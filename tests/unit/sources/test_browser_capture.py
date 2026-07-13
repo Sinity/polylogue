@@ -13,6 +13,7 @@ from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.browser_capture import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -189,6 +190,35 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert session.messages[1].blocks[0].type.value == "code"
     assert DOM_FALLBACK_INGEST_FLAG not in session.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
+
+
+def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_meta"] = {"capture_fidelity": "native_compact"}
+    payload["provider_meta"] = {"capture_fidelity": "native_compact"}
+    payload["raw_provider_payload"] = {
+        "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+        "mapping": {
+            "untrusted-native-shape": {
+                "id": "untrusted-native-shape",
+                "message": {
+                    "id": "wrong-native-message",
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["must not override envelope turns"]},
+                },
+            }
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+
+    assert [message.provider_message_id for message in parsed.messages] == ["u1", "a1"]
+    assert [message.text for message in parsed.messages] == ["Draft the plan", "Here is the plan"]
+    assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in parsed.ingest_flags
+    assert DOM_FALLBACK_INGEST_FLAG not in parsed.ingest_flags
 
 
 def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:

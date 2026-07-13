@@ -291,6 +291,17 @@ describe("background backfill coordinator", () => {
     });
   });
 
+  it("preserves compact-capture fidelity after the receiver acknowledges it", async () => {
+    const adapter = new FixtureAdapter(["compact-one"]);
+    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-compact-v1" })];
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
+  });
+
   it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {
     const store = new MemoryBackfillStore();
     await store.createJob({
@@ -415,6 +426,49 @@ describe("background backfill coordinator", () => {
 
     await h.coordinator.control(job.id, "resume");
     expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "eligible", attempt_count: 0, last_error: null }]);
+  });
+
+  it("repairs a persisted bridge hold before a restarted worker fetches or completes it", async () => {
+    const h = harness({ adapter: new FixtureAdapter(["one"]) });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    const [item] = await h.store.listQueue(job.id);
+    await h.store.putQueue({
+      ...item,
+      state: "bridge_oversize",
+      last_error: "backfill_bridge_projection_too_large:observed_bytes=25200000;limit_bytes=25165824",
+    });
+
+    await h.coordinator.wake(job.id);
+
+    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
+    expect(h.adapter.fetchCalls).toEqual([]);
+  });
+
+  it("fails compact provider-contract drift per item and continues the job", async () => {
+    const adapter = new FixtureAdapter(["bad", "good"]);
+    adapter.fetchNative = async (nativeId) => {
+      adapter.fetchCalls.push(nativeId);
+      if (nativeId === "bad") throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
+      return response(chatGptNative(nativeId));
+    };
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect((await h.store.listQueue(job.id)).find((item) => item.native_id === "bad")).toMatchObject({
+      native_id: "bad",
+      state: "failed",
+      attempt_count: 0,
+      last_response_class: "contract_drift",
+    });
+    expect((await h.coordinator.status(job.id)).transport_failures).toBe(0);
+
+    h.advance(h.policy.baseCadenceMs);
+    await h.coordinator.wake(job.id);
+    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "complete" });
+    expect(h.adapter.fetchCalls).toEqual(["bad", "good"]);
   });
 
   it.each([

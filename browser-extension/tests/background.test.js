@@ -649,6 +649,30 @@ describe("background receiver diagnostics", () => {
     expect(status.inventory_complete).toBe(false);
   });
 
+  it("holds a browser scripting-result size rejection without spending retry attempts", async () => {
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => {
+      throw new Error("The message length exceeded the maximum allowed size");
+    });
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+
+    expect(started.ok).toBe(true);
+    let status;
+    await vi.waitFor(async () => {
+      status = (await sendRuntimeMessage({ type: "polylogue.backfill.status" })).jobs[0];
+      expect(status).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
+    });
+    expect(status.last_error).toContain("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
+    // The failed page invocation was a real ChatGPT inventory request (cost
+    // two); it is accounted once but does not enter transport retry backoff.
+    expect(status.daily_requests).toBe(2);
+    expect(status.transport_failures).toBe(0);
+  });
+
   it("schedules cleanup before waiting and removes an inactive tab when readiness fails", async () => {
     tabs = [];
     globalThis.chrome.tabs.create = vi.fn(async ({ url, active }) => ({ id: 99, url, active, status: "loading" }));

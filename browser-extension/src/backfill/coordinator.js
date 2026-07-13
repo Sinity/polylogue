@@ -20,6 +20,10 @@ function bridgeOversizeError(error) {
     || String(error?.message || error).startsWith("backfill_bridge_projection_too_large:");
 }
 
+function providerContractDriftError(error) {
+  return String(error?.message || error).startsWith("provider_contract_drift:");
+}
+
 function mergePolicy(patch = {}) {
   const policy = { ...DEFAULT_BACKFILL_POLICY, ...patch };
   if (policy.leaseMs <= PROVIDER_REQUEST_TIMEOUT_MS * 2) throw new Error("backfill_lease_must_exceed_request_timeout");
@@ -165,6 +169,17 @@ export class BackfillCoordinator {
     const jobId = job.id;
     job = await this.ensureReceiverContract(job, now);
     if (job.status !== "running") return this.status(jobId);
+    const persistedBridgeHold = (await this.store.listQueue(jobId)).find((item) => item.state === "bridge_oversize");
+    if (persistedBridgeHold) {
+      // A worker can die after durable queue persistence but before the job
+      // pause. Repair that crash window before any alarm can fetch another
+      // item or mark the all-terminal queue complete.
+      return this.pauseJob(
+        { ...job, last_error: persistedBridgeHold.last_error || "backfill_bridge_response_too_large" },
+        "backfill_bridge_response_too_large",
+        now,
+      );
+    }
     await this.store.recoverExpiredLeases(jobId, now);
     await this.schedule(jobId, now + job.policy.leaseMs);
     const receiverItem = await this.store.acquireNextLease(jobId, this.instanceId, now, job.policy.leaseMs, true);
@@ -288,6 +303,17 @@ export class BackfillCoordinator {
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
+      if (providerContractDriftError(error)) {
+        await this.saveQueue(job, {
+          ...item,
+          state: "failed",
+          lease_owner: null,
+          lease_expires_at_ms: null,
+          last_response_class: "contract_drift",
+          last_error: String(error?.message || error),
+        });
+        return job;
+      }
       return this.retryTransport(job, item, error, now);
     }
     job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
@@ -309,14 +335,16 @@ export class BackfillCoordinator {
       await this.saveQueue(job, { ...item, state: "failed", lease_owner: null, lease_expires_at_ms: null, last_response_class: "contract_drift", last_error: String(error.message || error) });
       return job;
     }
+    const captureFidelity = capture.provider_meta?.capture_fidelity || "native_full";
     if (!capture.session?.turns?.length) {
-      await this.saveQueue(job, { ...item, state: "no_turns", lease_owner: null, lease_expires_at_ms: null, last_response_class: "native_empty", capture_fidelity: "native_full" });
+      await this.saveQueue(job, { ...item, state: "no_turns", lease_owner: null, lease_expires_at_ms: null, last_response_class: "native_empty", capture_fidelity: captureFidelity });
       return job;
     }
     return this.submitReceiver(job, item, capture, now);
   }
 
   async submitReceiver(job, item, capture, now) {
+    const captureFidelity = capture.provider_meta?.capture_fidelity || "native_full";
     const serialized = serializedJson(capture);
     const hash = await serializedContentHash(serialized);
     const firstPersistence = item.resume_state !== "captured_waiting_receiver" || !item.envelope;
@@ -338,7 +366,7 @@ export class BackfillCoordinator {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       const contractError = receiverAckContractError(receipt, hash);
       if (contractError) throw contractError;
-      const completeItem = { ...item, state: "complete", envelope: null, content_hash: hash, capture_fidelity: "native_full", receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_acked", completed_at: nowIso(now) };
+      const completeItem = { ...item, state: "complete", envelope: null, content_hash: hash, capture_fidelity: captureFidelity, receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_acked", completed_at: nowIso(now) };
       const revision = item.provider_updated_at
         ? {
           id: `${item.provider}:${item.native_id}`,
@@ -363,11 +391,11 @@ export class BackfillCoordinator {
     } catch (error) {
       if (String(error?.message || error).startsWith("stale_backfill_execution:")) throw error;
       if (error?.code === "receiver_contract_incompatible" || String(error?.message || error).startsWith("receiver_contract_incompatible:")) {
-        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_contract_incompatible", last_error: String(error.message || error) });
+        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_contract_incompatible", last_error: String(error.message || error) });
         return this.pauseJob({ ...job, last_error: String(error.message || error) }, "receiver_contract_incompatible", now);
       }
       const attempt = (item.attempt_count || 0) + 1;
-      await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_down", last_error: String(error.message || error) });
+      await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_down", last_error: String(error.message || error) });
       const exhausted = attempt >= job.policy.maxReceiverAttempts;
       const next = {
         ...job,
@@ -424,6 +452,13 @@ export class BackfillCoordinator {
   }
 
   async handleJobTransport(job, error, now) {
+    if (bridgeOversizeError(error)) {
+      return this.pauseJob(
+        { ...job, last_error: String(error?.message || error) },
+        "backfill_bridge_response_too_large",
+        now,
+      );
+    }
     const failures = (job.transport_failures || 0) + 1;
     const next = { ...job, transport_failures: failures, last_error: String(error.message || error) };
     if (failures >= job.policy.breakerThreshold) return this.pauseJob(next, "repeated_transport_failures", now);

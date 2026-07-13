@@ -92,7 +92,7 @@ export async function executeProviderPageRequest(request) {
   function compactChatGptConversation(body) {
     let source;
     try { source = JSON.parse(body); } catch { throw new Error("provider_contract_drift:chatgpt_conversation_not_json_object"); }
-    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object") {
+    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
       throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
     }
     const mapping = {};
@@ -126,6 +126,16 @@ export async function executeProviderPageRequest(request) {
       throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
     }
     return projected;
+  }
+
+  function assertScriptingResultBound(response) {
+    // executeScript returns this exact result shape. JSON encoding is a
+    // conservative byte model for the browser bridge because escaped content
+    // can be larger than the compact conversation string alone.
+    const bytes = new globalThis.TextEncoder().encode(JSON.stringify({ ok: true, response })).length;
+    if (bytes > compactChatGptBridgeMaxBytes) {
+      throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
+    }
   }
 
   async function chatGptRequest() {
@@ -164,7 +174,10 @@ export async function executeProviderPageRequest(request) {
       headers: { Authorization: `Bearer ${accessToken}`, "ChatGPT-Account-Id": accountId },
     }, request.operation === "conversation" ? compactChatGptSourceMaxBytes : maxResponseBytes,
     request.operation === "conversation" ? "backfill_bridge_source_response_too_large" : "backfill_bridge_response_too_large");
-    if (request.operation === "conversation" && response.ok) response.body = compactChatGptConversation(response.body);
+    if (request.operation === "conversation" && response.ok) {
+      response.body = compactChatGptConversation(response.body);
+      assertScriptingResultBound(response);
+    }
     return response;
   }
 

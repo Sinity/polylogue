@@ -148,6 +148,40 @@ describe("first-party provider page transport", () => {
     expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=25165824$/);
   });
 
+  it("accounts for escaping in the outer scripting-result bridge payload", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ['"'.repeat(13 * 1024 * 1024)] } } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result.error).toMatch(/^backfill_bridge_projection_too_large:observed_bytes=.+;limit_bytes=25165824$/);
+  });
+
+  it("returns malformed compact source as typed provider contract drift", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({ id: "conversation-1", mapping: [] }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result).toMatchObject({ ok: false, error: "provider_contract_drift:chatgpt_conversation.mapping_must_be_object" });
+  });
   it("uses the exact Claude UI selector despite ambiguous per-organization keys", async () => {
     const selected = "22222222-2222-4222-8222-222222222222";
     const other = "11111111-1111-4111-8111-111111111111";
