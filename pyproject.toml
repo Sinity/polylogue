@@ -65,7 +65,7 @@ dev = [
   "pytest-json-report>=1.5.0",  # Structured JSON report for verify pipeline + dashboard (#1026, #998)
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.14.1",
-  "hypothesis>=6.155.7",
+  "hypothesis>=6.156.6",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.4.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
@@ -76,7 +76,7 @@ dev = [
   "mypy>=1.17,<1.21",
   "types-dateparser>=1.4.1.20260617",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.15.20",
+  "ruff>=0.15.21",
   "pre-commit>=4.6.0",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
