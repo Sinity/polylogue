@@ -3,14 +3,20 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from polylogue.archive.revision_replay import ApplicationDecision
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
-from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
     repair_quarantined_accepted_raws,
@@ -302,7 +308,6 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
             WHERE r.origin = 'unknown-export'
             """
         ).fetchone() == (0,)
-
     reapplied = repair_browser_capture_origin_mismatches(
         _config(tmp_path),
         [raw_id],
@@ -312,6 +317,27 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
     )
     assert reapplied.repaired_count == 0
     assert receipt.read_text().count("\n") == 2
+
+
+def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "rebuild-repair.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+
+    backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id, copy_raw_id])
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-origin-one'"
+        ).fetchone() == (copy_raw_id,)
 
 
 @pytest.mark.parametrize("mutation", ["blob", "head", "origin", "canonical_head"])
@@ -339,6 +365,16 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
             )
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    assert report.ineligible_count == 1
+
+
+def test_browser_capture_origin_rejects_unresolved_source_membership(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = ?", (raw_id,))
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+
     assert report.ineligible_count == 1
 
 
@@ -425,6 +461,20 @@ def test_browser_capture_origin_repair_rejects_underproven_canonical_head(tmp_pa
     assert report.ineligible_count == 1
 
 
+def test_browser_capture_origin_repair_rejects_missing_canonical_blob(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blob_hash = source.execute(
+            "SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (canonical_raw_id,)
+        ).fetchone()[0]
+    BlobStore(tmp_path / "blob").blob_path(blob_hash.lower()).unlink()
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])
+
+    assert report.ineligible_count == 1
+
+
 def test_browser_capture_origin_copy_forward_reproves_before_source_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -479,3 +529,99 @@ def test_browser_capture_origin_copy_forward_resumes_after_source_stage_interrup
     assert resumed.repaired_count == 1
     assert resumed.items[0].status == "already_repaired"
     assert resumed.items[0].copy_forward_source_complete is True
+
+
+def test_browser_capture_origin_copy_forward_refuses_incomplete_blob_reference(tmp_path: Path) -> None:
+    import polylogue.storage.repair as repair_module
+
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    item = dry_run.items[0]
+    assert item.copy_forward_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        repair_module._stage_browser_origin_copy_forward_source(source, item)
+        source.execute("DELETE FROM blob_refs WHERE ref_id = ?", (item.copy_forward_raw_id,))
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "incomplete-copy-receipt.jsonl",
+            proof_digest=dry_run.proof_digest,
+        )
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (raw_id,)
+
+
+def test_browser_capture_origin_live_membership_ignores_quarantined_conflict(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "live-membership-repair.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    session = _parse_one(Provider.CHATGPT, _browser_payload(), "browser-capture/chatgpt/one.json")[0]
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=cursor,
+        parser_fingerprint="browser-origin-test",
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        parsed_by_raw_id = {
+            raw_id: session,
+            copy_raw_id: session,
+        }
+        projections = {raw_id: session_revision_projection(session), copy_raw_id: session_revision_projection(session)}
+        # Production guard reproduction: an unresolved quarantined member
+        # chosen over the existing byte head raises at the real archive writer.
+        with pytest.raises(RuntimeError, match="membership replay cannot retire"):
+            archive.apply_raw_membership_classification(
+                "chatgpt:browser-origin-one",
+                MembershipClassification((raw_id,), (), ()),
+                parsed_by_raw_id,
+                projections,
+                acquired_at_ms=5,
+            )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        processor._apply_membership_sessions(archive, copy_raw_id, [session], acquired_at_ms=6)
+        assert archive.raw_revision_head_raw_id("chatgpt:browser-origin-one") == copy_raw_id
+
+
+def test_browser_capture_origin_live_membership_defers_all_quarantined_rows(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "all-quarantined-repair.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            "UPDATE raw_session_memberships SET revision_authority = 'quarantined' "
+            "WHERE logical_source_key = 'chatgpt:browser-origin-one'"
+        )
+    session = _parse_one(Provider.CHATGPT, _browser_payload(), "browser-capture/chatgpt/one.json")[0]
+    cursor = CursorStore(tmp_path / "all-quarantined-cursor.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=cursor,
+        parser_fingerprint="browser-origin-test",
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        processor._apply_membership_sessions(archive, copy_raw_id, [session], acquired_at_ms=7)
+        assert archive.raw_revision_head_raw_id("chatgpt:browser-origin-one") == copy_raw_id

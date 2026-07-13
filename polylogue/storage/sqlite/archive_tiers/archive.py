@@ -2224,10 +2224,33 @@ class ArchiveStore:
         return tuple(sorted(selected)), logical_keys
 
     def raw_membership_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return only byte-proven membership candidates for live classification."""
         rows = (
             self._ensure_source_conn()
             .execute(
-                "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ? ORDER BY raw_id",
+                """
+                SELECT raw_id FROM raw_session_memberships
+                WHERE logical_source_key = ? AND revision_authority = 'byte_proven'
+                ORDER BY raw_id
+                """,
+                (logical_source_key,),
+            )
+            .fetchall()
+        )
+        return tuple(str(row[0]) for row in rows)
+
+    def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return census candidates excluding quarantined full rows with another authority key."""
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+                SELECT m.raw_id
+                FROM raw_session_memberships AS m
+                JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+                WHERE m.logical_source_key = ? AND r.revision_authority = 'byte_proven'
+                ORDER BY m.raw_id
+                """,
                 (logical_source_key,),
             )
             .fetchall()
