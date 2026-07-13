@@ -8,12 +8,14 @@ import re
 import shlex
 import sqlite3
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from time import perf_counter
+from typing import TypeVar, cast
 
 from polylogue.coordination.payloads import (
     AgentCoordinationPayload,
@@ -47,6 +49,7 @@ from polylogue.paths import active_index_db_path, archive_root
 logger = get_logger(__name__)
 
 CommandRunner = Callable[[Sequence[str], Path | None], "CommandResult"]
+_StageResult = TypeVar("_StageResult")
 
 _COMMAND_CHARS = 220
 _CHANGED_PATH_LIMIT = 40
@@ -54,6 +57,7 @@ _CHANGED_PATH_LIMIT = 40
 # complete default response below the bead's 8 KiB transport ceiling.
 _COMPACT_BYTE_BUDGET = 7_600
 _PROCESS_COMMAND = ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args=")
+_BEADS_PROBE_TIMEOUT_SECONDS = 0.35
 _AGENT_NAMES = ("codex", "claude", "gemini")
 _SYSTEM_RESOURCE_NAMES = frozenset(
     {
@@ -94,8 +98,15 @@ def build_coordination_envelope(
     limit: int = 10,
     detail: bool = False,
     runner: CommandRunner | None = None,
+    stage_timings_ms: MutableMapping[str, float] | None = None,
 ) -> AgentCoordinationPayload:
-    """Return a bounded, JSON-first coordination envelope for agents."""
+    """Return a bounded, JSON-first coordination envelope for agents.
+
+    ``stage_timings_ms`` is an optional caller-owned diagnostic sink.  It is
+    intentionally not projected into the agent payload: timing collection is
+    for the benchmark harness, while the compact payload remains bounded and
+    semantically stable.
+    """
 
     now = datetime.now(UTC).isoformat()
     root_cwd = (cwd or Path.cwd()).resolve()
@@ -103,27 +114,47 @@ def build_coordination_envelope(
     peer_limit = max(1, min(limit, 50))
     resource_limit = max(1, min(limit, 50))
 
-    repo = _repo_payload(root_cwd, command_runner)
-    process_result, process_rows = _process_snapshot(command_runner)
-    self_payload = _self_payload(root_cwd, repo, process_rows, process_result)
-    work_item = _work_item_payload(root_cwd, repo, command_runner)
-    beads = _beads_payload(root_cwd, repo, command_runner)
-    all_peers = _logical_peer_payloads(
-        process_rows,
-        process_result,
-        owner_pid=self_payload.owner_pid,
-        invocation_pid=self_payload.invocation_pid,
+    repo = _timed_stage(stage_timings_ms, "repo", lambda: _repo_payload(root_cwd, command_runner))
+    process_result, process_rows = _timed_stage(stage_timings_ms, "process", lambda: _process_snapshot(command_runner))
+    self_payload = _timed_stage(
+        stage_timings_ms,
+        "self",
+        lambda: _self_payload(root_cwd, repo, process_rows, process_result),
     )
-    all_resources = _resource_scope_payloads(
-        process_rows,
-        process_result,
-        root_cwd,
-        archive_resource=_configured_archive_resource(),
+    work_item = _timed_stage(
+        stage_timings_ms,
+        "work_item",
+        lambda: _work_item_payload(root_cwd, repo, command_runner),
+    )
+    beads = _timed_stage(stage_timings_ms, "beads", lambda: _beads_payload(root_cwd, repo, command_runner))
+    all_peers = _timed_stage(
+        stage_timings_ms,
+        "peers",
+        lambda: _logical_peer_payloads(
+            process_rows,
+            process_result,
+            owner_pid=self_payload.owner_pid,
+            invocation_pid=self_payload.invocation_pid,
+        ),
+    )
+    all_resources = _timed_stage(
+        stage_timings_ms,
+        "resources",
+        lambda: _resource_scope_payloads(
+            process_rows,
+            process_result,
+            root_cwd,
+            archive_resource=_configured_archive_resource(),
+        ),
     )
     peers = all_peers[:peer_limit]
     resources = all_resources[:resource_limit]
-    archive = _archive_payload(resources)
-    handoff = _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit)
+    archive = _timed_stage(stage_timings_ms, "archive", lambda: _archive_payload(resources))
+    handoff = _timed_stage(
+        stage_timings_ms,
+        "handoff",
+        lambda: _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit),
+    )
     (
         session_trees,
         activity_episodes,
@@ -131,14 +162,22 @@ def build_coordination_envelope(
         proof_refs,
         context_flow_refs,
         archive_evidence_degraded_reason,
-    ) = _archive_evidence_payloads(
-        repo,
-        self_payload,
-        archive,
-        limit=peer_limit,
+    ) = _timed_stage(
+        stage_timings_ms,
+        "archive_evidence",
+        lambda: _archive_evidence_payloads(
+            repo,
+            self_payload,
+            archive,
+            limit=peer_limit,
+        ),
     )
-    overlaps = _overlap_payloads(repo, work_item, peers, resources)
-    advisories = _advisories(repo, work_item, overlaps, archive, archive_evidence_degraded_reason)
+    overlaps = _timed_stage(stage_timings_ms, "overlaps", lambda: _overlap_payloads(repo, work_item, peers, resources))
+    advisories = _timed_stage(
+        stage_timings_ms,
+        "advisories",
+        lambda: _advisories(repo, work_item, overlaps, archive, archive_evidence_degraded_reason),
+    )
     provenance = (repo.provenance, work_item.provenance, self_payload.provenance)
     payload = AgentCoordinationPayload(
         view=view,
@@ -175,8 +214,31 @@ def build_coordination_envelope(
     total_counts["resource_components"] = sum(episode.component_count for episode in all_resources)
     total_counts["resource_refs"] = sum(episode.resource_count for episode in all_resources)
     if detail:
-        return _finalize_projection(projected, total_counts=total_counts, detail=True)
-    return _compact_coordination_payload(projected, total_counts=total_counts)
+        return _timed_stage(
+            stage_timings_ms,
+            "projection",
+            lambda: _finalize_projection(projected, total_counts=total_counts, detail=True),
+        )
+    return _timed_stage(
+        stage_timings_ms,
+        "projection",
+        lambda: _compact_coordination_payload(projected, total_counts=total_counts),
+    )
+
+
+def _timed_stage(
+    timings: MutableMapping[str, float] | None,
+    name: str,
+    call: Callable[[], _StageResult],
+) -> _StageResult:
+    """Execute one envelope stage and record its wall time when requested."""
+
+    started = perf_counter()
+    try:
+        return call()
+    finally:
+        if timings is not None:
+            timings[name] = round((perf_counter() - started) * 1_000, 3)
 
 
 def project_coordination_envelope(
@@ -660,7 +722,7 @@ def _serialized_size(payload: AgentCoordinationPayload) -> int:
     return len(payload.to_json(exclude_none=True).encode("utf-8"))
 
 
-def _run_command(args: Sequence[str], cwd: Path | None) -> CommandResult:
+def _run_command(args: Sequence[str], cwd: Path | None, *, timeout_seconds: float = 2.0) -> CommandResult:
     try:
         completed = subprocess.run(
             [str(arg) for arg in args],
@@ -668,7 +730,7 @@ def _run_command(args: Sequence[str], cwd: Path | None) -> CommandResult:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(tuple(str(arg) for arg in args), 124, "", str(exc))
@@ -947,11 +1009,19 @@ def _beads_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunn
     beads_dir = beads_root / ".beads"
     if not beads_dir.exists():
         return None
-    hooks_result = runner(("bd", "hooks", "list", "--json"), beads_root)
+    # These three Beads read probes have no data dependency.  They used to
+    # serialize three CLI startups on every compact status request, which was
+    # the dominant live-route latency.  Preserve all three result contracts
+    # while letting their subprocess waits overlap.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="coordination-beads") as executor:
+        hooks_future = executor.submit(_run_beads_probe, runner, ("bd", "hooks", "list", "--json"), beads_root)
+        gates_future = executor.submit(_run_beads_probe, runner, ("bd", "gate", "list", "--json"), beads_root)
+        merge_future = executor.submit(_run_beads_probe, runner, ("bd", "merge-slot", "check", "--json"), beads_root)
+        hooks_result = hooks_future.result()
+        gates_result = gates_future.result()
+        merge_result = merge_future.result()
     hooks = _beads_hooks(hooks_result)
-    gates_result = runner(("bd", "gate", "list", "--json"), beads_root)
     gates = _beads_gates(gates_result)
-    merge_result = runner(("bd", "merge-slot", "check", "--json"), beads_root)
     merge_slot = _beads_merge_slot(merge_result)
     hooks_all_installed = all(hook.installed for hook in hooks) if hooks else None
     hooks_outdated_count = sum(1 for hook in hooks if hook.outdated) if hooks else None
@@ -973,6 +1043,20 @@ def _beads_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunn
             else (hooks_result.stderr.strip()[:200] or "bd hooks list failed"),
         ),
     )
+
+
+def _run_beads_probe(runner: CommandRunner, args: Sequence[str], cwd: Path) -> CommandResult:
+    """Bound live Beads probes so an unavailable optional source stays honest.
+
+    A timeout returns the existing error-shaped ``CommandResult`` rather than
+    stale merge state.  Test runners retain their injected deterministic
+    behavior, while production status stays interactive when a Beads command
+    blocks on its own daemon or lock.
+    """
+
+    if runner is _run_command:
+        return _run_command(args, cwd, timeout_seconds=_BEADS_PROBE_TIMEOUT_SECONDS)
+    return runner(args, cwd)
 
 
 def _beads_hooks(result: CommandResult) -> tuple[CoordinationBeadsHookPayload, ...]:

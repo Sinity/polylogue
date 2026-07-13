@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -227,6 +228,99 @@ class FakeRunner:
                 "",
             )
         return CommandResult(key, 1, "", "unexpected command")
+
+
+def test_coordination_envelope_overlaps_independent_beads_probes(tmp_path: Path) -> None:
+    """The production envelope waits for all Beads facts without serializing them."""
+
+    root = tmp_path / "repo"
+    (root / ".beads").mkdir(parents=True)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(args: Sequence[str], cwd: Path | None) -> CommandResult:
+        key = tuple(args)
+        if key[:4] == ("git", "-C", str(root), "rev-parse"):
+            return CommandResult(key, 0, str(root) + "\n", "")
+        if key[:4] == ("git", "-C", str(root), "branch"):
+            return CommandResult(key, 0, "feature/coordination-envelope\n", "")
+        if key[:4] == ("git", "-C", str(root), "status"):
+            return CommandResult(key, 0, "", "")
+        if key == ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args="):
+            return CommandResult(key, 0, "", "")
+        if key in {
+            ("bd", "hooks", "list", "--json"),
+            ("bd", "gate", "list", "--json"),
+            ("bd", "merge-slot", "check", "--json"),
+        }:
+            calls.append(key)
+            sleep(0.05)
+            if key[1] == "hooks":
+                return CommandResult(key, 0, '{"hooks": []}', "")
+            if key[1] == "gate":
+                return CommandResult(key, 0, "[]", "")
+            return CommandResult(key, 0, '{"available": true}', "")
+        return CommandResult(key, 1, "", "unexpected command")
+
+    timings: dict[str, float] = {}
+    payload = build_coordination_envelope(cwd=root, runner=runner, stage_timings_ms=timings)
+
+    assert payload.beads is not None
+    assert {call[1] for call in calls} == {"hooks", "gate", "merge-slot"}
+    # Three 50 ms probes must overlap on the live code path; a sequential
+    # implementation records roughly 150 ms for this stage.
+    assert timings["beads"] < 110
+
+
+def test_coordination_envelope_bounds_live_beads_probe_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real command path receives the interactive probe deadline."""
+
+    root = tmp_path / "repo"
+    (root / ".beads").mkdir(parents=True)
+    calls: list[tuple[tuple[str, ...], float]] = []
+
+    def fake_run(
+        args: Sequence[str],
+        cwd: Path | None,
+        *,
+        timeout_seconds: float = 2.0,
+    ) -> CommandResult:
+        key = tuple(args)
+        calls.append((key, timeout_seconds))
+        if key[:4] == ("git", "-C", str(root), "rev-parse"):
+            return CommandResult(key, 0, str(root) + "\n", "")
+        if key[:4] == ("git", "-C", str(root), "branch"):
+            return CommandResult(key, 0, "feature/coordination-envelope\n", "")
+        if key[:4] == ("git", "-C", str(root), "status"):
+            return CommandResult(key, 0, "", "")
+        if key == ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args="):
+            return CommandResult(key, 0, "", "")
+        if key == ("bd", "hooks", "list", "--json"):
+            return CommandResult(key, 0, '{"hooks": []}', "")
+        if key == ("bd", "gate", "list", "--json"):
+            return CommandResult(key, 0, "[]", "")
+        if key == ("bd", "merge-slot", "check", "--json"):
+            return CommandResult(key, 124, "", "timed out")
+        return CommandResult(key, 1, "", "unexpected command")
+
+    monkeypatch.setattr("polylogue.coordination.envelope._run_command", fake_run)
+    payload = build_coordination_envelope(cwd=root)
+
+    assert payload.beads is not None
+    probes = [
+        timeout
+        for command, timeout in calls
+        if command
+        in {
+            ("bd", "hooks", "list", "--json"),
+            ("bd", "gate", "list", "--json"),
+            ("bd", "merge-slot", "check", "--json"),
+        }
+    ]
+    assert len(probes) == 3
+    assert all(timeout == 0.35 for timeout in probes)
 
 
 def test_coordination_envelope_uses_beads_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
