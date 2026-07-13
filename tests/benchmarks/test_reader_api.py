@@ -61,7 +61,7 @@ def test_bench_reader_list_with_provider(
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.list_summaries(provider="claude-code"),
+        lambda store: store.repository.list_summaries(origin="claude-code"),
     )
 
 

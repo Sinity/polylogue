@@ -645,7 +645,7 @@ async def test_tools_passes_filters_to_tool_usage_insight(monkeypatch: pytest.Mo
 
     query = store.queries[0]
     assert isinstance(query, ToolUsageInsightQuery)
-    assert query.provider == "claude-code-session"
+    assert query.origin == "claude-code-session"
     assert query.tool == "mcp__serena__find_symbol"
     assert query.mcp_server == "serena"
     assert query.action_kind == "tool_use"

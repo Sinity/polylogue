@@ -301,10 +301,10 @@ class TestRawSessionStorage:
         for r in records:
             await backend.save_raw_session(r)
 
-        chatgpt_records = [r async for r in backend.iter_raw_sessions(provider="chatgpt")]
+        chatgpt_records = [r async for r in backend.iter_raw_sessions(origin="chatgpt")]
         assert len(chatgpt_records) == 3
 
-        claude_records = [r async for r in backend.iter_raw_sessions(provider="claude-ai")]
+        claude_records = [r async for r in backend.iter_raw_sessions(origin="claude-ai")]
         assert len(claude_records) == 3
 
     async def test_iter_raw_ids_by_source_name(self, backend: SQLiteBackend) -> None:
@@ -397,9 +397,9 @@ class TestRawSessionStorage:
             )
         )
 
-        matched_records = [record async for record in backend.iter_raw_sessions(provider="chatgpt")]
+        matched_records = [record async for record in backend.iter_raw_sessions(origin="chatgpt")]
         matched_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
-        matched_count = await backend.get_raw_session_count(provider="chatgpt")
+        matched_count = await backend.get_raw_session_count(origin="chatgpt")
 
         assert [record.raw_id for record in matched_records] == ["raw-generic"]
         assert matched_ids == ["raw-generic"]
@@ -503,9 +503,9 @@ class TestRawSessionStorage:
         assert await backend.get_raw_session_count() == 5
 
         # Filtered count
-        assert await backend.get_raw_session_count(provider="chatgpt") == 3
-        assert await backend.get_raw_session_count(provider="claude-ai") == 2
-        assert await backend.get_raw_session_count(provider="codex") == 0
+        assert await backend.get_raw_session_count(origin="chatgpt") == 3
+        assert await backend.get_raw_session_count(origin="claude-ai") == 2
+        assert await backend.get_raw_session_count(origin="codex") == 0
 
     async def test_iter_raw_sessions_without_limit_returns_all(self, backend: SQLiteBackend) -> None:
         """Iterating without limit returns all records."""

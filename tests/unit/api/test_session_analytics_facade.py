@@ -76,7 +76,7 @@ async def test_aggregate_sessions_maps_provider_filter_through(tmp_path: Path) -
     fetch_mock = AsyncMock(return_value=[])
     poly.list_session_profile_insights = fetch_mock  # type: ignore[method-assign]
 
-    await poly.aggregate_sessions(group_by="workflow_shape", provider="claude-code")
+    await poly.aggregate_sessions(group_by="workflow_shape", origin="claude-code")
 
     assert fetch_mock.await_args is not None
     query = fetch_mock.await_args.args[0]

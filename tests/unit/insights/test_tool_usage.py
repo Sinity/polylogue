@@ -147,7 +147,7 @@ class TestBuildToolUsageInsight:
         insight = build_tool_usage_insight(
             rows=rows,
             coverage_rows=coverage,
-            query=ToolUsageInsightQuery(provider="claude-code"),
+            query=ToolUsageInsightQuery(origin="claude-code"),
             materialized_at="2026-05-17T00:00:00+00:00",
         )
         assert [entry.source_name for entry in insight.entries] == ["claude-code"]
@@ -386,7 +386,7 @@ class TestListToolUsageInsightsEndToEnd:
         )
 
         [insight] = await archive.list_tool_usage_insights(
-            ToolUsageInsightQuery(provider="claude-code-session", mcp_server="serena", limit=1)
+            ToolUsageInsightQuery(origin="claude-code-session", mcp_server="serena", limit=1)
         )
 
         assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__serena__find_symbol"]
@@ -468,7 +468,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         with ArchiveStore.open_existing(archive.archive_root) as store:
             rows = store.list_tool_observed_event_count_rows(
-                ToolUsageInsightQuery(provider="claude-code-session", mcp_server="serena", limit=5)
+                ToolUsageInsightQuery(origin="claude-code-session", mcp_server="serena", limit=5)
             )
 
         assert rows == [
@@ -559,7 +559,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         with ArchiveStore.open_existing(archive.archive_root) as store:
             rows = store.list_tool_action_evidence_count_rows(
-                ToolUsageInsightQuery(provider="codex-session", limit=5),
+                ToolUsageInsightQuery(origin="codex-session", limit=5),
                 detail_patterns=("codebase-memory",),
             )
 
@@ -623,7 +623,7 @@ class TestListToolUsageInsightsEndToEnd:
 
         with ArchiveStore.open_existing(archive.archive_root) as store:
             rows = store.list_tool_action_evidence_count_rows(
-                ToolUsageInsightQuery(provider="codex-session", limit=5),
+                ToolUsageInsightQuery(origin="codex-session", limit=5),
                 detail_patterns=("codebase-memory",),
                 since_ms=cutoff_ms,
             )
@@ -686,7 +686,7 @@ class TestListToolUsageInsightsEndToEnd:
         )
 
         query = ToolUsageInsightQuery(
-            provider="claude-code-session",
+            origin="claude-code-session",
             mcp_server="serena",
             since_ms=cutoff_ms,
             limit=5,

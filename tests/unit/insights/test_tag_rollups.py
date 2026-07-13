@@ -6,8 +6,8 @@ both produce it) named ``insights/tag_rollups.py:49`` as a candidate leak
 site. Reading it to ground truth shows it performs the *forward*
 ``Provider -> Origin`` conversion (via ``origin_from_provider``), which is
 total and well-defined even for this fiber -- there is no reverse lookup here
-for a disambiguator to fix. These tests pin that: both ``provider="gemini"``
-and ``provider="drive"`` correctly resolve to the ``aistudio-drive`` origin
+for a disambiguator to fix. These tests pin that: both ``origin="aistudio-drive"``
+and ``origin="aistudio-drive"`` correctly resolve to the ``aistudio-drive`` origin
 filter (not silently falling back to ``unknown-export`` or raising), proving
 the site was already correct and is not blocked by the collapse.
 """
@@ -45,7 +45,7 @@ def _counts() -> dict[str, int]:
 def test_provider_gemini_filters_to_aistudio_drive_origin() -> None:
     rollups = synthesize_provider_tag_rollups(
         _FakeArchive(_counts()),  # type: ignore[arg-type]
-        provider="gemini",
+        origin="aistudio-drive",
         materialized_at="2026-07-12T00:00:00+00:00",
     )
     assert [r.tag for r in rollups] == ["origin:aistudio-drive"]
@@ -59,7 +59,7 @@ def test_provider_drive_filters_to_the_same_aistudio_drive_origin() -> None:
     "gemini", not fall back to unknown-export or raise."""
     rollups = synthesize_provider_tag_rollups(
         _FakeArchive(_counts()),  # type: ignore[arg-type]
-        provider="drive",
+        origin="aistudio-drive",
         materialized_at="2026-07-12T00:00:00+00:00",
     )
     assert [r.tag for r in rollups] == ["origin:aistudio-drive"]
@@ -74,12 +74,12 @@ def test_gemini_and_drive_provider_filters_agree() -> None:
     (tracked as this bead's follow-up), not a smarter reverse lookup here."""
     gemini_rollups = synthesize_provider_tag_rollups(
         _FakeArchive(_counts()),  # type: ignore[arg-type]
-        provider="gemini",
+        origin="aistudio-drive",
         materialized_at="2026-07-12T00:00:00+00:00",
     )
     drive_rollups = synthesize_provider_tag_rollups(
         _FakeArchive(_counts()),  # type: ignore[arg-type]
-        provider="drive",
+        origin="aistudio-drive",
         materialized_at="2026-07-12T00:00:00+00:00",
     )
     assert [r.tag for r in gemini_rollups] == [r.tag for r in drive_rollups]

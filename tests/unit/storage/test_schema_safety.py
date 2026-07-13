@@ -381,7 +381,7 @@ class TestSessionFilterSQL:
         """Empty provider should still produce valid SQL."""
         from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_session_filters(provider="")
+        where_clause, params = _build_session_filters(origin="")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
 

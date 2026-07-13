@@ -44,7 +44,7 @@ def test_bench_list_sessions_provider_filter(benchmark: BenchmarkFixture, bench_
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.queries.list_sessions(SessionRecordQuery(provider="chatgpt", limit=50)),
+        lambda store: store.backend.queries.list_sessions(SessionRecordQuery(origin="chatgpt", limit=50)),
     )
 
 
@@ -76,7 +76,7 @@ def test_bench_list_sessions_combined_filter(benchmark: BenchmarkFixture, bench_
         bench_db_10k,
         lambda store: store.backend.queries.list_sessions(
             SessionRecordQuery(
-                provider="claude-ai",
+                origin="claude-ai-export",
                 has_tool_use=True,
                 min_messages=2,
                 limit=50,

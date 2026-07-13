@@ -88,7 +88,7 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
         InsightExportBundleRequest(
             output_path=target,
             insights=("profiles", "work-events"),
-            provider="codex",
+            origin="codex-session",
             since="2026-03-01",
             until="2026-03-31",
         )
