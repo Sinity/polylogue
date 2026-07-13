@@ -22,6 +22,7 @@ from devtools.index_fast_forward import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
 
 _OLD_MESSAGES_FTS = """
 CREATE VIRTUAL TABLE messages_fts USING fts5(
@@ -177,6 +178,15 @@ def _seed_v32_fixture(path: Path) -> dict[str, int]:
             """,
             (message_id, session_id, digest),
         )
+        block_id = str(conn.execute("SELECT block_id FROM blocks").fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO web_content_constructs (
+                session_id, message_id, block_id, position, provider, construct_type
+            ) VALUES (?, ?, ?, 0, 'chatgpt', 'content_reference')
+            """,
+            (session_id, message_id, block_id),
+        )
         conn.execute(
             """
             INSERT INTO threads(thread_id, search_text)
@@ -233,6 +243,12 @@ def test_fast_forward_v32_fixture_applies_exact_deltas_without_raw_reparse(tmp_p
 
     assert receipt["status"] == "clone_ready"
     assert receipt["raw_reparse"] is False
+    plan = index_fast_forward_plan(32, FAST_FORWARD_TO_VERSION)
+    assert plan is not None
+    assert receipt["declared_stages"] == list(plan.stage_names)
+    assert receipt["delta_classes"] == [
+        delta_class.value for declaration in plan.declarations for delta_class in declaration.classes
+    ]
     validation = validate_clone(
         clone,
         expected_counts=expected_counts,
@@ -253,6 +269,16 @@ def test_fast_forward_v32_fixture_applies_exact_deltas_without_raw_reparse(tmp_p
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_web_constructs_message'"
         ).fetchone()
+        web_construct_message_id = str(conn.execute("SELECT message_id FROM web_content_constructs").fetchone()[0])
+        query_plan = " ".join(
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM web_content_constructs WHERE message_id = ? LIMIT 1",
+                (web_construct_message_id,),
+            )
+        )
+        assert "INDEX idx_web_constructs_message" in query_plan
+        assert "SCAN web_content_constructs" not in query_plan
         delegation_columns = [row[1] for row in conn.execute("PRAGMA table_info(delegations)")]
         assert "instruction_tool_use_block_id" in delegation_columns
         for fts_table in ("messages_fts", "session_work_events_fts", "threads_fts"):
@@ -438,3 +464,56 @@ def test_failed_restart_contract_automatically_restores_v32_symlink(
     assert active_link.resolve() == active_db.resolve()
     rolled_back = json.loads(receipt_path.read_text())
     assert rolled_back["status"] == "rolled_back_after_failed_activation"
+
+
+def test_interrupted_activation_leaves_rollbackable_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between symlink swap and receipt write must not strand the archive.
+
+    Anti-vacuity: writing rollback metadata only after the swap means a
+    SIGKILL/power loss in that window leaves an active clone with a
+    clone_ready receipt that rollback refuses. The pre-swap "activating"
+    receipt with rollback_target keeps rollback executable.
+    """
+    import devtools.index_fast_forward as iff
+
+    archive_root = tmp_path / "archive"
+    active_dir = archive_root / ".index-generations" / "gen-v32"
+    active_dir.mkdir(parents=True)
+    active_db = active_dir / "index.db"
+    _seed_v32_fixture(active_db)
+    active_hash = _sha256(active_db)
+    active_link = archive_root / "index.db"
+    active_link.symlink_to(active_db)
+    receipt_path = archive_root / "recovery" / "v35.json"
+
+    receipt = create_and_fast_forward_generation(
+        active_link,
+        receipt_path,
+        max_io_full_avg10=1000,
+        max_memory_full_avg10=1000,
+        batch_rows=1,
+    )
+    clone = Path(str(receipt["clone_path"]))
+
+    real_swap = iff._swap_active_symlink
+
+    def _swap_then_crash(source_link: Path, target: Path, *, label: str) -> None:
+        real_swap(source_link, target, label=label)
+        raise RuntimeError("simulated crash after swap, before receipt write")
+
+    monkeypatch.setattr(iff, "_swap_active_symlink", _swap_then_crash)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        activate_generation(receipt_path)
+    monkeypatch.setattr(iff, "_swap_active_symlink", real_swap)
+
+    on_disk = json.loads(receipt_path.read_text())
+    assert on_disk["status"] == "activating"
+    assert on_disk["rollback_target"] == str(active_db)
+    assert active_link.resolve() == clone.resolve()
+
+    rollback_generation(receipt_path)
+    assert active_link.resolve() == active_db.resolve()
+    assert _sha256(active_db) == active_hash

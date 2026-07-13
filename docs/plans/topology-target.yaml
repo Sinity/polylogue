@@ -3577,6 +3577,10 @@ files:
     loc: 289
     target: polylogue/storage/sqlite/connection_profile.py
     owner: stable
+  - path: polylogue/storage/sqlite/lifecycle.py
+    loc: 235
+    target: polylogue/storage/sqlite/lifecycle.py
+    owner: stable
   - path: polylogue/storage/sqlite/maintenance.py
     loc: 100
     target: polylogue/storage/sqlite/maintenance.py
