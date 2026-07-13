@@ -163,6 +163,33 @@ def _raw_session_row(root: Path, raw_id: str) -> dict[str, object]:
     return dict(row)
 
 
+def _retarget_fixture_raw_id(root: Path, old_raw_id: str, new_raw_id: str) -> None:
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute("PRAGMA foreign_keys = OFF")
+        source.execute("UPDATE raw_sessions SET raw_id = ? WHERE raw_id = ?", (new_raw_id, old_raw_id))
+        source.execute("UPDATE blob_refs SET ref_id = ? WHERE ref_id = ?", (new_raw_id, old_raw_id))
+        source.execute("UPDATE raw_session_memberships SET raw_id = ? WHERE raw_id = ?", (new_raw_id, old_raw_id))
+        source.execute("UPDATE raw_membership_census SET raw_id = ? WHERE raw_id = ?", (new_raw_id, old_raw_id))
+        source.execute("UPDATE raw_artifacts SET raw_id = ? WHERE raw_id = ?", (new_raw_id, old_raw_id))
+        source.commit()
+    with sqlite3.connect(root / "index.db") as index:
+        index.execute("PRAGMA foreign_keys = OFF")
+        index.execute("UPDATE sessions SET raw_id = ? WHERE raw_id = ?", (new_raw_id, old_raw_id))
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_raw_id = ? WHERE accepted_raw_id = ?",
+            (new_raw_id, old_raw_id),
+        )
+        index.execute(
+            """
+            UPDATE raw_revision_applications
+            SET raw_id = ?, accepted_raw_id = ?, baseline_raw_id = ?
+            WHERE raw_id = ?
+            """,
+            (new_raw_id, new_raw_id, new_raw_id, old_raw_id),
+        )
+        index.commit()
+
+
 @pytest.mark.parametrize("typed_quarantined", [False, True])
 def test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(
     tmp_path: Path, typed_quarantined: bool
@@ -403,17 +430,25 @@ def test_quarantined_accepted_raw_repair_preserves_parallel_provenance_context(t
     assert report.items[0].authority_context_digest
 
 
-def test_quarantined_accepted_raw_repair_legacy_source_refuses_arbitrary_raw_ids(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    raw_id = _seed_invalid_head(tmp_path)
+def test_quarantined_accepted_raw_repair_source_v7_authorizes_only_fixed_cohort(tmp_path: Path) -> None:
+    authorized_fixture_raw = _seed_invalid_head(tmp_path, "authorized")
+    arbitrary_raw = _seed_invalid_head(tmp_path, "arbitrary")
     from polylogue.storage import repair as repair_module
 
-    monkeypatch.setattr(repair_module, "_raw_sessions_capture_mode_available", lambda conn: False)
-    report = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+    authorized_raw = sorted(repair_module._LEGACY_YLA_AUTHORITY_RAW_IDS)[0]
+    _retarget_fixture_raw_id(tmp_path, authorized_fixture_raw, authorized_raw)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.execute("PRAGMA user_version = 7")
+        source.commit()
 
-    assert report.ineligible_count == 1
-    assert report.items[0].reason == "legacy source tier authorizes only the fixed yla8.10 repair cohort"
+    eligible = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [authorized_raw])
+    refused = repair_module.repair_quarantined_accepted_raws(_config(tmp_path), [arbitrary_raw])
+
+    assert eligible.eligible_count == 1, eligible.items[0].reason
+    assert eligible.items[0].capture_mode is None
+    assert refused.ineligible_count == 1
+    assert refused.items[0].reason == "legacy source tier authorizes only the fixed yla8.10 repair cohort"
 
 
 def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
