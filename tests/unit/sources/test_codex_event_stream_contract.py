@@ -246,7 +246,7 @@ class TestToolCallStreamingContract:
         tool_use_block = next(block for block in tool_use_msgs[0].blocks if block.type == BlockType.TOOL_USE)
         assert tool_use_block.tool_name == "exec_command"
         assert tool_use_block.tool_id == "call_abc"
-        assert tool_use_block.tool_input == {"cmd": "ls /tmp"}
+        assert tool_use_block.tool_input == {"cmd": "ls /tmp", "command": "ls /tmp"}
 
     def test_function_call_output_produces_paired_tool_result(self) -> None:
         records = _load_catalog("tool_call_stream.jsonl")

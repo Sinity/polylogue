@@ -1090,9 +1090,32 @@ class TestEdgeCases:
         assert result.messages[0].message_type is MessageType.TOOL_USE
         assert result.messages[0].blocks[0].type == "tool_use"
         assert result.messages[0].blocks[0].tool_name == "exec_command"
-        assert result.messages[0].blocks[0].tool_input == {"cmd": "git status"}
+        assert result.messages[0].blocks[0].tool_input == {
+            "cmd": "git status",
+            "command": "git status",
+        }
         assert result.messages[1].message_type is MessageType.TOOL_RESULT
         assert result.messages[1].blocks[0].type == "tool_result"
+
+    def test_exec_freeform_arguments_gain_canonical_command(self) -> None:
+        script = 'const result = await tools.exec_command({"cmd":"polylogue find repo:polylogue"});'
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": "call-exec",
+                    "name": "exec",
+                    "arguments": script,
+                },
+            }
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.tool_name == "exec"
+        assert block.tool_input == {"arguments": script, "command": script}
 
     def test_event_msg_token_count_preserves_current_model_and_usage_extras(self) -> None:
         payload = [

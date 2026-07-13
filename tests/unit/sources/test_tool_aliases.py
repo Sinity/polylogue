@@ -7,8 +7,10 @@ from polylogue.archive.viewport.tools import classify_tool
 
 def test_codex_shell_aliases_share_canonical_name_and_category() -> None:
     assert classify_tool("exec_command", {"cmd": "ls"}) is ToolCategory.SHELL
+    assert classify_tool("exec", {"command": "await tools.exec_command(...)"}) is ToolCategory.SHELL
     assert classify_tool("shell_command", {"command": "git status"}) is ToolCategory.GIT
     assert canonical_tool_name("exec_command") == "bash"
+    assert canonical_tool_name("exec") == "bash"
     assert canonical_tool_name("shell_command") == "bash"
     assert canonical_tool_name("Bash") == "bash"
 
