@@ -2383,6 +2383,75 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The degraded daemon heartbeat must not depend on index.db existing."""
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+    actors: list[str] = []
+
+    class Lifecycle:
+        def heartbeat(self) -> None:
+            calls.append("heartbeat")
+
+    class Coordinator:
+        async def run_sync(self, actor: str, function: object, /, *args: object, **kwargs: object) -> object:
+            actors.append(actor)
+            assert callable(function)
+            return function(*args, **kwargs)
+
+    async def exercise() -> None:
+        monkeypatch.setattr(daemon_cli, "_daemon_lifecycle", Lifecycle())
+        monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+        task = asyncio.create_task(daemon_cli._periodic_lifecycle_heartbeat(interval_s=0))
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+                if calls:
+                    break
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+
+    assert calls
+    assert actors == ["daemon.lifecycle.heartbeat"]
+
+
+def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed forensic start must not strand the daemon's mutual-exclusion lock."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class Coordinator:
+        async def run_sync(self, _actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("ops unavailable")
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return True
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+
+    with pytest.raises(RuntimeError, match="ops unavailable"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert not (tmp_path / "daemon.pid").exists()
+
+
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.archive_identity import ArchiveIdentityConflictError
@@ -2945,6 +3014,13 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     def fail_background_work(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("schema-blocked daemon must not start DB background work")
 
+    lifecycle_tick_started = False
+
+    async def lifecycle_heartbeat() -> None:
+        nonlocal lifecycle_tick_started
+        lifecycle_tick_started = True
+        await asyncio.Event().wait()
+
     server = FakeServer()
     critical = HealthAlert(
         check_name="schema_version",
@@ -2957,6 +3033,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_check_schema_version_fast", return_value=critical),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lifecycle_heartbeat),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
@@ -2980,3 +3057,4 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
 
     assert server.shutdown_called is False
     assert server.close_called is True
+    assert lifecycle_tick_started is True

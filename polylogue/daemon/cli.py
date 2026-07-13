@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -62,6 +63,9 @@ from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
 from polylogue.version import POLYLOGUE_VERSION
 
+if TYPE_CHECKING:
+    from polylogue.daemon.lifecycle import DaemonLifecycle
+
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
@@ -87,6 +91,7 @@ _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
+_daemon_lifecycle: DaemonLifecycle | None = None
 
 
 def _cleanup_pidfile() -> None:
@@ -397,6 +402,30 @@ async def _periodic_heartbeat() -> None:
             )
         except Exception:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
+
+
+async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> None:
+    """Advance the ops-only heartbeat even when archive work is blocked.
+
+    This must remain independent of index stats and convergence: a daemon that
+    deliberately keeps only API/health surfaces available after schema
+    preflight failure is still alive and must not age into a false vanished
+    state.
+    """
+    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
+
+    interval = DAEMON_HEARTBEAT_INTERVAL_SECONDS if interval_s is None else interval_s
+    while True:
+        await asyncio.sleep(interval)
+        lifecycle = _daemon_lifecycle
+        if lifecycle is None:
+            continue
+        try:
+            await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("daemon: lifecycle heartbeat write failed", exc_info=True)
 
 
 async def _periodic_db_optimize() -> None:
@@ -999,7 +1028,7 @@ async def run_daemon_services(
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
-    global _pidfile_path
+    global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
     from polylogue.paths import active_index_db_path
@@ -1082,13 +1111,30 @@ async def run_daemon_services(
     # attempt by an ephemeral instance would still atexit-unlink the live
     # daemon's pidfile.
     _pidfile_path = pidfile
+    from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
+
+    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
+    try:
+        _daemon_lifecycle = await write_coordinator.run_sync(
+            "daemon.lifecycle.start",
+            DaemonLifecycle.start,
+            details={"archive_root": str(archive_root_path)},
+        )
+        previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
+    except BaseException:
+        lifecycle = _daemon_lifecycle
+        if lifecycle is not None:
+            with contextlib.suppress(Exception):
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
+        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        _daemon_lifecycle = None
+        raise
 
     # Ensure all configured source roots exist so health checks don't flag
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
-
-    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
 
     if lifecycle_events_enabled:
         await _emit_daemon_lifecycle_event(
@@ -1117,7 +1163,11 @@ async def run_daemon_services(
     # Several maintenance loops can write the archive, especially convergence
     # debt retry; starting them before FTS startup freshness recovery self-contends on
     # SQLite during daemon bootstrap.
-    maintenance_tasks: list[asyncio.Task[None]] = []
+    # The lifecycle tick is deliberately scheduled before the schema-block
+    # guard. It writes only the disposable ops tier and proves that the
+    # surviving API/health process is still alive while archive work is
+    # intentionally withheld.
+    maintenance_tasks: list[asyncio.Task[None]] = [asyncio.create_task(_periodic_lifecycle_heartbeat())]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
@@ -1130,6 +1180,7 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
+    termination: BaseException | None = None
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -1315,6 +1366,7 @@ async def run_daemon_services(
                     )
                 await asyncio.gather(*maintenance_tasks)
         except BaseException as exc:
+            termination = exc
             if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
                 _log_completed_daemon_tasks(tasks + maintenance_tasks)
             raise
@@ -1325,7 +1377,9 @@ async def run_daemon_services(
             for _ in range(cleanup_cancel_requests):
                 cleanup_task.uncancel()
         try:
-            if lifecycle_events_enabled:
+            lifecycle = _daemon_lifecycle
+            signal_termination = lifecycle.received_signal_name is not None or isinstance(termination, SystemExit)
+            if lifecycle_events_enabled and not signal_termination:
                 await _emit_daemon_lifecycle_event(
                     "shutdown_started",
                     archive_root_path=archive_root_path,
@@ -1374,6 +1428,24 @@ async def run_daemon_services(
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
+            if lifecycle is not None:
+                exit_kind = "clean"
+                if signal_termination:
+                    exit_kind = "signal"
+                elif termination is not None and not isinstance(
+                    termination, (KeyboardInterrupt, asyncio.CancelledError)
+                ):
+                    exit_kind = "error"
+                try:
+                    await write_coordinator.run_sync(
+                        "daemon.lifecycle.stop",
+                        lifecycle.stop,
+                        exit_kind=exit_kind,
+                        bounded=signal_termination,
+                    )
+                except Exception:
+                    logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
+
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
@@ -1386,6 +1458,8 @@ async def run_daemon_services(
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
+            restore_signal_handlers(previous_signal_handlers)
+            _daemon_lifecycle = None
 
     logger.info("daemon stopped")
 

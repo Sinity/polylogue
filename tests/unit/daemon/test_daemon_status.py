@@ -12,6 +12,7 @@ from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.fts_status import FTSReadiness
+from polylogue.daemon.health import DaemonHealth
 from polylogue.daemon.status import (
     _insight_freshness_info,
     browser_capture_status_payload,
@@ -345,6 +346,27 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     assert status.live_cursor.failing_files[0].source_path == str(failed)
     assert status.live_cursor.failing_files[0].failure_count == 1
     assert status.live_cursor.failing_files[0].next_retry_at is not None
+
+
+def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None:
+    """A shutdown after the status read cannot make one payload contradict itself."""
+    db = tmp_path / "index.db"
+    fresh = {"state": "fresh", "running": True, "heartbeat_age_s": 1.0}
+    stopped = {"state": "stopped", "running": False, "heartbeat_age_s": 1.1}
+
+    with (
+        patch("polylogue.daemon.status.db_path", return_value=db),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch("polylogue.daemon.status.check_health", return_value=DaemonHealth()),
+        patch("polylogue.daemon.lifecycle.lifecycle_status", side_effect=[fresh, stopped]) as lifecycle,
+    ):
+        status = build_daemon_status(sources=())
+
+    assert lifecycle.call_count == 1
+    assert status.daemon_liveness is True
+    assert status.daemon_lifecycle == fresh
 
 
 def test_daemon_status_redacts_default_browser_capture_spool(

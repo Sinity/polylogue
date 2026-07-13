@@ -349,6 +349,20 @@ class TestLivenessProbeContract:
         assert payload["started_at"] == 1234.5
         assert payload["uptime_s"] == 42.25
 
+    def test_liveness_reports_in_process_heartbeat_age(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("polylogue.daemon.lifecycle.process_heartbeat_age_seconds", lambda: 3.25)
+
+        handler = _make_handler("GET", "/healthz/live")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["heartbeat_age_s"] == 3.25
+
     def test_liveness_does_not_query_health_subsystem(
         self,
         workspace_env: dict[str, Path],

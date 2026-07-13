@@ -9,12 +9,14 @@ from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ArchiveCursorLagSample,
+    ArchiveDaemonLifecycle,
     ArchiveDaemonStageEvent,
     ArchiveEmbeddingCatchupRun,
     ArchiveMcpCallLogEntry,
     ArchiveOtlpSpan,
     OpsCompactState,
     add_convergence_debt,
+    latest_daemon_lifecycle,
     list_cursor_lag_samples,
     list_daemon_stage_events,
     list_embedding_catchup_runs,
@@ -27,6 +29,10 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     read_mcp_call,
     read_otlp_span,
     record_cursor_lag_sample,
+    record_daemon_lifecycle_heartbeat,
+    record_daemon_lifecycle_signal,
+    record_daemon_lifecycle_start,
+    record_daemon_lifecycle_stop,
     record_daemon_stage_event,
     record_ingest_attempt,
     record_mcp_call,
@@ -108,6 +114,27 @@ def test_record_ingest_attempt_records_one_row(tmp_path: Path) -> None:
     assert row[2] == 7
     assert row[3] == '["/tmp/source-a.jsonl"]'
     assert conn.execute("SELECT COUNT(*) FROM ingest_attempts").fetchone()[0] == 1
+
+
+def test_daemon_lifecycle_writes_preserve_signal_and_heartbeat(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+
+    record_daemon_lifecycle_start(conn, run_id="run-1", started_at_ms=100, details={"pid": 12})
+    record_daemon_lifecycle_heartbeat(conn, run_id="run-1", heartbeat_at_ms=200)
+    record_daemon_lifecycle_signal(conn, run_id="run-1", signal_name="SIGTERM", observed_at_ms=300)
+    record_daemon_lifecycle_stop(conn, run_id="run-1", stopped_at_ms=400, exit_kind="signal")
+
+    row = latest_daemon_lifecycle(conn)
+
+    assert row == ArchiveDaemonLifecycle(
+        run_id="run-1",
+        started_at_ms=100,
+        stopped_at_ms=400,
+        last_heartbeat_at_ms=400,
+        signal="SIGTERM",
+        exit_kind="signal",
+        details={"pid": 12},
+    )
 
 
 def test_add_convergence_debt_adds_or_refreshes_one_row(tmp_path: Path) -> None:
