@@ -83,7 +83,7 @@ def embedding_error_class(error_message: object) -> str:
         return "provider_http_400"
     if "http 429" in normalized or "status 429" in normalized:
         return "provider_http_429"
-    if "timeout" in normalized:
+    if "timeout" in normalized or "timed out" in normalized:
         return "provider_timeout"
     return "provider_error"
 
