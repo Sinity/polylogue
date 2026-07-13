@@ -334,6 +334,7 @@ class ResolvedRefOperand:
     operand: RefOperand
     grain: RelationGrain
     lineage: tuple[ObjectRef, ...] = ()
+    member_refs: tuple[str, ...] = ()
 
 
 class RefResolver(Protocol):
@@ -361,7 +362,18 @@ def resolve_ref_operand(
             field="from",
         )
     resolved = resolver.resolve_ref_operand(operand)
-    formatted = [ref.format() for ref in (*ancestry, *resolved.lineage, operand.reference)]
+    if operand.grain is not None and operand.grain != resolved.grain:
+        raise ExpressionCompileError(
+            f"reference {operand.reference.format()} has grain {resolved.grain!r}, not {operand.grain!r}; "
+            "use a same-grain relation or an explicit grain-changing projection",
+            field="from",
+        )
+    # Resolvers may include the direct operand in lineage for explainability;
+    # add it only when absent so a normal one-hop query ref is not mistaken for
+    # a cycle. Repeated ancestors or indirect lineage still fail closed.
+    formatted = [ref.format() for ref in (*ancestry, *resolved.lineage)]
+    if operand.reference.format() not in formatted:
+        formatted.append(operand.reference.format())
     if len(formatted) != len(set(formatted)):
         raise RefOperandCycleError(
             f"reference cycle detected while resolving {operand.reference.format()}; use a non-recursive query definition",

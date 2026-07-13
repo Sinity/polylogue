@@ -8,10 +8,17 @@ import pytest
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import (
+    EvaluationReceipt,
+    get_query,
+    get_retained_query_run,
+    list_watched_queries,
     migrate_saved_query_assertions,
+    put_evaluation_receipt,
     put_query,
     put_query_edge,
+    put_query_name,
     put_result_set,
+    put_retained_query_run,
 )
 
 
@@ -113,3 +120,56 @@ def test_saved_query_migration_preserves_all_assertions_and_repoints_targets() -
     target_ref = conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'saved'").fetchone()[0]
     assert str(target_ref).startswith("query:")
     assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
+
+
+def test_watched_definition_retention_and_receipt_are_durable_contracts() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "codex-session"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    put_query_name(conn, name="codex", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+    result = put_result_set(
+        conn,
+        result_set_id="watch-result",
+        query_hash=query.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:one",),
+        exactness="exact",
+        persistence_class="watch",
+        created_at_ms=3,
+    )
+    put_retained_query_run(
+        conn,
+        run_id="qr_saved",
+        query_hash=query.query_hash,
+        result_set_id=result.result_set_id,
+        retained_at_ms=4,
+    )
+    put_evaluation_receipt(
+        conn,
+        query_hash=query.query_hash,
+        result_set_id=result.result_set_id,
+        receipt=EvaluationReceipt(
+            receipt_id="receipt-1",
+            source_generation="source:g1",
+            user_generation="user:g1",
+            index_generation="index:g1",
+            runtime_build_ref="build:test",
+            model_refs=("model:none",),
+        ),
+        created_at_ms=5,
+    )
+
+    restored = get_query(conn, query.query_hash)
+    assert restored is not None
+    assert restored.definition_protocol_version == "polylogue.query-definition.v1"
+    assert restored.canonical_plan["definition_protocol_version"] == "polylogue.query-definition.v1"
+    assert list_watched_queries(conn) == (restored,)
+    assert get_retained_query_run(conn, "qr_saved") is not None
+    assert conn.execute("SELECT result_set_id FROM query_evaluation_receipts").fetchone()[0] == result.result_set_id

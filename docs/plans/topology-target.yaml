@@ -331,8 +331,13 @@ files:
     target: polylogue/archive/query/completions.py
     owner: archive-query
     reason: archive-domain query semantics
+  - path: polylogue/archive/query/evaluator.py
+    loc: 161
+    target: polylogue/archive/query/evaluator.py
+    owner: archive-query
+    reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
-    loc: 3270
+    loc: 3497
     target: polylogue/archive/query/expression.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -1224,7 +1229,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/query_identity.py
-    loc: 157
+    loc: 168
     target: polylogue/core/query_identity.py
     owner: core-primitive
     reason: core primitive
@@ -1315,7 +1320,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1674
+    loc: 1942
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
@@ -3525,7 +3530,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 211
+    loc: 242
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
@@ -3573,7 +3578,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 569
+    loc: 571
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py
@@ -3769,7 +3774,7 @@ files:
     target: polylogue/storage/sqlite/queries/tool_usage.py
     owner: stable
   - path: polylogue/storage/sqlite/query_objects.py
-    loc: 242
+    loc: 467
     target: polylogue/storage/sqlite/query_objects.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store.py

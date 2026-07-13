@@ -850,7 +850,7 @@ def test_default_convergence_stages_always_register_embed_stage(
 
     stage_names = [stage.name for stage in make_default_convergence_stages(tmp_path / "archive.sqlite")]
 
-    assert stage_names == ["fts", "embed", "insights"]
+    assert stage_names == ["fts", "embed", "insights", "standing-queries"]
 
 
 def test_embed_stage_is_noop_when_disabled(

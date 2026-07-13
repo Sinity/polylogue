@@ -69,3 +69,21 @@ def test_canonical_query_plan_retains_relative_time_as_dynamic_ast() -> None:
     dynamic: dict[str, JsonValue] = {"field": "since", "relative": "7d"}
 
     assert canonical_query_plan(dynamic, grain="session", lane="dialogue", rank_policy="mixed")["ast"] == dynamic
+
+
+def test_definition_protocol_version_is_bound_into_query_identity() -> None:
+    plan: dict[str, JsonValue] = {"field": "origin", "value": "codex-session"}
+
+    assert query_hash_for_plan(
+        plan,
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        definition_protocol_version="polylogue.query-definition.v1",
+    ) != query_hash_for_plan(
+        plan,
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        definition_protocol_version="polylogue.query-definition.v2",
+    )

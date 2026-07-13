@@ -265,7 +265,7 @@ def test_user_tier_v3_migrates_to_current_with_verified_backup_receipt(
         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert result.from_version == 3
         assert result.to_version == USER_SCHEMA_VERSION
-        assert result.applied_versions == (4, 5, 6, 7)
+        assert result.applied_versions == (4, 5, 6, 7, 8)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
@@ -319,8 +319,8 @@ def test_user_tier_v5_annotation_migration_requires_verified_backup_and_matches_
     try:
         result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
         assert result.from_version == 5
-        assert result.to_version == USER_SCHEMA_VERSION == 7
-        assert result.applied_versions == (6, 7)
+        assert result.to_version == USER_SCHEMA_VERSION == 8
+        assert result.applied_versions == (6, 7, 8)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         assert conn.execute("SELECT assertion_id FROM assertions WHERE assertion_id = 'sentinel'").fetchone()
         saved_target = conn.execute(
