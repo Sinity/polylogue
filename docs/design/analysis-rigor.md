@@ -148,3 +148,110 @@ definition hash, the registration timestamp preceding the run, the evidence
 refs, a re-run button, and the holdout confirmation. Agent claims that carry
 their own falsification handles. Nobody else's agent-memory product can do
 that, and it is exactly the credibility demos need.
+
+---
+
+# Part II — Comparative judgment: quality questions need a different primitive
+(Added 2026-07-13 after operator challenge: "what demos/analyses do we
+actually want... could pairwise comparisons be relevant [gwern's resorter]...
+judgments being solely human seems pointlessly limiting... the design around
+judgements is weak.")
+
+## II.1 The gap Part I leaves open
+
+Part I's mechanisms govern claims about COUNTS AND MEASURES — things the
+archive can compute exactly. But inventory the analyses we actually want to
+run and half of them are QUALITY questions with no ground-truth column:
+
+- Which model/tier produces better lane outcomes (Sol vs Terra vs Sonnet)?
+- Which of N attempts at the same task is best (best-of-N selection)?
+- Which sessions are exemplary enough to demo; which findings matter most?
+- Which prompt/methodology variant yields better work (not just faster)?
+- What order should 478 open beads actually be tackled in (priority is a
+  latent quality, and hand-assigned P1-P4 is a noisy proxy)?
+
+These are latent-variable estimation problems. Absolute scoring ("rate this
+1-10") is unreliable for humans AND agents: scale drift, anchor effects,
+inconsistency. The reliable elicitation primitive is COMPARISON: "which of
+these two is better on dimension X?" — this is the resorter insight
+(gwern.net/resorter) and the psychometric consensus behind Bradley-Terry/
+Thurstone models.
+
+Note the pleasing symmetry with Part I's frame: archive counts are a
+POPULATION (no inference machinery), but judgments are a SAMPLE from a noisy
+preference process — so here, and only here, estimation machinery (latent
+strengths, uncertainty, active sampling) genuinely belongs.
+
+## II.2 Mechanisms K–O
+
+### K. Comparative judgment objects (pairwise and n-wise)
+A new judgment shape alongside accept/reject: compare(items[2..n],
+dimension, verdict = choice or full ordering, judge_ref, blinded,
+elicitation_ref). Pairwise is the base case; n-wise orderings decompose into
+sequential choices (Plackett-Luce), so one storage shape covers both.
+Dimensions are explicit (correctness, taste, usefulness...) — one comparison
+row per dimension judged, never a mushed overall unless "overall" is the
+declared dimension. Stored as assertion rows like every other judgment —
+the graph already has the right bones.
+
+### L. Judges are actors, human or agent — calibration is measured, not assumed
+judge_ref identifies WHO judged: the operator, or an agent (model + prompt
+hash — the prompt hash matters; a judge is a program). Nothing in the
+lifecycle may assume human. Per-judge calibration becomes a measurable
+quantity: agreement with consensus / with gold (operator) verdicts on
+overlap items, tracked per dimension. An agent judge is exactly a noisy
+rater in the crowdsourcing-theory sense (Dawid-Skene), and its weight in
+aggregation should come from its MEASURED agreement, not its vibes.
+
+### M. Aggregation models as content-addressed definitions — ranker:<hash>
+A ranking is a DERIVED object: ranker:<hash> (Bradley-Terry MLE, majority,
+Dawid-Skene-weighted, mean-of-scores) applied to a judgment set yields a
+ranking result-set (items, latent scores, uncertainty intervals, judge
+provenance). Same content-address discipline as query:<hash>/metric:<hash>:
+two rankings citing different ranker hashes are visibly incomparable;
+re-running is cheap; the fitted model is never the truth, the judgment rows
+are. Implementation note: BT fits in ~100 lines of pure Python (iterative
+scaling); no scipy.
+
+### N. Active elicitation sessions (the resorter loop)
+An elicitation session = (target set, dimension(s), judge, blinding policy,
+budget). The session engine picks the next comparison to maximize
+information — closest current latent estimates / fewest observations —
+so a useful ranking of ~50 items costs ~100 comparisons, not 1225. Surfaces:
+interactive CLI for the operator (p5g's fzf pattern extends naturally:
+two panes, pick the better one, j/k/tie/skip), and batch mode for agent
+judges (MCP tool feeding comparison pairs, collecting verdicts). Part I's
+blinding (F) is applied HERE: provenance masked during elicitation,
+revealed after. Sessions are durable objects citing their emitted judgments.
+
+### O. Judge cascades: cheap screens, expensive confirms
+Routing policy for judgment demand: agent judges screen everything (cheap,
+parallel); items where agents disagree, are uncertain, or stakes are high
+route to the operator; operator verdicts double as gold for calibrating the
+agent judges (L). The operator's existing accept/reject lifecycle survives
+unchanged as the final acceptance gate for durable claims — what changes is
+that a calibrated agent layer now feeds it, and MOST judgment volume never
+needs a human. This directly answers "human-only judging is pointlessly
+limiting" while keeping the recursive-safety spine (agent judgments are
+still candidates; promotion still gated).
+
+## II.3 What this makes possible (the demos, concretely)
+
+- "Rank tonight's 30 lane outcomes by review quality: 3 agent judges,
+  blinded, Bradley-Terry, operator spot-checks 10%" — one command, and the
+  output carries judge agreement + uncertainty + full provenance. This is
+  the flagship multi-agent demo and nobody else can run it.
+- Backlog resorting: pairwise-compare P2 beads on "expected leverage",
+  20 minutes of operator comparisons, get a defensible ordering (resorter's
+  original use-case, on beads).
+- Best-of-N: codex cloud --attempts N, agents judge pairwise per dimension,
+  auto-select with an audit trail.
+- Model procurement: Sol-vs-Terra on real archived work, blinded, with
+  calibration-weighted agent panels — a measured answer to "is Sol worth 2x".
+
+## II.4 Sequencing
+K+L are schema-shaped (judgment rows + judge identity) → they extend
+rxdo.4's finding/judgment work and should land right after it. M+N are the
+estimation/elicitation layer (pure-Python BT + a CLI/MCP loop). O is a
+routing policy over L. None of it blocks Part I; A (metric:<hash>) and M
+(ranker:<hash>) share the canonicalization machinery.
