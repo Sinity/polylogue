@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -43,6 +45,7 @@ from polylogue.mcp.payloads import (
     session_tree_payload,
 )
 from polylogue.mcp.query_contracts import (
+    MCPCharacterLimit,
     MCPCountBound,
     MCPToolLimit,
     MCPToolOffset,
@@ -126,6 +129,50 @@ def _split_archive_csv(value: str | None) -> tuple[str, ...]:
     return tuple(token.strip() for token in value.split(",") if token.strip())
 
 
+def _summary_excerpt(text: str, *, limit: int = 240) -> str:
+    normalized = " ".join(text.split())
+    return normalized if len(normalized) <= limit else normalized[: limit - 1] + "…"
+
+
+def _session_summary_payload(
+    summary: object,
+    session: object,
+    phases: Sequence[object],
+) -> MCPRootPayload[dict[str, object]]:
+    """Add bounded content orientation to the historical metadata summary."""
+    base = archive_summary_payload(cast(Any, summary)).model_dump(mode="json")
+    messages = tuple(getattr(session, "messages", ()))
+    authored = tuple(
+        message
+        for message in messages
+        if str(getattr(getattr(message, "material_origin", None), "value", getattr(message, "material_origin", "")))
+        == "human_authored"
+    )
+    authored_text = tuple(
+        "\n".join(str(block.text) for block in getattr(message, "blocks", ()) if getattr(block, "text", None))
+        for message in authored
+    )
+    tool_counts = Counter(
+        str(block.tool_name)
+        for message in messages
+        for block in getattr(message, "blocks", ())
+        if getattr(block, "tool_name", None)
+    )
+    base["content_summary"] = {
+        "counts": {
+            "messages": int(getattr(summary, "message_count", len(messages))),
+            "authored_user_messages": int(getattr(summary, "authored_user_message_count", len(authored))),
+            "authored_user_words": int(getattr(summary, "authored_user_word_count", 0)),
+            "tool_uses": int(getattr(summary, "tool_use_count", sum(tool_counts.values()))),
+        },
+        "phase_count": len(phases),
+        "top_tools": [{"name": name, "count": count} for name, count in tool_counts.most_common(5)],
+        "first_authored_user_excerpt": _summary_excerpt(authored_text[0]) if authored_text else None,
+        "last_authored_user_excerpt": _summary_excerpt(authored_text[-1]) if authored_text else None,
+    }
+    return MCPRootPayload(root=cast(dict[str, object], base))
+
+
 def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     async def _search(**kwargs: object) -> str:
         if "query" not in kwargs:
@@ -156,7 +203,10 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
-            with ArchiveStore.open_existing(archive_root) as archive:
+            with (
+                ArchiveStore.open_existing(archive_root) as archive,
+                hooks.response_context("search", request.response_arguments()),
+            ):
                 return hooks.json_payload(
                     archive_search_payload(
                         archive,
@@ -168,6 +218,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         sort=request.sort,
                         config=config,
                         archive_root=archive_root,
+                        include_affordances=request.include_affordances,
                     )
                 )
 
@@ -289,7 +340,10 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             spec = request.build_spec(hooks.clamp_limit)
             config = hooks.get_config()
             archive_root = mcp_archive_root(config)
-            with ArchiveStore.open_existing(archive_root) as archive:
+            with (
+                ArchiveStore.open_existing(archive_root) as archive,
+                hooks.response_context("list_sessions", request.response_arguments()),
+            ):
                 return hooks.json_payload(
                     archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
                 )
@@ -796,7 +850,9 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                     session_id = archive.resolve_session_id(id)
                     archive_summary = archive.read_summary(session_id)
-                    return hooks.json_payload(archive_summary_payload(archive_summary))
+                    session = archive.read_session(session_id)
+                    phases = archive.get_session_phase_insights(session_id)
+                    return hooks.json_payload(_session_summary_payload(archive_summary, session, phases))
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {id}", code="not_found")
 
@@ -874,12 +930,18 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         offset: MCPToolOffset = 0,
         offset_from: str = "start",
         tail: bool = False,
+        max_chars_per_message: MCPCharacterLimit = None,
+        excerpt: bool = False,
+        match_query: str | None = None,
     ) -> str:
         """Return a filtered message page.
 
         ``offset`` is evaluated after role/type/material filters. Use
         ``tail=True`` or ``offset_from="end"`` to read the filtered tail of a
-        large session without first calculating the filtered total.
+        large session without first calculating the filtered total. Set
+        ``max_chars_per_message`` to cap each returned body; ``excerpt=True``
+        preserves both its head and tail, or a window around the first term in
+        ``match_query`` when that query occurs in the message.
         """
 
         async def run() -> str:
@@ -901,17 +963,35 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
                     resolved_session_id = archive.resolve_session_id(session_id)
                     session = archive.read_session(resolved_session_id)
-                return hooks.json_payload(
-                    archive_messages_payload(
-                        session,
-                        roles=(message_role,) if message_role else (),
-                        message_type=normalized_message_type,
-                        material_origins=(material_origin,) if material_origin else (),
-                        limit=hooks.clamp_limit(limit),
-                        offset=max(0, offset),
-                        offset_from=normalized_offset_from,
+                with hooks.response_context(
+                    "get_messages",
+                    {
+                        "session_id": session_id,
+                        "message_role": message_role,
+                        "message_type": message_type,
+                        "material_origin": material_origin,
+                        "limit": hooks.clamp_limit(limit),
+                        "offset": max(0, offset),
+                        "offset_from": normalized_offset_from,
+                        "max_chars_per_message": max_chars_per_message,
+                        "excerpt": excerpt,
+                        "match_query": match_query,
+                    },
+                ):
+                    return hooks.json_payload(
+                        archive_messages_payload(
+                            session,
+                            roles=(message_role,) if message_role else (),
+                            message_type=normalized_message_type,
+                            material_origins=(material_origin,) if material_origin else (),
+                            limit=hooks.clamp_limit(limit),
+                            offset=max(0, offset),
+                            offset_from=normalized_offset_from,
+                            max_chars_per_message=max_chars_per_message,
+                            excerpt=excerpt,
+                            match_query=match_query,
+                        )
                     )
-                )
             except (KeyError, ValueError, sqlite3.OperationalError):
                 return hooks.error_json(f"Session not found: {session_id}", code="not_found")
 

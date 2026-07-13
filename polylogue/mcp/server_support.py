@@ -10,14 +10,23 @@ with that blast radius in mind; see docs/test-economics.md.
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
-from polylogue.archive.query.spec import clamp_query_limit
+from polylogue.archive.query.spec import (
+    QUERY_ACTION_TYPES,
+    QUERY_RETRIEVAL_LANES,
+    QUERY_SEQUENCE_ACTION_TYPES,
+    QuerySpecError,
+    clamp_query_limit,
+)
+from polylogue.core.enums import MessageType, Origin, enum_values
 from polylogue.errors import (
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
@@ -36,6 +45,29 @@ logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
 MCPRole = Literal["read", "write", "admin"]
+MCP_RESPONSE_BUDGET_BYTES = 25_000
+_QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
+    "sort": ("date", "tokens", "messages", "words", "longest", "random"),
+    "origin": enum_values(Origin),
+    "exclude_origin": enum_values(Origin),
+    "message_type": enum_values(MessageType),
+    "retrieval_lane": QUERY_RETRIEVAL_LANES,
+    "action": QUERY_ACTION_TYPES,
+    "exclude_action": QUERY_ACTION_TYPES,
+    "action_sequence": QUERY_SEQUENCE_ACTION_TYPES,
+}
+_SESSION_ID_ARGUMENT_NAMES: dict[str, str] = {"get_session_summary": "id"}
+
+
+@dataclass(frozen=True)
+class _ResponseContext:
+    """Replay information attached by a tool while it serializes a response."""
+
+    tool: str
+    arguments: Mapping[str, object]
+
+
+_response_context_var: ContextVar[_ResponseContext | None] = ContextVar("mcp_response_context", default=None)
 
 
 class JSONPayloadSerializer(Protocol):
@@ -48,6 +80,10 @@ class ErrorJSONSerializer(Protocol):
 
 class FencedCodeExtractor(Protocol):
     def __call__(self, text: str, language: str = "") -> list[MCPFencedCodeBlock]: ...
+
+
+class ResponseContextHook(Protocol):
+    def __call__(self, tool: str, arguments: Mapping[str, object]) -> AbstractContextManager[None]: ...
 
 
 class SafeCallHook(Protocol):
@@ -82,6 +118,7 @@ class ServerCallbacks:
     get_config: Callable[[], Config]
     get_polylogue: Callable[[], Polylogue]
     extract_fenced_code: FencedCodeExtractor
+    response_context: ResponseContextHook
     role: MCPRole
 
 
@@ -107,15 +144,137 @@ def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlo
     return results
 
 
+@contextmanager
+def _response_context(tool: str, arguments: Mapping[str, object]) -> Iterator[None]:
+    """Associate one serialized response with its safe, narrower replay call."""
+    token = _response_context_var.set(_ResponseContext(tool=tool, arguments=arguments))
+    try:
+        yield
+    finally:
+        _response_context_var.reset(token)
+
+
+def _compact_metadata(
+    value: object,
+    *,
+    string_limit: int = 512,
+    item_limit: int = 12,
+    depth: int = 0,
+    max_depth: int = 3,
+) -> object:
+    """Keep the budget fallback informative without reproducing its large body."""
+    if isinstance(value, str):
+        return value if len(value) <= string_limit else value[:string_limit] + "…"
+    if isinstance(value, list):
+        return {"returned": len(value)}
+    if isinstance(value, dict):
+        if depth >= max_depth:
+            return {"fields": len(value), "truncated": True}
+        return {
+            str(key): _compact_metadata(
+                item,
+                string_limit=string_limit,
+                item_limit=item_limit,
+                depth=depth + 1,
+                max_depth=max_depth,
+            )
+            for key, item in list(value.items())[:item_limit]
+        }
+    return value
+
+
+def _fallback_response_arguments(fn_name: str, session_id: str | None) -> dict[str, object]:
+    """Return replayable identifiers carried by the safe-call contract."""
+    if session_id is None:
+        return {}
+    return {_SESSION_ID_ARGUMENT_NAMES.get(fn_name, "session_id"): session_id}
+
+
+def _narrow_continuation(context: _ResponseContext | None) -> dict[str, object] | None:
+    """Build a direct MCP call descriptor that re-reads the same evidence safely."""
+    if context is None:
+        return None
+    arguments = dict(context.arguments)
+    if context.tool == "archive_get_session":
+        session_id = arguments.get("session_id")
+        if isinstance(session_id, str):
+            return {
+                "tool": "get_messages",
+                "arguments": {
+                    "session_id": session_id,
+                    "limit": 3,
+                    "max_chars_per_message": 4096,
+                    "excerpt": True,
+                },
+                "reason": "The full session exceeded the MCP response budget; read a bounded message page instead.",
+            }
+    limit = arguments.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        arguments["limit"] = max(1, min(limit, 3))
+    if context.tool == "get_messages":
+        requested_max_chars = arguments.get("max_chars_per_message")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
+        arguments["max_chars_per_message"] = min(max_chars, 4096)
+        arguments["excerpt"] = True
+    if context.tool == "list_corrections":
+        requested_max_chars = arguments.get("max_chars_per_correction")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 4096
+        arguments["max_chars_per_correction"] = min(max_chars, 4096)
+    if "max_chars_per_item" in arguments:
+        requested_max_chars = arguments.get("max_chars_per_item")
+        max_chars = requested_max_chars if isinstance(requested_max_chars, int) else 512
+        arguments["max_chars_per_item"] = min(max_chars, 512)
+    return {
+        "tool": context.tool,
+        "arguments": arguments,
+        "reason": "The original response exceeded the MCP response budget; retry this narrower call to read the same evidence.",
+    }
+
+
+def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: bool) -> str:
+    """Return a bounded metadata-only response instead of truncating JSON."""
+    body = payload.model_dump(mode="json", exclude_none=exclude_none)
+    context = _response_context_var.get()
+    continuation = _narrow_continuation(context)
+    envelope = {
+        "ok": True,
+        "status": "response_budget_exceeded",
+        "budget_exceeded": True,
+        "tool": context.tool if context is not None else None,
+        "budget_bytes": MCP_RESPONSE_BUDGET_BYTES,
+        "original_bytes": original_bytes,
+        "payload_type": type(payload).__name__,
+        "metadata": _compact_metadata(body),
+        "continuation": continuation,
+        "next_action": (
+            "Use continuation.tool with continuation.arguments to retrieve the same evidence in a bounded page."
+            if continuation is not None
+            else "Request a narrower page or projection for this response."
+        ),
+    }
+    return json.dumps(envelope, indent=2, ensure_ascii=False, default=str)
+
+
 def _json_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
-    """Serialize a typed MCP payload with canonical JSON formatting."""
+    """Serialize typed MCP output, replacing oversized bodies with a safe envelope."""
     to_json = getattr(payload, "to_json", None)
     if callable(to_json):
         result = to_json(exclude_none=exclude_none)
         if isinstance(result, str):
-            return result
+            original_bytes = len(result.encode("utf-8"))
+            return (
+                result
+                if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
+                else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
+            )
         raise TypeError(f"{type(payload).__name__}.to_json() returned {type(result).__name__}, expected str")
-    return serialize_surface_payload(payload, exclude_none=exclude_none)
+    result = serialize_surface_payload(payload, exclude_none=exclude_none)
+    original_bytes = len(result.encode("utf-8"))
+    return (
+        result
+        if original_bytes <= MCP_RESPONSE_BUDGET_BYTES
+        else _budget_envelope(payload, original_bytes=original_bytes, exclude_none=exclude_none)
+    )
 
 
 def _clamp_limit(limit: int | object) -> int:
@@ -149,7 +308,23 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
-    if isinstance(exc, SchemaVersionMismatchError):
+    from polylogue.archive.query.expression import ExpressionCompileError
+
+    if isinstance(exc, QuerySpecError | ExpressionCompileError):
+        field = exc.field
+        valid_values = _QUERY_ERROR_VALID_VALUES.get(field, ()) if field is not None else ()
+        valid_hint = f" Valid values: {', '.join(valid_values)}." if valid_values else ""
+        value = exc.value if isinstance(exc, QuerySpecError) else str(exc)
+        payload = MCPErrorPayload(
+            message=f"invalid {field}: {value}.{valid_hint}",
+            code="invalid_query",
+            error="invalid_query",
+            detail=type(exc).__name__,
+            field=field,
+            tool=fn_name,
+            valid_values=valid_values,
+        )
+    elif isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(
             message=str(exc),
             code="schema_version_mismatch",
@@ -302,7 +477,8 @@ def _safe_call(
     """
     started_at_ms = _now_ms()
     try:
-        result = fn()
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+            result = fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         _record_mcp_call_log(
@@ -368,7 +544,8 @@ async def _async_safe_call(
     """Async counterpart of :func:`_safe_call`. Same isolation and call-log contract."""
     started_at_ms = _now_ms()
     try:
-        result = await fn()
+        with _response_context(fn_name, _fallback_response_arguments(fn_name, session_id)):
+            result = await fn()
     except Exception as exc:
         logger.exception("MCP tool %s failed", fn_name)
         _record_mcp_call_log(
@@ -439,6 +616,7 @@ __all__ = [
     "_get_polylogue",
     "_get_runtime_services",
     "_json_payload",
+    "_response_context",
     "_safe_call",
     "_set_runtime_services",
     "role_allows",
