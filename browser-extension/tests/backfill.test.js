@@ -291,6 +291,17 @@ describe("background backfill coordinator", () => {
     });
   });
 
+  it("preserves compact-capture fidelity after the receiver acknowledges it", async () => {
+    const adapter = new FixtureAdapter(["compact-one"]);
+    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-compact-v1" })];
+    const h = harness({ adapter });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
+  });
+
   it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {
     const store = new MemoryBackfillStore();
     await store.createJob({
