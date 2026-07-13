@@ -135,13 +135,13 @@ class RepositoryRawMixin:
     async def reset_parse_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_parse_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
@@ -149,13 +149,13 @@ class RepositoryRawMixin:
     async def reset_validation_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_validation_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
@@ -183,13 +183,13 @@ class RepositoryRawMixin:
 
     async def iter_raw_sessions(
         self,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RawSessionRecord]:
         async with self._backend.connection() as conn:
             async for record in raw_queries.iter_raw_sessions(
                 conn,
-                provider=provider,
+                origin=origin,
                 limit=limit,
             ):
                 yield record
@@ -216,9 +216,9 @@ class RepositoryRawMixin:
             ):
                 yield header
 
-    async def get_raw_session_count(self, provider: str | None = None) -> int:
+    async def get_raw_session_count(self, origin: str | None = None) -> int:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_session_count(conn, provider=provider)
+            return await raw_queries.get_raw_session_count(conn, origin=origin)
 
     async def get_raw_records_for_session(
         self,

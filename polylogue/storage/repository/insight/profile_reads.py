@@ -39,13 +39,13 @@ class RepositoryInsightProfileReadMixin:
     async def list_session_latency_profile_records(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: int | None = 500,
     ) -> list[SessionLatencyProfileRecord]:
         return await self.queries.list_session_latency_profiles(
-            provider=provider,
+            origin=origin,
             since=since,
             until=until,
             limit=limit,
@@ -77,7 +77,7 @@ class RepositoryInsightProfileReadMixin:
     async def list_session_profiles(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         first_message_since: str | None = None,
@@ -96,7 +96,7 @@ class RepositoryInsightProfileReadMixin:
     ) -> list[SessionProfile]:
         records = await self._list_session_profile_records_query(
             SessionProfileListQuery(
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 first_message_since=first_message_since,
@@ -119,7 +119,7 @@ class RepositoryInsightProfileReadMixin:
     async def list_session_profile_records(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         first_message_since: str | None = None,
@@ -138,7 +138,7 @@ class RepositoryInsightProfileReadMixin:
     ) -> list[SessionProfileRecord]:
         return await self._list_session_profile_records_query(
             SessionProfileListQuery(
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 first_message_since=first_message_since,
@@ -163,7 +163,7 @@ class RepositoryInsightProfileReadMixin:
     async def list_session_enrichment_records(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         first_message_since: str | None = None,
@@ -179,7 +179,7 @@ class RepositoryInsightProfileReadMixin:
     ) -> list[SessionProfileRecord]:
         return await self._list_session_profile_records_query(
             SessionProfileListQuery(
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 first_message_since=first_message_since,

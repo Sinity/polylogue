@@ -56,7 +56,7 @@ class RepositoryInsightTimelineReadMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         session_date_since: str | None = None,
@@ -69,7 +69,7 @@ class RepositoryInsightTimelineReadMixin:
         records = await self._list_session_work_event_records_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 session_date_since=session_date_since,
@@ -86,7 +86,7 @@ class RepositoryInsightTimelineReadMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         session_date_since: str | None = None,
@@ -99,7 +99,7 @@ class RepositoryInsightTimelineReadMixin:
         return await self._list_session_work_event_records_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 session_date_since=session_date_since,
@@ -115,7 +115,7 @@ class RepositoryInsightTimelineReadMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         kind: str | None = None,
@@ -125,7 +125,7 @@ class RepositoryInsightTimelineReadMixin:
         records = await self._list_session_phase_records_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 kind=kind,
@@ -139,7 +139,7 @@ class RepositoryInsightTimelineReadMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         kind: str | None = None,
@@ -149,7 +149,7 @@ class RepositoryInsightTimelineReadMixin:
         return await self._list_session_phase_records_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 kind=kind,
