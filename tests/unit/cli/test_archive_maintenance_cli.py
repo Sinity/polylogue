@@ -1394,6 +1394,65 @@ def test_quarantined_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
     assert "--proof-digest" in missing_proof.output
 
 
+def test_browser_capture_origin_repair_cli_is_bounded_and_requires_receipt_proof(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    raw_id = "b" * 64
+    dry_run = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "browser-capture-origin-mismatches",
+            "--raw-id",
+            raw_id,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert dry_run.exit_code == 0
+    payload = json.loads(dry_run.output)
+    assert payload["mode"] == "dry-run"
+    assert payload["requested_count"] == 1
+    assert payload["ineligible_count"] == 1
+    assert len(payload["proof_digest"]) == 64
+
+    missing_receipt = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "browser-capture-origin-mismatches",
+            "--raw-id",
+            raw_id,
+            "--apply",
+        ],
+    )
+    assert missing_receipt.exit_code == 2
+    assert "--receipt" in missing_receipt.output
+    missing_proof = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "browser-capture-origin-mismatches",
+            "--raw-id",
+            raw_id,
+            "--apply",
+            "--receipt",
+            "repair.jsonl",
+        ],
+    )
+    assert missing_proof.exit_code == 2
+    assert "--proof-digest" in missing_proof.output
+
+
 def test_archive_read_cli_lists_archive_sessions(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

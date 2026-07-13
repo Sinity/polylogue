@@ -1668,6 +1668,77 @@ def quarantined_accepted_raws_command(
         click.echo(f"Receipt: {report.receipt_path}")
 
 
+@maintenance_group.command("browser-capture-origin-mismatches")
+@click.option("--raw-id", "raw_ids", multiple=True, required=True, help="Exact mismatched raw id (repeatable).")
+@click.option("--apply", "apply_changes", is_flag=True, help="Copy forward only after every target passes proof.")
+@click.option("--proof-digest", help="Exact aggregate digest emitted by the matching dry-run.")
+@click.option(
+    "--receipt",
+    "receipt_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Required append-only operator recovery receipt path for --apply.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def browser_capture_origin_mismatches_command(
+    env: AppEnv,
+    raw_ids: tuple[str, ...],
+    apply_changes: bool,
+    proof_digest: str | None,
+    receipt_path: Path | None,
+    output_format: str,
+) -> None:
+    """Copy mismatched browser captures forward under parsed origin authority.
+
+    The old raw, blob, membership, byte head, and application receipts remain
+    immutable.  Apply creates a new raw reference to the exact retained blob,
+    records a canonical head, and advances only the derived session raw pointer.
+    """
+    del env
+    if apply_changes and receipt_path is None:
+        raise click.UsageError("--apply requires --receipt PATH")
+    if apply_changes and proof_digest is None:
+        raise click.UsageError("--apply requires --proof-digest from the exact dry-run")
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+    from polylogue.storage.repair import repair_browser_capture_origin_mismatches
+
+    try:
+        report = repair_browser_capture_origin_mismatches(
+            config,
+            list(raw_ids),
+            apply=apply_changes,
+            receipt_path=receipt_path,
+            proof_digest=proof_digest,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = asdict(report)
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(
+        f"{report.mode}: requested={report.requested_count} eligible={report.eligible_count} "
+        f"already_repaired={report.already_repaired_count} repaired={report.repaired_count} "
+        f"ineligible={report.ineligible_count}"
+    )
+    click.echo(f"Proof digest: {report.proof_digest}")
+    for item in report.items:
+        click.echo(
+            f"  {item.raw_id} {item.status} strategy={item.repair_strategy or 'unavailable'} "
+            f"replacement={item.replacement_raw_id or 'unavailable'} "
+            f"proof={item.proof_digest or 'unavailable'}: {item.reason}"
+        )
+    if report.receipt_path is not None:
+        click.echo(f"Receipt: {report.receipt_path}")
+
+
 @maintenance_group.command("preview")
 @click.option(
     "--scope",

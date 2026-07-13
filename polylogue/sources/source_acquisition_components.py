@@ -376,7 +376,7 @@ def _stream_browser_capture_provider(blob_store: BlobStore, blob_hash: str) -> P
                     break
     except ijson.JSONError:
         return Provider.UNKNOWN
-    if capture_kind != "browser_llm_session" or provider in {None, Provider.UNKNOWN}:
+    if capture_kind != "browser_llm_session" or provider is None or provider is Provider.UNKNOWN:
         return Provider.UNKNOWN
     return provider
 
