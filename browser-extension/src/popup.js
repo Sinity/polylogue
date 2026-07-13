@@ -3,6 +3,10 @@ const AUTO_REFRESH_MS = 8000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const { operatorPresentationForState, operatorStatusForState } = globalThis.PolylogueOperatorStatus;
 
+function hostMatches(hostname, domain) {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -14,11 +18,10 @@ function escapeHtml(value) {
 function hostLabel(url) {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.includes("chatgpt.com")) return "ChatGPT";
-    if (parsed.hostname.includes("claude.ai")) return "Claude.ai";
-    if (parsed.hostname.includes("grok.com")) return "Grok";
-    if (parsed.hostname === "x.com" || parsed.hostname.endsWith(".x.com")) return "Grok / X";
-    if (parsed.hostname === "twitter.com" || parsed.hostname.endsWith(".twitter.com")) return "Grok / X";
+    if (hostMatches(parsed.hostname, "chatgpt.com")) return "ChatGPT";
+    if (hostMatches(parsed.hostname, "claude.ai")) return "Claude.ai";
+    if (hostMatches(parsed.hostname, "grok.com")) return "Grok";
+    if (hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) return "Grok / X";
     return parsed.hostname;
   } catch {
     return "Unknown";
@@ -28,9 +31,9 @@ function hostLabel(url) {
 function providerFromUrl(url) {
   try {
     const parsed = new URL(url || "");
-    if (parsed.hostname.includes("chatgpt.com")) return "chatgpt";
-    if (parsed.hostname.includes("claude.ai")) return "claude-ai";
-    if (parsed.hostname.includes("grok.com") || parsed.hostname.includes("x.com") || parsed.hostname.includes("twitter.com")) {
+    if (hostMatches(parsed.hostname, "chatgpt.com")) return "chatgpt";
+    if (hostMatches(parsed.hostname, "claude.ai")) return "claude-ai";
+    if (hostMatches(parsed.hostname, "grok.com") || hostMatches(parsed.hostname, "x.com") || hostMatches(parsed.hostname, "twitter.com")) {
       return "grok";
     }
   } catch {

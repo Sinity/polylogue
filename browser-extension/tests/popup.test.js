@@ -302,6 +302,13 @@ describe("popup capture", () => {
     expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
   });
 
+  it("does not list unrelated lookalike hosts as supported providers", async () => {
+    await loadPopup({}, [{ id: 88, title: "Lookalike", url: "https://notx.com/chat/anything" }]);
+
+    expect(document.getElementById("open-tab-count").textContent).toBe("0");
+    expect(document.getElementById("open-tabs").textContent).toContain("No supported conversation tabs");
+  });
+
   it("marks DOM-derived captures as partial fidelity in the operator vocabulary", async () => {
     await loadPopup({
       polylogueState: {

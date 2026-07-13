@@ -264,6 +264,23 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueSessionLedger["chatgpt:conv-rejected"].last_error).toBe("invalid capture");
   });
 
+  it("does not let an inactive rejection replace the active conversation card", async () => {
+    tabs = [
+      { id: 1, url: "https://chatgpt.com/c/conv-active", active: true },
+      { id: 2, url: "https://chatgpt.com/c/conv-rejected", active: false },
+    ];
+    stored.polylogueState = { online: true, provider: "chatgpt", provider_session_id: "conv-active", archive_state: { state: "archived" } };
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "invalid capture" }, { ok: false, status: 400 }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-rejected", turns: [] } },
+    }, { tab: tabs[1] });
+
+    expect(stored.polylogueState.provider_session_id).toBe("conv-active");
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-rejected"][0].detail).toBe("capture_rejected");
+  });
+
   it("keeps receiver request id on error state", async () => {
     globalThis.fetch = vi.fn(async () =>
       responseJson({ error: "unauthorized" }, { ok: false, status: 401, requestId: "reject-42" }),
@@ -829,6 +846,46 @@ describe("capture retry queue", () => {
       reason: "capture_retry_drained",
       detail: "spooled_only",
     });
+  });
+
+  it("keeps concurrent retry enqueues instead of overwriting one capture", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    const capture = (sessionId) => sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: sessionId, turns: [] } },
+    });
+
+    await Promise.all([capture("conv-concurrent-a"), capture("conv-concurrent-b")]);
+
+    expect(stored.polylogueCaptureQueue.entries.map((entry) => entry.envelope.session.provider_session_id)).toEqual([
+      "conv-concurrent-a",
+      "conv-concurrent-b",
+    ]);
+  });
+
+  it("drops a retry after a later non-retryable receiver rejection", async () => {
+    let callCount = 0;
+    globalThis.fetch = vi.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) throw new TypeError("Failed to fetch");
+      return responseJson({ error: "invalid capture" }, { ok: false, status: 400 });
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-retry-rejected", turns: [] } },
+    });
+    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+
+    alarmListener({ name: "polylogueCaptureRetry" });
+
+    await vi.waitFor(() => expect(stored.polylogueCaptureQueue.entries).toHaveLength(0));
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-retry-rejected"][0]).toMatchObject({
+      event: "held_with_reason",
+      detail: "capture_rejected",
+    });
+    expect(stored.polylogueCaptureLog[0].reason).toBe("capture_retry_rejected");
   });
 
   it("does not queue a capture rejected with a client error", async () => {

@@ -27,10 +27,17 @@ let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
 let storageMutationQueue = Promise.resolve();
+let captureQueueMutationQueue = Promise.resolve();
 
 function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
   storageMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function serializeCaptureQueueMutation(mutation) {
+  const result = captureQueueMutationQueue.then(mutation, mutation);
+  captureQueueMutationQueue = result.then(() => undefined, () => undefined);
   return result;
 }
 
@@ -239,6 +246,7 @@ function isRetryableCaptureError(error) {
 }
 
 async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
+  return serializeCaptureQueueMutation(async () => {
   const entry = {
     id: buildReceiverRequestId(),
     envelope,
@@ -281,9 +289,11 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
     queue_length: entries.length,
   });
   return nextQueue;
+  });
 }
 
 async function drainCaptureQueue(trigger = "alarm") {
+  return serializeCaptureQueueMutation(async () => {
   const queue = await getCaptureQueue();
   if (!queue.entries.length) {
     await clearRetryAlarm();
@@ -354,6 +364,29 @@ async function drainCaptureQueue(trigger = "alarm") {
         last_receiver_request_id: result.receiver_request_id || null,
       }, entry.tab_url);
     } catch (error) {
+      if (!isRetryableCaptureError(error)) {
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendCaptureLog({
+          ok: false,
+          reason: "capture_retry_rejected",
+          queued_id: entry.id,
+          attempts: entry.attempts,
+          error: String(error.message || error),
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: "capture_retry_drained",
+          detail: "capture_rejected",
+          tabId: entry.tab_id || null,
+        });
+        continue;
+      }
       const attempts = entry.attempts + 1;
       remaining.push({
         ...entry,
@@ -378,6 +411,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     await appendDebugLog({ stage: "capture_retry_drain", drained, remaining: remaining.length });
   }
   return { drained, remaining: remaining.length };
+  });
 }
 
 async function loadCaptureQueueIntoCache() {
@@ -1563,12 +1597,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       receiver_request_id: error.receiverRequestId || null,
       error: String(error.message || error),
     });
-    await setState({
+    const captureSummary = message.type === "polylogue.capture"
+      ? envelopeSessionSummary(message.envelope)
+      : null;
+    await setStateForTab(sender.tab?.id || null, {
       online: false,
       captured: false,
       error: String(error.message || error),
-      last_receiver_request_id: error.receiverRequestId || null
-    });
+      provider: captureSummary?.provider || null,
+      provider_session_id: captureSummary?.providerSessionId || null,
+      last_receiver_request_id: error.receiverRequestId || null,
+    }, sender.tab?.url || sender.tab?.pendingUrl || null);
     sendResponse({
       ok: false,
       error: String(error.message || error),
