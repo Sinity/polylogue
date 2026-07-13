@@ -19,10 +19,12 @@ from polylogue.storage.sqlite.lifecycle import (
     index_fast_forward_plan,
 )
 
+_DEPLOYED_FAST_FORWARD_TARGET = 35
+
 
 def test_v32_to_current_plan_declares_ma2_as_an_index_only_delta() -> None:
     """Exercise the production declaration used by clone fast-forward selection."""
-    plan = index_fast_forward_plan(32, INDEX_SCHEMA_VERSION)
+    plan = index_fast_forward_plan(32, _DEPLOYED_FAST_FORWARD_TARGET)
 
     assert plan is not None
     ma2 = next(declaration for declaration in plan.declarations if declaration.version == 34)
@@ -64,7 +66,7 @@ def test_plan_orders_declarations_before_validating_contiguity(monkeypatch: pyte
     """Registry order cannot silently downgrade a complete clone-safe plan."""
     monkeypatch.setattr(lifecycle, "INDEX_DELTA_DECLARATIONS", tuple(reversed(lifecycle.INDEX_DELTA_DECLARATIONS)))
 
-    plan = lifecycle.index_fast_forward_plan(32, INDEX_SCHEMA_VERSION)
+    plan = lifecycle.index_fast_forward_plan(32, _DEPLOYED_FAST_FORWARD_TARGET)
 
     assert plan is not None
     assert tuple(declaration.version for declaration in plan.declarations) == (33, 34, 35)
@@ -73,7 +75,7 @@ def test_plan_orders_declarations_before_validating_contiguity(monkeypatch: pyte
 def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """A declared class cannot advance an index version without executable SQL."""
     empty_declaration = IndexDeltaDeclaration(
-        version=36,
+        version=37,
         classes=(DerivedDeltaClass.INDEX_ONLY,),
     )
     monkeypatch.setattr(
@@ -82,17 +84,17 @@ def test_nonsemantic_delta_without_operations_is_rejected(monkeypatch: pytest.Mo
         (*lifecycle.INDEX_DELTA_DECLARATIONS, empty_declaration),
     )
 
-    report = lifecycle.index_delta_declaration_report(36)
+    report = lifecycle.index_delta_declaration_report(37)
 
     assert report["ok"] is False
-    assert report["invalid_versions"] == (36,)
-    assert lifecycle.index_fast_forward_plan(32, 36) is None
+    assert report["invalid_versions"] == (37,)
+    assert lifecycle.index_fast_forward_plan(32, 37) is None
 
 
 def test_delta_without_a_declared_class_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """An operation cannot create a clone route without a delta classification."""
     unclassified_declaration = IndexDeltaDeclaration(
-        version=36,
+        version=37,
         classes=(),
         operations=(
             FastForwardOperation(
@@ -108,8 +110,8 @@ def test_delta_without_a_declared_class_is_rejected(monkeypatch: pytest.MonkeyPa
         (*lifecycle.INDEX_DELTA_DECLARATIONS, unclassified_declaration),
     )
 
-    assert lifecycle.index_delta_declaration_report(36)["invalid_versions"] == (36,)
-    assert lifecycle.index_fast_forward_plan(32, 36) is None
+    assert lifecycle.index_delta_declaration_report(37)["invalid_versions"] == (37,)
+    assert lifecycle.index_fast_forward_plan(32, 37) is None
 
 
 def test_schema_policy_rejects_an_index_bump_without_a_delta_declaration(

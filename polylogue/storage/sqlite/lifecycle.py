@@ -87,6 +87,13 @@ class IndexFastForwardPlan:
             )
         )
 
+    @property
+    def stage_names(self) -> tuple[str, ...]:
+        """Return the stable executor-stage order declared by this plan."""
+        return tuple(
+            dict.fromkeys(operation.name for declaration in self.declarations for operation in declaration.operations)
+        )
+
 
 class IndexDeltaDeclarationReport(TypedDict):
     """Static coverage result consumed by the schema-version policy lint."""
@@ -161,6 +168,10 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
                 ),
             ),
         ),
+    ),
+    IndexDeltaDeclaration(
+        version=36,
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
 )
 

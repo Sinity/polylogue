@@ -22,6 +22,7 @@ from devtools.index_fast_forward import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
 
 _OLD_MESSAGES_FTS = """
 CREATE VIRTUAL TABLE messages_fts USING fts5(
@@ -242,8 +243,12 @@ def test_fast_forward_v32_fixture_applies_exact_deltas_without_raw_reparse(tmp_p
 
     assert receipt["status"] == "clone_ready"
     assert receipt["raw_reparse"] is False
-    assert receipt["equivalence_sample_before"] == receipt["equivalence_sample_after"]
-    assert "parser-content drift" in str(receipt["equivalence_caveat"])
+    plan = index_fast_forward_plan(32, FAST_FORWARD_TO_VERSION)
+    assert plan is not None
+    assert receipt["declared_stages"] == list(plan.stage_names)
+    assert receipt["delta_classes"] == [
+        delta_class.value for declaration in plan.declarations for delta_class in declaration.classes
+    ]
     validation = validate_clone(
         clone,
         expected_counts=expected_counts,

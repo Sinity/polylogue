@@ -33,6 +33,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 )
 from polylogue.storage.fts.pl_fold import pl_fold, pl_fold_sql_expr
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.lifecycle import IndexFastForwardPlan, index_fast_forward_plan
 
 FAST_FORWARD_FROM_VERSION = 32
 FAST_FORWARD_TO_VERSION = 35
@@ -41,23 +42,16 @@ DEFAULT_MESSAGE_BATCH_ROWS = 50_000
 DEFAULT_MAX_IO_FULL_AVG10 = 45.0
 DEFAULT_MAX_MEMORY_FULL_AVG10 = 5.0
 
-_CANONICAL_OBJECTS = (
-    ("table", "insight_materialization"),
-    ("index", "idx_web_constructs_message"),
-    ("view", "delegations"),
-    ("table", "messages_fts"),
-    ("trigger", "messages_fts_ai"),
-    ("trigger", "messages_fts_ad"),
-    ("trigger", "messages_fts_au"),
-    ("table", "session_work_events_fts"),
-    ("trigger", "session_work_events_fts_ai"),
-    ("trigger", "session_work_events_fts_ad"),
-    ("trigger", "session_work_events_fts_au"),
-    ("table", "threads_fts"),
-    ("trigger", "threads_fts_ai"),
-    ("trigger", "threads_fts_ad"),
-    ("trigger", "threads_fts_au"),
+_EXECUTOR_STAGE_NAMES = (
+    "v33-insight-check",
+    "v34-index-and-delegations",
+    "v35-messages-fts",
+    "v35-insight-fts",
 )
+_PLAN = index_fast_forward_plan(FAST_FORWARD_FROM_VERSION, FAST_FORWARD_TO_VERSION)
+if _PLAN is None:
+    raise RuntimeError("the deployed index fast-forward executor lacks a declared clone-safe plan")
+_CANONICAL_OBJECTS = _PLAN.canonical_objects
 
 _STRUCTURAL_TABLES = (
     "sessions",
@@ -262,6 +256,14 @@ def _database_metrics(conn: sqlite3.Connection) -> dict[str, int]:
     }
 
 
+def _deployed_plan(source_version: int) -> IndexFastForwardPlan | None:
+    """Return a declared plan only when the deployed executor owns every stage."""
+    plan = index_fast_forward_plan(source_version, FAST_FORWARD_TO_VERSION)
+    if plan is None or any(stage not in _EXECUTOR_STAGE_NAMES for stage in plan.stage_names):
+        return None
+    return plan
+
+
 def plan_index(path: Path) -> dict[str, object]:
     identity = file_identity(path)
     with sqlite3.connect(f"file:{identity.resolved_path}?mode=ro", uri=True, timeout=30.0) as conn:
@@ -275,15 +277,31 @@ def plan_index(path: Path) -> dict[str, object]:
             "threads_source": int(conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]),
             "threads_indexed": int(conn.execute("SELECT COUNT(*) FROM threads_fts").fetchone()[0]),
         }
+    plan = _deployed_plan(metrics["user_version"])
+    already_current = metrics["user_version"] == FAST_FORWARD_TO_VERSION
     return {
         "identity": asdict(identity),
         "metrics": metrics,
         "counts": counts,
         "fts": fts,
         "pressure": asdict(pressure_sample()),
-        "eligible": metrics["user_version"] == FAST_FORWARD_FROM_VERSION,
+        "eligible": plan is not None,
+        "already_current": already_current,
         "target_version": FAST_FORWARD_TO_VERSION,
-        "raw_reparse": False,
+        "delta_classes": (
+            [delta_class.value for declaration in plan.declarations for delta_class in declaration.classes]
+            if plan is not None
+            else []
+        ),
+        "declared_stages": list(plan.stage_names) if plan is not None else [],
+        "required_action": (
+            "already_current"
+            if already_current
+            else "clone_sql_fast_forward"
+            if plan is not None
+            else "rebuild_or_reprocess"
+        ),
+        "raw_reparse": plan is None and not already_current,
     }
 
 
@@ -532,25 +550,31 @@ def fast_forward_clone(
     batch_rows: int = DEFAULT_MESSAGE_BATCH_ROWS,
     fail_after_stage: str | None = None,
 ) -> dict[str, object]:
-    canonical = _canonical_schema()
     identity = file_identity(db_path)
     with sqlite3.connect(db_path, timeout=120.0) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         metrics = _database_metrics(conn)
-        if metrics["user_version"] != FAST_FORWARD_FROM_VERSION:
-            raise RuntimeError(
-                f"clone must start at index user_version {FAST_FORWARD_FROM_VERSION}, found {metrics['user_version']}"
-            )
+        source_version = metrics["user_version"]
         before_counts = _table_counts(conn)
+    plan = _deployed_plan(source_version)
+    if plan is None:
+        raise RuntimeError(
+            f"no deployed clone-safe plan from index schema v{source_version}; rebuild or reprocess from source evidence"
+        )
+    canonical = _canonical_schema()
     receipt: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
         "status": "upgrading",
         "started_at_ms": _now_ms(),
-        "source_version": FAST_FORWARD_FROM_VERSION,
+        "source_version": source_version,
         "target_version": FAST_FORWARD_TO_VERSION,
         "clone_identity_before": asdict(identity),
         "structural_counts_before": before_counts,
         "raw_reparse": False,
+        "delta_classes": [
+            delta_class.value for declaration in plan.declarations for delta_class in declaration.classes
+        ],
+        "declared_stages": list(plan.stage_names),
         "stages": [],
         "pressure_samples": [],
     }
@@ -576,84 +600,62 @@ def fast_forward_clone(
         conn.commit()
         return {"index": "idx_web_constructs_message", "view": "delegations"}
 
+    def apply_v35_messages(conn: sqlite3.Connection) -> dict[str, object]:
+        return _rebuild_messages_fts(
+            conn,
+            canonical,
+            batch_rows=batch_rows,
+            pressure_guard=guard,
+        )
+
+    def apply_v35_insights(conn: sqlite3.Connection) -> dict[str, object]:
+        result: dict[str, object] = {
+            "session_work_events_fts": _rebuild_small_fts(
+                conn,
+                canonical,
+                table_name="session_work_events_fts",
+                trigger_names=(
+                    "session_work_events_fts_ai",
+                    "session_work_events_fts_ad",
+                    "session_work_events_fts_au",
+                ),
+                insert_sql=f"""
+                    INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
+                    SELECT event_id, session_id, work_event_type, {pl_fold_sql_expr("search_text")}
+                    FROM session_work_events
+                """,
+            ),
+            "threads_fts": _rebuild_small_fts(
+                conn,
+                canonical,
+                table_name="threads_fts",
+                trigger_names=("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
+                insert_sql=f"""
+                    INSERT INTO threads_fts (thread_id, root_id, text)
+                    SELECT thread_id, thread_id, {pl_fold_sql_expr("search_text")}
+                    FROM threads
+                """,
+            ),
+        }
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+        conn.commit()
+        return result
+
     try:
         guard()
         with sqlite3.connect(db_path, timeout=120.0) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
-
-            _run_stage(
-                receipt,
-                receipt_path,
-                "v33-insight-check",
-                lambda: apply_v33(conn),
-            )
-            if fail_after_stage == "v33-insight-check":
-                raise RuntimeError("injected failure after v33-insight-check")
-            guard()
-
-            _run_stage(
-                receipt,
-                receipt_path,
-                "v34-index-and-delegations",
-                lambda: apply_v34(conn),
-            )
-            if fail_after_stage == "v34-index-and-delegations":
-                raise RuntimeError("injected failure after v34-index-and-delegations")
-            guard()
-
-            _run_stage(
-                receipt,
-                receipt_path,
-                "v35-messages-fts",
-                lambda: _rebuild_messages_fts(
-                    conn,
-                    canonical,
-                    batch_rows=batch_rows,
-                    pressure_guard=guard,
-                ),
-            )
-            if fail_after_stage == "v35-messages-fts":
-                raise RuntimeError("injected failure after v35-messages-fts")
-            guard()
-
-            _run_stage(
-                receipt,
-                receipt_path,
-                "v35-insight-fts",
-                lambda: {
-                    "session_work_events_fts": _rebuild_small_fts(
-                        conn,
-                        canonical,
-                        table_name="session_work_events_fts",
-                        trigger_names=(
-                            "session_work_events_fts_ai",
-                            "session_work_events_fts_ad",
-                            "session_work_events_fts_au",
-                        ),
-                        insert_sql=f"""
-                            INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-                            SELECT event_id, session_id, work_event_type, {pl_fold_sql_expr("search_text")}
-                            FROM session_work_events
-                        """,
-                    ),
-                    "threads_fts": _rebuild_small_fts(
-                        conn,
-                        canonical,
-                        table_name="threads_fts",
-                        trigger_names=("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
-                        insert_sql=f"""
-                            INSERT INTO threads_fts (thread_id, root_id, text)
-                            SELECT thread_id, thread_id, {pl_fold_sql_expr("search_text")}
-                            FROM threads
-                        """,
-                    ),
-                },
-            )
-            record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
-            conn.commit()
-            if fail_after_stage == "v35-insight-fts":
-                raise RuntimeError("injected failure after v35-insight-fts")
-            guard()
+            stage_handlers: dict[str, Callable[[], dict[str, object]]] = {
+                "v33-insight-check": lambda: apply_v33(conn),
+                "v34-index-and-delegations": lambda: apply_v34(conn),
+                "v35-messages-fts": lambda: apply_v35_messages(conn),
+                "v35-insight-fts": lambda: apply_v35_insights(conn),
+            }
+            for stage_name in plan.stage_names:
+                _run_stage(receipt, receipt_path, stage_name, stage_handlers[stage_name])
+                if fail_after_stage == stage_name:
+                    raise RuntimeError(f"injected failure after {stage_name}")
+                guard()
 
         pre_version_validation = _run_stage(
             receipt,
@@ -662,7 +664,7 @@ def fast_forward_clone(
             lambda: validate_clone(
                 db_path,
                 expected_counts=before_counts,
-                expected_version=FAST_FORWARD_FROM_VERSION,
+                expected_version=source_version,
                 run_quick_check=True,
             ),
         )
