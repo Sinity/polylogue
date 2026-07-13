@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import multiprocessing
+import os
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -317,6 +318,27 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         reverse=reverse,
         similar_text=similar_text,
         retrieval_lane=retrieval_lane,
+    ):
+        return
+    if _try_emit_daemon_unit_page(
+        config=config,
+        request=request,
+        params=params,
+        source=unit_source,
+        expression=unit_source_query,
+        limit=limit,
+        offset=page_offset,
+        output_format=output_format,
+        fields=fields,
+        stream=stream,
+        tags_to_add=tags_to_add,
+        metadata_to_set=metadata_to_set,
+        delete_matched=delete_matched,
+        sample_count=sample_count,
+        since_session_id=since_session_id,
+        cursor=cursor,
+        sort=sort,
+        reverse=reverse,
     ):
         return
     if not index_db_path.exists():
@@ -924,10 +946,15 @@ def _try_emit_daemon_session_page(
         retrieval_lane=retrieval_lane,
     ):
         return False
+    if bool(params.get("no_daemon")):
+        return False
     daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
     payload = _fetch_daemon_sessions_payload(config, daemon_params)
     if payload is None:
         return False
+    elapsed_ms = payload.pop("_daemon_elapsed_ms", None)
+    if bool(params.get("verbose")) and isinstance(elapsed_ms, int):
+        click.echo(f"served-by: daemon (uds, {elapsed_ms}ms)", err=True)
     if isinstance(payload.get("hits"), list):
         _emit_daemon_search_payload(
             payload,
@@ -951,6 +978,71 @@ def _try_emit_daemon_session_page(
         )
         return True
     return False
+
+
+def _try_emit_daemon_unit_page(
+    *,
+    config: Config,
+    request: RootModeRequest,
+    params: dict[str, object],
+    source: QueryUnitSource | None,
+    expression: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    fields: str | None,
+    stream: bool,
+    tags_to_add: tuple[str, ...],
+    metadata_to_set: tuple[tuple[str, str], ...],
+    delete_matched: bool,
+    sample_count: int | None,
+    since_session_id: str | None,
+    cursor: object | None,
+    sort: str | None,
+    reverse: bool,
+) -> bool:
+    """Render daemon query-unit envelopes with the existing CLI renderer."""
+
+    if source is None or stream or tags_to_add or metadata_to_set or delete_matched:
+        return False
+    if any(
+        (
+            params.get("stats_only"),
+            params.get("stats_by"),
+            params.get("count_only"),
+            params.get("open_result"),
+            params.get("conv_id"),
+            sample_count is not None,
+            since_session_id is not None,
+            cursor is not None,
+            sort is not None,
+            reverse,
+        )
+    ):
+        # Session-only modes must keep failing with the local UsageError; the
+        # daemon endpoint would silently ignore these flags and return rows.
+        return False
+    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
+    daemon_params["expression"] = expression
+    payload = _fetch_daemon_payload(
+        config,
+        "/api/query-units?" + urlencode(tuple(_daemon_query_pairs(daemon_params)), doseq=True),
+        disabled=bool(params.get("no_daemon")),
+    )
+    if payload is None:
+        return False
+    payload.pop("_daemon_elapsed_ms", None)
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return False
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        _emit_unit_no_results(payload, unit=source.unit, output_format=output_format)
+    text_line = (
+        _aggregate_query_line if payload.get("mode") == "query-unit-aggregate" else _query_unit_text_line(source.unit)
+    )
+    _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+    return True
 
 
 def _resolve_single_query_ref(archive: ArchiveStore, query: str) -> str | None:
@@ -1057,23 +1149,53 @@ def _daemon_session_query_params(
     return query_params
 
 
-def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, object]) -> dict[str, object] | None:
-    daemon_url_value = getattr(config, "daemon_url", "http://127.0.0.1:8766")
-    if not isinstance(daemon_url_value, str) or not daemon_url_value.startswith(("http://", "https://")):
+def _daemon_disabled(*, flag: bool = False) -> bool:
+    if flag:
+        return True
+    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off"
+
+
+def _fetch_daemon_sessions_payload(
+    config: Config,
+    query_params: Mapping[str, object],
+    *,
+    disabled: bool = False,
+) -> dict[str, object] | None:
+    return _fetch_daemon_payload(config, "/api/cli/query", body={"params": dict(query_params)}, disabled=disabled)
+
+
+def _fetch_daemon_payload(
+    config: Config,
+    path: str,
+    *,
+    body: dict[str, object] | None = None,
+    disabled: bool = False,
+) -> dict[str, object] | None:
+    if _daemon_disabled(flag=disabled):
         return None
-    daemon_url = daemon_url_value.rstrip("/")
-    auth_token = getattr(config, "api_auth_token", None)
-    auth_header = auth_token if isinstance(auth_token, str) and auth_token else None
-    expected_archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
-    return _fetch_daemon_sessions_payload_with_deadline(
-        daemon_url,
-        auth_header,
-        dict(query_params),
-        expected_archive_root=expected_archive_root,
-    )
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
+    client = DaemonClient(socket_path, auth_token=getattr(config, "api_auth_token", None))
+    if (
+        client.probe(
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.request_json("POST" if body is not None else "GET", path, body)
+    if payload is not None:
+        if client.last_elapsed_ms is not None:
+            payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+        return payload
+    return None
 
 
 def _fetch_daemon_sessions_payload_with_deadline(

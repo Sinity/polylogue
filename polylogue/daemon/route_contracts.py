@@ -202,6 +202,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "SearchEnvelope / SessionListResponse with route_state",
     ),
     RouteContract(
+        "POST",
+        "/api/cli/query",
+        "read_query",
+        "private",
+        "credential_if_configured",
+        "SearchEnvelope / SessionListResponse with route_state",
+        "Local UDS-only root-request parameter envelope; daemon owns query compilation.",
+    ),
+    RouteContract(
         "GET",
         "/api/facets",
         "read_query",

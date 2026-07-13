@@ -3509,3 +3509,49 @@ class TestSearchIndexRebuild:
             assert "searchable" in result.output.lower() or "c1" in result.output
         else:
             assert "no session" in result.output.lower() or "matched" in result.output.lower()
+
+
+def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session-only flags on unit queries must keep failing, daemon or not.
+
+    Anti-vacuity: without the fast-path guard, a reachable daemon serves
+    /api/query-units rows for ``--count`` unit queries, silently ignoring the
+    flag instead of raising the local UsageError.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    config.daemon_url = "http://127.0.0.1:9876"
+    config.api_auth_token = None
+    env = _make_env(repo=MagicMock(), config=config)
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query._fetch_daemon_payload",
+        MagicMock(side_effect=AssertionError("session-only unit query must not take the daemon fast path")),
+    )
+    store = MagicMock()
+    store.__enter__ = MagicMock(return_value=MagicMock())
+    store.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        MagicMock(return_value=store),
+    )
+
+    with pytest.raises(click.UsageError, match="do not combine"):
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("messages where role:assistant AND text:timeout",),
+                    "count_only": True,
+                    "output_format": "json",
+                },
+            )
+        )

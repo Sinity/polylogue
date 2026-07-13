@@ -41,34 +41,26 @@ def _seed_continuation_session(db_path: Path) -> None:
         _rebuild_archive_session_insights(archive)
 
 
-def test_continue_json_by_root_format_renders_context_image(cli_workspace: dict[str, Path]) -> None:
+def test_continue_emits_interactive_resume_command(cli_workspace: dict[str, Path]) -> None:
     _seed_continuation_session(cli_workspace["db_path"])
 
     result = CliRunner().invoke(
         cli,
-        ["--format", "json", "--id", NID_CONTINUE_ROOT, "continue"],
+        ["--id", NID_CONTINUE_ROOT, "continue"],
         catch_exceptions=False,
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["spec"]["purpose"] == "continue"
-    assert payload["spec"]["seed_refs"] == [f"session:{NID_CONTINUE_ROOT}"]
-    assert {segment["kind"] for segment in payload["segments"]} == {"query_unit", "read_view"}
-    assert all(segment["kind"] != "recovery" for segment in payload["segments"])
-    message_segments = [segment for segment in payload["segments"] if segment["payload_kind"] == "messages"]
-    assert message_segments
-    assert "CLI Continue" in message_segments[0]["markdown"]
+    assert result.output == "codex resume ext-cli-continue-root\n"
 
 
-def test_continue_plain_names_successor_context_sections(cli_workspace: dict[str, Path]) -> None:
+def test_continue_defaults_to_printing_not_executing(cli_workspace: dict[str, Path]) -> None:
     _seed_continuation_session(cli_workspace["db_path"])
 
     result = CliRunner().invoke(cli, ["--id", NID_CONTINUE_ROOT, "continue"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "# Query: run" in result.output
-    assert "# Messages: CLI Continue" in result.output
+    assert result.output == "codex resume ext-cli-continue-root\n"
 
 
 def test_continue_missing_session_exits_with_clear_message(cli_workspace: dict[str, Path]) -> None:

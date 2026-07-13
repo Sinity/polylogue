@@ -325,6 +325,12 @@ MODIFIER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...]
 
 GLOBAL_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (
     click.option("--plain", is_flag=True, help="Force non-interactive plain output"),
+    click.option(
+        "--no-daemon",
+        is_flag=True,
+        default=False,
+        help="Run archive reads in-process instead of using the local daemon.",
+    ),
     click.option("-v", "--verbose", is_flag=True, help="Verbose output"),
     click.option(
         "--diagnose",

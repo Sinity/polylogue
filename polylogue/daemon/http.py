@@ -401,6 +401,12 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
     )
 
 
+def _cli_read_post_routes() -> tuple[_StaticPostRoute, ...]:
+    """Read-only POST routes whose request bodies carry CLI parameter maps."""
+
+    return (_StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),)
+
+
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
     """Return route patterns implemented by daemon HTTP dispatch."""
 
@@ -420,6 +426,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
     routes.extend(("POST", route.pattern) for route in _observability_post_routes())
     routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
+    routes.extend(("POST", route.pattern) for route in _cli_read_post_routes())
     routes.extend(user_state_http.user_state_route_patterns())
     return tuple(routes)
 
@@ -1176,8 +1183,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @property
     def _client_host(self) -> str:
         """Extract client IP from the request."""
-        # The client_address is (host, port) from the underlying socket.
-        return str(self.client_address[0])
+        client_address: object = self.client_address
+        return str(client_address[0]) if isinstance(client_address, tuple) else "127.0.0.1"
 
     def _web_credential_token(self) -> str | None:
         return read_web_credential_cookie(self.headers.get("Cookie", ""))
@@ -1725,6 +1732,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 else:
                     handler()
             return
+        cli_read_route = next((route for route in _cli_read_post_routes() if tuple(path) == route.segments), None)
+        if cli_read_route is not None:
+            if not self._check_auth("read"):
+                return
+            handler = cast(Callable[..., None], getattr(self, cli_read_route.handler_name))
+            handler()
+            return
         if not self._check_auth("user_state"):
             return
         if not self._check_cross_origin():
@@ -2091,7 +2105,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
 
     def _handle_health(self) -> None:
+        from polylogue.config import load_polylogue_config
         from polylogue.paths import active_index_db_path
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO
 
         dbp = active_index_db_path()
         db_size = dbp.stat().st_size if dbp.exists() else 0
@@ -2124,6 +2141,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "blob_dir_size_bytes": 0,
             "quick_check": "pass" if quick_check_ok else "error",
             "quick_check_age_s": None,
+            "archive_root": str(load_polylogue_config().archive_root),
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "daemon_version": POLYLOGUE_VERSION,
+            "commit": VERSION_INFO.commit,
+            "started_at": getattr(self.server, "started_at", None),
         }
         self._send_json(HTTPStatus.OK, overview)
 
@@ -4101,6 +4123,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
+    def _handle_cli_query(self) -> None:
+        """Serve a root-request parameter map through the daemon query compiler.
+
+        The CLI sends exactly :meth:`RootModeRequest.query_params` rather than
+        reconstructing a query string itself.  This preserves the daemon as
+        the owner of structured-query lowering while keeping the transport
+        payload deliberately small and stdlib-friendly.
+        """
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 65_536:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            raw_params = body["params"]
+            if not isinstance(raw_params, dict):
+                raise TypeError("params must be an object")
+            from polylogue.cli.root_request import RootModeRequest, _expression_from_query_terms
+
+            request = RootModeRequest.from_params(raw_params)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        params: dict[str, list[str]] = {}
+        for key, value in request.params.items():
+            if value is None or value is False:
+                continue
+            if isinstance(value, tuple | list):
+                params[str(key)] = [str(item) for item in value]
+            elif value is True:
+                params[str(key)] = ["1"]
+            else:
+                params[str(key)] = [str(value)]
+        expression = _expression_from_query_terms(request.query_terms)
+        if expression:
+            params["query"] = [expression]
+        self._handle_list_sessions(params)
+
+    @daemon_safe_handler
     def _handle_reset(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -4468,6 +4531,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
+        self.started_at = datetime.now(UTC).isoformat()
         self.web_credentials = web_credentials or WebCredentialRegistry()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:

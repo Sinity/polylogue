@@ -141,6 +141,8 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
+  --no-daemon                     Run archive reads in-process instead of
+                                  using the local daemon.
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
@@ -160,7 +162,7 @@ Commands:
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.
-    continue  Compile a successor-agent continuation report.
+    continue  Print or execute the harness command that resumes a session.
     Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
     command.
 
@@ -474,16 +476,16 @@ Commands:
 ```text
 Usage: polylogue continue [OPTIONS]
 
-  Compile a successor-agent continuation report for one matched session.
+  Print or explicitly execute a verified harness-resume command.
 
   Examples:
       polylogue find id:abc then continue
-      polylogue find id:abc then continue --format json
-      polylogue --latest continue --to clipboard
-      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue find id:abc then continue --exec
       polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
 Options:
+  --exec                          Run the verified interactive resume command
+                                  instead of printing it.
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
@@ -498,8 +500,8 @@ Options:
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
   --json                          Shortcut for --format json.
-  -f, --format [json]             Output format. JSON emits the shared
-                                  ContextImage payload.
+  -f, --format [json]             Reserved for compatibility; continue emits a
+                                  shell command only.
   --help                          Show this message and exit.
 ```
 
