@@ -385,6 +385,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench coordination-latency",
+        "benchmarking",
+        "Measure compact coordination status p50/p95 with raw stage samples.",
+        "devtools.coordination_latency_probe",
+        examples=("devtools bench coordination-latency --samples 21 --out .local/coordination-latency.json",),
+    ),
+    CommandSpec(
         "lab snapshot read-surface",
         "verification lab",
         "Capture and compare archive read-surface snapshots.",
