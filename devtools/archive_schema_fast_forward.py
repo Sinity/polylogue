@@ -674,9 +674,22 @@ def activate_prepared_forward(
             migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=backup_manifest)
         with sqlite3.connect(user) as conn:
             migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=backup_manifest)
+        # Durable migrations can legitimately leave a WAL behind after their
+        # connection closes.  Finalize those files before immutable evidence
+        # reads: their committed pages must be in the database file, not a
+        # transient sidecar.  This remains inside the rollback boundary.
+        for path in (source, user):
+            _finalize_clone_database(path)
         promoted.append(_promote_index_generation(staging_root / index.name, index))
         promoted.append(atomic_promote(staging_root / embeddings.name, embeddings, rollback_root / embeddings.name))
         promoted.append(atomic_promote(staging_root / ops.name, ops, rollback_root / ops.name))
+        versions = {
+            "source": _database_evidence(source).user_version,
+            "user": _database_evidence(user).user_version,
+            "index": _database_evidence(index).user_version,
+            "embeddings": _database_evidence(embeddings).user_version,
+            "ops": _database_evidence(ops).user_version,
+        }
     except Exception as exc:
         for item in reversed(promoted):
             _restore_promoted(item)
@@ -690,13 +703,7 @@ def activate_prepared_forward(
             "status": "activated",
             "activated_at_ms": _now_ms(),
             "promoted": promoted,
-            "versions": {
-                "source": _database_evidence(source).user_version,
-                "user": _database_evidence(user).user_version,
-                "index": _database_evidence(index).user_version,
-                "embeddings": _database_evidence(embeddings).user_version,
-                "ops": _database_evidence(ops).user_version,
-            },
+            "versions": versions,
         }
     )
     _write_receipt(receipt_path, payload)
