@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import errno
+import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +15,7 @@ from devtools.archive_schema_fast_forward import (
     _parser,
     _promote_index_generation,
     _require_receipt_identity,
+    activate_prepared_forward,
     atomic_promote,
     beads_evidence,
     fast_forward_embeddings_clone,
@@ -218,6 +222,104 @@ def test_atomic_promote_keeps_a_named_rollback(tmp_path: Path) -> None:
     assert active.read_text(encoding="utf-8") == "new"
     assert rollback.read_text(encoding="utf-8") == "old"
     assert promoted["rollback"] == str(rollback)
+
+
+def test_atomic_promote_copies_across_subvolumes_before_local_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Promotion must not issue a cross-device rename for staging artifacts."""
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    archive.mkdir()
+    staging.mkdir()
+    active = archive / "embeddings.db"
+    clone = staging / "prepared-embeddings.db"
+    rollback = staging / "rollback" / "embeddings.db"
+    active.write_text("old", encoding="utf-8")
+    clone.write_text("new", encoding="utf-8")
+    real_replace = os.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def reject_cross_device_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        replace_calls.append((source_path, destination_path))
+        if source_path.parent != destination_path.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", reject_cross_device_replace)
+
+    atomic_promote(clone, active, rollback)
+
+    assert active.read_text(encoding="utf-8") == "new"
+    assert rollback.read_text(encoding="utf-8") == "old"
+    assert not clone.exists()
+    assert all(source.parent == destination.parent for source, destination in replace_calls)
+
+
+def test_activation_failure_restores_durable_snapshots_without_cross_device_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-migration snapshots are rollback inputs, never promoted entries."""
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    archive.mkdir()
+    staging.mkdir()
+    source = archive / "source.db"
+    user = archive / "user.db"
+    for database in (source, user, archive / "index.db", archive / "embeddings.db", archive / "ops.db"):
+        with sqlite3.connect(database) as conn:
+            conn.execute("CREATE TABLE retained (value TEXT)")
+            conn.execute("INSERT INTO retained VALUES ('original')")
+            conn.commit()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "polylogue.archive-schema-fast-forward.v1",
+                "status": "prepared",
+                "archive_root": str(archive),
+                "staging_root": str(staging),
+                "backup_manifest": str(manifest),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.archive_schema_fast_forward._require_service_stopped", lambda _service: None)
+    monkeypatch.setattr("devtools.archive_schema_fast_forward._require_receipt_identity", lambda *_args: None)
+    monkeypatch.setattr("devtools.archive_schema_fast_forward.require_no_beads_evidence", lambda *_paths: None)
+
+    def fail_after_source_mutation(conn: sqlite3.Connection, tier: ArchiveTier, **_kwargs: object) -> None:
+        assert tier is ArchiveTier.SOURCE
+        conn.execute("CREATE TABLE migration_marker (value TEXT)")
+        conn.commit()
+        raise RuntimeError("synthetic source migration failure")
+
+    monkeypatch.setattr("devtools.archive_schema_fast_forward.migrate_archive_tier", fail_after_source_mutation)
+    real_replace = os.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def reject_cross_device_replace(source_path: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        source_item = Path(source_path)
+        destination_item = Path(destination)
+        replace_calls.append((source_item, destination_item))
+        if source_item.parent != destination_item.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(source_path, destination)
+
+    monkeypatch.setattr(os, "replace", reject_cross_device_replace)
+
+    with pytest.raises(RuntimeError, match="synthetic source migration failure"):
+        activate_prepared_forward(receipt_path=receipt, backup_manifest=manifest)
+
+    with sqlite3.connect(source) as conn:
+        assert conn.execute("SELECT value FROM retained").fetchall() == [("original",)]
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name='migration_marker'").fetchone() is None
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "rolled_back"
+    assert all(source_item.parent == destination_item.parent for source_item, destination_item in replace_calls)
 
 
 def test_index_generation_promotion_preserves_active_symlink_protocol(tmp_path: Path) -> None:
