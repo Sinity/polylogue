@@ -418,6 +418,47 @@ def fast_forward_embeddings_clone(source: Path, destination: Path) -> CloneForwa
     return CloneForwardResult(source_before, clone_after, True, ())
 
 
+def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> CloneForwardResult:
+    """Prove one completed v36 index clone against a stable v35 active index.
+
+    This deliberately accepts only a single already-completed staging clone.
+    It does not resume arbitrary phases: the active source must still be the
+    observed v35 snapshot, and the supplied clone must independently satisfy
+    the same structural and integrity proof before its atomic move.
+    """
+    source_before = _database_evidence(source)
+    if source_before.user_version != 35:
+        raise SchemaFastForwardError(
+            f"reused index clone requires active v35 source, found v{source_before.user_version}"
+        )
+    require_no_beads_evidence(source)
+    staged_clone = staged_clone.resolve(strict=True)
+    if not staged_clone.is_file() or staged_clone == source.resolve(strict=True):
+        raise SchemaFastForwardError(f"invalid reused index clone: {staged_clone}")
+    if destination.exists():
+        raise SchemaFastForwardError(f"reused index destination already exists: {destination}")
+    _finalize_clone_database(staged_clone)
+    require_no_beads_evidence(staged_clone)
+    clone_after = _database_evidence(staged_clone)
+    if clone_after.user_version != INDEX_SCHEMA_VERSION:
+        raise SchemaFastForwardError(
+            f"reused index clone requires v{INDEX_SCHEMA_VERSION}, found v{clone_after.user_version}"
+        )
+    with _open_immutable_readonly(staged_clone) as conn:
+        foreign_key_check = tuple(str(row) for row in conn.execute("PRAGMA foreign_key_check"))
+        quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
+    if foreign_key_check or quick_check != ("ok",):
+        raise SchemaFastForwardError(
+            f"reused index clone integrity contract failed: fk={foreign_key_check!r}, quick={quick_check!r}"
+        )
+    if clone_after.table_counts != source_before.table_counts:
+        raise SchemaFastForwardError("reused index clone changed structural row counts")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(staged_clone, destination)
+    _fsync_directory(destination.parent)
+    return CloneForwardResult(source_before, clone_after, True, foreign_key_check)
+
+
 def atomic_promote(clone: Path, active: Path, rollback: Path) -> dict[str, str]:
     """Atomically publish one regular prepared clone and retain rollback bytes."""
     if rollback.exists() or clone == active:
@@ -483,6 +524,7 @@ def plan_clone_forward(
     staging_root: Path,
     receipt_path: Path,
     backup_manifest: Path,
+    reuse_index_clone_path: Path | None = None,
 ) -> dict[str, object]:
     """Prepare derived clones and a receipt; it never promotes or migrates durable tiers."""
     source = archive_root / "source.db"
@@ -493,12 +535,18 @@ def plan_clone_forward(
     for path in (source, user, index, embeddings, ops):
         if not path.exists():
             raise SchemaFastForwardError(f"archive tier is missing: {path}")
+    if reuse_index_clone_path is not None:
+        _require_service_stopped("polylogued.service")
     require_no_beads_evidence(source, index)
     if not backup_manifest.exists():
         raise SchemaFastForwardError(f"verified backup manifest is missing: {backup_manifest}")
     run_root = staging_root / f"schema-forward-{uuid.uuid4().hex}"
     run_root.mkdir(parents=True, exist_ok=False)
-    index_result = fast_forward_index_clone(index, run_root / "index.db")
+    index_result = (
+        fast_forward_index_clone(index, run_root / "index.db")
+        if reuse_index_clone_path is None
+        else reuse_index_clone(index, reuse_index_clone_path, run_root / "index.db")
+    )
     embeddings_result = fast_forward_embeddings_clone(embeddings, run_root / "embeddings.db")
     initialize_archive_database(run_root / "ops.db", ArchiveTier.OPS)
     payload: dict[str, object] = {
@@ -508,6 +556,7 @@ def plan_clone_forward(
         "archive_root": str(archive_root),
         "backup_manifest": str(backup_manifest),
         "staging_root": str(run_root),
+        "reused_index_clone": str(reuse_index_clone_path) if reuse_index_clone_path is not None else None,
         "source": asdict(_database_evidence(source)),
         "user": asdict(_database_evidence(user)),
         "index": asdict(index_result),
@@ -610,6 +659,11 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--staging-root", type=Path, required=True)
     prepare.add_argument("--receipt", type=Path, required=True)
     prepare.add_argument("--backup-manifest", type=Path, required=True)
+    prepare.add_argument(
+        "--reuse-index-clone",
+        type=Path,
+        help="one completed v36 staging index clone to re-prove and move into this prepare run",
+    )
     activate = commands.add_parser("activate", help="Run durable migrations and publish derived clones")
     activate.add_argument("--receipt", type=Path, required=True)
     activate.add_argument("--backup-manifest", type=Path, required=True)
@@ -628,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
             staging_root=args.staging_root,
             receipt_path=args.receipt,
             backup_manifest=args.backup_manifest,
+            reuse_index_clone_path=args.reuse_index_clone,
         )
     else:
         result = activate_prepared_forward(
@@ -649,6 +704,7 @@ __all__ = [
     "beads_evidence",
     "fast_forward_embeddings_clone",
     "fast_forward_index_clone",
+    "reuse_index_clone",
     "plan_clone_forward",
     "reflink_clone",
     "require_no_beads_evidence",
