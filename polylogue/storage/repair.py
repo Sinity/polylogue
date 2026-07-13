@@ -271,8 +271,86 @@ def _proof_digest(item: QuarantinedAcceptedRawRepairItem) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _raw_sessions_capture_mode_available(conn: sqlite3.Connection) -> bool:
-    return any(str(row[1]) == "capture_mode" for row in conn.execute("PRAGMA main.table_info(raw_sessions)").fetchall())
+def _raw_sessions_capture_mode_available(conn: sqlite3.Connection, *, schema: str = "main") -> bool:
+    if schema not in {"main", "source"}:
+        raise ValueError(f"unsupported raw-session schema: {schema}")
+    return any(
+        str(row[1]) == "capture_mode" for row in conn.execute(f"PRAGMA {schema}.table_info(raw_sessions)").fetchall()
+    )
+
+
+def _browser_origin_source_envelope_is_exact(
+    conn: sqlite3.Connection,
+    *,
+    schema: str,
+    raw_id: str,
+    origin: str,
+    capture_mode: str,
+    native_id: str,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    logical_source_key: str | None,
+    revision_kind: RawRevisionKind,
+    source_revision: str | None,
+    baseline_raw_id: str | None,
+    acquisition_generation: int | None,
+    revision_authority: RawRevisionAuthority,
+) -> sqlite3.Row | None:
+    """Prove a complete source envelope and its raw-payload blob reference.
+
+    Browser-origin repair only admits full snapshots.  Keep this one proof
+    shared across preflight, locked staging, exact canonical, and semantic
+    witnesses so lineage/capture metadata cannot drift between those routes.
+    """
+    if schema not in {"main", "source"}:
+        raise ValueError(f"unsupported raw-session schema: {schema}")
+    has_capture_mode = _raw_sessions_capture_mode_available(conn, schema=schema)
+    capture_projection = "capture_mode" if has_capture_mode else "NULL AS capture_mode"
+    row = conn.execute(
+        f"""
+        SELECT origin, {capture_projection}, native_id, source_path, source_index,
+               blob_hash, blob_size, logical_source_key, revision_kind,
+               source_revision, predecessor_source_revision, predecessor_raw_id,
+               baseline_raw_id, append_start_offset, append_end_offset,
+               acquisition_generation, revision_authority
+        FROM {schema}.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    expected = (
+        origin,
+        capture_mode if has_capture_mode else None,
+        native_id,
+        source_path,
+        source_index,
+        blob_hash,
+        blob_size,
+        logical_source_key,
+        revision_kind.value,
+        source_revision,
+        None,
+        None,
+        baseline_raw_id,
+        None,
+        None,
+        acquisition_generation,
+        revision_authority.value,
+    )
+    if row is None or tuple(row) != expected:
+        return None
+    blob_ref = conn.execute(
+        f"""
+        SELECT blob_hash, source_path, size_bytes
+        FROM {schema}.blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        """,
+        (raw_id,),
+    ).fetchone()
+    if blob_ref is None or tuple(blob_ref) != (blob_hash, source_path, blob_size):
+        return None
+    return cast(sqlite3.Row, row)
 
 
 def _stageable_quarantined_census_cohort(
@@ -1503,45 +1581,29 @@ def _verify_browser_origin_copy_forward_source_stage(
     assert item.blob_hash is not None
     assert item.blob_size is not None
     assert item.accepted_content_hash is not None
-    raw = conn.execute(
-        """
-        SELECT origin, source_path, source_index, blob_hash, blob_size,
-               logical_source_key, revision_kind, source_revision,
-               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-               append_start_offset, append_end_offset, acquisition_generation,
-               revision_authority
-        FROM raw_sessions WHERE raw_id = ?
-        """,
-        (item.raw_id,),
-    ).fetchone()
-    expected = (
-        Origin.UNKNOWN_EXPORT.value,
-        item.source_path,
-        item.source_index,
-        bytes.fromhex(item.blob_hash),
-        item.blob_size,
-        item.old_logical_source_key,
-        RawRevisionKind.FULL.value,
-        item.blob_hash,
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-        RawRevisionAuthority.QUARANTINED.value,
-    )
-    if raw is None or tuple(raw) != expected:
+    native_id = item.session_id.split(":", 1)[1]
+    if (
+        _browser_origin_source_envelope_is_exact(
+            conn,
+            schema="main",
+            raw_id=item.raw_id,
+            origin=Origin.UNKNOWN_EXPORT.value,
+            capture_mode=Provider.UNKNOWN.value,
+            native_id=native_id,
+            source_path=item.source_path,
+            source_index=item.source_index,
+            blob_hash=bytes.fromhex(item.blob_hash),
+            blob_size=item.blob_size,
+            logical_source_key=item.old_logical_source_key,
+            revision_kind=RawRevisionKind.FULL,
+            source_revision=item.blob_hash,
+            baseline_raw_id=None,
+            acquisition_generation=0,
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+        )
+        is None
+    ):
         raise RuntimeError(f"source evidence changed before copy-forward stage for {item.raw_id}")
-    blob_ref = conn.execute(
-        """
-        SELECT blob_hash, size_bytes FROM blob_refs
-        WHERE ref_id = ? AND ref_type = 'raw_payload'
-        """,
-        (item.raw_id,),
-    ).fetchone()
-    if blob_ref is None or tuple(blob_ref) != (bytes.fromhex(item.blob_hash), item.blob_size):
-        raise RuntimeError(f"raw blob reference changed before copy-forward stage for {item.raw_id}")
     store = BlobStore(archive_root / "blob")
     payload = store.read_all(item.blob_hash)
     if len(payload) != item.blob_size or hashlib.sha256(payload).hexdigest() != item.blob_hash:
@@ -1605,16 +1667,11 @@ def _canonical_browser_origin_head_is_exact(
     source_revision = str(canonical_head["accepted_source_revision"])
     frontier = int(canonical_head["accepted_frontier"])
     generation = int(canonical_head["acquisition_generation"])
-    raw = conn.execute(
+    raw_locator = conn.execute(
         """
-        SELECT origin, source_path, blob_hash, blob_size, logical_source_key, revision_kind,
-               source_revision, baseline_raw_id, acquisition_generation, revision_authority
+        SELECT source_path, source_index
         FROM source.raw_sessions WHERE raw_id = ?
         """,
-        (raw_id,),
-    ).fetchone()
-    blob_ref = conn.execute(
-        "SELECT blob_hash, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
         (raw_id,),
     ).fetchone()
     membership = conn.execute(
@@ -1638,9 +1695,30 @@ def _canonical_browser_origin_head_is_exact(
         (raw_id, canonical_key),
     ).fetchone()
     native_id = session_id.split(":", 1)[1]
+    raw = (
+        _browser_origin_source_envelope_is_exact(
+            conn,
+            schema="source",
+            raw_id=raw_id,
+            origin=canonical_origin.value,
+            capture_mode=canonical_key.split(":", 1)[0],
+            native_id=native_id,
+            source_path=str(raw_locator["source_path"]) if raw_locator is not None else "",
+            source_index=0,
+            blob_hash=bytes.fromhex(source_revision),
+            blob_size=frontier,
+            logical_source_key=canonical_key,
+            revision_kind=RawRevisionKind.FULL,
+            source_revision=source_revision,
+            baseline_raw_id=raw_id,
+            acquisition_generation=generation,
+            revision_authority=RawRevisionAuthority.BYTE_PROVEN,
+        )
+        if raw_locator is not None and int(raw_locator["source_index"]) == 0
+        else None
+    )
     if (
         raw is None
-        or blob_ref is None
         or membership is None
         or census is None
         or application is None
@@ -1679,21 +1757,7 @@ def _canonical_browser_origin_head_is_exact(
     ):
         return False
     return (
-        tuple(raw)
-        == (
-            canonical_origin.value,
-            str(raw["source_path"]),
-            bytes.fromhex(source_revision),
-            frontier,
-            canonical_key,
-            RawRevisionKind.FULL.value,
-            source_revision,
-            raw_id,
-            generation,
-            RawRevisionAuthority.BYTE_PROVEN.value,
-        )
-        and tuple(blob_ref) == (bytes.fromhex(source_revision), frontier)
-        and tuple(membership)
+        tuple(membership)
         == (
             native_id,
             source_revision,
@@ -1796,18 +1860,11 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         or str(indexed_raw_id) == raw_id
     ):
         return None
-    raw = conn.execute(
+    raw_locator = conn.execute(
         """
-        SELECT origin, source_path, blob_hash, blob_size, logical_source_key,
-               revision_kind, source_revision, predecessor_source_revision,
-               predecessor_raw_id, baseline_raw_id, append_start_offset,
-               append_end_offset, acquisition_generation, revision_authority
+        SELECT source_path, source_index, blob_hash, blob_size
         FROM source.raw_sessions WHERE raw_id = ?
         """,
-        (raw_id,),
-    ).fetchone()
-    blob_ref = conn.execute(
-        "SELECT blob_hash, source_path, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
         (raw_id,),
     ).fetchone()
     memberships = conn.execute(
@@ -1832,10 +1889,36 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         """,
         (canonical_key, excluded_application_decision_id, excluded_application_decision_id),
     ).fetchall()
-    if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or not applications:
+    if raw_locator is None or len(memberships) != 1 or len(census) != 1 or not applications:
+        return None
+    blob_ref = conn.execute(
+        "SELECT blob_hash, source_path, size_bytes FROM source.blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()
+    if blob_ref is None:
         return None
     try:
-        blob_hash = _bytes_value(raw["blob_hash"])
+        blob_hash = _bytes_value(raw_locator["blob_hash"])
+        raw = _browser_origin_source_envelope_is_exact(
+            conn,
+            schema="source",
+            raw_id=raw_id,
+            origin=canonical_origin.value,
+            capture_mode=canonical_key.split(":", 1)[0],
+            native_id=native_id,
+            source_path=str(raw_locator["source_path"]),
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=int(raw_locator["blob_size"]),
+            logical_source_key=None,
+            revision_kind=RawRevisionKind.UNKNOWN,
+            source_revision=None,
+            baseline_raw_id=None,
+            acquisition_generation=None,
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+        )
+        if raw is None or int(raw_locator["source_index"]) != 0:
+            return None
         store = BlobStore(archive_root / "blob")
         payload = store.read_all(blob_hash.hex())
         provider = detect_provider(json.loads(payload))
@@ -1876,6 +1959,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             or str(historical["accepted_raw_id"]) != raw_id
             or str(historical["accepted_source_revision"]) != str(head_snapshot["accepted_source_revision"])
             or _bytes_value(historical["accepted_content_hash"]) != accepted_hash
+            or int(historical["decided_at_ms"]) < 0
             or any(
                 historical[name] is not None for name in ("baseline_raw_id", "predecessor_raw_id", "append_end_offset")
             )
@@ -1883,7 +1967,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             return None
         historical_raw = conn.execute(
             """
-            SELECT origin, native_id, source_path, blob_hash, blob_size,
+            SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
                    logical_source_key, revision_kind, source_revision,
                    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
                    append_start_offset, append_end_offset, acquisition_generation,
@@ -1917,26 +2001,26 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         historical_blob_size = int(historical_raw["blob_size"])
         if (
             historical_blob_size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
-            or tuple(historical_raw)
-            != (
-                canonical_origin.value,
-                native_id,
-                str(historical_raw["source_path"]),
-                historical_blob_hash,
-                historical_blob_size,
-                None,
-                RawRevisionKind.UNKNOWN.value,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                RawRevisionAuthority.QUARANTINED.value,
+            or int(historical_raw["source_index"]) != 0
+            or _browser_origin_source_envelope_is_exact(
+                conn,
+                schema="source",
+                raw_id=historical_raw_id,
+                origin=canonical_origin.value,
+                capture_mode=canonical_key.split(":", 1)[0],
+                native_id=native_id,
+                source_path=str(historical_raw["source_path"]),
+                source_index=0,
+                blob_hash=historical_blob_hash,
+                blob_size=historical_blob_size,
+                logical_source_key=None,
+                revision_kind=RawRevisionKind.UNKNOWN,
+                source_revision=None,
+                baseline_raw_id=None,
+                acquisition_generation=None,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
-            or tuple(historical_blob_ref)
-            != (historical_blob_hash, str(historical_raw["source_path"]), historical_blob_size)
+            is None
             or len(historical_memberships) != 1
             or tuple(historical_memberships[0])
             != (
@@ -1979,28 +2063,10 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     if not (
         len(payload) == int(raw["blob_size"])
         and hashlib.sha256(payload).digest() == blob_hash
-        and tuple(blob_ref) == (blob_hash, str(raw["source_path"]), int(raw["blob_size"]))
         and len(sessions) == 1
         and str(make_session_id(provider, sessions[0].provider_session_id)) == session_id
         and f"{provider.value}:{sessions[0].provider_session_id}" == canonical_key
         and bytes.fromhex(session_content_hash(sessions[0])) == accepted_hash
-        and tuple(raw)
-        == (
-            canonical_origin.value,
-            str(raw["source_path"]),
-            blob_hash,
-            int(raw["blob_size"]),
-            None,
-            RawRevisionKind.UNKNOWN.value,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            RawRevisionAuthority.QUARANTINED.value,
-        )
         and str(membership["provider_session_id"]) == native_id
         and str(membership["source_revision"]) == accepted_hash.hex()
         and _bytes_value(membership["normalized_content_hash"]) == accepted_hash
@@ -2135,6 +2201,29 @@ def _inspect_browser_capture_origin_mismatch(
     canonical_key = f"{provider.value}:{session.provider_session_id}"
     session_id = str(make_session_id(provider, session.provider_session_id))
     old_key = str(raw["logical_source_key"] or "")
+    if (
+        _browser_origin_source_envelope_is_exact(
+            conn,
+            schema="source",
+            raw_id=raw_id,
+            origin=Origin.UNKNOWN_EXPORT.value,
+            capture_mode=Provider.UNKNOWN.value,
+            native_id=session.provider_session_id,
+            source_path=source_path,
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            logical_source_key=old_key,
+            revision_kind=RawRevisionKind.FULL,
+            source_revision=blob_hash_hex,
+            baseline_raw_id=None,
+            acquisition_generation=0,
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+        )
+        is None
+        or int(raw["source_index"]) != 0
+    ):
+        return _browser_origin_ineligible(raw_id, "source envelope does not exactly bind the normalized session")
     if old_key != f"{Provider.UNKNOWN.value}:{session.provider_session_id}":
         return _browser_origin_ineligible(raw_id, "unknown source key does not match the normalized session identity")
     if canonical_origin is Origin.UNKNOWN_EXPORT or canonical_key == old_key:
