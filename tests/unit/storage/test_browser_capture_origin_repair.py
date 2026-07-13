@@ -115,6 +115,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
                 accepted_content_hash=accepted_hash,
                 accepted_frontier_kind="byte",
                 accepted_frontier=len(payload),
+                baseline_raw_id=raw_id,
                 detail="historical mismatched browser head",
             ),
             decided_at_ms=2,
@@ -139,7 +140,7 @@ def _seed_mismatched_browser_head(root: Path) -> str:
                 normalized_content_hash, message_count, acquisition_generation,
                 revision_authority, decision, decided_at_ms
             ) VALUES (?, 'chatgpt:browser-origin-one', 'browser-origin-one', ?, ?, 1, 0,
-                      'quarantined', 'applied', 2)
+                      'quarantined', NULL, NULL)
             """,
             (raw_id, accepted_hash.hex(), accepted_hash),
         )
@@ -319,6 +320,24 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
     assert receipt.read_text().count("\n") == 2
 
 
+def test_browser_capture_origin_rejects_decided_quarantined_membership(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_session_memberships
+            SET decision = 'ambiguous', decided_at_ms = 2
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+
+    report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+    assert report.items[0].reason == "membership census does not exactly reproduce the accepted session"
+
+
 def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
@@ -340,7 +359,7 @@ def test_browser_capture_origin_rebuild_keeps_copy_forward_head(tmp_path: Path) 
         ).fetchone() == (copy_raw_id,)
 
 
-@pytest.mark.parametrize("mutation", ["blob", "head", "origin", "canonical_head"])
+@pytest.mark.parametrize("mutation", ["blob", "head", "origin", "application", "canonical_head"])
 def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
@@ -350,6 +369,11 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
             index.execute("UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1")
         elif mutation == "origin":
             source.execute("UPDATE raw_sessions SET origin = 'chatgpt-export' WHERE raw_id = ?", (raw_id,))
+        elif mutation == "application":
+            index.execute(
+                "DELETE FROM raw_revision_applications WHERE raw_id = ? AND decision = 'selected_baseline'",
+                (raw_id,),
+            )
         else:
             index.execute(
                 """
@@ -371,7 +395,10 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
 def test_browser_capture_origin_rejects_unresolved_source_membership(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
-        source.execute("UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = ?", (raw_id,))
+        source.execute(
+            "UPDATE raw_session_memberships SET decision = 'ambiguous', decided_at_ms = 2 WHERE raw_id = ?",
+            (raw_id,),
+        )
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
 
