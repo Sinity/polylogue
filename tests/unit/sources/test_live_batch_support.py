@@ -1685,7 +1685,7 @@ def test_live_append_chain_survives_post_ingest_compaction(
     assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks)
 
 
-def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
+def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1710,17 +1710,24 @@ def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    grew = False
+    grew_during_prefix_proof = False
+    original_hash = sha256_range_from_path
 
-    def grow_after_acquisition(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
-        nonlocal grew
-        if not grew:
+    def grow_during_prefix_proof(
+        source_path: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> tuple[str, int]:
+        nonlocal grew_during_prefix_proof
+        result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        if not grew_during_prefix_proof:
             with path.open("ab") as handle:
                 handle.write(appended_during_parse)
-            grew = True
-        return set(paths), 0.0, {}, []
+            grew_during_prefix_proof = True
+        return result
 
-    monkeypatch.setattr(processor, "_converge_paths", grow_after_acquisition)
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_during_prefix_proof)
 
     first = asyncio.run(processor.ingest_files([path]))
 
@@ -1769,6 +1776,76 @@ def test_full_ingest_cursor_stops_at_captured_blob_boundary_when_file_grows(
         session_hash = conn.execute("SELECT content_hash FROM sessions").fetchone()[0]
         accepted_hash = conn.execute("SELECT accepted_content_hash FROM raw_revision_heads").fetchone()[0]
         assert session_hash == accepted_hash
+
+
+def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "busy-hot.jsonl"
+    captured = (
+        b'{"type":"session_meta","payload":{"id":"busy-hot","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"captured","role":"user",'
+        b'"content":[{"type":"input_text","text":"captured"}]}}\n'
+    )
+    appended_records = (
+        b'{"type":"response_item","payload":{"type":"message","id":"later-a","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"later-a"}]}}\n',
+        b'{"type":"response_item","payload":{"type":"message","id":"later-b","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"later-b"}]}}\n',
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="live-batched-v2",
+    )
+    original_hash = sha256_range_from_path
+    next_record = 0
+
+    def grow_on_every_prefix_proof(
+        source_path: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> tuple[str, int]:
+        nonlocal next_record
+        result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        with path.open("ab") as handle:
+            handle.write(appended_records[next_record])
+        next_record += 1
+        return result
+
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_on_every_prefix_proof)
+    first = asyncio.run(processor.ingest_files([path]))
+
+    assert first.full_file_count == 1
+    assert first.succeeded_file_count == 1
+    deferred = cursor.get_record(path)
+    assert deferred is not None
+    assert deferred.byte_offset == 0
+    assert deferred.content_fingerprint is None
+    assert deferred.failure_count == 1
+
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", original_hash)
+    watcher = LiveWatcher(polylogue, (WatchSource(name="codex", root=root),), cursor=cursor)
+    assert watcher._needs_work(path)
+    reconciled = cursor.get_record(path)
+    assert reconciled is not None
+    assert reconciled.byte_offset == len(captured)
+    assert reconciled.content_fingerprint == sha256(captured).hexdigest()
+
+    second = asyncio.run(processor.ingest_files([path]))
+
+    assert second.full_file_count == 0
+    assert second.append_file_count == 1
+    assert second.succeeded_file_count == 1
 
 
 @pytest.mark.parametrize("replacement_mode", ["atomic", "in-place"])

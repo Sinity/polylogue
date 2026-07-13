@@ -16,7 +16,7 @@ from io import BytesIO
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
@@ -140,6 +140,16 @@ P = ParamSpec("P")
 T = TypeVar("T")
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
+_FULL_CAPTURE_PREFIX_PROOF_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class _FullCapturePrefixProof:
+    """Result of proving a captured full-file prefix is still trustworthy."""
+
+    outcome: Literal["verified", "deferred", "rejected"]
+    stat: os.stat_result | None
+    bytes_read: int
 
 
 def _single_route_stage_payload(*, append_file_count: int, full_file_count: int) -> dict[str, object] | None:
@@ -799,25 +809,36 @@ class LiveBatchProcessor:
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
         byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
-        if not self._full_capture_still_matches(
+        prefix_proof = self._full_capture_still_matches(
             path,
             stat=stat,
             byte_size=byte_size,
             captured_content_hash=captured_content_hash,
             captured_file_observation=captured_file_observation,
-        ):
+        )
+        bytes_read = prefix_proof.bytes_read
+        if prefix_proof.outcome == "deferred":
+            self._last_cursor_write_stale = True
+            logger.info(
+                "live.watcher: captured prefix remained busy; preserving raw for cursor reconciliation: %s",
+                path,
+            )
+            self._defer_full_cursor_retry(path, source_name=resolved_source_name, stat=stat)
+            return bytes_read
+        if prefix_proof.outcome != "verified":
             self._last_cursor_write_stale = True
             logger.warning(
                 "live.watcher: source changed after full capture; cursor invalidated for full retry: %s",
                 path,
             )
             self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
-            return 0
+            return bytes_read
+        assert prefix_proof.stat is not None
+        stat = prefix_proof.stat
         if source_revision is not None:
             fp = source_revision
             last_nl = byte_size
             tail_hash = source_revision
-            bytes_read = 0
             if captured_content_hash is not None:
                 bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
                 tail_hash = encode_cursor_hash_authority(
@@ -825,9 +846,9 @@ class LiveBatchProcessor:
                     bounded_tail_hash,
                     ctime_ns=stat.st_ctime_ns,
                 )
-                bytes_read = tail_bytes
+                bytes_read += tail_bytes
         else:
-            fp, last_nl, tail_hash, bytes_read = cursor_state_after_full_ingest(
+            fp, last_nl, tail_hash, cursor_state_bytes = cursor_state_after_full_ingest(
                 path,
                 byte_size,
                 raw_fingerprint=raw_fingerprint,
@@ -838,20 +859,34 @@ class LiveBatchProcessor:
                 end_offset=last_nl,
             )
             tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
-            bytes_read += prefix_bytes
-        try:
-            final_stat = path.stat()
-        except FileNotFoundError:
-            final_stat = None
-        if final_stat is None or _file_observation(final_stat) != _file_observation(stat):
+            bytes_read += cursor_state_bytes + prefix_bytes
+        final_prefix_proof = self._full_capture_still_matches(
+            path,
+            stat=stat,
+            byte_size=byte_size,
+            captured_content_hash=captured_content_hash,
+            captured_file_observation=captured_file_observation,
+        )
+        bytes_read += final_prefix_proof.bytes_read
+        if final_prefix_proof.outcome == "deferred":
+            self._last_cursor_write_stale = True
+            logger.info(
+                "live.watcher: captured prefix remained busy after cursor proof; preserving raw for reconciliation: %s",
+                path,
+            )
+            self._defer_full_cursor_retry(path, source_name=resolved_source_name, stat=stat)
+            return bytes_read
+        if final_prefix_proof.outcome != "verified":
             self._last_cursor_write_stale = True
             self._invalidate_cursor_for_full_retry(
                 path,
                 source_name=resolved_source_name,
-                stat=final_stat,
+                stat=final_prefix_proof.stat,
                 captured_file_observation=captured_file_observation,
             )
             return bytes_read
+        assert final_prefix_proof.stat is not None
+        final_stat = final_prefix_proof.stat
         updated = self._cursor.set(
             path,
             byte_size,
@@ -861,10 +896,10 @@ class LiveBatchProcessor:
             content_fingerprint=fp,
             tail_hash=tail_hash,
             source_name=resolved_source_name,
-            st_dev=stat.st_dev,
-            st_ino=stat.st_ino,
-            mtime_ns=stat.st_mtime_ns,
-            allow_backward=stat.st_size <= byte_size,
+            st_dev=final_stat.st_dev,
+            st_ino=final_stat.st_ino,
+            mtime_ns=final_stat.st_mtime_ns,
+            allow_backward=final_stat.st_size <= byte_size,
         )
         self._last_cursor_write_stale = not updated
         if not updated:
@@ -890,29 +925,73 @@ class LiveBatchProcessor:
         byte_size: int,
         captured_content_hash: str | None,
         captured_file_observation: tuple[int, int, int, int, int] | None,
-    ) -> bool:
+    ) -> _FullCapturePrefixProof:
         if captured_file_observation is None:
-            return True
+            try:
+                final_stat = path.stat()
+            except OSError:
+                return _FullCapturePrefixProof("rejected", None, 0)
+            initial_outcome: Literal["verified", "rejected"] = (
+                "verified" if _file_observation(final_stat) == _file_observation(stat) else "rejected"
+            )
+            return _FullCapturePrefixProof(initial_outcome, final_stat, 0)
         captured_dev, captured_ino, _captured_size, _captured_mtime_ns, _captured_ctime_ns = captured_file_observation
         if (stat.st_dev, stat.st_ino) != (captured_dev, captured_ino) or stat.st_size < byte_size:
-            return False
+            return _FullCapturePrefixProof("rejected", stat, 0)
         if captured_content_hash is None:
-            return _file_observation(stat) == captured_file_observation
+            try:
+                final_stat = path.stat()
+            except OSError:
+                return _FullCapturePrefixProof("rejected", None, 0)
+            legacy_outcome: Literal["verified", "rejected"] = (
+                "verified"
+                if _file_observation(stat) == captured_file_observation
+                and _file_observation(final_stat) == _file_observation(stat)
+                else "rejected"
+            )
+            return _FullCapturePrefixProof(legacy_outcome, final_stat, 0)
         normalized_fingerprint = captured_content_hash.lower()
         if len(normalized_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in normalized_fingerprint):
-            return False
-        try:
-            current_fingerprint, _bytes_read = sha256_range_from_path(
-                path,
-                start_offset=0,
-                end_offset=byte_size,
-            )
-            final_stat = path.stat()
-        except (EOFError, OSError):
-            return False
-        return current_fingerprint == normalized_fingerprint and _file_observation(final_stat) == _file_observation(
-            stat
-        )
+            return _FullCapturePrefixProof("rejected", stat, 0)
+
+        bytes_read = 0
+        latest_stat = stat
+        for _attempt in range(_FULL_CAPTURE_PREFIX_PROOF_ATTEMPTS):
+            try:
+                proof_start = path.stat()
+                if (proof_start.st_dev, proof_start.st_ino) != (
+                    captured_dev,
+                    captured_ino,
+                ) or proof_start.st_size < byte_size:
+                    return _FullCapturePrefixProof("rejected", proof_start, bytes_read)
+                current_fingerprint, proof_bytes = sha256_range_from_path(
+                    path,
+                    start_offset=0,
+                    end_offset=byte_size,
+                )
+                proof_end = path.stat()
+            except (EOFError, OSError):
+                return _FullCapturePrefixProof("rejected", None, bytes_read)
+            bytes_read += proof_bytes
+            latest_stat = proof_end
+            if current_fingerprint != normalized_fingerprint:
+                return _FullCapturePrefixProof("rejected", proof_end, bytes_read)
+            if _file_observation(proof_start) == _file_observation(proof_end):
+                return _FullCapturePrefixProof("verified", proof_end, bytes_read)
+            if (
+                (proof_end.st_dev, proof_end.st_ino) != (captured_dev, captured_ino)
+                or proof_end.st_size < byte_size
+                or proof_end.st_size <= proof_start.st_size
+            ):
+                return _FullCapturePrefixProof("rejected", proof_end, bytes_read)
+        return _FullCapturePrefixProof("deferred", latest_stat, bytes_read)
+
+    def _defer_full_cursor_retry(self, path: Path, *, source_name: str, stat: os.stat_result) -> None:
+        """Back off a busy full-prefix handoff without discarding its raw evidence."""
+
+        if self._cursor.get_record(path) is None:
+            self._invalidate_cursor_for_full_retry(path, source_name=source_name, stat=stat)
+        self._cursor.mark_failed(path)
 
     def _invalidate_cursor_for_full_retry(
         self,
