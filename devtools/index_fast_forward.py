@@ -968,15 +968,19 @@ def activate_generation(receipt_path: Path, *, service: str | None = None, resta
         "clone_identity": clone_identity,
         "receipt_validation_reused": True,
     }
-    _swap_active_symlink(source_link, clone, label="v35")
+    # Persist rollback metadata BEFORE the swap: a crash between the symlink
+    # swap and the receipt write must leave a receipt that rollback accepts.
     receipt.update(
         {
-            "status": "activated",
-            "activated_at_ms": _now_ms(),
+            "status": "activating",
+            "activation_started_at_ms": _now_ms(),
             "rollback_target": str(source_target),
             "activation_validation": validation,
         }
     )
+    _write_receipt(receipt_path, receipt)
+    _swap_active_symlink(source_link, clone, label="v35")
+    receipt.update({"status": "activated", "activated_at_ms": _now_ms()})
     _write_receipt(receipt_path, receipt)
     if service and restart:
         _restart_and_verify_or_rollback(
@@ -991,8 +995,8 @@ def activate_generation(receipt_path: Path, *, service: str | None = None, resta
 
 def rollback_generation(receipt_path: Path, *, service: str | None = None, restart: bool = False) -> dict[str, object]:
     receipt = _load_receipt(receipt_path)
-    if receipt.get("status") != "activated":
-        raise RuntimeError("rollback requires an activated receipt")
+    if receipt.get("status") not in ("activated", "activating"):
+        raise RuntimeError("rollback requires an activated or interrupted-activation receipt")
     if service and _service_active(service):
         raise RuntimeError(f"service must be stopped before rollback: {service}")
     source_link = Path(str(receipt["source_link"]))
@@ -1034,6 +1038,10 @@ def _parser() -> argparse.ArgumentParser:
     rollback.add_argument("--receipt", type=Path, required=True)
     rollback.add_argument("--service", default="polylogued.service")
     rollback.add_argument("--restart", action="store_true")
+    # devtools click_dispatch forwards a root/local --json flag into argv;
+    # output is already JSON, so accept it everywhere as a no-op.
+    for owner in (parser, plan, clone, validate, activate, rollback):
+        owner.add_argument("--json", action="store_true", help="JSON output (always on)")
     return parser
 
 

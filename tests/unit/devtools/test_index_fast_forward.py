@@ -464,3 +464,56 @@ def test_failed_restart_contract_automatically_restores_v32_symlink(
     assert active_link.resolve() == active_db.resolve()
     rolled_back = json.loads(receipt_path.read_text())
     assert rolled_back["status"] == "rolled_back_after_failed_activation"
+
+
+def test_interrupted_activation_leaves_rollbackable_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between symlink swap and receipt write must not strand the archive.
+
+    Anti-vacuity: writing rollback metadata only after the swap means a
+    SIGKILL/power loss in that window leaves an active clone with a
+    clone_ready receipt that rollback refuses. The pre-swap "activating"
+    receipt with rollback_target keeps rollback executable.
+    """
+    import devtools.index_fast_forward as iff
+
+    archive_root = tmp_path / "archive"
+    active_dir = archive_root / ".index-generations" / "gen-v32"
+    active_dir.mkdir(parents=True)
+    active_db = active_dir / "index.db"
+    _seed_v32_fixture(active_db)
+    active_hash = _sha256(active_db)
+    active_link = archive_root / "index.db"
+    active_link.symlink_to(active_db)
+    receipt_path = archive_root / "recovery" / "v35.json"
+
+    receipt = create_and_fast_forward_generation(
+        active_link,
+        receipt_path,
+        max_io_full_avg10=1000,
+        max_memory_full_avg10=1000,
+        batch_rows=1,
+    )
+    clone = Path(str(receipt["clone_path"]))
+
+    real_swap = iff._swap_active_symlink
+
+    def _swap_then_crash(*args: object, **kwargs: object) -> None:
+        real_swap(*args, **kwargs)
+        raise RuntimeError("simulated crash after swap, before receipt write")
+
+    monkeypatch.setattr(iff, "_swap_active_symlink", _swap_then_crash)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        activate_generation(receipt_path)
+    monkeypatch.setattr(iff, "_swap_active_symlink", real_swap)
+
+    on_disk = json.loads(receipt_path.read_text())
+    assert on_disk["status"] == "activating"
+    assert on_disk["rollback_target"] == str(active_db)
+    assert active_link.resolve() == clone.resolve()
+
+    rollback_generation(receipt_path)
+    assert active_link.resolve() == active_db.resolve()
+    assert _sha256(active_db) == active_hash
