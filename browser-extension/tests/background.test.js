@@ -575,6 +575,13 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls[0].options.signal).toBeDefined();
   });
 
+  it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "not_found" }, { ok: false, status: 404 }));
+    const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(started.job).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
   it("restores a packaged recovery checkpoint as an actionable paused job and ignores its alarm", async () => {
     await loadBackground({
       polylogueBackfillRecoveryCheckpoint: {

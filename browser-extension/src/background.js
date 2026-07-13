@@ -698,6 +698,7 @@ async function getJson(path, timeoutMs = null) {
     if (!response.ok) {
       const error = new Error(body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
+      error.status = response.status;
       throw error;
     }
     return { ...body, receiver_request_id: receiverRequestId };
@@ -717,7 +718,13 @@ async function getJson(path, timeoutMs = null) {
 }
 
 async function backfillReceiverPreflight() {
-  const capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+  let capability;
+  try {
+    capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+  } catch (error) {
+    if (error?.status === 404) throw new Error("receiver_contract_incompatible:capability_endpoint_missing");
+    throw error;
+  }
   const fields = capability?.durable_ack_fields;
   if (!Array.isArray(fields) || DURABLE_RECEIVER_ACK_FIELDS.some((field) => !fields.includes(field))) {
     throw new Error("receiver_contract_incompatible:durable_ack_fields_missing");
