@@ -205,9 +205,44 @@ def test_reuse_index_clone_reproves_v36_staging_before_atomic_move(tmp_path: Pat
 
     assert result.source == expected.source
     assert result.clone == expected.clone
-    assert not staged.exists()
+    assert staged.exists()
     assert destination.exists()
     assert not any(Path(f"{destination}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
+
+
+def test_reuse_index_clone_copies_across_subvolumes_before_local_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    archive.mkdir()
+    staging.mkdir()
+    source = archive / "index-v35.db"
+    completed = archive / "completed-index-v36.db"
+    destination = staging / "new-run" / "index.db"
+    _create_v35_index(source)
+    fast_forward_index_clone(source, completed)
+    real_replace = os.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def reject_cross_device_replace(
+        source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]
+    ) -> None:
+        source_item = Path(source_path)
+        destination_item = Path(destination_path)
+        replace_calls.append((source_item, destination_item))
+        if source_item.parent != destination_item.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(os, "replace", reject_cross_device_replace)
+
+    reuse_index_clone(source, completed, destination)
+
+    assert completed.exists()
+    assert destination.exists()
+    assert all(source_item.parent == destination_item.parent for source_item, destination_item in replace_calls)
+    assert not list(destination.parent.glob(f".{destination.name}.schema-forward-*.tmp"))
 
 
 def test_atomic_promote_keeps_a_named_rollback(tmp_path: Path) -> None:

@@ -454,8 +454,19 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
     if clone_after.table_counts != source_before.table_counts:
         raise SchemaFastForwardError("reused index clone changed structural row counts")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(staged_clone, destination)
-    _fsync_directory(destination.parent)
+    local_clone = destination.with_name(f".{destination.name}.schema-forward-{uuid.uuid4().hex}.tmp")
+    try:
+        # A completed clone may live in an archive generation while the new
+        # receipt lives under staging.  Those roots can be separate
+        # subvolumes, so publish a reflinked local copy rather than renaming
+        # across devices.  Retain the independently proven input for a later
+        # retry if this run does not reach activation.
+        reflink_clone(staged_clone, local_clone)
+        os.replace(local_clone, destination)
+        _fsync_directory(destination.parent)
+    except Exception:
+        local_clone.unlink(missing_ok=True)
+        raise
     return CloneForwardResult(source_before, clone_after, True, foreign_key_check)
 
 
