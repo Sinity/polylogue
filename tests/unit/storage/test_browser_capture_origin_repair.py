@@ -19,6 +19,7 @@ from polylogue.sources.revision_backfill import _parse_one, backfill_historical_
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
     repair_browser_capture_origin_mismatches,
+    repair_legacy_browser_capture_missing_native_ids,
     repair_quarantined_accepted_raws,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -153,6 +154,13 @@ def _seed_mismatched_browser_head(root: Path) -> str:
             """,
             (raw_id,),
         )
+    return raw_id
+
+
+def _seed_legacy_browser_head_without_native_id(root: Path) -> str:
+    raw_id = _seed_mismatched_browser_head(root)
+    with sqlite3.connect(root / "source.db") as source:
+        source.execute("UPDATE raw_sessions SET native_id = NULL WHERE raw_id = ?", (raw_id,))
     return raw_id
 
 
@@ -593,6 +601,140 @@ def test_browser_capture_origin_rejects_legacy_raw_without_native_id(tmp_path: P
 
     assert report.ineligible_count == 1
     assert report.items[0].reason == "source envelope does not exactly bind the normalized session"
+
+
+def test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempotent(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    ordinary = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    assert ordinary.ineligible_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        old_source = source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        old_refs = source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
+        old_memberships = source.execute(
+            "SELECT * FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key", (raw_id,)
+        ).fetchall()
+        old_head = index.execute(
+            "SELECT * FROM raw_revision_heads WHERE logical_source_key = 'unknown:browser-origin-one'"
+        ).fetchone()
+        old_applications = index.execute(
+            "SELECT * FROM raw_revision_applications WHERE raw_id = ? ORDER BY decision_id", (raw_id,)
+        ).fetchall()
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    item = dry_run.items[0]
+    assert item.status == "eligible"
+    assert item.legacy_null_native_id is True
+    assert item.parser_derived_native_id == "browser-origin-one"
+    receipt = tmp_path / "legacy-native-id.jsonl"
+    applied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    assert applied.repaired_count == 1
+    copy_raw_id = applied.items[0].copy_forward_raw_id
+    assert copy_raw_id is not None
+    lines = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert lines[0]["schema"] == "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
+    assert lines[0]["targets"][0]["legacy_null_native_id"] is True
+    assert lines[0]["targets"][0]["parser_derived_native_id"] == "browser-origin-one"
+    assert lines[-1]["legacy_native_witness_bindings"] == [
+        {"raw_id": raw_id, "legacy_null_native_id": True, "parser_derived_native_id": "browser-origin-one"}
+    ]
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        assert source.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == old_source
+        assert (
+            source.execute("SELECT * FROM blob_refs WHERE ref_id = ? ORDER BY ref_type", (raw_id,)).fetchall()
+            == old_refs
+        )
+        assert (
+            source.execute(
+                "SELECT * FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key", (raw_id,)
+            ).fetchall()
+            == old_memberships
+        )
+        assert (
+            index.execute(
+                "SELECT * FROM raw_revision_heads WHERE logical_source_key = 'unknown:browser-origin-one'"
+            ).fetchone()
+            == old_head
+        )
+        assert (
+            index.execute(
+                "SELECT * FROM raw_revision_applications WHERE raw_id = ? ORDER BY decision_id", (raw_id,)
+            ).fetchall()
+            == old_applications
+        )
+        assert source.execute(
+            "SELECT origin, native_id FROM raw_sessions WHERE raw_id = ?", (copy_raw_id,)
+        ).fetchone() == (
+            "chatgpt-export",
+            "browser-origin-one",
+        )
+    reapplied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    assert reapplied.already_repaired_count == 1
+
+
+@pytest.mark.parametrize("mutation", ["native", "path", "blob_ref", "census", "head", "application"])
+def test_legacy_browser_native_id_copy_forward_rejects_any_witness_drift(tmp_path: Path, mutation: str) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    if mutation == "native":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_sessions SET native_id = 'wrong-native' WHERE raw_id = ?", (raw_id,))
+    elif mutation == "path":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute(
+                "UPDATE raw_sessions SET source_path = 'browser-capture/chatgpt/wrong.json' WHERE raw_id = ?", (raw_id,)
+            )
+    elif mutation == "blob_ref":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("DELETE FROM blob_refs WHERE ref_id = ?", (raw_id,))
+    elif mutation == "census":
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            source.execute("UPDATE raw_membership_census SET member_count = 2 WHERE raw_id = ?", (raw_id,))
+    elif mutation == "head":
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute(
+                "UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1 WHERE logical_source_key = 'unknown:browser-origin-one'"
+            )
+    else:
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index.execute("UPDATE raw_revision_applications SET decision = 'superseded' WHERE raw_id = ?", (raw_id,))
+
+    report = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+
+    assert report.ineligible_count == 1
+
+
+def test_legacy_browser_native_id_copy_forward_accepts_source_v7(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("ALTER TABLE raw_sessions DROP COLUMN capture_mode")
+        source.execute("PRAGMA user_version = 7")
+    dry_run = repair_legacy_browser_capture_missing_native_ids(_config(tmp_path), [raw_id])
+    applied = repair_legacy_browser_capture_missing_native_ids(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=tmp_path / "legacy-source-v7.jsonl",
+        proof_digest=dry_run.proof_digest,
+    )
+    assert applied.repaired_count == 1
+
+
+def test_legacy_browser_native_id_copy_forward_rejects_stale_proof_before_writing(tmp_path: Path) -> None:
+    raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        before = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with pytest.raises(RuntimeError, match="proof digest"):
+        repair_legacy_browser_capture_missing_native_ids(
+            _config(tmp_path),
+            [raw_id],
+            apply=True,
+            receipt_path=tmp_path / "stale-proof.jsonl",
+            proof_digest="0" * 64,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == before
 
 
 def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_mode(tmp_path: Path) -> None:

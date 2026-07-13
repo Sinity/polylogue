@@ -66,6 +66,7 @@ _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
 _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-origin-copy-forward.v1"
+_LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA = "polylogue.browser-capture-legacy-native-id-copy-forward.v1"
 _QUARANTINED_CENSUS_STAGE_FINGERPRINT = "repair-quarantined-accepted-raw-v1"
 _QUARANTINED_CENSUS_STAGE_DETAIL = "census-only evidence staged before accepted-head authority refinement"
 _BROWSER_ORIGIN_SEMANTIC_HISTORICAL_WITNESS_LIMIT = 8
@@ -188,6 +189,8 @@ class BrowserCaptureOriginRepairItem:
     semantic_head_snapshot: dict[str, object] | None = None
     semantic_witness_digest: str | None = None
     terminal_byte_witness_digest: str | None = None
+    legacy_null_native_id: bool = False
+    parser_derived_native_id: str | None = None
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -286,7 +289,7 @@ def _browser_origin_source_envelope_is_exact(
     raw_id: str,
     origin: str,
     capture_mode: str,
-    native_id: str,
+    native_id: str | None,
     source_path: str,
     source_index: int,
     blob_hash: bytes,
@@ -1483,14 +1486,37 @@ def _browser_origin_terminal_byte_witness_bindings(
     ]
 
 
+def _browser_origin_legacy_native_witness_bindings(
+    items: list[BrowserCaptureOriginRepairItem],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "raw_id": item.raw_id,
+            "legacy_null_native_id": item.legacy_null_native_id,
+            "parser_derived_native_id": item.parser_derived_native_id,
+        }
+        for item in items
+    ]
+
+
 def _browser_origin_copy_forward_detail(item: BrowserCaptureOriginRepairItem) -> str:
     """Encode the proven semantic-head snapshot in the immutable copy receipt."""
-    return json.dumps(
-        {
-            "kind": "browser_capture_origin_copy_forward_v2",
+    payload: dict[str, object] = {
+        "kind": "browser_capture_origin_copy_forward_v2",
+        "raw_id": item.raw_id,
+        "semantic_head": item.semantic_head_snapshot,
+    }
+    if item.legacy_null_native_id:
+        assert item.parser_derived_native_id is not None
+        payload = {
+            "kind": "browser_capture_legacy_native_id_copy_forward_v1",
             "raw_id": item.raw_id,
+            "legacy_null_native_id": True,
+            "parser_derived_native_id": item.parser_derived_native_id,
             "semantic_head": item.semantic_head_snapshot,
-        },
+        }
+    return json.dumps(
+        payload,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -1500,16 +1526,28 @@ def _browser_origin_semantic_head_from_copy_detail(
     detail: object,
     *,
     raw_id: str,
+    parser_derived_native_id: str | None = None,
 ) -> tuple[bool, dict[str, object] | None]:
     """Read a prior semantic-head snapshot only from the immutable index receipt."""
     try:
         payload = json.loads(str(detail))
     except (TypeError, ValueError, json.JSONDecodeError):
         return False, None
-    if not isinstance(payload, dict) or payload.get("kind") != "browser_capture_origin_copy_forward_v2":
+    if not isinstance(payload, dict):
         return False, None
     snapshot = payload.get("semantic_head")
-    if payload.get("raw_id") != raw_id or set(payload) != {"kind", "raw_id", "semantic_head"}:
+    ordinary = payload.get("kind") == "browser_capture_origin_copy_forward_v2" and set(payload) == {
+        "kind",
+        "raw_id",
+        "semantic_head",
+    }
+    legacy = (
+        payload.get("kind") == "browser_capture_legacy_native_id_copy_forward_v1"
+        and set(payload) == {"kind", "raw_id", "legacy_null_native_id", "parser_derived_native_id", "semantic_head"}
+        and payload.get("legacy_null_native_id") is True
+        and payload.get("parser_derived_native_id") == parser_derived_native_id
+    )
+    if payload.get("raw_id") != raw_id or not (ordinary or legacy):
         return False, None
     if snapshot is None:
         return True, None
@@ -1581,7 +1619,7 @@ def _verify_browser_origin_copy_forward_source_stage(
     assert item.blob_hash is not None
     assert item.blob_size is not None
     assert item.accepted_content_hash is not None
-    native_id = item.session_id.split(":", 1)[1]
+    native_id = None if item.legacy_null_native_id else item.session_id.split(":", 1)[1]
     if (
         _browser_origin_source_envelope_is_exact(
             conn,
@@ -2115,6 +2153,7 @@ def _inspect_browser_capture_origin_mismatch(
     raw_id: str,
     *,
     conn: sqlite3.Connection,
+    allow_legacy_null_native_id: bool = False,
 ) -> BrowserCaptureOriginRepairItem:
     conn.row_factory = sqlite3.Row
     raw = conn.execute(
@@ -2201,6 +2240,9 @@ def _inspect_browser_capture_origin_mismatch(
     canonical_key = f"{provider.value}:{session.provider_session_id}"
     session_id = str(make_session_id(provider, session.provider_session_id))
     old_key = str(raw["logical_source_key"] or "")
+    expected_old_native_id = None if allow_legacy_null_native_id else session.provider_session_id
+    if allow_legacy_null_native_id and raw["native_id"] is not None:
+        return _browser_origin_ineligible(raw_id, "legacy-native-id actuator requires a NULL durable native identity")
     if (
         _browser_origin_source_envelope_is_exact(
             conn,
@@ -2208,7 +2250,7 @@ def _inspect_browser_capture_origin_mismatch(
             raw_id=raw_id,
             origin=Origin.UNKNOWN_EXPORT.value,
             capture_mode=Provider.UNKNOWN.value,
-            native_id=session.provider_session_id,
+            native_id=expected_old_native_id,
             source_path=source_path,
             source_index=0,
             blob_hash=blob_hash,
@@ -2546,7 +2588,9 @@ def _inspect_browser_capture_origin_mismatch(
     if copy_forward_terminal:
         assert copy_application is not None
         detail_is_exact, terminal_snapshot = _browser_origin_semantic_head_from_copy_detail(
-            copy_application["detail"], raw_id=raw_id
+            copy_application["detail"],
+            raw_id=raw_id,
+            parser_derived_native_id=session.provider_session_id if allow_legacy_null_native_id else None,
         )
         if not detail_is_exact:
             return _browser_origin_ineligible(raw_id, "copy-forward receipt detail is not exact")
@@ -2606,6 +2650,8 @@ def _inspect_browser_capture_origin_mismatch(
         semantic_head_snapshot=semantic_head_snapshot,
         semantic_witness_digest=semantic_witness_digest,
         terminal_byte_witness_digest=terminal_byte_witness_digest,
+        legacy_null_native_id=allow_legacy_null_native_id,
+        parser_derived_native_id=session.provider_session_id if allow_legacy_null_native_id else None,
         evidence_digest=evidence_digest,
     )
     return dataclasses.replace(item, proof_digest=_browser_origin_item_digest(item))
@@ -2624,7 +2670,12 @@ class _BrowserOriginReceipt:
         os.close(self.descriptor)
 
 
-def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRepairItem]) -> _BrowserOriginReceipt:
+def _lock_browser_origin_receipt(
+    path: Path,
+    items: list[BrowserCaptureOriginRepairItem],
+    *,
+    schema: str,
+) -> _BrowserOriginReceipt:
     if path.is_symlink():
         raise RuntimeError("repair receipt path must not be a symbolic link")
     targets = [_browser_origin_item_payload(item) for item in items]
@@ -2655,7 +2706,7 @@ def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRep
             except (ValueError, json.JSONDecodeError) as exc:
                 raise RuntimeError("existing repair receipt has invalid planned JSON") from exc
             expected = {
-                "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+                "schema": schema,
                 "state": "planned",
                 "target_hash": target_hash,
                 "targets": targets,
@@ -2671,20 +2722,30 @@ def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRep
                 except (ValueError, json.JSONDecodeError):
                     applied = None
                 if isinstance(applied, dict) and applied.get("state") == "applied":
+                    requires_legacy_witness = any(item.legacy_null_native_id for item in items)
+                    legacy_witness_matches = applied.get(
+                        "legacy_native_witness_bindings"
+                    ) == _browser_origin_legacy_native_witness_bindings(items)
                     if (
-                        applied.get("schema") != _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA
+                        applied.get("schema") != schema
                         or applied.get("target_hash") != target_hash
                         or applied.get("replacement_raw_ids") != [item.replacement_raw_id for item in items]
                         or applied.get("semantic_witness_bindings") != _browser_origin_semantic_witness_bindings(items)
                         or applied.get("terminal_byte_witness_bindings")
                         != _browser_origin_terminal_byte_witness_bindings(items)
+                        or (requires_legacy_witness and not legacy_witness_matches)
+                        or (
+                            not requires_legacy_witness
+                            and applied.get("legacy_native_witness_bindings") is not None
+                            and not legacy_witness_matches
+                        )
                     ):
                         raise RuntimeError("existing repair receipt has a conflicting terminal record")
                     terminal = True
                     torn = b""
             return _BrowserOriginReceipt(path, descriptor, target_hash, terminal, torn)
         planned = {
-            "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+            "schema": schema,
             "state": "planned",
             "target_hash": target_hash,
             "targets": targets,
@@ -2704,16 +2765,19 @@ def _lock_browser_origin_receipt(path: Path, items: list[BrowserCaptureOriginRep
 def _finish_browser_origin_receipt(
     receipt: _BrowserOriginReceipt,
     items: list[BrowserCaptureOriginRepairItem],
+    *,
+    schema: str,
 ) -> None:
     os.lseek(receipt.descriptor, 0, os.SEEK_END)
     terminal: dict[str, object] = {
-        "schema": _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
+        "schema": schema,
         "state": "applied",
         "target_hash": receipt.target_hash,
         "applied_at_ms": int(time.time() * 1000),
         "replacement_raw_ids": [item.replacement_raw_id for item in items],
         "semantic_witness_bindings": _browser_origin_semantic_witness_bindings(items),
         "terminal_byte_witness_bindings": _browser_origin_terminal_byte_witness_bindings(items),
+        "legacy_native_witness_bindings": _browser_origin_legacy_native_witness_bindings(items),
     }
     if receipt.torn:
         if not receipt.torn.endswith(b"\n"):
@@ -2943,13 +3007,15 @@ def _apply_browser_origin_repair_item(conn: sqlite3.Connection, item: BrowserCap
     raise RuntimeError(f"unsupported browser-capture origin repair strategy: {item.repair_strategy}")
 
 
-def repair_browser_capture_origin_mismatches(
+def _repair_browser_capture_origin_mismatches(
     config: Config,
     raw_ids: list[str],
     *,
     apply: bool = False,
     receipt_path: Path | None = None,
     proof_digest: str | None = None,
+    allow_legacy_null_native_id: bool = False,
+    receipt_schema: str = _BROWSER_CAPTURE_ORIGIN_REPAIR_RECEIPT_SCHEMA,
 ) -> BrowserCaptureOriginRepairReport:
     """Copy exact browser-capture evidence forward under parsed origin authority."""
     if len(set(raw_ids)) != len(raw_ids):
@@ -2968,7 +3034,15 @@ def repair_browser_capture_origin_mismatches(
         raise RuntimeError("source or index tier is missing")
 
     def inspect(connection: sqlite3.Connection) -> list[BrowserCaptureOriginRepairItem]:
-        return [_inspect_browser_capture_origin_mismatch(archive_root, raw_id, conn=connection) for raw_id in raw_ids]
+        return [
+            _inspect_browser_capture_origin_mismatch(
+                archive_root,
+                raw_id,
+                conn=connection,
+                allow_legacy_null_native_id=allow_legacy_null_native_id,
+            )
+            for raw_id in raw_ids
+        ]
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
@@ -2986,7 +3060,7 @@ def repair_browser_capture_origin_mismatches(
         assert receipt_path is not None
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         with RebuildLease(archive_root):
-            receipt = _lock_browser_origin_receipt(receipt_path, items)
+            receipt = _lock_browser_origin_receipt(receipt_path, items, schema=receipt_schema)
             try:
                 with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
                     proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
@@ -3038,7 +3112,7 @@ def repair_browser_capture_origin_mismatches(
                     for before, after_item in zip(locked, after, strict=True)
                 ]
                 if not receipt.terminal:
-                    _finish_browser_origin_receipt(receipt, items)
+                    _finish_browser_origin_receipt(receipt, items, schema=receipt_schema)
             finally:
                 receipt.close()
     return BrowserCaptureOriginRepairReport(
@@ -3051,6 +3125,48 @@ def repair_browser_capture_origin_mismatches(
         proof_digest=aggregate,
         receipt_path=str(receipt_path) if receipt_path is not None else None,
         items=tuple(items),
+    )
+
+
+def repair_browser_capture_origin_mismatches(
+    config: Config,
+    raw_ids: list[str],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> BrowserCaptureOriginRepairReport:
+    """Copy exact browser-capture evidence forward under parsed origin authority."""
+    return _repair_browser_capture_origin_mismatches(
+        config,
+        raw_ids,
+        apply=apply,
+        receipt_path=receipt_path,
+        proof_digest=proof_digest,
+    )
+
+
+def repair_legacy_browser_capture_missing_native_ids(
+    config: Config,
+    raw_ids: list[str],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> BrowserCaptureOriginRepairReport:
+    """Copy forward only the exact legacy browser shape with native_id NULL.
+
+    The legacy raw remains immutable evidence. The parsed native identity is
+    written only to the new canonical raw and to the dedicated receipt.
+    """
+    return _repair_browser_capture_origin_mismatches(
+        config,
+        raw_ids,
+        apply=apply,
+        receipt_path=receipt_path,
+        proof_digest=proof_digest,
+        allow_legacy_null_native_id=True,
+        receipt_schema=_LEGACY_BROWSER_CAPTURE_NATIVE_ID_REPAIR_RECEIPT_SCHEMA,
     )
 
 
