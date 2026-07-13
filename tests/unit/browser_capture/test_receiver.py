@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from polylogue.browser_capture.models import (
     BrowserCaptureAcceptedPayload,
     BrowserCaptureArchiveStatePayload,
+    BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
     BrowserCaptureReceiverStatusPayload,
@@ -385,6 +386,7 @@ def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
     concrete_routes = {(contract.method, contract.pattern) for contract in BROWSER_CAPTURE_ROUTE_CONTRACTS}
 
     assert ("GET", "/v1/status") in concrete_routes
+    assert ("GET", "/v1/browser-captures/capabilities") in concrete_routes
     assert ("GET", "/v1/archive-state") in concrete_routes
     assert ("POST", "/v1/browser-captures") in concrete_routes
     assert browser_capture_route_contract_for("POST", "/v1/browser-captures") is not None
@@ -398,6 +400,16 @@ def test_receiver_rejects_web_origins_by_default(tmp_path: Path) -> None:
     assert response.status == HTTPStatus.FORBIDDEN
     assert response.getheader("X-Request-ID")
     assert error.error == "origin_not_allowed"
+
+
+def test_receiver_declares_durable_browser_backfill_ack_contract(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "GET", "/v1/browser-captures/capabilities", origin=_EXTENSION_ORIGIN)
+        body = BrowserCaptureCapabilitiesPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.OK
+    assert response.getheader("X-Request-ID")
+    assert body.durable_ack_fields == ("receiver_request_id", "content_hash")
 
 
 def test_receiver_rejects_extra_web_origin_without_token(tmp_path: Path) -> None:

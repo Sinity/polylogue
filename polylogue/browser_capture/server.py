@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserCaptureAcceptedPayload,
+    BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
     BrowserPostAckPayload,
@@ -199,6 +200,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if self._reject_origin() or self._reject_token():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/browser-captures/capabilities":
+            self._send_json(HTTPStatus.OK, BrowserCaptureCapabilitiesPayload().model_dump(mode="json"))
+            return
         if parsed.path == "/v1/status":
             self._send_json(HTTPStatus.OK, receiver_status_payload(self.server.config))
             return

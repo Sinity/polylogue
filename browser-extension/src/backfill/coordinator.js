@@ -7,6 +7,7 @@ import {
   retryAfterMs,
   serializedContentHash,
   serializedJson,
+  receiverAckContractError,
 } from "./models.js";
 import { jobFinished, progressBuckets } from "./storage.js";
 
@@ -21,14 +22,18 @@ function mergePolicy(patch = {}) {
 }
 
 export class BackfillCoordinator {
-  constructor({ store, adapters, receiver, alarms, clock = () => Date.now(), random = Math.random, instanceId = "extension-instance" }) {
+  constructor({ store, adapters, receiver, receiverPreflight = null, checkpoint = null, alarms, clock = () => Date.now(), random = Math.random, instanceId = "extension-instance", receiverContractEpoch = instanceId }) {
     this.store = store;
     this.adapters = adapters;
     this.receiver = receiver;
+    this.receiverPreflight = receiverPreflight;
+    this.checkpoint = checkpoint;
     this.alarms = alarms;
     this.clock = clock;
     this.random = random;
     this.instanceId = instanceId;
+    this.receiverContractEpoch = receiverContractEpoch;
+    this.controlChains = new Map();
   }
 
   async start({ provider, cutoff, policy = {}, provider_options = {} }) {
@@ -62,22 +67,50 @@ export class BackfillCoordinator {
       execution_expires_at_ms: null,
     };
     await this.store.createJob(job);
-    await this.schedule(id, now);
-    return job;
+    const checked = await this.ensureReceiverContract(job, now, true);
+    if (checked.status === "running") await this.schedule(id, now);
+    return this.status(id);
   }
 
   async control(jobId, action) {
+    // A preflight is asynchronous. Serialize operator actions per job so a
+    // delayed resume cannot overwrite a later cancel (or pause) after its
+    // receiver check returns.
+    const previous = this.controlChains.get(jobId) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.performControl(jobId, action));
+    this.controlChains.set(jobId, next);
+    void next.then(
+      () => { if (this.controlChains.get(jobId) === next) this.controlChains.delete(jobId); },
+      () => { if (this.controlChains.get(jobId) === next) this.controlChains.delete(jobId); },
+    );
+    return next;
+  }
+
+  async performControl(jobId, action) {
     const now = this.clock();
     const status = action === "start" || action === "resume" ? "running" : action === "pause" ? "paused" : action === "cancel" ? "cancelled" : null;
     if (!status) throw new Error(`unknown_backfill_action:${action}`);
-    await this.store.controlJob(jobId, status, nowIso(now), action === "resume" ? {
+    if (action === "resume" && (await this.store.listQueue(jobId)).some((item) => item.state === "recovery_required")) {
+      throw new Error("browser_profile_recovery_required");
+    }
+    // Preflight while the job is still paused.  Marking it running first would
+    // let an alarm acquire its next execution generation while an older worker
+    // is still deciding whether this receiver is safe to use.
+    const contractError = status === "running" ? await this.preflightReceiverContract() : null;
+    if (contractError) {
+      await this.store.controlJob(jobId, "paused", nowIso(now), this.receiverContractFailurePatch(contractError));
+      return this.status(jobId);
+    }
+    const resumed = await this.store.controlJob(jobId, status, nowIso(now), status === "running" ? {
       cooldown_until_ms: null,
       cooldown_reason: null,
       throttle_count: 0,
+      receiver_contract_epoch: this.receiverContractEpoch,
+      receiver_contract_checked_at: nowIso(now),
       last_error: null,
     } : {}, action === "resume" ? now : null);
     if (status === "running") {
-      await this.schedule(jobId, now);
+      await this.schedule(resumed.id, now);
     }
     return this.status(jobId);
   }
@@ -85,7 +118,12 @@ export class BackfillCoordinator {
   async status(jobId) {
     const job = await this.requireJob(jobId);
     const queue = await this.store.listQueue(jobId);
-    return { ...job, progress: progressBuckets(queue) };
+    const checkpointError = await this.persistCheckpoint();
+    return {
+      ...job,
+      progress: progressBuckets(queue),
+      recovery_checkpoint_error: checkpointError,
+    };
   }
 
   async listStatus() {
@@ -120,6 +158,8 @@ export class BackfillCoordinator {
   async runLeasedJob(initialJob, now) {
     let job = initialJob;
     const jobId = job.id;
+    job = await this.ensureReceiverContract(job, now);
+    if (job.status !== "running") return this.status(jobId);
     await this.store.recoverExpiredLeases(jobId, now);
     await this.schedule(jobId, now + job.policy.leaseMs);
     const receiverItem = await this.store.acquireNextLease(jobId, this.instanceId, now, job.policy.leaseMs, true);
@@ -290,7 +330,8 @@ export class BackfillCoordinator {
     try {
       const receipt = await this.receiver(capture, serialized);
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
-      if (!receipt?.receiver_request_id || receipt.content_hash !== hash) throw new Error("receiver_ack_hash_mismatch");
+      const contractError = receiverAckContractError(receipt, hash);
+      if (contractError) throw contractError;
       const completeItem = { ...item, state: "complete", envelope: null, content_hash: hash, capture_fidelity: "native_full", receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_acked", completed_at: nowIso(now) };
       const revision = item.provider_updated_at
         ? {
@@ -315,6 +356,10 @@ export class BackfillCoordinator {
       return next;
     } catch (error) {
       if (String(error?.message || error).startsWith("stale_backfill_execution:")) throw error;
+      if (error?.code === "receiver_contract_incompatible" || String(error?.message || error).startsWith("receiver_contract_incompatible:")) {
+        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_contract_incompatible", last_error: String(error.message || error) });
+        return this.pauseJob({ ...job, last_error: String(error.message || error) }, "receiver_contract_incompatible", now);
+      }
       const attempt = (item.attempt_count || 0) + 1;
       await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: "native_full", attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_down", last_error: String(error.message || error) });
       const exhausted = attempt >= job.policy.maxReceiverAttempts;
@@ -392,6 +437,54 @@ export class BackfillCoordinator {
     const next = { ...job, status: "paused", cooldown_reason: reason, last_error: job.last_error || reason, updated_at: nowIso(now) };
     await this.saveJob(next);
     return next;
+  }
+
+  async ensureReceiverContract(job, now, force = false) {
+    if (!this.receiverPreflight) return job;
+    if (!force && job.receiver_contract_epoch === this.receiverContractEpoch) return job;
+    const contractError = await this.preflightReceiverContract();
+    if (contractError) {
+      const next = { ...job, ...this.receiverContractFailurePatch(contractError), updated_at: nowIso(now) };
+      if (job.execution_owner === this.instanceId) await this.saveJob(next);
+      else await this.store.putJob(next);
+      return next;
+    }
+    const next = { ...job, receiver_contract_epoch: this.receiverContractEpoch, receiver_contract_checked_at: nowIso(now), last_error: null };
+    if (job.execution_owner === this.instanceId) await this.saveJob(next);
+    else await this.store.putJob(next);
+    return next;
+  }
+
+  async preflightReceiverContract() {
+    if (!this.receiverPreflight) return null;
+    try {
+      await this.receiverPreflight();
+      return null;
+    } catch (error) {
+      return String(error?.message || error);
+    }
+  }
+
+  receiverContractFailurePatch(message) {
+    return {
+      status: "paused",
+      cooldown_reason: message.startsWith("receiver_contract_incompatible:")
+        ? "receiver_contract_incompatible"
+        : "receiver_preflight_unavailable",
+      last_error: message,
+    };
+  }
+
+  async persistCheckpoint() {
+    if (!this.checkpoint) return null;
+    try {
+      await this.checkpoint(await this.store.exportRecoveryCheckpoint());
+      return null;
+    } catch (error) {
+      // IndexedDB remains authoritative. A best-effort profile-recovery copy
+      // must never turn an otherwise durable backfill action into a failure.
+      return String(error?.message || error);
+    }
   }
 
   async saveJob(job) {

@@ -13,6 +13,7 @@ from typing import Literal
 
 BrowserCaptureAuthPolicy = Literal["extension_origin", "bearer_if_web_origin", "bearer_if_configured"]
 BrowserCaptureRouteKind = Literal[
+    "capabilities",
     "status",
     "archive_state",
     "capture_ingest",
@@ -36,6 +37,15 @@ class BrowserCaptureRouteContract:
 
 
 BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/browser-captures/capabilities",
+        "capabilities",
+        "bearer_if_configured",
+        None,
+        "BrowserCaptureCapabilitiesPayload",
+        "Declares the durable acknowledgement fields required by browser backfill.",
+    ),
     BrowserCaptureRouteContract(
         "GET",
         "/v1/status",

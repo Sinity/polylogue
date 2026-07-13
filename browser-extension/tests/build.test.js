@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { indexedDB } from "fake-indexeddb";
+import { IDBFactory, indexedDB } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -176,12 +176,19 @@ describe("build.mjs full archive emission", () => {
       tabs: { ...tabs, get: vi.fn(), onActivated: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
     };
     const fetchCalls = [];
+    let receiverPosts = 0;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       let body;
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-capability" : null }, json: async () => ({ durable_ack_fields: ["receiver_request_id", "content_hash"] }) };
+      }
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
-      body = { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
-      return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-ack" : null }, json: async () => body };
+      receiverPosts += 1;
+      body = receiverPosts === 1
+        ? { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash }
+        : { ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: contentHash };
+      return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" && receiverPosts > 1 ? "packaged-ack" : null }, json: async () => body };
     });
     const packagedWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?smoke=${Date.now()}`;
     await import(/* @vite-ignore */ packagedWorkerUrl);
@@ -193,7 +200,20 @@ describe("build.mjs full archive emission", () => {
       await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount));
     }
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).includes("/v1/browser-captures"))).toBe(true));
+    await vi.waitFor(() => expect(receiverPosts).toBe(1));
+    const paused = await send({ type: "polylogue.backfill.status" });
+    expect(paused.jobs[0]).toMatchObject({
+      status: "paused",
+      cooldown_reason: "receiver_contract_incompatible",
+      last_error: "receiver_contract_incompatible:missing_receiver_request_id",
+    });
+    expect(receiverPosts).toBe(1);
+    await send({ type: "polylogue.backfill.control", job_id: started.job.id, action: "resume" });
+    alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+    await vi.waitFor(() => expect(receiverPosts).toBe(2));
+    const recovered = await send({ type: "polylogue.backfill.status" });
+    expect(recovered.jobs[0].progress.complete).toBe(1);
+    expect(pageRequests.filter((message) => message.operation === "conversation")).toHaveLength(1);
     expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
     expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);
@@ -202,6 +222,33 @@ describe("build.mjs full archive emission", () => {
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
     expect(tabs.sendMessage).not.toHaveBeenCalled();
     expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
+
+    globalThis.indexedDB = new IDBFactory();
+    stored = {
+      receiverBaseUrl: "http://127.0.0.1:8765",
+      receiverAuthToken: "token",
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [{
+          id: "packaged-recovered", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
+        }],
+        queue: [{ id: "packaged-recovered-item", job_id: "packaged-recovered", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
+        revisions: [],
+      },
+    };
+    const pageRequestCount = pageRequests.length;
+    const recoveredWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?recovery=${Date.now()}`;
+    await import(/* @vite-ignore */ recoveredWorkerUrl);
+    const recoveredStatus = await send({ type: "polylogue.backfill.status" });
+    expect(recoveredStatus.jobs[0]).toMatchObject({
+      id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",
+      progress: { operator_action: 1 },
+    });
+    alarmListener({ name: "polylogueBackfillWake:packaged-recovered" });
+    await Promise.resolve();
+    expect(pageRequests).toHaveLength(pageRequestCount);
     rmSync(smokeRoot, { recursive: true, force: true });
   });
 });

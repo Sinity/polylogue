@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "./backfill/coordinator.js";
-import { BACKFILL_ALARM, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
+import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
 import { providerAdapters } from "./backfill/providers.js";
 import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
@@ -11,6 +11,8 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
+const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
+const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const POST_POLL_INTERVAL_MS = 5000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
@@ -74,18 +76,32 @@ async function withExtensionInstanceAttribution(envelope) {
 
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
-    backfillCoordinatorPromise = extensionInstanceId().then((instanceId) => new BackfillCoordinator({
-      store: new IndexedDbBackfillStore(),
-      adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
-      receiver: (envelope, serialized) => postJson(
-        "/v1/browser-captures",
-        envelope,
-        serialized,
-        PROVIDER_REQUEST_TIMEOUT_MS,
-      ),
-      alarms: chrome.alarms,
-      instanceId,
-    }));
+    const candidate = (async () => {
+      const store = new IndexedDbBackfillStore();
+      const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
+      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      const instanceId = await extensionInstanceId();
+      return new BackfillCoordinator({
+        store,
+        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        receiver: (envelope, serialized) => postJson(
+          "/v1/browser-captures",
+          envelope,
+          serialized,
+          PROVIDER_REQUEST_TIMEOUT_MS,
+          true,
+        ),
+        receiverPreflight: backfillReceiverPreflight,
+        checkpoint: async (checkpoint) => chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint }),
+        alarms: chrome.alarms,
+        instanceId,
+        receiverContractEpoch: BACKFILL_WORKER_EPOCH,
+      });
+    })();
+    backfillCoordinatorPromise = candidate;
+    void candidate.catch(() => {
+      if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
+    });
   }
   return backfillCoordinatorPromise;
 }
@@ -605,7 +621,7 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   return headers;
 }
 
-async function postJson(path, payload, serializedBody = null, timeoutMs = null) {
+async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
@@ -618,7 +634,8 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
       body: serializedBody || JSON.stringify(payload),
       signal: controller?.signal,
     });
-    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const acknowledgedRequestId = response.headers.get("X-Request-ID");
+    const receiverRequestId = acknowledgedRequestId || requestId;
     const body = await response.json().catch(() => ({}));
     await appendDebugLog({
       stage: "receiver_response",
@@ -639,6 +656,12 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
       error.status = response.status;
       throw error;
     }
+    if (requireReceiverRequestId && !acknowledgedRequestId) {
+      const error = new Error("receiver_contract_incompatible:missing_receiver_request_id");
+      error.receiverRequestId = null;
+      error.status = response.status;
+      throw error;
+    }
     return { ...body, receiver_request_id: receiverRequestId };
   } catch (error) {
     await appendDebugLog({
@@ -655,13 +678,16 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null) 
   }
 }
 
-async function getJson(path) {
+async function getJson(path, timeoutMs = null) {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       headers: await requestHeaders({ requestId }),
+      signal: controller?.signal,
     });
     const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
     const body = await response.json().catch(() => ({}));
@@ -680,6 +706,7 @@ async function getJson(path) {
     if (!response.ok) {
       const error = new Error(body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
+      error.status = response.status;
       throw error;
     }
     return { ...body, receiver_request_id: receiverRequestId };
@@ -693,7 +720,24 @@ async function getJson(path) {
       error: String(error.message || error),
     });
     throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
   }
+}
+
+async function backfillReceiverPreflight() {
+  let capability;
+  try {
+    capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+  } catch (error) {
+    if (error?.status === 404) throw new Error("receiver_contract_incompatible:capability_endpoint_missing");
+    throw error;
+  }
+  const fields = capability?.durable_ack_fields;
+  if (!Array.isArray(fields) || DURABLE_RECEIVER_ACK_FIELDS.some((field) => !fields.includes(field))) {
+    throw new Error("receiver_contract_incompatible:durable_ack_fields_missing");
+  }
+  return capability;
 }
 
 async function refreshReceiverState() {

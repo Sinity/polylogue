@@ -10,10 +10,11 @@ let stored;
 let fetchCalls;
 let tabs;
 
-function installChromeMock() {
+function installChromeMock(storagePatch = {}) {
   stored = {
     receiverAuthToken: "token-1",
     receiverBaseUrl: "http://127.0.0.1:8875",
+    ...storagePatch,
   };
   messageListener = null;
   installedListener = null;
@@ -106,12 +107,19 @@ function installChromeMock() {
       }),
     },
   };
+  globalThis.fetch = vi.fn(async (url, options = {}) => {
+    fetchCalls.push({ url, options });
+    if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+    }
+    return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+  });
 }
 
-async function loadBackground() {
+async function loadBackground(storagePatch = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
-  installChromeMock();
+  installChromeMock(storagePatch);
   await import("../src/background.js");
   expect(messageListener).toBeTypeOf("function");
 }
@@ -521,7 +529,13 @@ describe("background receiver diagnostics", () => {
   });
 
   it("routes backfill inventory through an existing provider page instead of service-worker fetch", async () => {
-    globalThis.fetch = vi.fn(async () => responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 }));
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+      }
+      return responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 });
+    });
 
     const started = await sendRuntimeMessage({
       type: "polylogue.backfill.start",
@@ -537,9 +551,59 @@ describe("background receiver diagnostics", () => {
       func: expect.any(Function),
       args: [expect.objectContaining({ provider: "chatgpt", operation: "inventory" })],
     })));
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchCalls[0].url).toContain("/v1/browser-captures/capabilities");
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("retries coordinator initialization after recovery storage fails once", async () => {
+    globalThis.chrome.storage.local.get = vi.fn()
+      .mockRejectedValueOnce(new Error("synthetic_recovery_storage_failure"))
+      .mockImplementation(async (defaults) => ({ ...defaults, ...stored }));
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: false, error: "synthetic_recovery_storage_failure" });
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
+  });
+
+  it("bounds receiver capability preflight with the provider request timeout", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+    });
+    await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(fetchCalls[0]).toMatchObject({ url: expect.stringContaining("/v1/browser-captures/capabilities") });
+    expect(fetchCalls[0].options.signal).toBeDefined();
+  });
+
+  it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "not_found" }, { ok: false, status: 404 }));
+    const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(started.job).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("restores a packaged recovery checkpoint as an actionable paused job and ignores its alarm", async () => {
+    await loadBackground({
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [{
+          id: "recovered-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
+        }],
+        queue: [{ id: "recovered-item", job_id: "recovered-job", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
+        revisions: [],
+      },
+    });
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    expect(status.jobs[0]).toMatchObject({
+      id: "recovered-job", status: "paused", cooldown_reason: "browser_profile_recovery_required",
+      inventory_cursor: "17", daily_requests: 7, last_ack: { receiver_request_id: "ack-1" },
+      progress: { operator_action: 1 },
+    });
+    alarmListener({ name: "polylogueBackfillWake:recovered-job" });
+    await Promise.resolve();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 
   it("does not reuse unsupported provider subdomains as authenticated transport roots", async () => {
