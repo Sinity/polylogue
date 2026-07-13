@@ -703,7 +703,20 @@ def test_browser_origin_repair_accepts_exact_semantic_superseded_sibling(tmp_pat
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
 
 
-@pytest.mark.parametrize("mutation", ["head_frontier", "head_revision", "receipt_id", "receipt_time"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "head_frontier",
+        "head_revision",
+        "receipt_id",
+        "receipt_time",
+        "copy_predecessor_revision",
+        "copy_predecessor_raw",
+        "copy_append_start",
+        "copy_append_end",
+        "copy_capture_mode",
+    ],
+)
 def test_browser_origin_repair_refuses_mutated_terminal_byte_authority(tmp_path: Path, mutation: str) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     semantic_raw_id = _seed_semantic_canonical_head(tmp_path, mismatched_raw_id)
@@ -737,11 +750,29 @@ def test_browser_origin_repair_refuses_mutated_terminal_byte_authority(tmp_path:
                 "UPDATE raw_revision_applications SET decision_id = ? WHERE raw_id = ?",
                 ("e" * 64, copy_raw_id),
             )
-        else:
+        elif mutation == "receipt_time":
             index.execute(
                 "UPDATE raw_revision_applications SET decided_at_ms = decided_at_ms + 1 WHERE raw_id = ?",
                 (copy_raw_id,),
             )
+        else:
+            with sqlite3.connect(tmp_path / "source.db") as source:
+                if mutation == "copy_predecessor_revision":
+                    source.execute(
+                        "UPDATE raw_sessions SET predecessor_source_revision = ? WHERE raw_id = ?",
+                        ("0" * 64, copy_raw_id),
+                    )
+                elif mutation == "copy_predecessor_raw":
+                    source.execute(
+                        "UPDATE raw_sessions SET predecessor_raw_id = ? WHERE raw_id = ?",
+                        ("f" * 64, copy_raw_id),
+                    )
+                elif mutation == "copy_append_start":
+                    source.execute("UPDATE raw_sessions SET append_start_offset = 0 WHERE raw_id = ?", (copy_raw_id,))
+                elif mutation == "copy_append_end":
+                    source.execute("UPDATE raw_sessions SET append_end_offset = 1 WHERE raw_id = ?", (copy_raw_id,))
+                else:
+                    source.execute("UPDATE raw_sessions SET capture_mode = 'unknown' WHERE raw_id = ?", (copy_raw_id,))
 
     with pytest.raises(RuntimeError, match="ineligible"):
         repair_browser_capture_origin_mismatches(
@@ -754,6 +785,95 @@ def test_browser_origin_repair_refuses_mutated_terminal_byte_authority(tmp_path:
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count,)
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+def test_browser_origin_repair_refuses_competing_terminal_copy_application(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
+    receipt = tmp_path / "competing-copy-application.jsonl"
+    applied = repair_browser_capture_origin_mismatches(
+        _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+    )
+    item = applied.items[0]
+    assert item.copy_forward_raw_id is not None
+    assert item.session_id is not None
+    assert item.canonical_logical_source_key is not None
+    assert item.blob_hash is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        record_revision_application_sync(
+            index,
+            RevisionApplicationReceipt(
+                raw_id=item.copy_forward_raw_id,
+                session_id=item.session_id,
+                logical_source_key=item.canonical_logical_source_key,
+                source_revision=item.blob_hash,
+                acquisition_generation=0,
+                decision=ApplicationDecision.DEFERRED,
+                accepted_raw_id=None,
+                accepted_source_revision=None,
+                accepted_content_hash=None,
+                detail="competing copy receipt",
+            ),
+            decided_at_ms=99,
+        )
+
+    with pytest.raises(RuntimeError, match="ineligible"):
+        repair_browser_capture_origin_mismatches(
+            _config(tmp_path), [raw_id], apply=True, receipt_path=receipt, proof_digest=dry_run.proof_digest
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (source_count,)
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned", "applied"]
+
+
+@pytest.mark.parametrize(
+    "decision", [ApplicationDecision.SUPERSEDED, ApplicationDecision.DEFERRED, ApplicationDecision.AMBIGUOUS]
+)
+def test_browser_origin_repair_refuses_extra_old_key_receipt(tmp_path: Path, decision: ApplicationDecision) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blob_hash = source.execute(
+            "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        accepted_hash = bytes(
+            index.execute(
+                "SELECT content_hash FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+            ).fetchone()[0]
+        )
+        record_revision_application_sync(
+            index,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id="chatgpt-export:browser-origin-one",
+                logical_source_key="unknown:browser-origin-one",
+                source_revision=blob_hash,
+                acquisition_generation=0,
+                decision=decision,
+                accepted_raw_id=raw_id if decision is ApplicationDecision.SUPERSEDED else None,
+                accepted_source_revision=blob_hash if decision is ApplicationDecision.SUPERSEDED else None,
+                accepted_content_hash=accepted_hash if decision is ApplicationDecision.SUPERSEDED else None,
+                detail=f"unexpected {decision.value}",
+            ),
+            decided_at_ms=98,
+        )
+
+    assert repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id]).ineligible_count == 1
+
+
+@pytest.mark.parametrize("head_shape", ["old", "semantic"])
+def test_browser_origin_repair_refuses_head_receipt_timestamp_drift(tmp_path: Path, head_shape: str) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    accepted_raw_id = raw_id if head_shape == "old" else _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET decided_at_ms = decided_at_ms + 1 WHERE accepted_raw_id = ?",
+            (accepted_raw_id,),
+        )
+
+    assert repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id]).ineligible_count == 1
 
 
 @pytest.mark.parametrize("mutation", ["receipt", "revision", "membership", "selected", "blob"])

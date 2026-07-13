@@ -1445,6 +1445,7 @@ def _browser_origin_semantic_head_from_copy_detail(
         "accepted_frontier_kind",
         "accepted_frontier",
         "acquisition_generation",
+        "decided_at_ms",
     }
     if set(snapshot) != expected_keys:
         return False, None
@@ -1460,6 +1461,8 @@ def _browser_origin_semantic_head_from_copy_detail(
             or snapshot["accepted_frontier"] < 0
             or not isinstance(snapshot["acquisition_generation"], int)
             or snapshot["acquisition_generation"] < 0
+            or not isinstance(snapshot["decided_at_ms"], int)
+            or snapshot["decided_at_ms"] < 0
         ):
             return False, None
     except ValueError:
@@ -1503,8 +1506,10 @@ def _verify_browser_origin_copy_forward_source_stage(
     raw = conn.execute(
         """
         SELECT origin, source_path, source_index, blob_hash, blob_size,
-               logical_source_key, revision_kind, source_revision, baseline_raw_id,
-               acquisition_generation, revision_authority
+               logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
         FROM raw_sessions WHERE raw_id = ?
         """,
         (item.raw_id,),
@@ -1518,6 +1523,10 @@ def _verify_browser_origin_copy_forward_source_stage(
         item.old_logical_source_key,
         RawRevisionKind.FULL.value,
         item.blob_hash,
+        None,
+        None,
+        None,
+        None,
         None,
         0,
         RawRevisionAuthority.QUARANTINED.value,
@@ -1732,6 +1741,7 @@ def _semantic_head_snapshot(head: Mapping[str, object] | sqlite3.Row) -> dict[st
         "accepted_frontier_kind": str(head["accepted_frontier_kind"]),
         "accepted_frontier": cast(int, head["accepted_frontier"]),
         "acquisition_generation": cast(int, head["acquisition_generation"]),
+        "decided_at_ms": cast(int, head["decided_at_ms"]),
     }
 
 
@@ -1765,7 +1775,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
     accepted_hash: bytes,
     message_count: int,
     indexed_raw_id: str,
-    excluded_application_raw_id: str | None = None,
+    excluded_application_decision_id: str | None = None,
 ) -> _SemanticCanonicalWitness | None:
     """Prove a quarantined semantic head is evidence, not a replacement authority.
 
@@ -1782,6 +1792,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         or str(head_snapshot["accepted_frontier_kind"]) != "semantic"
         or cast(int, head_snapshot["accepted_frontier"]) < 0
         or cast(int, head_snapshot["acquisition_generation"]) < 0
+        or cast(int, head_snapshot["decided_at_ms"]) < 0
         or str(indexed_raw_id) == raw_id
     ):
         return None
@@ -1816,10 +1827,10 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
                decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
                baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
-        WHERE logical_source_key = ? AND (? IS NULL OR raw_id != ?)
+        WHERE logical_source_key = ? AND (? IS NULL OR decision_id != ?)
         ORDER BY raw_id
         """,
-        (canonical_key, excluded_application_raw_id, excluded_application_raw_id),
+        (canonical_key, excluded_application_decision_id, excluded_application_decision_id),
     ).fetchall()
     if raw is None or blob_ref is None or len(memberships) != 1 or len(census) != 1 or not applications:
         return None
@@ -2010,6 +2021,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         and _bytes_value(application["accepted_content_hash"]) == accepted_hash
         and all(application[name] is None for name in ("baseline_raw_id", "predecessor_raw_id", "append_end_offset"))
         and int(application["decided_at_ms"]) >= 0
+        and int(application["decided_at_ms"]) == cast(int, head_snapshot["decided_at_ms"])
     ):
         return None
     return _SemanticCanonicalWitness(
@@ -2131,7 +2143,8 @@ def _inspect_browser_capture_origin_mismatch(
     head = conn.execute(
         """
         SELECT session_id, accepted_source_revision, accepted_content_hash,
-               accepted_frontier_kind, accepted_frontier, acquisition_generation
+               accepted_frontier_kind, accepted_frontier, acquisition_generation,
+               append_end_offset, decided_at_ms
         FROM raw_revision_heads WHERE logical_source_key = ? AND accepted_raw_id = ?
         """,
         (old_key, raw_id),
@@ -2146,15 +2159,19 @@ def _inspect_browser_capture_origin_mismatch(
     ).fetchone()
     old_applications = conn.execute(
         """
-        SELECT session_id, logical_source_key, source_revision, acquisition_generation,
+        SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision,
-               accepted_content_hash, baseline_raw_id, decided_at_ms
+               accepted_content_hash, baseline_raw_id, predecessor_raw_id,
+               append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
-        WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+        WHERE raw_id = ? AND logical_source_key = ?
         ORDER BY decision_id
         """,
         (raw_id, old_key),
     ).fetchall()
+    old_key_application_count = conn.execute(
+        "SELECT COUNT(*) FROM raw_revision_applications WHERE logical_source_key = ?", (old_key,)
+    ).fetchone()
     if (
         head is None
         or indexed is None
@@ -2165,22 +2182,26 @@ def _inspect_browser_capture_origin_mismatch(
         or str(head["accepted_frontier_kind"]) != "byte"
         or int(head["accepted_frontier"]) != blob_size
         or int(head["acquisition_generation"]) != int(raw["acquisition_generation"])
+        or head["append_end_offset"] is not None
         or _bytes_value(indexed["content_hash"]) != accepted_hash
         or len(old_applications) != 1
-        or tuple(old_applications[0])[:-1]
-        != (
-            session_id,
-            old_key,
-            blob_hash_hex,
-            int(raw["acquisition_generation"]),
-            ApplicationDecision.SELECTED_BASELINE.value,
-            raw_id,
-            blob_hash_hex,
-            accepted_hash,
-            raw_id,
-        )
-        or not isinstance(old_applications[0][-1], int)
-        or int(old_applications[0][-1]) < 0
+        or old_key_application_count is None
+        or int(old_key_application_count[0]) != 1
+        or not _revision_application_decision_id_is_exact(old_applications[0])
+        or str(old_applications[0]["raw_id"]) != raw_id
+        or str(old_applications[0]["session_id"]) != session_id
+        or str(old_applications[0]["logical_source_key"]) != old_key
+        or str(old_applications[0]["source_revision"]) != blob_hash_hex
+        or int(old_applications[0]["acquisition_generation"]) != int(raw["acquisition_generation"])
+        or str(old_applications[0]["decision"]) != ApplicationDecision.SELECTED_BASELINE.value
+        or str(old_applications[0]["accepted_raw_id"]) != raw_id
+        or str(old_applications[0]["accepted_source_revision"]) != blob_hash_hex
+        or _bytes_value(old_applications[0]["accepted_content_hash"]) != accepted_hash
+        or str(old_applications[0]["baseline_raw_id"]) != raw_id
+        or old_applications[0]["predecessor_raw_id"] is not None
+        or old_applications[0]["append_end_offset"] is not None
+        or int(old_applications[0]["decided_at_ms"]) < 0
+        or int(head["decided_at_ms"]) != int(old_applications[0]["decided_at_ms"])
     ):
         return _browser_origin_ineligible(raw_id, "current accepted head does not exactly prove the normalized session")
     membership = conn.execute(
@@ -2233,11 +2254,14 @@ def _inspect_browser_capture_origin_mismatch(
         """,
         (canonical_key,),
     ).fetchone()
+    copy_columns = {str(row[1]) for row in conn.execute("PRAGMA source.table_info(raw_sessions)")}
+    copy_capture_mode_projection = "capture_mode" if "capture_mode" in copy_columns else "NULL AS capture_mode"
     copy_raw = conn.execute(
-        """
-        SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
+        f"""
+        SELECT origin, {copy_capture_mode_projection}, native_id, source_path, source_index, blob_hash, blob_size,
                logical_source_key, revision_kind, source_revision, baseline_raw_id,
-               acquisition_generation, revision_authority
+               predecessor_source_revision, predecessor_raw_id, append_start_offset,
+               append_end_offset, acquisition_generation, revision_authority
         FROM source.raw_sessions WHERE raw_id = ?
         """,
         (copy_raw_id,),
@@ -2262,7 +2286,7 @@ def _inspect_browser_capture_origin_mismatch(
         "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?",
         (copy_raw_id,),
     ).fetchone()
-    copy_application = conn.execute(
+    copy_applications = conn.execute(
         """
         SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
@@ -2271,9 +2295,11 @@ def _inspect_browser_capture_origin_mismatch(
         WHERE raw_id = ? AND logical_source_key = ?
         """,
         (copy_raw_id, canonical_key),
-    ).fetchone()
+    ).fetchall()
+    copy_application = copy_applications[0] if len(copy_applications) == 1 else None
     copy_raw_exact = copy_raw is not None and (
         str(copy_raw["origin"]),
+        str(copy_raw["capture_mode"]) if copy_raw["capture_mode"] is not None else None,
         str(copy_raw["native_id"]),
         str(copy_raw["source_path"]),
         int(copy_raw["source_index"]),
@@ -2282,11 +2308,16 @@ def _inspect_browser_capture_origin_mismatch(
         str(copy_raw["logical_source_key"]),
         str(copy_raw["revision_kind"]),
         str(copy_raw["source_revision"]),
+        copy_raw["predecessor_source_revision"],
+        copy_raw["predecessor_raw_id"],
         str(copy_raw["baseline_raw_id"]),
+        copy_raw["append_start_offset"],
+        copy_raw["append_end_offset"],
         int(copy_raw["acquisition_generation"]),
         str(copy_raw["revision_authority"]),
     ) == (
         canonical_origin.value,
+        provider.value if "capture_mode" in copy_columns else None,
         session.provider_session_id,
         copy_path,
         int(raw["source_index"]),
@@ -2295,7 +2326,11 @@ def _inspect_browser_capture_origin_mismatch(
         canonical_key,
         RawRevisionKind.FULL.value,
         blob_hash_hex,
+        None,
+        None,
         copy_raw_id,
+        None,
+        None,
         0,
         RawRevisionAuthority.BYTE_PROVEN.value,
     )
@@ -2437,7 +2472,7 @@ def _inspect_browser_capture_origin_mismatch(
                 accepted_hash=accepted_hash,
                 message_count=len(projection.message_hashes),
                 indexed_raw_id=str(indexed["raw_id"]),
-                excluded_application_raw_id=copy_raw_id,
+                excluded_application_decision_id=str(copy_application["decision_id"]),
             )
             if terminal_witness is None or terminal_witness.head_snapshot != terminal_snapshot:
                 return _browser_origin_ineligible(raw_id, "copy-forward semantic witness no longer reproves")
@@ -2446,16 +2481,9 @@ def _inspect_browser_capture_origin_mismatch(
             semantic_head_snapshot = terminal_witness.head_snapshot
             semantic_witness_digest = terminal_witness.digest
         terminal_byte_witness_digest = _authority_rows_digest([canonical_head], [copy_application])
-    evidence_rows = conn.execute(
-        """
-        SELECT decision_id, raw_id, logical_source_key, decision, accepted_raw_id,
-               accepted_source_revision, accepted_content_hash, decided_at_ms
-        FROM raw_revision_applications WHERE session_id = ? ORDER BY decision_id
-        """,
-        (session_id,),
-    ).fetchall()
-    evidence_rows = [row for row in evidence_rows if str(row["logical_source_key"]) == old_key]
-    evidence_digest = _authority_rows_digest([raw], [head], [indexed_evidence], [membership], [census], evidence_rows)
+    evidence_digest = _authority_rows_digest(
+        [raw], [head], [indexed_evidence], [membership], [census], old_applications
+    )
     item = BrowserCaptureOriginRepairItem(
         raw_id=raw_id,
         status="already_repaired" if already_repaired else "eligible",
