@@ -63,7 +63,10 @@ _HORIZONS = {"horizon:frontier", "horizon:mid", "horizon:vision"}
 _EPHEMERAL_RE = re.compile(r"(/realm/inbox/|(?<![\w.])/tmp/)")
 # Provenance-ish context that legitimizes an ephemeral path mention.
 _PROVENANCE_HINTS = ("verbatim spec", "preserved as", "provenance", "escrow", "was in /realm/inbox", "corpus")
-_BEAD_REF_RE = re.compile(r"polylogue-[a-z0-9]+(?:\.[0-9]+)?")
+# A Bead ref cannot be only the prefix of a longer external/request id such as
+# ``polylogue-ext-mrhjgnkn``.  The negative lookahead prevents that token from
+# being misreported as a dangling ``polylogue-ext`` Bead.
+_BEAD_REF_RE = re.compile(r"polylogue-[a-z0-9]+(?:\.[0-9]+)?(?![a-z0-9-])")
 
 _DEFAULT_ISSUES_RELPATH = ".beads/issues.jsonl"
 _DEFAULT_ALLOWLIST_RELPATH = ".agent/tools/bead-lint-allow.txt"
@@ -133,7 +136,11 @@ def _load_allowlist(allow_path: Path) -> set[tuple[str, str]]:
     return allow
 
 
-def collect_findings(path: Path | None = None, allow_path: Path | None = None) -> list[Finding]:
+def collect_findings(
+    path: Path | None = None,
+    allow_path: Path | None = None,
+    checks: set[str] | None = None,
+) -> list[Finding]:
     """Run all 12 backlog-hygiene checks against a Beads jsonl export.
 
     ``path`` defaults to ``.beads/issues.jsonl`` under the repo root;
@@ -151,7 +158,7 @@ def collect_findings(path: Path | None = None, allow_path: Path | None = None) -
     findings: list[Finding] = []
 
     def add(check: str, bid: str, msg: str) -> None:
-        if (check, bid) not in allow:
+        if (checks is None or check in checks) and (check, bid) not in allow:
             findings.append(Finding(check, bid, msg))
 
     # D1 dangling deps
@@ -277,6 +284,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument(
+        "--checks",
+        type=lambda value: {item.strip() for item in value.split(",") if item.strip()},
+        default=None,
+        help="run only the named comma-separated checks (for example D1,D2)",
+    )
+    parser.add_argument(
         "--fresh",
         action="store_true",
         help="run `bd export -o <path>` first (bd updates do not immediately re-export the jsonl)",
@@ -303,7 +316,11 @@ def main(argv: list[str] | None = None) -> int:
             print(message)
         return 0
 
-    findings = collect_findings(path=path, allow_path=root / _DEFAULT_ALLOWLIST_RELPATH)
+    findings = collect_findings(
+        path=path,
+        allow_path=root / _DEFAULT_ALLOWLIST_RELPATH,
+        checks=args.checks,
+    )
     issues_scanned = len(_load(path)[0])
 
     if args.json:

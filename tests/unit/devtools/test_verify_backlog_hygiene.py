@@ -196,6 +196,48 @@ def test_allowlist_suppresses_matching_finding(tmp_path: Path) -> None:
     assert findings == []
 
 
+def test_check_filter_limits_findings_to_requested_classes(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-filtered",
+                labels=[],
+                dependencies=[{"depends_on_id": "polylogue-missing", "type": "blocks"}],
+            )
+        ],
+    )
+
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+        checks={"D1", "D2"},
+    )
+    assert [(finding.check, finding.bead_id) for finding in findings] == [("D1", "polylogue-filtered")]
+
+
+def test_external_request_id_is_not_parsed_as_truncated_bead_ref(tmp_path: Path) -> None:
+    path = tmp_path / "issues.jsonl"
+    _write_jsonl(
+        path,
+        [
+            _issue(
+                "polylogue-request-ref",
+                acceptance_criteria="Verify the receiver receipt.",
+                description="Receiver request polylogue-ext-mrhjgnkn-hzbd33l3 was acknowledged.",
+                labels=["area:capture"],
+            )
+        ],
+    )
+
+    findings = verify_backlog_hygiene.collect_findings(
+        path=path,
+        allow_path=tmp_path / "no-allowlist.txt",
+    )
+    assert not [finding for finding in findings if finding.check == "X2"]
+
+
 def test_main_json_reports_findings_and_nonzero_exit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
