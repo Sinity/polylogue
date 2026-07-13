@@ -27,7 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
     AssertionStatus,
     AssertionVisibility,
-    FindingAssertionInput,
+    FindingAssertion,
     assertion_envelope_to_payload,
     assertion_id_for_candidate_judgment,
     assertion_id_for_finding,
@@ -1337,64 +1337,6 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
         conn.close()
 
 
-def test_findings_reuse_candidate_judgment_lifecycle_and_deduplicate(tmp_path: Path) -> None:
-    """A repeated detector finding is one candidate assertion, not a new lifecycle."""
-
-    conn = _connect(tmp_path / "user.db")
-    try:
-        finding = FindingAssertionInput(
-            finding_kind="measure",
-            target_ref="session:codex-session:finding-demo",
-            body_text="The measure changed enough to require operator review.",
-            evidence_refs=("session:codex-session:finding-demo",),
-            detector_ref="agent:finding-detector",
-            value={"statistic": {"op": "eq", "value": 3, "unit": "runs"}, "n": 3},
-        )
-        first = upsert_findings_as_assertions(conn, (finding,), now_ms=10)
-        second = upsert_findings_as_assertions(conn, (finding,), now_ms=11)
-        assert [row.assertion_id for row in first] == [row.assertion_id for row in second]
-        assert first[0].assertion_id == assertion_id_for_finding(
-            finding_kind="measure",
-            target_ref=finding.target_ref,
-            value={"format": "polylogue.finding.v1", "finding_kind": "measure", **finding.value},
-            evidence_refs=finding.evidence_refs,
-            detector_ref=finding.detector_ref,
-        )
-        assert first[0].kind is AssertionKind.FINDING
-        assert first[0].status is AssertionStatus.CANDIDATE
-        assert first[0].context_policy == {"inject": False, "promotion_required": True}
-        accepted = judge_assertion_candidate(
-            conn,
-            candidate_ref=f"assertion:{first[0].assertion_id}",
-            decision="accept",
-            inject=False,
-            now_ms=12,
-        )
-        assert accepted.resulting_assertion is not None
-        assert accepted.resulting_assertion.kind is AssertionKind.FINDING
-        rematerialized = upsert_findings_as_assertions(
-            conn,
-            (
-                FindingAssertionInput(
-                    finding_kind=finding.finding_kind,
-                    target_ref=finding.target_ref,
-                    body_text="Detector wording changed after operator review.",
-                    evidence_refs=finding.evidence_refs,
-                    detector_ref=finding.detector_ref,
-                    value=finding.value,
-                    scope_ref="insight:changed-detector-scope",
-                ),
-            ),
-            now_ms=13,
-        )
-        assert rematerialized == [accepted.candidate]
-        assert rematerialized[0].body_text == finding.body_text
-        assert rematerialized[0].scope_ref is None
-        assert rematerialized[0].updated_at_ms == accepted.candidate.updated_at_ms
-    finally:
-        conn.close()
-
-
 def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "user.db")
     try:
@@ -1558,3 +1500,117 @@ def test_assertion_id_for_pathology_finding_is_stable() -> None:
     assert first == assertion_id_for_pathology_finding(**base)  # type: ignore[arg-type]
     changed = assertion_id_for_pathology_finding(**{**base, "finding_kind": "stale_context"})  # type: ignore[arg-type]
     assert changed != first
+
+
+def test_upsert_findings_reuses_candidate_lifecycle_and_evidence_refs(tmp_path: Path) -> None:
+    """Real writer path: detector evidence remains reviewable and never auto-injects."""
+    conn = _connect(tmp_path / "user.db")
+    try:
+        finding = FindingAssertion(
+            claim_key="tool-failure-rate",
+            target_ref="query:tool-failure-rate-v1",
+            body_text="The failure rate increased from the pre-registered baseline.",
+            finding_kind="query-delta",
+            statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+            n=200,
+            query_ref="query:tool-failure-rate-v1",
+            result_set_ref="result-set:tool-failure-rate-run-2",
+            baseline_ref="result-set:tool-failure-rate-run-1",
+            current_ref="result-set:tool-failure-rate-run-2",
+            expected={"measure": "tool-failure-rate", "op": "<=", "value": 0.1, "tolerance": 0.02},
+            detector_ref="insight:tool-failure-detector@v1",
+        )
+
+        written = upsert_findings_as_assertions(conn, [finding], now_ms=1_700_000_000_000)
+        assert len(written) == 1
+        candidate = written[0]
+        assert candidate.kind is AssertionKind.FINDING
+        assert candidate.status is AssertionStatus.CANDIDATE
+        assert candidate.visibility is AssertionVisibility.PRIVATE
+        assert candidate.context_policy == {"inject": False, "promotion_required": True}
+        assert candidate.evidence_refs == [
+            "query:tool-failure-rate-v1",
+            "result-set:tool-failure-rate-run-1",
+            "result-set:tool-failure-rate-run-2",
+        ]
+        assert candidate.value == {
+            "_schema": "polylogue.finding.v1",
+            "finding_kind": "query-delta",
+            "statistic": {"op": "rate", "value": 0.18, "unit": "fraction"},
+            "n": 200,
+            "query_ref": "query:tool-failure-rate-v1",
+            "result_set_ref": "result-set:tool-failure-rate-run-2",
+            "baseline_ref": "result-set:tool-failure-rate-run-1",
+            "current_ref": "result-set:tool-failure-rate-run-2",
+            "expected": {"measure": "tool-failure-rate", "op": "<=", "value": 0.1, "tolerance": 0.02},
+        }
+
+        # Idempotency uses canonical payload + sorted evidence, not call order.
+        rerun = upsert_findings_as_assertions(conn, [finding], now_ms=1_700_000_001_000)
+        assert [item.assertion_id for item in rerun] == [candidate.assertion_id]
+        assert len(list_assertion_claims(conn, kinds=(AssertionKind.FINDING,))) == 1
+        assert (
+            assertion_id_for_finding(
+                claim_key=finding.claim_key,
+                target_ref=finding.target_ref,
+                value=candidate.value,
+                evidence_refs=tuple(reversed(candidate.evidence_refs)),
+                detector_ref=finding.detector_ref,
+            )
+            == candidate.assertion_id
+        )
+
+        # The generic judgment queue and promotion code operate without a
+        # finding-specific lifecycle implementation.
+        assert [row.assertion_id for row in list_assertion_candidates(conn)] == [candidate.assertion_id]
+        judged = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="accept",
+            reason="sample frame and result refs checked",
+            actor_ref="user:local",
+            now_ms=1_700_000_002_000,
+        )
+        assert judged.candidate.status is AssertionStatus.ACCEPTED
+        assert judged.resulting_assertion is not None
+        assert judged.resulting_assertion.kind is AssertionKind.FINDING
+        assert judged.resulting_assertion.context_policy == {"inject": False}
+        assert judged.judgment.kind is AssertionKind.JUDGMENT
+    finally:
+        conn.close()
+
+
+def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_path: Path) -> None:
+    """Schema validation fails before a detector can create an unauditable claim."""
+    conn = _connect(tmp_path / "user.db")
+    try:
+        incomplete_delta = FindingAssertion(
+            claim_key="missing-baseline",
+            target_ref="query:delta",
+            body_text="missing baseline",
+            finding_kind="query-delta",
+            statistic={"op": "count", "value": 3, "unit": "sessions"},
+            n=3,
+            query_ref="query:delta",
+            result_set_ref="result-set:current",
+            current_ref="result-set:current",
+            detector_ref="insight:detector",
+        )
+        with pytest.raises(ValueError, match="baseline_ref"):
+            upsert_findings_as_assertions(conn, [incomplete_delta])
+
+        malformed_ref = FindingAssertion(
+            claim_key="bad-ref",
+            target_ref="query:delta",
+            body_text="invalid result ref",
+            finding_kind="measure",
+            statistic={"op": "count", "value": 3, "unit": "sessions"},
+            n=3,
+            query_ref="query:delta",
+            result_set_ref=" ",
+            detector_ref="insight:detector",
+        )
+        with pytest.raises(ValueError, match="result_set_ref"):
+            upsert_findings_as_assertions(conn, [malformed_ref])
+    finally:
+        conn.close()

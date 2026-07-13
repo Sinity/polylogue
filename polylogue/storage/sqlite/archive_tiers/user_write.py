@@ -278,6 +278,26 @@ def assertion_id_for_pathology_finding(
     )
 
 
+def assertion_id_for_finding(
+    *,
+    claim_key: str,
+    target_ref: str,
+    value: Mapping[str, object],
+    evidence_refs: Sequence[str],
+    detector_ref: str,
+) -> str:
+    """Return the deterministic id for one ``polylogue.finding.v1`` claim."""
+
+    return _deterministic_id(
+        f"assertion-{AssertionKind.FINDING}",
+        claim_key,
+        target_ref,
+        _json_dumps(dict(value)),
+        *sorted(evidence_refs),
+        detector_ref,
+    )
+
+
 def assertion_id_for_candidate_judgment(candidate_assertion_id: str, decision: str) -> str:
     return _deterministic_id(f"assertion-{AssertionKind.JUDGMENT}", candidate_assertion_id, decision)
 
@@ -448,6 +468,32 @@ class ArchiveAssertionBulkJudgmentEnvelope:
 class ArchiveAssertionCandidateReviewEnvelope:
     candidate: ArchiveAssertionEnvelope
     latest_judgment: ArchiveAssertionEnvelope | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FindingAssertion:
+    """One detector-produced claim stored through the assertion lifecycle.
+
+    Query and result-set refs deliberately remain opaque at this layer. The
+    rxdo substrate owns their grammar; this writer preserves them as public
+    evidence refs so future provenance readers can resolve ancestry.
+    """
+
+    claim_key: str
+    target_ref: str
+    body_text: str
+    finding_kind: str
+    statistic: Mapping[str, JSONValue]
+    n: int
+    query_ref: str
+    result_set_ref: str
+    detector_ref: str
+    baseline_ref: str | None = None
+    current_ref: str | None = None
+    expected: Mapping[str, JSONValue] | None = None
+    evidence_refs: Sequence[str] = ()
+    scope_ref: str | None = None
+    confidence: float | None = None
 
 
 def upsert_suppression(
@@ -1231,64 +1277,95 @@ def upsert_pathology_findings_as_assertions(
     return envelopes
 
 
-@dataclass(frozen=True, slots=True)
-class FindingAssertionInput:
-    """One deterministic, evidence-backed finding awaiting operator judgment."""
-
-    finding_kind: str
-    target_ref: str
-    body_text: str
-    evidence_refs: Sequence[str]
-    detector_ref: str
-    value: Mapping[str, object]
-    scope_ref: str | None = None
+_FINDING_KINDS: Final[frozenset[str]] = frozenset(
+    {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
+)
 
 
-def assertion_id_for_finding(
-    *,
-    finding_kind: str,
-    target_ref: str,
-    value: Mapping[str, object],
-    evidence_refs: Sequence[str],
-    detector_ref: str,
-) -> str:
-    """Return a stable identity for a materialized finding assertion."""
+def _validate_finding_ref(value: str, *, field: str) -> str:
+    """Keep finding evidence refs opaque until the rxdo substrate owns grammar."""
 
-    return _deterministic_id(
-        f"assertion-{AssertionKind.FINDING}",
-        finding_kind,
-        target_ref,
-        _json_dumps(dict(value)),
-        *sorted(evidence_refs),
-        detector_ref,
-    )
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"finding {field} must be a non-empty ref")
+    return normalized
+
+
+def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+    """Validate and project the additive ``polylogue.finding.v1`` payload."""
+
+    if finding.finding_kind not in _FINDING_KINDS:
+        raise ValueError(f"unsupported finding_kind: {finding.finding_kind!r}")
+    if not finding.claim_key.strip():
+        raise ValueError("finding claim_key must be non-empty")
+    if isinstance(finding.n, bool) or finding.n < 0:
+        raise ValueError("finding n must be a non-negative integer")
+    statistic = dict(finding.statistic)
+    if not {"op", "value", "unit"}.issubset(statistic):
+        raise ValueError("finding statistic must contain op, value, and unit")
+
+    query_ref = _validate_finding_ref(finding.query_ref, field="query_ref")
+    result_set_ref = _validate_finding_ref(finding.result_set_ref, field="result_set_ref")
+    value: dict[str, object] = {
+        "_schema": "polylogue.finding.v1",
+        "finding_kind": finding.finding_kind,
+        "statistic": statistic,
+        "n": finding.n,
+        "query_ref": query_ref,
+        "result_set_ref": result_set_ref,
+    }
+    if finding.baseline_ref is not None:
+        value["baseline_ref"] = _validate_finding_ref(finding.baseline_ref, field="baseline_ref")
+    if finding.current_ref is not None:
+        value["current_ref"] = _validate_finding_ref(finding.current_ref, field="current_ref")
+    if finding.finding_kind == "query-delta" and {"baseline_ref", "current_ref"} - value.keys():
+        raise ValueError("query-delta findings require baseline_ref and current_ref")
+    if finding.expected is not None:
+        expected = dict(finding.expected)
+        if not {"measure", "op", "value"}.issubset(expected):
+            raise ValueError("finding expected must contain measure, op, and value")
+        # Future rigor work can add bands, tolerances, or direction-only
+        # expectations without a user-tier schema migration.
+        value["expected"] = expected
+    return value
 
 
 def upsert_findings_as_assertions(
     conn: sqlite3.Connection,
-    findings: Sequence[FindingAssertionInput],
+    findings: Sequence[FindingAssertion],
     *,
     now_ms: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
-    """Materialize detector findings as private, non-injected candidates.
+    """Write detector findings as private, non-injected assertion candidates.
 
-    Findings deliberately use the same assertion candidate -> judgment ->
-    promoted-active path as pathology rows.  Their deterministic identity
-    makes a repeated materialization a no-op at the row-identity level.
+    This mirrors :func:`upsert_pathology_findings_as_assertions`: repeated
+    materialization maps identical claim/evidence inputs to the same row, and
+    terminal operator judgments are never overwritten by a detector.
     """
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     envelopes: list[ArchiveAssertionEnvelope] = []
     for finding in findings:
-        value = dict(finding.value)
-        value.setdefault("format", "polylogue.finding.v1")
-        value.setdefault("finding_kind", finding.finding_kind)
+        value = _finding_value(finding)
+        query_ref = str(value["query_ref"])
+        result_set_ref = str(value["result_set_ref"])
+        evidence_refs = [
+            query_ref,
+            result_set_ref,
+            *(_validate_finding_ref(ref, field="evidence_ref") for ref in finding.evidence_refs),
+        ]
+        for field in ("baseline_ref", "current_ref"):
+            ref = value.get(field)
+            if isinstance(ref, str):
+                evidence_refs.append(ref)
+        evidence_refs = sorted(set(evidence_refs))
+        detector_ref = _validate_finding_ref(finding.detector_ref, field="detector_ref")
         assertion_id = assertion_id_for_finding(
-            finding_kind=finding.finding_kind,
+            claim_key=finding.claim_key.strip(),
             target_ref=finding.target_ref,
             value=value,
-            evidence_refs=finding.evidence_refs,
-            detector_ref=finding.detector_ref,
+            evidence_refs=evidence_refs,
+            detector_ref=detector_ref,
         )
         existing = read_assertion_envelope(conn, assertion_id)
         if existing is not None and existing.status != AssertionStatus.CANDIDATE:
@@ -1298,18 +1375,19 @@ def upsert_findings_as_assertions(
             upsert_assertion(
                 conn,
                 assertion_id=assertion_id,
-                scope_ref=finding.scope_ref,
+                scope_ref=finding.scope_ref or detector_ref,
                 target_ref=finding.target_ref,
-                key=finding.finding_kind,
+                key=finding.claim_key.strip(),
                 kind=AssertionKind.FINDING,
                 value=value,
                 body_text=finding.body_text,
-                author_ref=finding.detector_ref,
+                author_ref=detector_ref,
                 author_kind="detector",
-                evidence_refs=finding.evidence_refs,
+                evidence_refs=evidence_refs,
                 status=AssertionStatus.CANDIDATE,
                 visibility=AssertionVisibility.PRIVATE,
-                context_policy=_ASSERTION_AGENT_CANDIDATE_CONTEXT_POLICY,
+                confidence=finding.confidence,
+                context_policy={"inject": False, "promotion_required": True},
                 now_ms=timestamp,
             )
         )
@@ -1389,6 +1467,7 @@ ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.RUN_STATE,
     AssertionKind.TRANSFORM_CANDIDATE,
     AssertionKind.PATHOLOGY,
+    AssertionKind.FINDING,
     AssertionKind.NOTE,
     AssertionKind.CORRECTION,
 )
@@ -2091,6 +2170,7 @@ __all__ = [
     "ArchiveRecallPackEnvelope",
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
+    "FindingAssertion",
     "AssertionKind",
     "AssertionStatus",
     "AssertionVisibility",
@@ -2099,6 +2179,7 @@ __all__ = [
     "assertion_id_for_blackboard_note",
     "assertion_id_for_candidate_judgment",
     "assertion_id_for_correction",
+    "assertion_id_for_finding",
     "assertion_id_for_mark",
     "assertion_id_for_promoted_candidate",
     "assertion_id_for_session_metadata",
@@ -2107,7 +2188,6 @@ __all__ = [
     "assertion_id_for_session_tag",
     "assertion_id_for_suppression",
     "assertion_id_for_pathology_finding",
-    "assertion_id_for_finding",
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
@@ -2136,6 +2216,7 @@ __all__ = [
     "upsert_assertion",
     "upsert_blackboard_note",
     "upsert_correction",
+    "upsert_findings_as_assertions",
     "upsert_mark",
     "upsert_recall_pack",
     "upsert_saved_view",
@@ -2143,8 +2224,6 @@ __all__ = [
     "upsert_session_tag_assertion",
     "upsert_suppression",
     "upsert_pathology_findings_as_assertions",
-    "FindingAssertionInput",
-    "upsert_findings_as_assertions",
     "upsert_transform_candidate_assertions",
     "upsert_workspace",
 ]
