@@ -185,7 +185,29 @@ CREATE TABLE history_sidecars (
     content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32)
 ) STRICT;
 
-INSERT INTO raw_sessions SELECT * FROM raw_sessions_v7;
+-- v7 appended ``predecessor_source_revision`` after ``revision_authority``;
+-- the canonical v9 table places it with the other predecessor fields.  Never
+-- copy this durable row positionally: doing so shifts a nullable predecessor
+-- value into the NOT NULL authority column and corrupts the remaining
+-- revision envelope.
+INSERT INTO raw_sessions (
+    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+    acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error, validated_at_ms,
+    validation_status, validation_error, validation_drift_count, validation_mode,
+    detection_warnings_json, logical_source_key, revision_kind, source_revision,
+    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+    append_start_offset, append_end_offset, acquisition_generation,
+    revision_authority, capture_mode
+)
+SELECT
+    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+    acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error, validated_at_ms,
+    validation_status, validation_error, validation_drift_count, validation_mode,
+    detection_warnings_json, logical_source_key, revision_kind, source_revision,
+    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+    append_start_offset, append_end_offset, acquisition_generation,
+    revision_authority, capture_mode
+FROM raw_sessions_v7;
 INSERT INTO raw_session_memberships SELECT * FROM raw_session_memberships_v7;
 INSERT INTO raw_membership_census SELECT * FROM raw_membership_census_v7;
 INSERT INTO raw_artifacts SELECT * FROM raw_artifacts_v7;
