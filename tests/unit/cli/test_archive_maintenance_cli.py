@@ -1326,7 +1326,7 @@ def test_missing_raw_blob_cursor_repair_apply_deletes_only_cursor(
         assert conn.execute("SELECT 1 FROM raw_sessions WHERE source_path = ?", (str(source),)).fetchone() == (1,)
 
 
-def test_untyped_accepted_raw_repair_cli_dry_run_is_bounded_json(
+def test_quarantined_accepted_raw_repair_cli_dry_run_is_bounded_json(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
@@ -1338,7 +1338,7 @@ def test_untyped_accepted_raw_repair_cli_dry_run_is_bounded_json(
             "--plain",
             "ops",
             "maintenance",
-            "untyped-accepted-raws",
+            "quarantined-accepted-raws",
             "--raw-id",
             raw_id,
             "--output-format",
@@ -1355,7 +1355,7 @@ def test_untyped_accepted_raw_repair_cli_dry_run_is_bounded_json(
     assert payload["items"][0]["raw_id"] == raw_id
 
 
-def test_untyped_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
+def test_quarantined_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
@@ -1363,7 +1363,7 @@ def test_untyped_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
     raw_id = "a" * 64
     missing_receipt = cli_runner.invoke(
         cli,
-        ["--plain", "ops", "maintenance", "untyped-accepted-raws", "--raw-id", raw_id, "--apply"],
+        ["--plain", "ops", "maintenance", "quarantined-accepted-raws", "--raw-id", raw_id, "--apply"],
     )
     assert missing_receipt.exit_code == 2
     assert "--receipt" in missing_receipt.output
@@ -1373,7 +1373,7 @@ def test_untyped_accepted_raw_repair_cli_apply_requires_receipt_and_proof(
             "--plain",
             "ops",
             "maintenance",
-            "untyped-accepted-raws",
+            "quarantined-accepted-raws",
             "--raw-id",
             raw_id,
             "--apply",

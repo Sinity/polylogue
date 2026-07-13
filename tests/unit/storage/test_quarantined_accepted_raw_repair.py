@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.repair import repair_untyped_accepted_raws
+from polylogue.storage.repair import repair_quarantined_accepted_raws
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
@@ -51,7 +52,13 @@ def _config(root: Path) -> Config:
     return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
 
 
-def _seed_invalid_head(root: Path, native_id: str = "repair-one", *, multi_session: bool = False) -> str:
+def _seed_invalid_head(
+    root: Path,
+    native_id: str = "repair-one",
+    *,
+    multi_session: bool = False,
+    typed_quarantined: bool = True,
+) -> str:
     initialize_active_archive_root(root)
     records = [_chatgpt_session(native_id, "proof text")]
     if multi_session:
@@ -99,6 +106,37 @@ def _seed_invalid_head(root: Path, native_id: str = "repair-one", *, multi_sessi
             decided_at_ms=decided_at_ms,
         )
         archive.commit()
+    with sqlite3.connect(root / "source.db") as source:
+        if typed_quarantined:
+            source.execute(
+                """
+                UPDATE raw_sessions
+                SET logical_source_key = ?, revision_kind = 'full', source_revision = ?,
+                    baseline_raw_id = NULL, acquisition_generation = 0,
+                    revision_authority = 'quarantined'
+                WHERE raw_id = ?
+                """,
+                (logical_source_key, source_revision, raw_id),
+            )
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'quarantined')
+            """,
+            (raw_id, logical_source_key, native_id, content_hash.hex(), content_hash, len(session.messages)),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms
+            ) VALUES (?, 'revision-membership-v1', 'complete', 1, 0)
+            """,
+            (raw_id,),
+        )
+        source.commit()
     return raw_id
 
 
@@ -124,8 +162,11 @@ def _raw_session_row(root: Path, raw_id: str) -> dict[str, object]:
     return dict(row)
 
 
-def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_path: Path) -> None:
-    raw_id = _seed_invalid_head(tmp_path)
+@pytest.mark.parametrize("typed_quarantined", [False, True])
+def test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(
+    tmp_path: Path, typed_quarantined: bool
+) -> None:
+    raw_id = _seed_invalid_head(tmp_path, typed_quarantined=typed_quarantined)
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute(
             """
@@ -141,9 +182,9 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
     before = _logical_state(tmp_path, raw_id)
     before_raw = _raw_session_row(tmp_path, raw_id)
 
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
 
-    assert dry_run.eligible_count == 1
+    assert dry_run.eligible_count == 1, dry_run.items[0].reason
     assert dry_run.items[0].proof_digest
     assert dry_run.items[0].application_decision_id
     assert dry_run.items[0].origin == "chatgpt-export"
@@ -158,9 +199,9 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
     assert dry_run.items[0].application_witness.detail == "newest unique byte-proven full baseline"
     assert _logical_state(tmp_path, raw_id) == before
 
-    receipt_path = tmp_path / "recovery" / "untyped-raw-repair.jsonl"
+    receipt_path = tmp_path / "recovery" / "quarantined-raw-repair.jsonl"
     receipt_path.parent.mkdir()
-    applied = repair_untyped_accepted_raws(
+    applied = repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -202,10 +243,12 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
         "acquisition_generation": 0,
         "revision_authority": "byte_proven",
     }
+    if typed_quarantined:
+        expected_updates = {"baseline_raw_id": raw_id, "revision_authority": "byte_proven"}
     assert {key: after_raw[key] for key in expected_updates} == expected_updates
     assert {key for key in before_raw if before_raw[key] != after_raw[key]} == set(expected_updates)
 
-    reapplied = repair_untyped_accepted_raws(
+    reapplied = repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -229,16 +272,13 @@ def test_untyped_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(tmp_p
         "application",
         "receipt_time",
         "typed_competitor",
-        "typed_quarantined_competitor",
-        "other_session_head",
-        "other_session_application",
         "second_indexed_session",
         "membership",
         "envelope",
         "multi_session",
     ],
 )
-def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
+def test_quarantined_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_invalid_head(tmp_path, multi_session=mutation == "multi_session")
     with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
         if mutation == "head_raw":
@@ -294,44 +334,6 @@ def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutat
                 """,
                 ("1" * 64, "2" * 64, "1" * 64, raw_id),
             )
-        elif mutation == "typed_quarantined_competitor":
-            source.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
-                    logical_source_key, revision_kind, source_revision, baseline_raw_id,
-                    acquisition_generation, revision_authority
-                ) SELECT ?, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
-                         'chatgpt:repair-one', 'full', ?, ?, 1, 'quarantined'
-                  FROM raw_sessions WHERE raw_id = ?
-                """,
-                ("1" * 64, "2" * 64, "1" * 64, raw_id),
-            )
-        elif mutation == "other_session_head":
-            index.execute(
-                """
-                INSERT INTO raw_revision_heads (
-                    logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
-                    accepted_content_hash, accepted_frontier_kind, accepted_frontier,
-                    acquisition_generation, append_end_offset, decided_at_ms
-                ) SELECT 'chatgpt:different-key', session_id, accepted_raw_id,
-                         accepted_source_revision, accepted_content_hash, accepted_frontier_kind,
-                         accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms
-                  FROM raw_revision_heads LIMIT 1
-                """
-            )
-        elif mutation == "other_session_application":
-            index.execute(
-                """
-                INSERT INTO raw_revision_applications (
-                    decision_id, raw_id, session_id, logical_source_key, source_revision,
-                    acquisition_generation, decision, detail, decided_at_ms
-                ) SELECT 'other-session-application', ?, session_id, 'chatgpt:different-key', ?,
-                         acquisition_generation + 1, 'ambiguous', 'test', decided_at_ms + 1
-                  FROM raw_revision_applications LIMIT 1
-                """,
-                ("3" * 64, "4" * 64),
-            )
         elif mutation == "second_indexed_session":
             index.execute(
                 """
@@ -342,11 +344,7 @@ def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutat
             )
         elif mutation == "membership":
             source.execute(
-                """
-                INSERT INTO raw_membership_census (
-                    raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
-                ) VALUES (?, 'test', 'failed', 0, 1, 'ambiguous')
-                """,
+                "UPDATE raw_membership_census SET status = 'failed', member_count = 0, detail = 'ambiguous' WHERE raw_id = ?",
                 (raw_id,),
             )
         elif mutation == "envelope":
@@ -355,40 +353,78 @@ def test_untyped_accepted_raw_repair_mutations_fail_closed(tmp_path: Path, mutat
         index.commit()
     before = _logical_state(tmp_path, raw_id)
 
-    report = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    report = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
 
     assert report.ineligible_count == 1
     assert _logical_state(tmp_path, raw_id) == before
 
 
-def test_untyped_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
+def test_quarantined_accepted_raw_repair_preserves_parallel_provenance_context(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        source.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                logical_source_key, revision_kind, source_revision,
+                acquisition_generation, revision_authority
+            ) SELECT ?, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                     logical_source_key, 'full', ?, 0, 'quarantined'
+              FROM raw_sessions WHERE raw_id = ?
+            """,
+            ("1" * 64, "2" * 64, raw_id),
+        )
+        index.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) SELECT 'chatgpt:parallel-provenance', session_id, ?, ?,
+                     accepted_content_hash, 'semantic', 1, 0, NULL, decided_at_ms - 1
+              FROM raw_revision_heads LIMIT 1
+            """,
+            ("3" * 64, "4" * 64),
+        )
+        source.commit()
+        index.commit()
+
+    report = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
+
+    assert report.eligible_count == 1, report.items[0].reason
+    assert report.items[0].parallel_session_head_count == 1
+    assert report.items[0].quarantined_sibling_raw_count == 1
+    assert report.items[0].authority_context_digest
+
+
+def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _seed_invalid_head(tmp_path, "first")
     second = _seed_invalid_head(tmp_path, "second")
     with pytest.raises(ValueError, match="duplicate"):
-        repair_untyped_accepted_raws(_config(tmp_path), [first, first])
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [first, second])
+        repair_quarantined_accepted_raws(_config(tmp_path), [first, first])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [first, second])
     before = _logical_state(tmp_path, first)
     receipt = tmp_path / "rollback-receipt.jsonl"
 
     from polylogue.storage import repair as repair_module
 
-    original = repair_module._inspect_untyped_accepted_raw
+    original = repair_module._inspect_quarantined_accepted_raw
     calls = 0
 
-    def fail_postproof(*args: object, **kwargs: object):
+    def fail_postproof(archive_root: Path, raw_id: str, *, conn: sqlite3.Connection) -> Any:
         nonlocal calls
         calls += 1
-        item = original(*args, **kwargs)
+        item = original(archive_root, raw_id, conn=conn)
         if calls == 5:
-            return repair_module._untyped_raw_item(item.raw_id, "injected post-proof failure")
+            return repair_module._quarantined_raw_item(item.raw_id, "injected post-proof failure")
         return item
 
-    monkeypatch.setattr(repair_module, "_inspect_untyped_accepted_raw", fail_postproof)
+    monkeypatch.setattr(repair_module, "_inspect_quarantined_accepted_raw", fail_postproof)
     with pytest.raises(RuntimeError, match="terminal state"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [first, second],
             apply=True,
@@ -400,23 +436,23 @@ def test_untyped_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch(
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
 
 
-def test_untyped_accepted_raw_repair_resumes_planned_receipt_after_committed_source(
+def test_quarantined_accepted_raw_repair_resumes_planned_receipt_after_committed_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt = tmp_path / "planned-resume.jsonl"
     from polylogue.storage import repair as repair_module
 
-    original_finish = repair_module._finish_untyped_raw_repair_receipt
+    original_finish = repair_module._finish_quarantined_raw_repair_receipt
     monkeypatch.setattr(
         repair_module,
-        "_finish_untyped_raw_repair_receipt",
+        "_finish_quarantined_raw_repair_receipt",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected terminal append crash")),
     )
     with pytest.raises(RuntimeError, match="terminal append crash"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [raw_id],
             apply=True,
@@ -426,8 +462,8 @@ def test_untyped_accepted_raw_repair_resumes_planned_receipt_after_committed_sou
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
     assert _raw_session_row(tmp_path, raw_id)["revision_authority"] == "byte_proven"
 
-    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", original_finish)
-    resumed = repair_untyped_accepted_raws(
+    monkeypatch.setattr(repair_module, "_finish_quarantined_raw_repair_receipt", original_finish)
+    resumed = repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -440,12 +476,12 @@ def test_untyped_accepted_raw_repair_resumes_planned_receipt_after_committed_sou
     assert records[1]["repaired_raw_ids"] == [raw_id]
 
 
-def test_untyped_accepted_raw_repair_writes_every_receipt_record_in_full(
+def test_quarantined_accepted_raw_repair_writes_every_receipt_record_in_full(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt = tmp_path / "short-write.jsonl"
     from polylogue.storage import repair as repair_module
 
@@ -455,7 +491,7 @@ def test_untyped_accepted_raw_repair_writes_every_receipt_record_in_full(
         return original_write(descriptor, payload[: max(1, min(11, len(payload)))])
 
     monkeypatch.setattr(repair_module, "_receipt_write", short_write)
-    repair_untyped_accepted_raws(
+    repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -466,28 +502,28 @@ def test_untyped_accepted_raw_repair_writes_every_receipt_record_in_full(
     assert [record["state"] for record in records] == ["planned", "applied"]
 
 
-def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
+def test_quarantined_accepted_raw_repair_recovers_preserved_torn_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt = tmp_path / "torn-terminal.jsonl"
     from polylogue.storage import repair as repair_module
 
-    original_finish = repair_module._finish_untyped_raw_repair_receipt
+    original_finish = repair_module._finish_quarantined_raw_repair_receipt
 
     def tear_terminal(locked: Any, *, items: list[Any]) -> None:
         del items
         # A complete JSON prefix without its newline must remain distinguishable
         # from the eventual applied record after recovery seals the torn line.
         repair_module._write_receipt_all(locked.descriptor, b"{}")
-        repair_module.os.fsync(locked.descriptor)
+        os.fsync(locked.descriptor)
         raise RuntimeError("injected torn terminal")
 
-    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", tear_terminal)
+    monkeypatch.setattr(repair_module, "_finish_quarantined_raw_repair_receipt", tear_terminal)
     with pytest.raises(RuntimeError, match="torn terminal"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [raw_id],
             apply=True,
@@ -502,12 +538,12 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
         if locked.torn_terminals and not locked.receipt_terminated:
             repair_module._write_receipt_all(locked.descriptor, b"\xff\n")
         repair_module._write_receipt_all(locked.descriptor, b'{"state":')
-        repair_module.os.fsync(locked.descriptor)
+        os.fsync(locked.descriptor)
         raise RuntimeError("injected torn recovery terminal")
 
-    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", tear_recovery)
+    monkeypatch.setattr(repair_module, "_finish_quarantined_raw_repair_receipt", tear_recovery)
     with pytest.raises(RuntimeError, match="torn recovery terminal"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [raw_id],
             apply=True,
@@ -515,8 +551,8 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
             proof_digest=dry_run.proof_digest,
         )
 
-    monkeypatch.setattr(repair_module, "_finish_untyped_raw_repair_receipt", original_finish)
-    repair_untyped_accepted_raws(
+    monkeypatch.setattr(repair_module, "_finish_quarantined_raw_repair_receipt", original_finish)
+    repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -533,7 +569,7 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
         {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in lines[1:3]
     ]
 
-    reapplied = repair_untyped_accepted_raws(
+    reapplied = repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -543,19 +579,19 @@ def test_untyped_accepted_raw_repair_recovers_preserved_torn_terminal(
     assert reapplied.already_repaired_count == 1
 
 
-def test_untyped_accepted_raw_repair_rejects_torn_terminal_without_source_commit(tmp_path: Path) -> None:
+def test_quarantined_accepted_raw_repair_rejects_torn_terminal_without_source_commit(tmp_path: Path) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt_path = tmp_path / "false-torn-terminal.jsonl"
     from polylogue.storage import repair as repair_module
 
-    locked = repair_module._lock_untyped_raw_repair_receipt(receipt_path, list(dry_run.items))
+    locked = repair_module._lock_quarantined_raw_repair_receipt(receipt_path, list(dry_run.items))
     repair_module._write_receipt_all(locked.descriptor, b'{"state":')
-    repair_module.os.fsync(locked.descriptor)
+    os.fsync(locked.descriptor)
     locked.close()
 
     with pytest.raises(RuntimeError, match="no matching committed source refinement"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [raw_id],
             apply=True,
@@ -576,16 +612,16 @@ def test_untyped_accepted_raw_repair_rejects_torn_terminal_without_source_commit
         (1, "repaired_raw_ids", []),
     ],
 )
-def test_untyped_accepted_raw_repair_rejects_corrupt_receipt_records(
+def test_quarantined_accepted_raw_repair_rejects_corrupt_receipt_records(
     tmp_path: Path,
     record_index: int,
     field: str,
     value: object,
 ) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt = tmp_path / "corrupt.jsonl"
-    repair_untyped_accepted_raws(
+    repair_quarantined_accepted_raws(
         _config(tmp_path),
         [raw_id],
         apply=True,
@@ -597,7 +633,7 @@ def test_untyped_accepted_raw_repair_rejects_corrupt_receipt_records(
     receipt.write_text("".join(json.dumps(record) + "\n" for record in records))
 
     with pytest.raises(RuntimeError, match="receipt"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [raw_id],
             apply=True,
@@ -606,16 +642,16 @@ def test_untyped_accepted_raw_repair_rejects_corrupt_receipt_records(
         )
 
 
-def test_untyped_accepted_raw_repair_serializes_one_receipt_inode(tmp_path: Path) -> None:
+def test_quarantined_accepted_raw_repair_serializes_one_receipt_inode(tmp_path: Path) -> None:
     raw_id = _seed_invalid_head(tmp_path)
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [raw_id])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [raw_id])
     receipt_path = tmp_path / "locked.jsonl"
     from polylogue.storage import repair as repair_module
 
-    locked = repair_module._lock_untyped_raw_repair_receipt(receipt_path, list(dry_run.items))
+    locked = repair_module._lock_quarantined_raw_repair_receipt(receipt_path, list(dry_run.items))
     try:
         with pytest.raises(RuntimeError, match="already locked"):
-            repair_untyped_accepted_raws(
+            repair_quarantined_accepted_raws(
                 _config(tmp_path),
                 [raw_id],
                 apply=True,
@@ -627,17 +663,17 @@ def test_untyped_accepted_raw_repair_serializes_one_receipt_inode(tmp_path: Path
         locked.close()
 
 
-def test_untyped_accepted_raw_repair_cas_failure_rolls_back_entire_batch(
+def test_quarantined_accepted_raw_repair_cas_failure_rolls_back_entire_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _seed_invalid_head(tmp_path, "cas-first")
     second = _seed_invalid_head(tmp_path, "cas-second")
-    dry_run = repair_untyped_accepted_raws(_config(tmp_path), [first, second])
+    dry_run = repair_quarantined_accepted_raws(_config(tmp_path), [first, second])
     before = {raw_id: _raw_session_row(tmp_path, raw_id) for raw_id in (first, second)}
     from polylogue.storage import repair as repair_module
 
-    original = repair_module._cas_refine_untyped_accepted_raw
+    original = repair_module._cas_refine_quarantined_accepted_raw
     calls = 0
 
     def fail_second(conn: sqlite3.Connection, item: Any) -> None:
@@ -647,9 +683,9 @@ def test_untyped_accepted_raw_repair_cas_failure_rolls_back_entire_batch(
             raise RuntimeError("injected CAS failure")
         original(conn, item)
 
-    monkeypatch.setattr(repair_module, "_cas_refine_untyped_accepted_raw", fail_second)
+    monkeypatch.setattr(repair_module, "_cas_refine_quarantined_accepted_raw", fail_second)
     with pytest.raises(RuntimeError, match="injected CAS failure"):
-        repair_untyped_accepted_raws(
+        repair_quarantined_accepted_raws(
             _config(tmp_path),
             [first, second],
             apply=True,
@@ -660,7 +696,7 @@ def test_untyped_accepted_raw_repair_cas_failure_rolls_back_entire_batch(
 
 
 @pytest.mark.parametrize("limit_kind", ["target", "aggregate"])
-def test_untyped_accepted_raw_repair_checks_blob_budget_before_read(
+def test_quarantined_accepted_raw_repair_checks_blob_budget_before_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     limit_kind: str,
@@ -670,14 +706,14 @@ def test_untyped_accepted_raw_repair_checks_blob_budget_before_read(
         raw_ids.append(_seed_invalid_head(tmp_path, "budget-second"))
     from polylogue.storage import repair as repair_module
 
-    blob_sizes = [_raw_session_row(tmp_path, raw_id)["blob_size"] for raw_id in raw_ids]
+    blob_sizes = [int(str(_raw_session_row(tmp_path, raw_id)["blob_size"])) for raw_id in raw_ids]
     if limit_kind == "target":
-        monkeypatch.setattr(repair_module, "_UNTYPED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES", int(blob_sizes[0]) - 1)
+        monkeypatch.setattr(repair_module, "_QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES", int(blob_sizes[0]) - 1)
     else:
         monkeypatch.setattr(
-            repair_module, "_UNTYPED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES", sum(map(int, blob_sizes)) - 1
+            repair_module, "_QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES", sum(blob_sizes) - 1
         )
     monkeypatch.setattr(BlobStore, "read_all", lambda *args, **kwargs: pytest.fail("blob was read before budget check"))
 
     with pytest.raises(RuntimeError, match="blob limit"):
-        repair_untyped_accepted_raws(_config(tmp_path), raw_ids)
+        repair_quarantined_accepted_raws(_config(tmp_path), raw_ids)

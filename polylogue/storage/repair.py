@@ -59,15 +59,15 @@ _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
-_UNTYPED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_untyped_raw_exact_byte_and_semantic_proof"
-_UNTYPED_ACCEPTED_RAW_REPAIR_LIMIT = 100
-_UNTYPED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
-_UNTYPED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
-_UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.untyped-accepted-raw-repair.v1"
+_QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
+_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
+_QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
+_QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
+_QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA = "polylogue.quarantined-accepted-raw-repair.v1"
 
 
 @dataclass(frozen=True, slots=True)
-class UntypedAcceptedRawArtifactWitness:
+class QuarantinedAcceptedRawArtifactWitness:
     artifact_id: str
     origin: str
     source_path: str
@@ -87,7 +87,7 @@ class UntypedAcceptedRawArtifactWitness:
 
 
 @dataclass(frozen=True, slots=True)
-class UntypedAcceptedRawApplicationWitness:
+class QuarantinedAcceptedRawApplicationWitness:
     decision_id: str
     raw_id: str
     session_id: str
@@ -106,7 +106,7 @@ class UntypedAcceptedRawApplicationWitness:
 
 
 @dataclass(frozen=True, slots=True)
-class UntypedAcceptedRawRepairItem:
+class QuarantinedAcceptedRawRepairItem:
     raw_id: str
     status: str
     reason: str
@@ -120,7 +120,7 @@ class UntypedAcceptedRawRepairItem:
     blob_ref_hash: str | None = None
     blob_ref_source_path: str | None = None
     blob_ref_size: int | None = None
-    artifact_witnesses: tuple[UntypedAcceptedRawArtifactWitness, ...] = ()
+    artifact_witnesses: tuple[QuarantinedAcceptedRawArtifactWitness, ...] = ()
     accepted_source_revision: str | None = None
     accepted_content_hash: str | None = None
     accepted_frontier_kind: str | None = None
@@ -128,13 +128,17 @@ class UntypedAcceptedRawRepairItem:
     head_decided_at_ms: int | None = None
     acquisition_generation: int | None = None
     application_decision_id: str | None = None
-    application_witness: UntypedAcceptedRawApplicationWitness | None = None
+    application_witness: QuarantinedAcceptedRawApplicationWitness | None = None
+    authority_context_digest: str | None = None
+    parallel_session_head_count: int = 0
+    quarantined_sibling_raw_count: int = 0
+    membership_row_count: int = 0
     proof_digest: str | None = None
     repaired: bool = False
 
 
 @dataclass(frozen=True, slots=True)
-class UntypedAcceptedRawRepairReport:
+class QuarantinedAcceptedRawRepairReport:
     mode: str
     requested_count: int
     eligible_count: int
@@ -143,11 +147,11 @@ class UntypedAcceptedRawRepairReport:
     ineligible_count: int
     proof_digest: str
     receipt_path: str | None
-    items: tuple[UntypedAcceptedRawRepairItem, ...]
+    items: tuple[QuarantinedAcceptedRawRepairItem, ...]
 
 
-def _untyped_raw_item(raw_id: str, reason: str) -> UntypedAcceptedRawRepairItem:
-    return UntypedAcceptedRawRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
+def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
+    return QuarantinedAcceptedRawRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
 
 
 def _bytes_value(value: object) -> bytes:
@@ -158,12 +162,22 @@ def _bytes_value(value: object) -> bytes:
     raise ValueError("expected SQLite BLOB value")
 
 
+def _authority_rows_digest(*row_sets: list[sqlite3.Row]) -> str:
+    def value_payload(value: object) -> object:
+        if isinstance(value, (bytes, memoryview)):
+            return {"blob_hex": bytes(value).hex()}
+        return value
+
+    payload = [[{key: value_payload(row[key]) for key in row} for row in rows] for rows in row_sets]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def _attach_repair_index(conn: sqlite3.Connection, index_db: Path) -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
 
 
-def _validate_untyped_raw_repair_blob_budget(conn: sqlite3.Connection, raw_ids: list[str]) -> None:
+def _validate_quarantined_raw_repair_blob_budget(conn: sqlite3.Connection, raw_ids: list[str]) -> None:
     """Reject a bounded repair set before any retained blob is loaded into memory."""
     rows = conn.execute(
         """
@@ -173,18 +187,18 @@ def _validate_untyped_raw_repair_blob_budget(conn: sqlite3.Connection, raw_ids: 
         (json.dumps(raw_ids),),
     ).fetchall()
     oversized = [
-        str(row["raw_id"]) for row in rows if int(row["blob_size"]) > _UNTYPED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
+        str(row["raw_id"]) for row in rows if int(row["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES
     ]
     if oversized:
         raise RuntimeError(
-            "untyped accepted raw repair exceeds the per-target retained-blob limit: " + ", ".join(oversized)
+            "quarantined accepted raw repair exceeds the per-target retained-blob limit: " + ", ".join(oversized)
         )
     total = sum(int(row["blob_size"]) for row in rows)
-    if total > _UNTYPED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
-        raise RuntimeError("untyped accepted raw repair exceeds the aggregate retained-blob limit")
+    if total > _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES:
+        raise RuntimeError("quarantined accepted raw repair exceeds the aggregate retained-blob limit")
 
 
-def _proof_digest(item: UntypedAcceptedRawRepairItem) -> str:
+def _proof_digest(item: QuarantinedAcceptedRawRepairItem) -> str:
     payload = {
         key: value
         for key, value in dataclasses.asdict(item).items()
@@ -193,12 +207,12 @@ def _proof_digest(item: UntypedAcceptedRawRepairItem) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _inspect_untyped_accepted_raw(
+def _inspect_quarantined_accepted_raw(
     archive_root: Path,
     raw_id: str,
     *,
     conn: sqlite3.Connection,
-) -> UntypedAcceptedRawRepairItem:
+) -> QuarantinedAcceptedRawRepairItem:
     """Prove one accepted head against source main + attached read-only index."""
     try:
         raw = conn.execute(
@@ -213,7 +227,7 @@ def _inspect_untyped_accepted_raw(
             (raw_id,),
         ).fetchone()
         if raw is None:
-            return _untyped_raw_item(raw_id, "raw row is missing")
+            return _quarantined_raw_item(raw_id, "raw row is missing")
         heads = conn.execute(
             """
             SELECT logical_source_key, session_id, accepted_raw_id,
@@ -225,7 +239,7 @@ def _inspect_untyped_accepted_raw(
             (raw_id,),
         ).fetchall()
         if len(heads) != 1:
-            return _untyped_raw_item(raw_id, f"expected one accepted head, found {len(heads)}")
+            return _quarantined_raw_item(raw_id, f"expected one accepted head, found {len(heads)}")
         head = heads[0]
         logical_source_key = str(head["logical_source_key"])
         session_id = str(head["session_id"])
@@ -234,7 +248,7 @@ def _inspect_untyped_accepted_raw(
             (raw_id,),
         ).fetchall()
         if len(session_rows) != 1 or str(session_rows[0]["session_id"]) != session_id:
-            return _untyped_raw_item(raw_id, "accepted head is not the raw's unique indexed session")
+            return _quarantined_raw_item(raw_id, "accepted head is not the raw's unique indexed session")
         session_row = session_rows[0]
         applications = conn.execute(
             """
@@ -243,42 +257,61 @@ def _inspect_untyped_accepted_raw(
                    accepted_source_revision, accepted_content_hash, append_end_offset,
                    baseline_raw_id, predecessor_raw_id, detail, decided_at_ms
             FROM index_tier.raw_revision_applications
-            WHERE raw_id = ? OR accepted_raw_id = ? OR logical_source_key = ? OR session_id = ?
+            WHERE raw_id = ? OR accepted_raw_id = ? OR logical_source_key = ?
             """,
-            (raw_id, raw_id, logical_source_key, session_id),
+            (raw_id, raw_id, logical_source_key),
         ).fetchall()
         if len(applications) != 1:
-            return _untyped_raw_item(raw_id, "competing raw-revision application authority exists")
+            return _quarantined_raw_item(raw_id, "competing raw-revision application authority exists")
         receipt = applications[0]
         competing_head_count = int(
             conn.execute(
                 """
                 SELECT COUNT(*) FROM index_tier.raw_revision_heads
-                WHERE session_id = ?
-                  AND NOT (accepted_raw_id = ? AND logical_source_key = ?)
+                WHERE logical_source_key = ?
+                  AND NOT (accepted_raw_id = ? AND session_id = ?)
                 """,
-                (session_id, raw_id, logical_source_key),
+                (logical_source_key, raw_id, session_id),
             ).fetchone()[0]
         )
-        competing_revision_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) FROM raw_sessions
-                WHERE raw_id != ? AND logical_source_key = ?
-                """,
-                (raw_id, logical_source_key),
-            ).fetchone()[0]
-        )
-        membership_count = int(
-            conn.execute(
-                """
-                SELECT
-                  (SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id = ? OR logical_source_key = ?)
-                  + (SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?)
-                """,
-                (raw_id, logical_source_key, raw_id),
-            ).fetchone()[0]
-        )
+        parallel_session_heads = conn.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                   accepted_content_hash, accepted_frontier_kind, accepted_frontier, decided_at_ms
+            FROM index_tier.raw_revision_heads
+            WHERE session_id = ? AND logical_source_key != ?
+            ORDER BY logical_source_key
+            """,
+            (session_id, logical_source_key),
+        ).fetchall()
+        competing_revision_rows = conn.execute(
+            """
+            SELECT raw_id, logical_source_key, revision_kind, source_revision,
+                   baseline_raw_id, acquisition_generation, revision_authority
+            FROM raw_sessions
+            WHERE raw_id != ? AND logical_source_key = ?
+            ORDER BY raw_id
+            """,
+            (raw_id, logical_source_key),
+        ).fetchall()
+        membership_rows = conn.execute(
+            """
+            SELECT raw_id, logical_source_key, provider_session_id, source_revision,
+                   normalized_content_hash, message_count, predecessor_raw_id,
+                   acquisition_generation, revision_authority, decision, decided_at_ms
+            FROM raw_session_memberships
+            WHERE raw_id = ? OR logical_source_key = ?
+            ORDER BY logical_source_key, raw_id
+            """,
+            (raw_id, logical_source_key),
+        ).fetchall()
+        census_rows = conn.execute(
+            """
+            SELECT raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            FROM raw_membership_census WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchall()
         blob_ref_rows = conn.execute(
             """
             SELECT blob_hash, source_path, size_bytes FROM blob_refs
@@ -298,7 +331,8 @@ def _inspect_untyped_accepted_raw(
             (raw_id,),
         ).fetchall()
     except sqlite3.Error as exc:
-        return _untyped_raw_item(raw_id, f"authority tiers are unreadable: {exc}")
+        logger.warning("quarantined raw repair authority read failed", raw_id=raw_id, error=str(exc))
+        return _quarantined_raw_item(raw_id, f"authority tiers are unreadable: {exc}")
 
     try:
         accepted_hash = _bytes_value(head["accepted_content_hash"])
@@ -306,7 +340,7 @@ def _inspect_untyped_accepted_raw(
         receipt_hash = _bytes_value(receipt["accepted_content_hash"])
         blob_hash_bytes = _bytes_value(raw["blob_hash"])
     except ValueError as exc:
-        return _untyped_raw_item(raw_id, str(exc))
+        return _quarantined_raw_item(raw_id, str(exc))
     accepted_revision = str(head["accepted_source_revision"])
     generation = int(head["acquisition_generation"])
     expected_envelope = (
@@ -333,6 +367,18 @@ def _inspect_untyped_accepted_raw(
         raw["acquisition_generation"],
         str(raw["revision_authority"]),
     )
+    quarantined_envelope = (
+        logical_source_key,
+        RawRevisionKind.FULL.value,
+        accepted_revision,
+        None,
+        None,
+        None,
+        None,
+        None,
+        generation,
+        RawRevisionAuthority.QUARANTINED.value,
+    )
     untyped_envelope = (
         None,
         RawRevisionKind.UNKNOWN.value,
@@ -345,14 +391,14 @@ def _inspect_untyped_accepted_raw(
         None,
         RawRevisionAuthority.QUARANTINED.value,
     )
-    if actual_envelope not in {untyped_envelope, expected_envelope}:
-        return _untyped_raw_item(raw_id, "source raw has a non-null or incompatible authority envelope")
+    if actual_envelope not in {untyped_envelope, quarantined_envelope, expected_envelope}:
+        return _quarantined_raw_item(raw_id, "source raw has an incompatible typed authority envelope")
     if str(head["accepted_frontier_kind"]) != "byte" or head["append_end_offset"] is not None:
-        return _untyped_raw_item(raw_id, "accepted head is not a full byte frontier")
+        return _quarantined_raw_item(raw_id, "accepted head is not a full byte frontier")
     if int(raw["source_index"]) < 0 or int(raw["blob_size"]) != int(head["accepted_frontier"]):
-        return _untyped_raw_item(raw_id, "raw shape or byte length differs from the accepted full frontier")
+        return _quarantined_raw_item(raw_id, "raw shape or byte length differs from the accepted full frontier")
     if accepted_hash != stored_hash or accepted_hash != receipt_hash:
-        return _untyped_raw_item(raw_id, "head, session, and application content hashes disagree")
+        return _quarantined_raw_item(raw_id, "head, session, and application content hashes disagree")
     expected_receipt = (
         raw_id,
         session_id,
@@ -384,11 +430,22 @@ def _inspect_untyped_accepted_raw(
         int(receipt["decided_at_ms"]),
     )
     if actual_receipt != expected_receipt:
-        return _untyped_raw_item(raw_id, "immutable baseline receipt does not exactly match the accepted head")
-    if competing_head_count or competing_revision_count or membership_count:
-        return _untyped_raw_item(raw_id, "competing typed or membership authority exists")
+        return _quarantined_raw_item(raw_id, "immutable baseline receipt does not exactly match the accepted head")
+    if competing_head_count or any(str(row["revision_authority"]) != "quarantined" for row in competing_revision_rows):
+        return _quarantined_raw_item(raw_id, "competing accepted or byte-proven source authority exists")
+    target_memberships = [row for row in membership_rows if str(row["raw_id"]) == raw_id]
+    if len(target_memberships) != 1 or len(census_rows) != 1:
+        return _quarantined_raw_item(raw_id, "expected one target membership and one membership census")
+    membership = target_memberships[0]
+    census = census_rows[0]
+    if (
+        str(census["status"]) != "complete"
+        or int(census["member_count"]) != 1
+        or any(row["decision"] == "applied" and str(row["raw_id"]) != raw_id for row in membership_rows)
+    ):
+        return _quarantined_raw_item(raw_id, "membership authority is failed, ambiguous, or competitively applied")
     if len(blob_ref_rows) != 1:
-        return _untyped_raw_item(raw_id, "expected exactly one raw-payload blob reference")
+        return _quarantined_raw_item(raw_id, "expected exactly one raw-payload blob reference")
     blob_ref = blob_ref_rows[0]
     if (
         _bytes_value(blob_ref["blob_hash"]) != blob_hash_bytes
@@ -401,13 +458,13 @@ def _inspect_untyped_accepted_raw(
             for artifact in artifact_rows
         )
     ):
-        return _untyped_raw_item(raw_id, "raw row, blob reference, and artifact identity disagree")
+        return _quarantined_raw_item(raw_id, "raw row, blob reference, and artifact identity disagree")
 
     blob_hash = blob_hash_bytes.hex()
-    if int(raw["blob_size"]) > _UNTYPED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
-        return _untyped_raw_item(raw_id, "retained raw exceeds the per-target repair byte limit")
+    if int(raw["blob_size"]) > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
+        return _quarantined_raw_item(raw_id, "retained raw exceeds the per-target repair byte limit")
     artifact_witnesses = tuple(
-        UntypedAcceptedRawArtifactWitness(
+        QuarantinedAcceptedRawArtifactWitness(
             artifact_id=str(artifact["artifact_id"]),
             origin=str(artifact["origin"]),
             source_path=str(artifact["source_path"]),
@@ -431,10 +488,10 @@ def _inspect_untyped_accepted_raw(
     )
     blob_store = BlobStore(archive_root / "blob")
     if not blob_store.exists(blob_hash) or not blob_store.verify(blob_hash):
-        return _untyped_raw_item(raw_id, "retained raw blob is missing or fails its content hash")
+        return _quarantined_raw_item(raw_id, "retained raw blob is missing or fails its content hash")
     payload = blob_store.read_all(blob_hash)
     if len(payload) != int(raw["blob_size"]) or hashlib.sha256(payload).hexdigest() != accepted_revision:
-        return _untyped_raw_item(raw_id, "retained bytes do not prove the accepted source revision")
+        return _quarantined_raw_item(raw_id, "retained bytes do not prove the accepted source revision")
     try:
         origin = Origin.from_string(str(raw["origin"]))
         provider = provider_from_origin(origin)
@@ -449,9 +506,10 @@ def _inspect_untyped_accepted_raw(
         )
         sessions = [_normalized_session(session, fallback_timestamp=fallback_timestamp) for session in sessions]
     except Exception as exc:
-        return _untyped_raw_item(raw_id, f"retained raw did not normalize cleanly: {type(exc).__name__}: {exc}")
+        logger.warning("quarantined raw repair normalization failed", raw_id=raw_id, error=str(exc))
+        return _quarantined_raw_item(raw_id, f"retained raw did not normalize cleanly: {type(exc).__name__}: {exc}")
     if len(sessions) != 1:
-        return _untyped_raw_item(raw_id, f"retained raw normalized to {len(sessions)} sessions instead of one")
+        return _quarantined_raw_item(raw_id, f"retained raw normalized to {len(sessions)} sessions instead of one")
     parsed = sessions[0]
     if (
         origin_from_provider(parsed.source_name) != origin
@@ -459,16 +517,29 @@ def _inspect_untyped_accepted_raw(
         or f"{provider.value}:{parsed.provider_session_id}" != logical_source_key
         or bytes.fromhex(session_content_hash(parsed)) != accepted_hash
     ):
-        return _untyped_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")
+        return _quarantined_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")
+    parsed_logical_source_key = f"{parsed.source_name.value}:{parsed.provider_session_id}"
+    if (
+        str(membership["logical_source_key"]) != parsed_logical_source_key
+        or str(membership["provider_session_id"]) != parsed.provider_session_id
+        or _bytes_value(membership["normalized_content_hash"]) != accepted_hash
+        or str(membership["source_revision"]) != accepted_hash.hex()
+        or int(membership["message_count"]) != len(parsed.messages)
+        or membership["predecessor_raw_id"] is not None
+        or int(membership["acquisition_generation"]) != generation
+        or str(membership["revision_authority"]) != "quarantined"
+        or membership["decision"] == "applied"
+    ):
+        return _quarantined_raw_item(raw_id, "membership evidence does not match the normalized accepted session")
 
     status = "already_repaired" if actual_envelope == expected_envelope else "eligible"
-    item = UntypedAcceptedRawRepairItem(
+    item = QuarantinedAcceptedRawRepairItem(
         raw_id=raw_id,
         status=status,
         reason=(
             "source envelope already matches the proven accepted head"
             if status == "already_repaired"
-            else _UNTYPED_ACCEPTED_RAW_REPAIR_DETAIL
+            else _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL
         ),
         logical_source_key=logical_source_key,
         session_id=session_id,
@@ -488,7 +559,7 @@ def _inspect_untyped_accepted_raw(
         head_decided_at_ms=int(head["decided_at_ms"]),
         acquisition_generation=generation,
         application_decision_id=str(receipt["decision_id"]),
-        application_witness=UntypedAcceptedRawApplicationWitness(
+        application_witness=QuarantinedAcceptedRawApplicationWitness(
             decision_id=str(receipt["decision_id"]),
             raw_id=str(receipt["raw_id"]),
             session_id=str(receipt["session_id"]),
@@ -507,11 +578,21 @@ def _inspect_untyped_accepted_raw(
             detail=str(receipt["detail"]),
             decided_at_ms=int(receipt["decided_at_ms"]),
         ),
+        authority_context_digest=_authority_rows_digest(
+            applications,
+            parallel_session_heads,
+            competing_revision_rows,
+            membership_rows,
+            census_rows,
+        ),
+        parallel_session_head_count=len(parallel_session_heads),
+        quarantined_sibling_raw_count=len(competing_revision_rows),
+        membership_row_count=len(membership_rows),
     )
     return dataclasses.replace(item, proof_digest=_proof_digest(item))
 
 
-def _repair_receipt_targets(items: list[UntypedAcceptedRawRepairItem]) -> list[dict[str, object]]:
+def _repair_receipt_targets(items: list[QuarantinedAcceptedRawRepairItem]) -> list[dict[str, object]]:
     targets = [
         {key: value for key, value in dataclasses.asdict(item).items() if key not in {"reason", "repaired", "status"}}
         for item in items
@@ -519,7 +600,7 @@ def _repair_receipt_targets(items: list[UntypedAcceptedRawRepairItem]) -> list[d
     return cast(list[dict[str, object]], json.loads(json.dumps(targets, sort_keys=True)))
 
 
-def _repair_proof_digest(items: list[UntypedAcceptedRawRepairItem]) -> str:
+def _repair_proof_digest(items: list[QuarantinedAcceptedRawRepairItem]) -> str:
     proof_digests = [item.proof_digest for item in items]
     return hashlib.sha256(json.dumps(proof_digests, separators=(",", ":")).encode()).hexdigest()
 
@@ -533,7 +614,7 @@ def _fsync_parent(path: Path) -> None:
 
 
 @dataclass(slots=True)
-class _LockedUntypedRawRepairReceipt:
+class _LockedQuarantinedRawRepairReceipt:
     path: Path
     descriptor: int
     target_hash: str
@@ -605,7 +686,7 @@ def _validate_repair_receipt_records(
     if not isinstance(planned, dict):
         raise RuntimeError("existing repair receipt does not start with valid planned JSON")
     planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_raw_ids", "planned_at_ms"}
-    if set(planned) != planned_keys or planned.get("schema") != _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
+    if set(planned) != planned_keys or planned.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
         raise RuntimeError("existing repair receipt has an invalid planned record schema")
     if planned.get("state") != "planned":
         raise RuntimeError("existing repair receipt must start with a planned record")
@@ -650,7 +731,7 @@ def _validate_repair_receipt_records(
     }
     if recovered:
         applied_keys |= {"torn_terminals"}
-    if set(applied) != applied_keys or applied.get("schema") != _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
+    if set(applied) != applied_keys or applied.get("schema") != _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA:
         raise RuntimeError("existing repair receipt has an invalid applied record schema")
     if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
         raise RuntimeError("existing repair receipt has an invalid applied target transition")
@@ -667,10 +748,10 @@ def _validate_repair_receipt_records(
     return True, intent_ids, torn_terminals, terminated
 
 
-def _lock_untyped_raw_repair_receipt(
+def _lock_quarantined_raw_repair_receipt(
     path: Path,
-    items: list[UntypedAcceptedRawRepairItem],
-) -> _LockedUntypedRawRepairReceipt:
+    items: list[QuarantinedAcceptedRawRepairItem],
+) -> _LockedQuarantinedRawRepairReceipt:
     """Lock one stable receipt inode and create or validate its planned record."""
     if path.is_symlink():
         raise RuntimeError("repair receipt path must not be a symbolic link")
@@ -693,7 +774,7 @@ def _lock_untyped_raw_repair_receipt(
             terminal, existing_intent, torn_terminals, terminated = _validate_repair_receipt_records(
                 _receipt_records(descriptor), targets=targets, target_hash=target_hash
             )
-            return _LockedUntypedRawRepairReceipt(
+            return _LockedQuarantinedRawRepairReceipt(
                 path,
                 descriptor,
                 target_hash,
@@ -703,7 +784,7 @@ def _lock_untyped_raw_repair_receipt(
                 terminated,
             )
         planned = {
-            "schema": _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
+            "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
             "state": "planned",
             "target_hash": target_hash,
             "targets": targets,
@@ -714,17 +795,17 @@ def _lock_untyped_raw_repair_receipt(
         _write_receipt_all(descriptor, encoded)
         os.fsync(descriptor)
         _fsync_parent(path)
-        return _LockedUntypedRawRepairReceipt(path, descriptor, target_hash, False, repair_intent_raw_ids)
+        return _LockedQuarantinedRawRepairReceipt(path, descriptor, target_hash, False, repair_intent_raw_ids)
     except Exception:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
         raise
 
 
-def _finish_untyped_raw_repair_receipt(
-    receipt: _LockedUntypedRawRepairReceipt,
+def _finish_quarantined_raw_repair_receipt(
+    receipt: _LockedQuarantinedRawRepairReceipt,
     *,
-    items: list[UntypedAcceptedRawRepairItem],
+    items: list[QuarantinedAcceptedRawRepairItem],
 ) -> None:
     opened = os.fstat(receipt.descriptor)
     named = receipt.path.stat(follow_symlinks=False)
@@ -739,7 +820,7 @@ def _finish_untyped_raw_repair_receipt(
         _write_receipt_all(receipt.descriptor, b"\xff\n")
         preserved_torn_terminals[-1] += b"\xff"
     terminal = {
-        "schema": _UNTYPED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
+        "schema": _QUARANTINED_ACCEPTED_RAW_REPAIR_RECEIPT_SCHEMA,
         "state": "applied",
         "target_hash": receipt.target_hash,
         "applied_at_ms": int(time.time() * 1000),
@@ -758,9 +839,9 @@ def _finish_untyped_raw_repair_receipt(
     _fsync_parent(receipt.path)
 
 
-def _cas_refine_untyped_accepted_raw(
+def _cas_refine_quarantined_accepted_raw(
     source_conn: sqlite3.Connection,
-    item: UntypedAcceptedRawRepairItem,
+    item: QuarantinedAcceptedRawRepairItem,
 ) -> None:
     assert item.logical_source_key is not None
     assert item.accepted_source_revision is not None
@@ -771,37 +852,46 @@ def _cas_refine_untyped_accepted_raw(
         SET logical_source_key = ?, revision_kind = 'full', source_revision = ?,
             baseline_raw_id = raw_id, acquisition_generation = ?,
             revision_authority = 'byte_proven'
-        WHERE raw_id = ? AND logical_source_key IS NULL
-          AND revision_kind = 'unknown' AND source_revision IS NULL
+        WHERE raw_id = ? AND revision_authority = 'quarantined'
           AND predecessor_source_revision IS NULL AND predecessor_raw_id IS NULL
-          AND baseline_raw_id IS NULL AND append_start_offset IS NULL
-          AND append_end_offset IS NULL AND acquisition_generation IS NULL
-          AND revision_authority = 'quarantined'
+          AND append_start_offset IS NULL AND append_end_offset IS NULL
+          AND (
+            (logical_source_key IS NULL AND revision_kind = 'unknown'
+             AND source_revision IS NULL AND baseline_raw_id IS NULL
+             AND acquisition_generation IS NULL)
+            OR
+            (logical_source_key = ? AND revision_kind = 'full'
+             AND source_revision = ? AND baseline_raw_id IS NULL
+             AND acquisition_generation = ?)
+          )
         """,
         (
             item.logical_source_key,
             item.accepted_source_revision,
             item.acquisition_generation,
             item.raw_id,
+            item.logical_source_key,
+            item.accepted_source_revision,
+            item.acquisition_generation,
         ),
     )
     if cursor.rowcount != 1:
         raise RuntimeError(f"source authority CAS failed for {item.raw_id}")
 
 
-def repair_untyped_accepted_raws(
+def repair_quarantined_accepted_raws(
     config: Config,
     raw_ids: list[str],
     *,
     apply: bool = False,
     receipt_path: Path | None = None,
     proof_digest: str | None = None,
-) -> UntypedAcceptedRawRepairReport:
-    """Refine accepted-but-untyped full raws only after exact retained proof."""
+) -> QuarantinedAcceptedRawRepairReport:
+    """Refine accepted untyped or typed-quarantined full raws after exact proof."""
     if len(set(raw_ids)) != len(raw_ids):
         raise ValueError("duplicate raw ids are not allowed")
-    if not raw_ids or len(raw_ids) > _UNTYPED_ACCEPTED_RAW_REPAIR_LIMIT:
-        raise ValueError(f"raw-id list must contain 1..{_UNTYPED_ACCEPTED_RAW_REPAIR_LIMIT} entries")
+    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError(f"raw-id list must contain 1..{_QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT} entries")
     if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
@@ -814,11 +904,11 @@ def repair_untyped_accepted_raws(
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as dry_conn:
         _attach_repair_index(dry_conn, index_db)
-        _validate_untyped_raw_repair_blob_budget(dry_conn, raw_ids)
-        items = [_inspect_untyped_accepted_raw(archive_root, raw_id, conn=dry_conn) for raw_id in raw_ids]
+        _validate_quarantined_raw_repair_blob_budget(dry_conn, raw_ids)
+        items = [_inspect_quarantined_accepted_raw(archive_root, raw_id, conn=dry_conn) for raw_id in raw_ids]
     aggregate_proof = _repair_proof_digest(items)
     if apply and any(item.status == "ineligible" for item in items):
-        raise RuntimeError("untyped accepted raw repair refused because one or more targets are ineligible")
+        raise RuntimeError("quarantined accepted raw repair refused because one or more targets are ineligible")
     if apply and receipt_path is None:
         raise ValueError("apply requires an explicit operator repair receipt path")
     if apply and proof_digest != aggregate_proof:
@@ -827,7 +917,7 @@ def repair_untyped_accepted_raws(
         from polylogue.storage.index_generation import ActiveWriterLease
 
         assert receipt_path is not None
-        receipt = _lock_untyped_raw_repair_receipt(receipt_path, items)
+        receipt = _lock_quarantined_raw_repair_receipt(receipt_path, items)
         try:
             lease = ActiveWriterLease(archive_root)
             lease.acquire()
@@ -837,9 +927,10 @@ def repair_untyped_accepted_raws(
                     _attach_repair_index(source_conn, index_db)
                     source_conn.execute("BEGIN IMMEDIATE")
                     try:
-                        _validate_untyped_raw_repair_blob_budget(source_conn, raw_ids)
+                        _validate_quarantined_raw_repair_blob_budget(source_conn, raw_ids)
                         locked_items = [
-                            _inspect_untyped_accepted_raw(archive_root, raw_id, conn=source_conn) for raw_id in raw_ids
+                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
+                            for raw_id in raw_ids
                         ]
                         if _repair_proof_digest(locked_items) != proof_digest:
                             raise RuntimeError("authority proof changed after acquiring the repair transaction")
@@ -851,9 +942,10 @@ def repair_untyped_accepted_raws(
                             raise RuntimeError("torn terminal receipt has no matching committed source refinement")
                         for item in locked_items:
                             if item.status == "eligible":
-                                _cas_refine_untyped_accepted_raw(source_conn, item)
+                                _cas_refine_quarantined_accepted_raw(source_conn, item)
                         after_items = [
-                            _inspect_untyped_accepted_raw(archive_root, raw_id, conn=source_conn) for raw_id in raw_ids
+                            _inspect_quarantined_accepted_raw(archive_root, raw_id, conn=source_conn)
+                            for raw_id in raw_ids
                         ]
                         if any(item.status != "already_repaired" for item in after_items):
                             raise RuntimeError("source envelope refinement did not reach the proven terminal state")
@@ -868,10 +960,10 @@ def repair_untyped_accepted_raws(
             finally:
                 lease.close()
             if not receipt.terminal:
-                _finish_untyped_raw_repair_receipt(receipt, items=items)
+                _finish_quarantined_raw_repair_receipt(receipt, items=items)
         finally:
             receipt.close()
-    return UntypedAcceptedRawRepairReport(
+    return QuarantinedAcceptedRawRepairReport(
         mode="apply" if apply else "dry-run",
         requested_count=len(items),
         eligible_count=sum(item.status == "eligible" for item in items),

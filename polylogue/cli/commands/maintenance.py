@@ -1599,7 +1599,7 @@ def missing_raw_blob_cursors_command(
         click.echo("Next: restart or run polylogued catch-up.")
 
 
-@maintenance_group.command("untyped-accepted-raws")
+@maintenance_group.command("quarantined-accepted-raws")
 @click.option("--raw-id", "raw_ids", multiple=True, required=True, help="Exact retained raw SHA-256 id (repeatable).")
 @click.option("--apply", "apply_changes", is_flag=True, help="Apply only after every target passes exact proof.")
 @click.option("--proof-digest", help="Exact aggregate digest emitted by the matching dry-run.")
@@ -1617,7 +1617,7 @@ def missing_raw_blob_cursors_command(
     show_default=True,
 )
 @click.pass_obj
-def untyped_accepted_raws_command(
+def quarantined_accepted_raws_command(
     env: AppEnv,
     raw_ids: tuple[str, ...],
     apply_changes: bool,
@@ -1625,7 +1625,7 @@ def untyped_accepted_raws_command(
     receipt_path: Path | None,
     output_format: str,
 ) -> None:
-    """Repair an accepted full raw whose durable source envelope stayed untyped.
+    """Repair a typed accepted full raw whose byte authority stayed quarantined.
 
     The actuator revalidates the existing immutable selected-baseline receipt,
     retained blob bytes, parser-normalized session identity/content, and the
@@ -1640,10 +1640,10 @@ def untyped_accepted_raws_command(
         raise click.UsageError("--apply requires --proof-digest from the exact dry-run")
     root = archive_root()
     config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
-    from polylogue.storage.repair import repair_untyped_accepted_raws
+    from polylogue.storage.repair import repair_quarantined_accepted_raws
 
     try:
-        report = repair_untyped_accepted_raws(
+        report = repair_quarantined_accepted_raws(
             config,
             list(raw_ids),
             apply=apply_changes,
