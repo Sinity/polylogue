@@ -50,16 +50,17 @@ CREATE TABLE IF NOT EXISTS queries (
     grain               TEXT NOT NULL CHECK(length(trim(grain)) > 0),
     lane                TEXT NOT NULL CHECK(length(trim(lane)) > 0),
     rank_policy         TEXT NOT NULL CHECK(length(trim(rank_policy)) > 0),
-    definition_protocol_version TEXT NOT NULL CHECK(length(trim(definition_protocol_version)) > 0),
-    created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0)
+    created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
+    definition_protocol_version TEXT NOT NULL DEFAULT 'polylogue.query-definition.v0'
+        CHECK(length(trim(definition_protocol_version)) > 0)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS query_names (
     name                    TEXT PRIMARY KEY NOT NULL CHECK(length(trim(name)) > 0),
     query_hash              TEXT NOT NULL REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
     supersedes_query_hash   TEXT REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    watch                   INTEGER NOT NULL DEFAULT 0 CHECK(watch IN (0, 1)),
-    updated_at_ms           INTEGER NOT NULL CHECK(updated_at_ms >= 0)
+    updated_at_ms           INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+    watch                   INTEGER NOT NULL DEFAULT 0 CHECK(watch IN (0, 1))
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_query_names_query_hash

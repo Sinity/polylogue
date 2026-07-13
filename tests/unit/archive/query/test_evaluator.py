@@ -149,6 +149,64 @@ def test_retained_query_run_rejects_a_result_set_for_another_query() -> None:
         )
 
 
+def test_retained_query_run_id_cannot_rebind_to_a_different_execution() -> None:
+    conn = _conn()
+    first = put_query(
+        conn,
+        {"field": "title", "value": "first"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    second = put_query(
+        conn,
+        {"field": "title", "value": "second"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    first_result = put_result_set(
+        conn,
+        result_set_id="first-retained",
+        query_hash=first.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:first",),
+        exactness="exact",
+        persistence_class="pinned",
+        created_at_ms=2,
+    )
+    second_result = put_result_set(
+        conn,
+        result_set_id="second-retained",
+        query_hash=second.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:second",),
+        exactness="exact",
+        persistence_class="pinned",
+        created_at_ms=2,
+    )
+    put_retained_query_run(
+        conn,
+        run_id="qr_immutable",
+        query_hash=first.query_hash,
+        result_set_id=first_result.result_set_id,
+        retained_at_ms=3,
+    )
+
+    with pytest.raises(ValueError, match="conflicts"):
+        put_retained_query_run(
+            conn,
+            run_id="qr_immutable",
+            query_hash=second.query_hash,
+            result_set_id=second_result.result_set_id,
+            retained_at_ms=4,
+        )
+
+
 def test_evaluation_request_rejects_an_unsupported_definition_protocol() -> None:
     unsupported = QueryObject(
         query_hash="a" * 64,

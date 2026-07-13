@@ -14,7 +14,13 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     mark_assertion_status,
     upsert_findings_as_assertions,
 )
-from polylogue.storage.sqlite.query_objects import EvaluationReceipt, put_query, put_query_name
+from polylogue.storage.sqlite.query_objects import (
+    EvaluationReceipt,
+    get_result_set_members,
+    get_watched_query_baseline,
+    put_query,
+    put_query_name,
+)
 
 
 class _Evaluator:
@@ -120,7 +126,7 @@ def test_watched_aliases_materialize_one_query_once_per_convergence(tmp_path: Pa
 
 
 def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> None:
-    index_db, _ = _seed_watch(tmp_path)
+    index_db, query_hash = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:a",))
     stage = make_standing_query_stage(index_db, evaluator=evaluator)
     assert stage.execute_sessions is not None
@@ -137,6 +143,19 @@ def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> N
         assert len(rows) == 2
         assert "baseline_ref" in str(rows[1][0])
         assert "result-set:watch-" in str(rows[1][0])
+        baseline = get_watched_query_baseline(conn, query_hash)
+        assert baseline is not None
+        assert get_result_set_members(conn, baseline.result_set_id) == ("session:a",)
+
+    evaluator.members = ("session:b",)
+    assert stage.execute_sessions(("session:changed",)) is True  # A -> B again
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        # Stable finding identity deduplicates the repeated B delta, but the
+        # durable pointer must still advance to B for the next transition.
+        assert conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'finding'").fetchone()[0] == 2
+        baseline = get_watched_query_baseline(conn, query_hash)
+        assert baseline is not None
+        assert get_result_set_members(conn, baseline.result_set_id) == ("session:b",)
 
 
 def test_promoted_expected_count_divergence_targets_original_finding_without_watch(tmp_path: Path) -> None:

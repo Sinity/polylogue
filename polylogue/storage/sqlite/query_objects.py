@@ -335,14 +335,18 @@ def put_retained_query_run(
         raise KeyError(f"result-set:{result_set_id}")
     if result_set.query_hash != query_hash:
         raise ValueError("retained query run result set must belong to the same query")
+    existing = conn.execute(
+        "SELECT query_hash, result_set_id, retained_at_ms FROM retained_query_runs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) == (query_hash, result_set_id, retained_at_ms):
+            return RetainedQueryRun(run_id, query_hash, result_set_id)
+        raise ValueError(f"retained query run id conflicts with a different execution: {run_id}")
     conn.execute(
         """
         INSERT INTO retained_query_runs (run_id, query_hash, result_set_id, retained_at_ms)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(run_id) DO UPDATE SET
-            query_hash = excluded.query_hash,
-            result_set_id = excluded.result_set_id,
-            retained_at_ms = excluded.retained_at_ms
         """,
         (run_id, query_hash, result_set_id, retained_at_ms),
     )
