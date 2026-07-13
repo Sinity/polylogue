@@ -342,6 +342,44 @@ def test_index_generation_promotion_preserves_active_symlink_protocol(tmp_path: 
     assert Path(promoted["generation_target"]).is_relative_to(generations)
 
 
+def test_index_generation_promotion_copies_staging_clone_before_local_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staged index never crosses a device boundary through ``os.replace``."""
+    archive = tmp_path / "archive"
+    staging = tmp_path / "staging"
+    generations = archive / ".index-generations"
+    old_target = generations / "gen-v35" / "index.db"
+    old_target.parent.mkdir(parents=True)
+    staging.mkdir()
+    old_target.write_text("v35", encoding="utf-8")
+    active = archive / "index.db"
+    active.symlink_to(old_target)
+    clone = staging / "prepared-index.db"
+    clone.write_text("v36", encoding="utf-8")
+    real_replace = os.replace
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def reject_cross_device_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        replace_calls.append((source_path, destination_path))
+        if source_path.parent != destination_path.parent:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", reject_cross_device_replace)
+
+    promoted = _promote_index_generation(clone, active)
+
+    assert active.is_symlink()
+    assert active.resolve().read_text(encoding="utf-8") == "v36"
+    assert old_target.read_text(encoding="utf-8") == "v35"
+    assert Path(promoted["rollback"]) == old_target
+    assert not clone.exists()
+    assert all(source.parent == destination.parent for source, destination in replace_calls)
+
+
 def test_activation_receipt_rejects_any_active_tier_identity_drift(tmp_path: Path) -> None:
     database = tmp_path / "source.db"
     with sqlite3.connect(database) as conn:
