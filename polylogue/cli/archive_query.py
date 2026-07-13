@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import multiprocessing
+import os
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -1058,22 +1059,33 @@ def _daemon_session_query_params(
 
 
 def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, object]) -> dict[str, object] | None:
-    daemon_url_value = getattr(config, "daemon_url", "http://127.0.0.1:8766")
-    if not isinstance(daemon_url_value, str) or not daemon_url_value.startswith(("http://", "https://")):
+    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on", "off"}:
         return None
-    daemon_url = daemon_url_value.rstrip("/")
-    auth_token = getattr(config, "api_auth_token", None)
-    auth_header = auth_token if isinstance(auth_token, str) and auth_token else None
-    expected_archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
+    client = DaemonClient(socket_path)
+    if (
+        client.probe(
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.request_json(
+        "GET", "/api/sessions?" + urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
     )
-    return _fetch_daemon_sessions_payload_with_deadline(
-        daemon_url,
-        auth_header,
-        dict(query_params),
-        expected_archive_root=expected_archive_root,
-    )
+    if payload is not None:
+        return payload
+    # Keep the direct archive path as the safe degraded-mode fallback.  Do not
+    # fall back to the legacy TCP/fork shortcut: it defeats the hot-process goal.
+    _ = archive_root
+    return None
 
 
 def _fetch_daemon_sessions_payload_with_deadline(
