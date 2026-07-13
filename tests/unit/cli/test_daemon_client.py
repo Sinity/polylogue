@@ -94,10 +94,11 @@ def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.Monk
     monkeypatch.setattr(DaemonAPIHandler, "_handle_health", health)
     socket_path = Path("/realm/tmp") / f"polylogue-uds-{getpid()}.sock"
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    server.auth_token = "uds-test-token"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = DaemonClient(socket_path)
+        client = DaemonClient(socket_path, auth_token="uds-test-token")
         assert (
             client.probe(
                 archive_root="/realm/archive",

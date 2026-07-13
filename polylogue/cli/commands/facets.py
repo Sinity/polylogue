@@ -67,6 +67,7 @@ def facets_command(
         origin=origin,
         include_deferred=include_deferred,
         no_idf=no_idf,
+        disabled=bool(ctx.parent and ctx.parent.params.get("no_daemon")),
     )
     if daemon_response is not None:
         emit_facets_response(daemon_response, output_format="json" if json_output else output_format)
@@ -89,10 +90,11 @@ def _fetch_daemon_facets(
     origin: str | None,
     include_deferred: bool,
     no_idf: bool,
+    disabled: bool,
 ) -> FacetsResponse | None:
     """Use the config-matched UDS daemon for read-only facets when lossless."""
 
-    if no_idf or os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+    if disabled or no_idf or os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
         return None
     if os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off":
         return None
@@ -103,7 +105,10 @@ def _fetch_daemon_facets(
     from polylogue.version import POLYLOGUE_VERSION
 
     config = load_effective_config(env)
-    client = DaemonClient(Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock")
+    client = DaemonClient(
+        Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock",
+        auth_token=getattr(config, "api_auth_token", None),
+    )
     if (
         client.probe(
             archive_root=str(config.archive_root),

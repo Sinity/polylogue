@@ -26,9 +26,10 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 
 class DaemonClient:
-    def __init__(self, socket_path: Path, *, timeout_s: float = 0.1) -> None:
+    def __init__(self, socket_path: Path, *, timeout_s: float = 0.1, auth_token: str | None = None) -> None:
         self.socket_path = socket_path
         self.timeout_s = timeout_s
+        self.auth_token = auth_token
         self.last_elapsed_ms: int | None = None
 
     def request_json(self, method: str, path: str, body: dict[str, object] | None = None) -> dict[str, Any] | None:
@@ -38,9 +39,10 @@ class DaemonClient:
         raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
         started_at = perf_counter()
         try:
-            connection.request(
-                method, path, body=raw, headers={"Host": "127.0.0.1", "Content-Type": "application/json"}
-            )
+            headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
+            if self.auth_token:
+                headers["Authorization"] = f"Bearer {self.auth_token}"
+            connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
             if response.status != 200:
                 return None

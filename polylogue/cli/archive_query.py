@@ -947,6 +947,9 @@ def _try_emit_daemon_session_page(
     payload = _fetch_daemon_sessions_payload(config, daemon_params)
     if payload is None:
         return False
+    elapsed_ms = payload.pop("_daemon_elapsed_ms", None)
+    if bool(params.get("verbose")) and isinstance(elapsed_ms, int):
+        click.echo(f"served-by: daemon (uds, {elapsed_ms}ms)", err=True)
     if isinstance(payload.get("hits"), list):
         _emit_daemon_search_payload(
             payload,
@@ -1001,6 +1004,7 @@ def _try_emit_daemon_unit_page(
     )
     if payload is None:
         return False
+    payload.pop("_daemon_elapsed_ms", None)
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         return False
@@ -1149,7 +1153,7 @@ def _fetch_daemon_payload(
     from polylogue.version import POLYLOGUE_VERSION
 
     socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
-    client = DaemonClient(socket_path)
+    client = DaemonClient(socket_path, auth_token=getattr(config, "api_auth_token", None))
     if (
         client.probe(
             archive_root=str(config.archive_root),
@@ -1161,6 +1165,8 @@ def _fetch_daemon_payload(
         return None
     payload = client.request_json("POST" if body is not None else "GET", path, body)
     if payload is not None:
+        if client.last_elapsed_ms is not None:
+            payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
         return payload
     return None
 
