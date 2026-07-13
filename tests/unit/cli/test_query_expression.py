@@ -512,6 +512,17 @@ class TestBooleanQueryExpression:
         assert ast.ref_operand == RefOperand(reference=ObjectRef(kind="result-set", object_id="stable-set"))
         assert ast.clauses == ()
 
+    @pytest.mark.parametrize(
+        ("expression", "match"),
+        [
+            ("from query:not-a-hash", "query hash must be 64 lowercase hexadecimal characters"),
+            ("from query-run:not-a-run", "query run id must start with 'qr_'"),
+        ],
+    )
+    def test_reference_pipeline_uses_canonical_substrate_identity_validation(self, expression: str, match: str) -> None:
+        with pytest.raises(ExpressionCompileError, match=match):
+            parse_reference_query_pipeline(expression)
+
     def test_reference_explain_reports_durable_lineage_without_textual_expansion(self) -> None:
         payload = explain_expression("from result-set:stable-set | group by model | count").to_payload()
 

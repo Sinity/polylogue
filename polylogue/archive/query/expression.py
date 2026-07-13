@@ -161,6 +161,7 @@ from polylogue.archive.query.spec import (
     normalize_retrieval_lane,
 )
 from polylogue.core.enums import Origin
+from polylogue.core.query_identity import query_ref, query_run_ref, result_set_ref
 from polylogue.core.refs import ObjectRef
 from polylogue.errors import PolylogueError
 
@@ -1718,6 +1719,20 @@ def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
 _REF_OPERAND_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort"})
 
 
+def _validate_ref_operand_identity(reference: ObjectRef) -> None:
+    """Apply the substrate's canonical identity constraints at the DSL edge."""
+
+    try:
+        if reference.kind == "query":
+            query_ref(reference.object_id)
+        elif reference.kind == "query-run":
+            query_run_ref(reference.object_id)
+        elif reference.kind == "result-set":
+            result_set_ref(reference.object_id)
+    except ValueError as exc:
+        raise ExpressionCompileError(f"invalid {reference.kind} reference: {exc}", field="from") from exc
+
+
 def _parse_ref_operand_stage(stage: str) -> RefOperand | None:
     """Parse the hand-split ``from <object-ref>`` source stage.
 
@@ -1743,6 +1758,7 @@ def _parse_ref_operand_stage(stage: str) -> RefOperand | None:
             f"Supported kinds: {supported}",
             field="from",
         )
+    _validate_ref_operand_identity(reference)
     return RefOperand(reference=reference)
 
 
@@ -1754,6 +1770,11 @@ def parse_reference_query_pipeline(expression: str) -> ReferenceQueryPipeline | 
     """
 
     stages = _split_pipeline_stages(expression)
+    if not stages:
+        stripped = expression.strip()
+        if not stripped:
+            return None
+        stages = (stripped,)
     if not stages:
         return None
     operand = _parse_ref_operand_stage(stages[0])
