@@ -5,10 +5,12 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.annotations.join import AnnotationGroupDimension
 from polylogue.coordination import build_coordination_envelope
+from polylogue.coordination.payloads import AgentCoordinationPayload
 from polylogue.core.enums import AssertionKind, AssertionStatus, Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.mcp.archive_support import (
@@ -66,6 +68,38 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class _MCPEmbeddingStatusEnv:
     config: Config
+
+
+@dataclass(frozen=True)
+class _CoordinationCacheEntry:
+    expires_at: float
+    payload: AgentCoordinationPayload
+
+
+class _CompactCoordinationCache:
+    """Bound compact status work in a warm MCP process without hiding refresh.
+
+    The short lifetime only covers repeated tool calls from the same agent
+    turn.  Callers can set ``fresh=True`` to bypass it whenever process or
+    repository state must be sampled immediately.
+    """
+
+    _TTL_SECONDS = 1.0
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str, int], _CoordinationCacheEntry] = {}
+
+    def get(self, *, view: str, cwd: Path | None, limit: int) -> AgentCoordinationPayload | None:
+        key = (view, str(cwd.resolve()) if cwd is not None else str(Path.cwd().resolve()), limit)
+        entry = self._entries.get(key)
+        if entry is None or entry.expires_at <= monotonic():
+            self._entries.pop(key, None)
+            return None
+        return entry.payload
+
+    def put(self, *, view: str, cwd: Path | None, limit: int, payload: AgentCoordinationPayload) -> None:
+        key = (view, str(cwd.resolve()) if cwd is not None else str(Path.cwd().resolve()), limit)
+        self._entries[key] = _CoordinationCacheEntry(expires_at=monotonic() + self._TTL_SECONDS, payload=payload)
 
 
 def _stats_embedding_overrides(config: Config) -> dict[str, object]:
@@ -692,6 +726,8 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    compact_coordination_cache = _CompactCoordinationCache()
+
     @mcp.tool()
     async def join_typed_annotations(
         schema_id: str,
@@ -1064,17 +1100,36 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         cwd: str | None = None,
         limit: MCPToolLimit = 10,
         detail: bool = False,
+        fresh: bool = False,
     ) -> str:
-        """Return the compact shared envelope; opt into bounded evidence detail."""
+        """Return the compact shared envelope; ``fresh`` bypasses its warm cache."""
 
         async def run() -> str:
             path = Path(cwd).expanduser().resolve() if cwd else None
-            payload = build_coordination_envelope(
-                view=view,
-                cwd=path,
-                limit=hooks.clamp_limit(limit),
-                detail=detail,
+            clamped_limit = hooks.clamp_limit(limit)
+            payload = (
+                None
+                if detail or fresh
+                else compact_coordination_cache.get(
+                    view=view,
+                    cwd=path,
+                    limit=clamped_limit,
+                )
             )
+            if payload is None:
+                payload = build_coordination_envelope(
+                    view=view,
+                    cwd=path,
+                    limit=clamped_limit,
+                    detail=detail,
+                )
+                if not detail:
+                    compact_coordination_cache.put(
+                        view=view,
+                        cwd=path,
+                        limit=clamped_limit,
+                        payload=payload,
+                    )
             return hooks.json_payload(payload, exclude_none=True)
 
         return await hooks.async_safe_call("agent_coordination", run)
