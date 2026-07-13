@@ -2,9 +2,34 @@
 
 # Getting Started
 
-A 5-minute quickstart for Polylogue.
+A 5-minute path from installation to a searchable local archive.
 
-## Enter the source checkout
+## Install
+
+Choose the channel that fits the host:
+
+```bash
+# Python CLI in an isolated environment
+pipx install polylogue
+# or: uv tool install polylogue
+
+# Homebrew on macOS or Linux
+brew tap sinity/polylogue
+brew install polylogue
+
+# Nix, without installing
+nix run github:Sinity/polylogue -- --help
+```
+
+All three routes expose `polylogue`; Python and Nix also provide `polylogued`
+and `polylogue-mcp`. Verify the selected route:
+
+```bash
+polylogue --version
+polylogue --help
+```
+
+For source development, clone the repository and enter its reproducible shell:
 
 ```bash
 git clone https://github.com/Sinity/polylogue.git
@@ -12,16 +37,9 @@ cd polylogue
 nix develop
 ```
 
-Verify:
-
-```bash
-polylogue --version
-# polylogue X.Y.Z (commit 0000000)
-```
-
-No packaged PyPI/Homebrew/container install path is documented as current until
-release artifacts exist and have been smoke-tested. From the dev shell,
-Polylogue follows XDG conventions and works without a mandatory config file.
+See [Installation](installation.md) for container, NixOS/Home Manager, release
+verification, and source-checkout details. Polylogue follows XDG conventions
+and does not require a configuration file for its default local paths.
 
 ## First search
 

@@ -2,30 +2,24 @@ site_name = "Polylogue"
 site_url = "/polylogue/"
 
 [[nav]]
-title = "Demos, Evidence, and Product"
-[[nav.items]]
-label = "Demos"
-path = "/demos/"
-[[nav.items]]
-label = "Finding: Structured Failure"
-path = "/findings/claim-vs-evidence/"
-[[nav.items]]
-label = "Proof Artifacts"
-path = "/proof/"
-[[nav.items]]
-label = "Polylogue on Sinex"
-path = "/architecture/sinex/"
-
-[[nav]]
-title = "Guides"
-[[nav.items]]
-label = "Documentation Map"
-path = "/docs/"
+title = "Start"
 [[nav.items]]
 label = "Getting Started"
 path = "/docs/getting-started/"
 [[nav.items]]
-label = "Search"
+label = "Installation"
+path = "/docs/installation/"
+[[nav.items]]
+label = "Demos and Proofs"
+path = "/demos/"
+[[nav.items]]
+label = "Documentation Map"
+path = "/docs/"
+
+[[nav]]
+title = "Use Polylogue"
+[[nav.items]]
+label = "Search and Query"
 path = "/docs/search/"
 [[nav.items]]
 label = "Providers"
@@ -39,14 +33,9 @@ path = "/docs/export/"
 [[nav.items]]
 label = "Daemon"
 path = "/docs/daemon/"
-
 [[nav.items]]
 label = "Browser Capture"
 path = "/docs/browser-capture/"
-
-[[nav.items]]
-label = "Maintenance"
-path = "/docs/maintenance/"
 
 [[nav]]
 title = "Reference"
@@ -57,16 +46,16 @@ path = "/reference/cli/"
 label = "MCP"
 path = "/reference/mcp/"
 [[nav.items]]
-label = "API"
+label = "Python API"
 path = "/reference/api/"
 [[nav.items]]
-label = "Config"
+label = "Configuration"
 path = "/reference/config/"
 
 [[nav]]
-title = "Architecture and Internals"
+title = "Understand"
 [[nav.items]]
-label = "Rings"
+label = "Architecture"
 path = "/architecture/rings/"
 [[nav.items]]
 label = "Internals"
@@ -75,58 +64,42 @@ path = "/architecture/internals/"
 label = "Schema"
 path = "/architecture/schema/"
 [[nav.items]]
-label = "Contributing"
-path = "/architecture/contributing/"
+label = "Polylogue on Sinex"
+path = "/architecture/sinex/"
+[[nav.items]]
+label = "Security"
+path = "/architecture/security/"
 
 [[nav]]
-title = "Operations and Verification"
+title = "Project"
 [[nav.items]]
-label = "Coverage"
+label = "Roadmap"
+path = "/beads/"
+[[nav.items]]
+label = "Proof Artifacts"
+path = "/proof/"
+[[nav.items]]
+label = "Verification"
 path = "/verifiability/coverage/"
 [[nav.items]]
-label = "Mutation"
-path = "/verifiability/mutation/"
+label = "Maintenance"
+path = "/docs/maintenance/"
 [[nav.items]]
-label = "Freshness"
-path = "/verifiability/freshness/"
+label = "Contributing"
+path = "/architecture/contributing/"
 [[nav.items]]
-label = "Drift"
-path = "/verifiability/drift/"
-
-[[nav]]
-title = "Historical Records"
-[[nav.items]]
-label = "Audit Records"
+label = "Historical Records"
 path = "/docs/audits/"
-[[nav.items]]
-label = "Retrospectives"
-path = "/docs/retrospectives/"
-
-[[nav]]
-title = "Design"
-[[nav.items]]
-label = "Second Brain"
-path = "/design/second-brain/"
-[[nav.items]]
-label = "Time Machine"
-path = "/design/time-machine/"
-[[nav.items]]
-label = "Project Memory"
-path = "/design/project-memory/"
-[[nav.items]]
-label = "Agent-First MCP"
-path = "/design/agent-first-mcp/"
-[[nav.items]]
-label = "Archive Storytelling"
-path = "/design/archive-storytelling/"
-[[nav.items]]
-label = "Whole Product"
-path = "/design/whole-product/"
 
 [[pages]]
 path = "/index.html"
-title = "Polylogue — Keep the Receipts for AI Work"
+title = "Polylogue — Evidence for AI Work"
 template = "home.html"
+
+[[pages]]
+path = "/beads/"
+title = "Roadmap and Work Graph"
+template = "beads.html"
 
 [[pages]]
 path = "/demos/"
@@ -152,6 +125,11 @@ source = "docs/sinex-interop.md"
 path = "/docs/getting-started/"
 title = "Getting Started"
 source = "docs/getting-started.md"
+
+[[pages]]
+path = "/docs/installation/"
+title = "Installation"
+source = "docs/installation.md"
 
 [[pages]]
 path = "/docs/"
@@ -247,6 +225,11 @@ source = "docs/schema.md"
 path = "/architecture/contributing/"
 title = "Contributing"
 source = "CONTRIBUTING.md"
+
+[[pages]]
+path = "/architecture/security/"
+title = "Security"
+source = "docs/security.md"
 
 [[pages]]
 path = "/verifiability/coverage/"

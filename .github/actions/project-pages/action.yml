@@ -1,0 +1,22 @@
+name: Build Sinity project site
+description: Assemble a project landing page and committed Beads board for GitHub Pages
+
+runs:
+  using: composite
+  steps:
+    - name: Assemble site
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -f docs/site/index.html
+        test -f docs/site/project.json
+        test -f .beads/issues.jsonl
+        rm -rf .cache/site
+        mkdir -p .cache/site/assets .cache/site/beads
+        cp -R docs/site/. .cache/site/
+        cp "$GITHUB_ACTION_PATH/assets/project.css" .cache/site/assets/project.css
+        cp "$GITHUB_ACTION_PATH/assets/project.js" .cache/site/assets/project.js
+        cp "$GITHUB_ACTION_PATH/assets/beads.js" .cache/site/assets/beads.js
+        cp "$GITHUB_ACTION_PATH/board/index.html" .cache/site/beads/index.html
+        cp .beads/issues.jsonl .cache/site/beads/issues.jsonl
+        python3 "$GITHUB_ACTION_PATH/check_site.py" .cache/site
