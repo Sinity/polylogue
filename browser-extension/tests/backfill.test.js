@@ -417,6 +417,23 @@ describe("background backfill coordinator", () => {
     expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "eligible", attempt_count: 0, last_error: null }]);
   });
 
+  it("repairs a persisted bridge hold before a restarted worker fetches or completes it", async () => {
+    const h = harness({ adapter: new FixtureAdapter(["one"]) });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    const [item] = await h.store.listQueue(job.id);
+    await h.store.putQueue({
+      ...item,
+      state: "bridge_oversize",
+      last_error: "backfill_bridge_projection_too_large:observed_bytes=25200000;limit_bytes=25165824",
+    });
+
+    await h.coordinator.wake(job.id);
+
+    expect(await h.coordinator.status(job.id)).toMatchObject({ status: "paused", cooldown_reason: "backfill_bridge_response_too_large" });
+    expect(h.adapter.fetchCalls).toEqual([]);
+  });
+
   it.each([
     ["memory storage", () => new MemoryBackfillStore()],
     ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],

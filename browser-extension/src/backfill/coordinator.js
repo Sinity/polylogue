@@ -165,6 +165,17 @@ export class BackfillCoordinator {
     const jobId = job.id;
     job = await this.ensureReceiverContract(job, now);
     if (job.status !== "running") return this.status(jobId);
+    const persistedBridgeHold = (await this.store.listQueue(jobId)).find((item) => item.state === "bridge_oversize");
+    if (persistedBridgeHold) {
+      // A worker can die after durable queue persistence but before the job
+      // pause. Repair that crash window before any alarm can fetch another
+      // item or mark the all-terminal queue complete.
+      return this.pauseJob(
+        { ...job, last_error: persistedBridgeHold.last_error || "backfill_bridge_response_too_large" },
+        "backfill_bridge_response_too_large",
+        now,
+      );
+    }
     await this.store.recoverExpiredLeases(jobId, now);
     await this.schedule(jobId, now + job.policy.leaseMs);
     const receiverItem = await this.store.acquireNextLease(jobId, this.instanceId, now, job.policy.leaseMs, true);
