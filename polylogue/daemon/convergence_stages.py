@@ -601,7 +601,9 @@ def make_standing_query_stage(
             return set()
         try:
             with sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0) as conn:
-                return set(session_ids) if list_watched_queries(conn) else set()
+                if list_watched_queries(conn) or _has_promoted_expected_findings(conn):
+                    return set(session_ids)
+                return set()
         except Exception:
             logger.warning("standing-queries: watch lookup failed", exc_info=True)
             return set(session_ids)
@@ -804,6 +806,19 @@ def _materialize_promoted_finding_drifts(
             ],
             now_ms=now_ms,
         )
+
+
+def _has_promoted_expected_findings(conn: sqlite3.Connection) -> bool:
+    """Return whether convergence must run expected findings without a watch."""
+    for finding in list_assertion_claims(
+        conn,
+        kinds=(AssertionKind.FINDING,),
+        statuses=(AssertionStatus.ACCEPTED,),
+    ):
+        value = finding.value if isinstance(finding.value, dict) else {}
+        if isinstance(value.get("expected"), dict):
+            return True
+    return False
 
 
 def _matches_expected_count(expected: Mapping[str, object], actual: int) -> bool:

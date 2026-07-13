@@ -117,6 +117,12 @@ class DurableRefResolver:
         manifest = get_result_set(self._conn, result_set_id)
         if manifest is None:
             raise RetainedRelationUnavailableError(f"retained result-set:{result_set_id} is unavailable")
+        if extra_lineage:
+            run = get_retained_query_run(self._conn, extra_lineage[0].object_id)
+            if run is None or manifest.query_hash != run.query_hash:
+                raise RetainedRelationUnavailableError(
+                    f"query run {extra_lineage[0].format()} does not retain a relation for its query"
+                )
         members = get_result_set_members(self._conn, result_set_id)
         if manifest.member_count != len(members):
             raise RetainedRelationUnavailableError(

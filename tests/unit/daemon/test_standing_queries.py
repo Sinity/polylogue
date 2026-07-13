@@ -5,6 +5,7 @@ from pathlib import Path
 
 from polylogue.archive.query.evaluator import QueryEvaluation, QueryEvaluationRequest
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_standing_query_stage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -43,7 +44,7 @@ class _Evaluator:
         raise AssertionError("standing queries do not resolve cohorts directly")
 
 
-def _seed_watch(tmp_path: Path) -> tuple[Path, str]:
+def _seed_watch(tmp_path: Path, *, watch: bool = True) -> tuple[Path, str]:
     index_db = tmp_path / "index.db"
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
@@ -56,7 +57,8 @@ def _seed_watch(tmp_path: Path) -> tuple[Path, str]:
             rank_policy="mixed",
             created_at_ms=1,
         )
-        put_query_name(conn, name="codex", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+        if watch:
+            put_query_name(conn, name="codex", query_hash=query.query_hash, watch=True, updated_at_ms=2)
         conn.commit()
     return index_db, query.query_hash
 
@@ -100,8 +102,8 @@ def test_cache_only_evaluation_after_index_reset_never_compares_baseline(tmp_pat
         assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE persistence_class = 'watch'").fetchone()[0] == 1
 
 
-def test_promoted_expected_count_divergence_targets_original_finding(tmp_path: Path) -> None:
-    index_db, query_hash = _seed_watch(tmp_path)
+def test_promoted_expected_count_divergence_targets_original_finding_without_watch(tmp_path: Path) -> None:
+    index_db, query_hash = _seed_watch(tmp_path, watch=False)
     with sqlite3.connect(tmp_path / "user.db") as conn:
         original = upsert_findings_as_assertions(
             conn,
@@ -124,8 +126,9 @@ def test_promoted_expected_count_divergence_targets_original_finding(tmp_path: P
         mark_assertion_status(conn, original.assertion_id, AssertionStatus.ACCEPTED, now_ms=2)
         conn.commit()
     stage = make_standing_query_stage(index_db, evaluator=_Evaluator(members=("session:one", "session:two")))
-    assert stage.execute_sessions is not None
-    assert stage.execute_sessions(("session:changed",)) is True
+    converger = DaemonConverger(stages=(stage,), max_workers=1)
+    states, _ = converger.converge_sessions(("session:changed",))
+    assert states["session:changed"].stages["standing-queries"].value == "done"
 
     with sqlite3.connect(tmp_path / "user.db") as conn:
         rows = conn.execute(

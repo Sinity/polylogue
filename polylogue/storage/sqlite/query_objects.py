@@ -288,6 +288,11 @@ def put_retained_query_run(
     result_set_id: str,
     retained_at_ms: int,
 ) -> RetainedQueryRun:
+    result_set = get_result_set(conn, result_set_id)
+    if result_set is None:
+        raise KeyError(f"result-set:{result_set_id}")
+    if result_set.query_hash != query_hash:
+        raise ValueError("retained query run result set must belong to the same query")
     conn.execute(
         """
         INSERT INTO retained_query_runs (run_id, query_hash, result_set_id, retained_at_ms)

@@ -101,3 +101,43 @@ def test_query_run_without_retained_relation_fails_closed() -> None:
             RefOperand(ObjectRef(kind="query-run", object_id="qr_missing")),
             DurableRefResolver(_conn(), _Evaluator()),
         )
+
+
+def test_retained_query_run_rejects_a_result_set_for_another_query() -> None:
+    conn = _conn()
+    first = put_query(
+        conn,
+        {"field": "title", "value": "first"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    second = put_query(
+        conn,
+        {"field": "title", "value": "second"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    result = put_result_set(
+        conn,
+        result_set_id="second-result",
+        query_hash=second.query_hash,
+        grain="session",
+        corpus_epoch="index:g1",
+        member_refs=("session:second",),
+        exactness="exact",
+        persistence_class="pinned",
+        created_at_ms=2,
+    )
+
+    with pytest.raises(ValueError, match="same query"):
+        put_retained_query_run(
+            conn,
+            run_id="qr_mismatch",
+            query_hash=first.query_hash,
+            result_set_id=result.result_set_id,
+            retained_at_ms=3,
+        )
