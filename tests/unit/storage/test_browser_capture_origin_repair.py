@@ -382,6 +382,16 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
     return sibling_raw_id
 
 
+def _stage_active_index_generation(root: Path) -> Path:
+    active_dir = root / ".index-generations" / "gen-v35"
+    active_dir.mkdir(parents=True)
+    active_index = active_dir / "index.db"
+    index_link = root / "index.db"
+    index_link.rename(active_index)
+    index_link.symlink_to(active_index)
+    return active_index
+
+
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
     # sqlite3.Connection's context manager commits/rolls back, but does not
     # close the handle.  Legacy repair deliberately changes journal posture,
@@ -885,6 +895,7 @@ def test_legacy_browser_native_id_copy_forwards_from_semantic_canonical_witness(
     raw_id = _seed_legacy_browser_head_without_native_id(tmp_path)
     semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
     sibling_raw_id = _seed_semantic_superseded_sibling(tmp_path, semantic_raw_id)
+    active_index = _stage_active_index_generation(tmp_path)
     historical_before = _rows(
         tmp_path,
         "source",
@@ -903,6 +914,7 @@ def test_legacy_browser_native_id_copy_forwards_from_semantic_canonical_witness(
     assert dry_run.items[0].semantic_canonical_raw_id == semantic_raw_id
     assert dry_run.items[0].semantic_historical_raw_ids == (sibling_raw_id,)
     assert dry_run.items[0].semantic_witness_digest is not None
+    assert (tmp_path / "index.db").resolve() == active_index
     receipt = tmp_path / "legacy-semantic-copy-receipt.jsonl"
     applied = repair_legacy_browser_capture_missing_native_ids(
         _config(tmp_path),
