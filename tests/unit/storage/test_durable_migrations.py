@@ -547,6 +547,26 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "OR capture_mode IS NULL)),\n",
         "",
     )
+    old_ddl = old_ddl.replace(
+        "    ,source_revision         TEXT\n"
+        "    ,predecessor_source_revision TEXT\n"
+        "    ,predecessor_raw_id      TEXT\n"
+        "    ,baseline_raw_id         TEXT\n"
+        "    ,append_start_offset     INTEGER CHECK(append_start_offset >= 0)\n"
+        "    ,append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset)\n"
+        "    ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)\n"
+        "    ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'\n"
+        "        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))\n",
+        "    ,source_revision         TEXT\n"
+        "    ,predecessor_raw_id      TEXT\n"
+        "    ,baseline_raw_id         TEXT\n"
+        "    ,append_start_offset     INTEGER CHECK(append_start_offset >= 0)\n"
+        "    ,append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset)\n"
+        "    ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)\n"
+        "    ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'\n"
+        "        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))\n"
+        "    ,predecessor_source_revision TEXT\n",
+    )
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
@@ -554,8 +574,11 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, logical_source_key, revision_kind, source_revision,
+                predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                append_start_offset, append_end_offset, acquisition_generation, revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "before-beads",
@@ -566,6 +589,16 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
                 bytes.fromhex(blob_hash),
                 blob_size,
                 1,
+                "codex:session-1",
+                "append",
+                "source-revision-1",
+                "source-revision-0",
+                "raw-predecessor",
+                "raw-baseline",
+                3,
+                7,
+                2,
+                "byte_proven",
             ),
         )
         conn.commit()
@@ -576,7 +609,22 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         assert result.from_version == 7
         assert result.to_version == SOURCE_SCHEMA_VERSION == 9
         assert result.applied_versions == (8, 9)
-        assert conn.execute("SELECT raw_id FROM raw_sessions WHERE raw_id = 'before-beads'").fetchone()
+        assert conn.execute(
+            """
+            SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                   append_start_offset, append_end_offset, acquisition_generation,
+                   revision_authority
+            FROM raw_sessions WHERE raw_id = 'before-beads'
+            """
+        ).fetchone() == (
+            "source-revision-0",
+            "raw-predecessor",
+            "raw-baseline",
+            3,
+            7,
+            2,
+            "byte_proven",
+        )
         conn.execute(
             """
             INSERT INTO raw_sessions (
