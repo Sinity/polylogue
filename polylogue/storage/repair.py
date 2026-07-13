@@ -909,7 +909,7 @@ def _inspect_quarantined_accepted_raw(
         ),
         parallel_session_head_count=len(parallel_session_heads),
         quarantined_sibling_raw_count=len(competing_revision_rows),
-        membership_row_count=len(membership_rows),
+        membership_row_count=0 if census_stage_raw_ids else len(membership_rows),
         census_stage_raw_ids=census_stage_raw_ids,
         parsed_message_count=len(parsed.messages),
     )

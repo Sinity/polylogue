@@ -506,6 +506,15 @@ def test_quarantined_accepted_raw_repair_stages_source_v7_census_before_target_c
         assert source.execute(
             "SELECT COUNT(*) FROM raw_membership_census WHERE raw_id IN (?, ?)", (raw_id, sibling_raw_id)
         ).fetchone() == (2,)
+    reapplied = repair_quarantined_accepted_raws(
+        _config(tmp_path),
+        [raw_id],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=dry_run.proof_digest,
+    )
+    assert reapplied.repaired_count == 0
+    assert reapplied.already_repaired_count == 1
 
 
 def test_quarantined_accepted_raw_repair_refuses_source_v7_census_staging_with_mixed_cohort(tmp_path: Path) -> None:
