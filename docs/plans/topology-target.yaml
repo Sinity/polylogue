@@ -838,9 +838,73 @@ files:
     loc: 288
     target: polylogue/cli/commands/judge.py
     owner: stable
-  - path: polylogue/cli/commands/maintenance.py
-    loc: 2954
-    target: polylogue/cli/commands/maintenance.py
+  - path: polylogue/cli/commands/maintenance/__init__.py
+    loc: 158
+    target: polylogue/cli/commands/maintenance/__init__.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_archive_plan.py
+    loc: 178
+    target: polylogue/cli/commands/maintenance/_archive_plan.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_archive_read.py
+    loc: 106
+    target: polylogue/cli/commands/maintenance/_archive_read.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_assertion_export.py
+    loc: 115
+    target: polylogue/cli/commands/maintenance/_assertion_export.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_backup_plan.py
+    loc: 167
+    target: polylogue/cli/commands/maintenance/_backup_plan.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_blob_gc.py
+    loc: 161
+    target: polylogue/cli/commands/maintenance/_blob_gc.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_blob_integrity.py
+    loc: 430
+    target: polylogue/cli/commands/maintenance/_blob_integrity.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_blob_publications.py
+    loc: 84
+    target: polylogue/cli/commands/maintenance/_blob_publications.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_embeddings.py
+    loc: 164
+    target: polylogue/cli/commands/maintenance/_embeddings.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_migrate_tier.py
+    loc: 89
+    target: polylogue/cli/commands/maintenance/_migrate_tier.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_plan.py
+    loc: 99
+    target: polylogue/cli/commands/maintenance/_plan.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_preview.py
+    loc: 86
+    target: polylogue/cli/commands/maintenance/_preview.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_raw_identity.py
+    loc: 566
+    target: polylogue/cli/commands/maintenance/_raw_identity.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_rebuild_index.py
+    loc: 506
+    target: polylogue/cli/commands/maintenance/_rebuild_index.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_run.py
+    loc: 167
+    target: polylogue/cli/commands/maintenance/_run.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_shared.py
+    loc: 98
+    target: polylogue/cli/commands/maintenance/_shared.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_status.py
+    loc: 154
+    target: polylogue/cli/commands/maintenance/_status.py
     owner: stable
   - path: polylogue/cli/commands/note.py
     loc: 89
@@ -2666,7 +2730,7 @@ files:
     target: polylogue/sinex/__init__.py
     owner: stable
   - path: polylogue/sinex/material_adapter.py
-    loc: 152
+    loc: 173
     target: polylogue/sinex/material_adapter.py
     owner: stable
   - path: polylogue/sinex/models.py
@@ -2674,11 +2738,11 @@ files:
     target: polylogue/sinex/models.py
     owner: stable
   - path: polylogue/sinex/obligations.py
-    loc: 195
+    loc: 237
     target: polylogue/sinex/obligations.py
     owner: stable
   - path: polylogue/sinex/service.py
-    loc: 233
+    loc: 244
     target: polylogue/sinex/service.py
     owner: stable
   - path: polylogue/sinex/transport.py
@@ -3322,7 +3386,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6566
+    loc: 6569
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
