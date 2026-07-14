@@ -24,6 +24,7 @@ DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE,
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
 
 
 class MigrationError(RuntimeError):
@@ -36,6 +37,7 @@ class MigrationStep:
     version: int
     name: str
     sql: str
+    requires_backup: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +65,14 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
         match = _MIGRATION_NAME_RE.match(item.name)
         if match is None:
             continue
+        sql = item.read_text(encoding="utf-8")
         steps.append(
             MigrationStep(
                 tier=tier,
                 version=int(match.group("version")),
                 name=item.name,
-                sql=item.read_text(encoding="utf-8"),
+                sql=sql,
+                requires_backup=_ADDITIVE_NO_BACKUP_MARKER not in sql,
             )
         )
     versions = [step.version for step in steps]
@@ -556,42 +560,49 @@ def migrate_archive_tier(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
     *,
-    backup_manifest: Path,
+    backup_manifest: Path | None,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier does not support in-place migrations")
     _checkpoint_live_tier(conn)
-    validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+    current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    target_version = ARCHIVE_VERSION_BY_TIER[tier]
+    if current_version == target_version:
+        return MigrationResult(
+            tier=tier,
+            from_version=current_version,
+            to_version=target_version,
+            applied_versions=(),
+        )
+    if current_version == 0:
+        raise MigrationError(f"{tier.value} tier is empty; initialize it fresh instead of migrating")
+    if current_version > target_version:
+        raise MigrationError(
+            f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
+        )
+
+    steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
+    expected_versions = tuple(range(current_version + 1, target_version + 1))
+    actual_versions = tuple(step.version for step in steps)
+    if actual_versions != expected_versions:
+        raise MigrationError(
+            f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
+        )
+    requires_backup = any(step.requires_backup for step in steps)
+    if requires_backup and backup_manifest is None:
+        raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
+    if requires_backup:
+        assert backup_manifest is not None
+        validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+
     try:
         conn.execute("BEGIN IMMEDIATE")
-        backup_receipt = validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
-        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        target_version = ARCHIVE_VERSION_BY_TIER[tier]
-        if current_version == target_version:
-            conn.rollback()
-            return MigrationResult(
-                tier=tier,
-                from_version=current_version,
-                to_version=target_version,
-                applied_versions=(),
-                backup_receipt=backup_receipt,
-            )
-        if current_version == 0:
-            raise MigrationError(f"{tier.value} tier is empty; initialize it fresh instead of migrating")
-        if current_version > target_version:
-            raise MigrationError(
-                f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
-            )
-
-        steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
-        expected_versions = tuple(range(current_version + 1, target_version + 1))
-        actual_versions = tuple(step.version for step in steps)
-        if actual_versions != expected_versions:
-            raise MigrationError(
-                f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
-            )
-
+        backup_receipt = (
+            validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+            if requires_backup and backup_manifest is not None
+            else None
+        )
         start_version = current_version
         applied: list[int] = []
         for step in steps:

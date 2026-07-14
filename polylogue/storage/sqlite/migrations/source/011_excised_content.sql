@@ -1,3 +1,4 @@
+-- migration-safety: additive-no-backup
 -- Durable removed-content ledger for standalone/off-mode excision
 -- (polylogue-27m). Purely additive: one new table, no existing column or
 -- constraint changes.

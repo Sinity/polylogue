@@ -547,6 +547,25 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         conn.close()
 
 
+def test_source_additive_ledger_migrations_do_not_require_a_backup(tmp_path: Path) -> None:
+    db_path = tmp_path / "source.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE excised_content")
+        conn.execute("DROP TABLE sinex_publication_obligations")
+        conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+
+        assert result.from_version == 9
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 11
+        assert result.applied_versions == (10, 11)
+        assert result.backup_receipt is None
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert {"sinex_publication_obligations", "excised_content"} <= tables
+
+
 def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     workspace_env: dict[str, Path],
     tmp_path: Path,

@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
@@ -1105,6 +1106,30 @@ def test_archive_init_cli_executes_confirmed_initialization(
             "tier": "index",
         }
     ]
+
+
+def test_migrate_tier_cli_allows_additive_source_ledgers_without_backup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    source_db = cli_workspace["archive_root"] / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(SOURCE_DDL)
+        conn.execute("DROP TABLE excised_content")
+        conn.execute("DROP TABLE sinex_publication_obligations")
+        conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "migrate-tier", "source", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["backup_manifest"] is None
+    assert payload["backup_receipt"] is None
+    assert payload["applied_versions"] == [10, 11]
 
 
 def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt(
