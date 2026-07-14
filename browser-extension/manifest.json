@@ -29,7 +29,7 @@
     },
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["src/common.js", "src/content/chatgpt.js"],
+      "js": ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"],
       "run_at": "document_start"
     },
     {
@@ -40,7 +40,7 @@
     },
     {
       "matches": ["https://claude.ai/*"],
-      "js": ["src/common.js", "src/content/claude.js"],
+      "js": ["src/common.js", "src/content/message_layer.js", "src/content/claude.js"],
       "run_at": "document_idle"
     },
     {

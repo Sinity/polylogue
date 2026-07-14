@@ -585,10 +585,8 @@ Options:
   --cohorts                       Summarize durable artifact cohorts
   --schema-origin TEXT            Limit schema verification to archive origin
                                   (repeatable)
-  --schema-provider TEXT          (DEPRECATED: Use --schema-origin instead.)
   --artifact-origin TEXT          Limit artifact coverage/listing/cohorting to
                                   effective origin (repeatable)
-  --artifact-provider TEXT        (DEPRECATED: Use --artifact-origin instead.)
   --artifact-status TEXT          Limit artifact listing/cohorting to support
                                   status (repeatable)
   --artifact-kind TEXT            Limit artifact listing/cohorting to artifact
@@ -685,7 +683,7 @@ Commands:
   action-affordances  Print shared query-action affordance metadata as JSON.
   completions         Generate shell completion scripts.
   paths               Print canonical archive paths and filesystem topology.
-  query-completions   Print shared query-builder completion metadata as...
+  query-completions   Print shared query-builder completion metadata as JSON.
 ```
 
 ## Completions

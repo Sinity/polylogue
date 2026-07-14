@@ -134,7 +134,7 @@ class TestMaintenanceScope:
         filter_payload = cast(dict[str, object], payload["filter"])
         # Every typed scope dimension is present with a None default.
         assert filter_payload["session_ids"] is None
-        assert filter_payload["provider"] is None
+        assert filter_payload["origin"] is None
 
     def test_scope_filter_roundtrips(self) -> None:
         from polylogue.maintenance.scope import MaintenanceScopeFilter
@@ -143,13 +143,13 @@ class TestMaintenanceScope:
             targets=("session_insights",),
             filter=MaintenanceScopeFilter(
                 session_ids=("c1", "c2"),
-                provider="claude",
+                origin="claude-code-session",
             ),
         )
         payload = scope.to_dict()
         filter_payload = cast(dict[str, object], payload["filter"])
         assert filter_payload["session_ids"] == ["c1", "c2"]
-        assert filter_payload["provider"] == "claude"
+        assert filter_payload["origin"] == "claude-code-session"
         # to_dict / from_dict round-trips the scope back to itself.
         scope_again = MaintenanceScope.from_dict(cast(dict[str, object], payload))
         assert scope_again == scope

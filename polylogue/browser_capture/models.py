@@ -255,6 +255,82 @@ class BrowserCaptureCapabilitiesPayload(BaseModel):
     )
 
 
+class BrowserBackfillCheckpointRequest(BaseModel):
+    """Extension-submitted backfill-ledger checkpoint mirror (polylogue-06zm).
+
+    The receiver becomes a durable second copy of the extension's IndexedDB
+    backfill ledger (job/queue/revision state, already sanitized of provider
+    credentials by the extension before it ever leaves the browser — see
+    browser-extension/src/backfill/storage.js exportRecoveryCheckpoint), so a
+    browser profile loss that also destroys the extension's local
+    chrome.storage.local mirror still leaves a recoverable checkpoint.
+    IndexedDB remains the fast primary source; this mirror is a fallback.
+
+    The receiver treats ``checkpoint`` as an opaque JSON object: its internal
+    job/queue/revision shape is the extension's concern, matching the browser
+    capture envelope's own "receiver does not reinterpret payload structure"
+    trust boundary (see BrowserCaptureHandler's class docstring).
+    """
+
+    extension_instance_id: str = Field(min_length=1, max_length=128)
+    checkpoint: dict[str, object]
+
+    @field_validator("checkpoint", mode="before")
+    @classmethod
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # This field is the disaster-recovery mirror of the extension's
+        # backfill ledger (polylogue-06zm): a malformed request must be
+        # REJECTED, never silently coerced to {} and persisted as if it were
+        # a legitimate checkpoint -- that would report HTTP 202 success while
+        # overwriting a previously-good stored checkpoint with an empty one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
+
+
+class BrowserBackfillCheckpointRecord(BaseModel):
+    """Persisted checkpoint envelope, one per extension instance (last write wins)."""
+
+    extension_instance_id: str
+    checkpoint: dict[str, object]
+    stored_at: str
+
+    @field_validator("checkpoint", mode="before")
+    @classmethod
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # Same durability rationale as BrowserBackfillCheckpointRequest above:
+        # a checkpoint file on disk that fails to parse as a JSON object is
+        # corrupt, not an empty-but-valid checkpoint. Raising here makes
+        # read_backfill_checkpoint's `except Exception: return None` treat a
+        # corrupt stored file as "no checkpoint found" rather than silently
+        # presenting fabricated empty data as a real one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
+
+
+class BrowserBackfillCheckpointAcceptedPayload(BaseModel):
+    """Response to ``POST /v1/backfill-checkpoint``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    extension_instance_id: str
+    stored_at: str
+    bytes_written: int
+
+
+class BrowserBackfillCheckpointPayload(BaseModel):
+    """Response to ``GET /v1/backfill-checkpoint``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    extension_instance_id: str
+    checkpoint: dict[str, object]
+    stored_at: str
+
+
 class BrowserCaptureErrorPayload(BaseModel):
     """Safe receiver error payload with no paths or stack traces."""
 
@@ -384,6 +460,10 @@ __all__ = [
     "BROWSER_CAPTURE_RECEIVER",
     "BROWSER_CAPTURE_SCHEMA_VERSION",
     "BROWSER_CAPTURE_TRANSPORT_SOURCE",
+    "BrowserBackfillCheckpointAcceptedPayload",
+    "BrowserBackfillCheckpointPayload",
+    "BrowserBackfillCheckpointRecord",
+    "BrowserBackfillCheckpointRequest",
     "BrowserCaptureAcceptedPayload",
     "BrowserCaptureCapabilitiesPayload",
     "BrowserCaptureArchiveLifecycle",

@@ -20,6 +20,8 @@ BrowserCaptureRouteKind = Literal[
     "post_command_enqueue",
     "post_command_poll",
     "post_command_ack",
+    "backfill_checkpoint_store",
+    "backfill_checkpoint_read",
 ]
 
 
@@ -105,6 +107,28 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserPostCommandAckRequest",
         "BrowserPostAckPayload | BrowserCaptureErrorPayload",
         "Extension reports the post result (submitted|failed); updates the queued command.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/backfill-checkpoint",
+        "backfill_checkpoint_store",
+        "bearer_if_web_origin",
+        "BrowserBackfillCheckpointRequest",
+        "BrowserBackfillCheckpointAcceptedPayload | BrowserCaptureErrorPayload",
+        (
+            "Mirrors the extension's sanitized backfill-ledger checkpoint (polylogue-06zm); "
+            "IndexedDB remains the fast primary source, this is the profile-loss fallback. "
+            "Overwrites any prior checkpoint for the same extension_instance_id."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/backfill-checkpoint",
+        "backfill_checkpoint_read",
+        "bearer_if_configured",
+        "extension_instance_id query parameter",
+        "BrowserBackfillCheckpointPayload | BrowserCaptureErrorPayload",
+        "Returns the mirrored checkpoint for an extension instance, or 404 if none was stored.",
     ),
 )
 

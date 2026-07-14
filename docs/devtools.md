@@ -176,6 +176,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench campaign` | Run or compare benchmark campaigns. |
 | `devtools bench coordination-latency` | Measure compact coordination status p50/p95 with raw stage samples. |
+| `devtools bench help-latency` | Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2). |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |

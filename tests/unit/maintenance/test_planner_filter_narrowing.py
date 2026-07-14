@@ -86,7 +86,7 @@ class TestPlannerLeavesFilterPassthroughDimensionsIntact:
     @pytest.mark.parametrize(
         "scope_filter",
         [
-            MaintenanceScopeFilter(provider="claude"),
+            MaintenanceScopeFilter(origin="claude-code-session"),
             MaintenanceScopeFilter(source_family="claude-code-session"),
             MaintenanceScopeFilter(failure_kind="ValidationError"),
             MaintenanceScopeFilter(parser_version="v3"),

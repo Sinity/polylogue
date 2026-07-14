@@ -135,12 +135,16 @@ describe("popup capture", () => {
     globalThis.document.getElementById("capture").click();
 
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(2));
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledTimes(2);
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledTimes(3);
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(1, {
       target: { tabId: CHATGPT_TAB.id },
       files: ["src/common.js"],
     });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(2, {
+      target: { tabId: CHATGPT_TAB.id },
+      files: ["src/content/message_layer.js"],
+    });
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(3, {
       target: { tabId: CHATGPT_TAB.id },
       files: ["src/content/chatgpt.js"],
     });

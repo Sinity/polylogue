@@ -184,7 +184,7 @@ preview, `--yes` to apply) removes a session across every local tier:
 3. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
    `raw_session_memberships`/`raw_membership_census`), then a durable
    removed-hash marker is recorded in the new `excised_content` table
-   (migration `010_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 10) for
+   (migration `011_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 11) for
    *every distinct blob hash* grouped under that raw ingestion's `ref_id` —
    not just the raw payload's own hash. `blob_refs` shares one `ref_id`
    across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a

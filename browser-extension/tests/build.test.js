@@ -183,6 +183,16 @@ describe("build.mjs full archive emission", () => {
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-capability" : null }, json: async () => ({ durable_ack_fields: ["receiver_request_id", "content_hash"] }) };
       }
+      if (String(url).includes("/v1/backfill-checkpoint")) {
+        // Best-effort ledger-checkpoint mirror/restore traffic (polylogue-06zm)
+        // is orthogonal to this fixture's receiverPosts accounting below --
+        // it must neither increment that counter nor be hashed as a capture
+        // envelope body.
+        if (options.method === "POST") {
+          return { ok: true, status: 202, headers: { get: () => null }, json: async () => ({ ok: true, extension_instance_id: "packaged-instance", stored_at: new Date().toISOString(), bytes_written: 1 }) };
+        }
+        return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({ ok: false, error: "checkpoint_not_found" }) };
+      }
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
       receiverPosts += 1;
       body = receiverPosts === 1

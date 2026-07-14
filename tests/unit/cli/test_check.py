@@ -727,8 +727,8 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
-    def test_check_origin_options_advertise_deprecated_provider_aliases(self, cli_workspace: WorkspacePaths) -> None:
-        """Doctor help exposes origin filters and the one-release aliases."""
+    def test_check_origin_options_advertise_no_provider_aliases(self, cli_workspace: WorkspacePaths) -> None:
+        """Doctor help exposes only the origin-worded flags -- no provider aliases."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -738,8 +738,30 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "--schema-origin TEXT" in result.output
         assert "--artifact-origin TEXT" in result.output
-        assert "--schema-provider TEXT  (DEPRECATED: Use --schema-origin instead.)" in result.output
-        assert "--artifact-provider TEXT  (DEPRECATED: Use --artifact-origin instead.)" in result.output
+        assert "--schema-provider" not in result.output
+        assert "--artifact-provider" not in result.output
+
+    @pytest.mark.parametrize(
+        "flag,hint",
+        [
+            ("--schema-provider", "--schema-origin"),
+            ("--artifact-provider", "--artifact-origin"),
+        ],
+    )
+    def test_check_rejects_retired_provider_flags_with_origin_hint(
+        self, cli_workspace: WorkspacePaths, flag: str, hint: str
+    ) -> None:
+        """The retired provider-named flags fail with an actionable did-you-mean-origin hint."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        result = CliRunner().invoke(cli, ["ops", "doctor", flag, "claude-code"])
+
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert flag in result.output
+        assert hint in result.output
 
     # --- Flag validation: invalid combos rejected with correct error ---
 
@@ -927,8 +949,8 @@ class TestCheckCommandSupplementary:
         assert request.progress_callback is not None
         assert mock_verify.call_args.kwargs["db_path"] == ANY
 
-    def test_check_schemas_accepts_deprecated_provider_alias(self, cli_workspace: WorkspacePaths) -> None:
-        """The old schema filter spelling warns but reaches the real workflow."""
+    def test_check_schemas_rejects_retired_schema_provider_flag(self, cli_workspace: WorkspacePaths) -> None:
+        """The retired --schema-provider spelling fails outright; no alias reaches the workflow."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -943,9 +965,10 @@ class TestCheckCommandSupplementary:
                 ["ops", "doctor", "--schemas", "--schema-provider", "claude-code"],
             )
 
-        assert result.exit_code == 0
-        assert "The option '--schema-provider' is deprecated." in result.output
-        assert mock_verify.call_args.args[0].providers == ["claude-code"]
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert "--schema-origin" in result.output
+        mock_verify.assert_not_called()
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace: WorkspacePaths) -> None:
         """Quarantine option is forwarded to verify_raw_corpus."""
@@ -1155,8 +1178,10 @@ class TestCheckCommandSupplementary:
         assert request.record_limit == 25
         assert request.record_offset == 50
 
-    def test_check_artifact_coverage_accepts_deprecated_provider_alias(self, cli_workspace: WorkspacePaths) -> None:
-        """The old artifact filter spelling warns but reaches the real workflow."""
+    def test_check_artifact_coverage_rejects_retired_artifact_provider_flag(
+        self, cli_workspace: WorkspacePaths
+    ) -> None:
+        """The retired --artifact-provider spelling fails outright; no alias reaches the workflow."""
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -1171,9 +1196,10 @@ class TestCheckCommandSupplementary:
                 ["ops", "doctor", "--artifact-coverage", "--artifact-provider", "claude-code"],
             )
 
-        assert result.exit_code == 0
-        assert "The option '--artifact-provider' is deprecated." in result.output
-        assert mock_prove.call_args.args[0].providers == ["claude-code"]
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert "--artifact-origin" in result.output
+        mock_prove.assert_not_called()
 
     def test_check_artifacts_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--artifacts adds artifact_observations rows to JSON output."""

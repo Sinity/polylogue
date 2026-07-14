@@ -259,6 +259,16 @@ class PolylogueConfig:
         return v if isinstance(v, str) and v else None
 
     @property
+    def sinex_mode(self) -> str:
+        """Sinex-backed evidence-mode authority profile: ``off``/``mirror``/``primary``.
+
+        See ``polylogue.sinex.models.PublicationMode`` and
+        ``docs/sinex-interop.md``. Default ``off``: standalone SQLite is
+        canonical and permanent, per operator directive.
+        """
+        return str(self._data.get("sinex_mode", "off")).strip().lower() or "off"
+
+    @property
     def log_level(self) -> str:
         return str(self._data.get("log_level", "INFO"))
 
@@ -663,6 +673,24 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Voyage provider API key presence; always redacted in inspection output.",
     ),
     ConfigInventoryEntry(
+        "sinex_mode",
+        toml_path="sinex.mode",
+        env_var="POLYLOGUE_SINEX_MODE",
+        owner_class="network-security",
+        reload_behavior="unwired",
+        description=(
+            "Sinex-backed evidence-mode authority profile: off (default; SQLite is "
+            "canonical, zero Sinex transport work), mirror (durable local commit plus "
+            "a best-effort publication obligation), or primary (local projection "
+            "advance waits for a confirming Sinex receipt). NOT YET CONSUMED: no "
+            "ingest, daemon, or CLI code path currently reads this value to construct "
+            "a PublicationService (Ref polylogue-303r.2) -- setting mirror/primary "
+            "today only surfaces a `sinex_mode_not_yet_wired` config diagnostic, it "
+            "does not create publication obligations or call any transport. See "
+            "docs/sinex-interop.md and polylogue/sinex/__init__.py."
+        ),
+    ),
+    ConfigInventoryEntry(
         "observability_enabled",
         toml_path="observability.enabled",
         env_var="POLYLOGUE_OBSERVABILITY_ENABLED",
@@ -1010,6 +1038,10 @@ def _default_config_values() -> dict[str, object]:
         # first-time user without an explicit configuration.
         "embedding_max_cost_usd": 5.0,
         "voyage_api_key": None,
+        # Standalone SQLite is the permanent, canonical default (operator
+        # directive, docs/sinex-interop.md) -- off performs zero Sinex
+        # transport work and creates no publication obligations.
+        "sinex_mode": "off",
         "log_level": "INFO",
         "force_plain": False,
         "no_color": False,
@@ -1610,7 +1642,61 @@ def config_diagnostics(cfg: PolylogueConfig | None = None) -> list[dict[str, obj
                 cfg=resolved,
             )
         )
+    diagnostics.extend(_sinex_mode_diagnostics(resolved))
     return diagnostics
+
+
+#: Recognized ``[sinex] mode`` / ``POLYLOGUE_SINEX_MODE`` values. Kept as a
+#: literal tuple (not an import of ``polylogue.sinex.models.PublicationMode``)
+#: so ``config.py`` stays free of internal-package imports -- it is the
+#: bootstrap layer every other package imports, not the reverse.
+_KNOWN_SINEX_MODES = ("off", "mirror", "primary")
+
+
+def _sinex_mode_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object]]:
+    """Diagnose ``sinex_mode``: unrecognized values, and the current unwired state.
+
+    ``sinex_mode`` is a real, tested authority-profile selector
+    (``polylogue.sinex``, design polylogue-303r.2), but as of this diagnostic
+    landing no ingest, daemon, or CLI code path reads it to construct a
+    ``PublicationService``. Configuring ``mirror``/``primary`` must never be a
+    silent no-op (the package's own design principle) -- surface that gap
+    here instead of leaving an operator to discover it by absence of effect.
+    """
+    mode = resolved.sinex_mode
+    if mode not in _KNOWN_SINEX_MODES:
+        return [
+            _config_diagnostic(
+                code="sinex_mode_unrecognized",
+                severity="error",
+                key="sinex_mode",
+                message=f"sinex_mode={mode!r} is not a recognized value (expected one of {_KNOWN_SINEX_MODES}).",
+                next_action="Set [sinex] mode (or POLYLOGUE_SINEX_MODE) to off, mirror, or primary.",
+                cfg=resolved,
+            )
+        ]
+    if mode == "off":
+        return []
+    return [
+        _config_diagnostic(
+            code="sinex_mode_not_yet_wired",
+            severity="warning",
+            key="sinex_mode",
+            message=(
+                f"sinex_mode={mode!r} is configured but no ingest, daemon, or CLI code path "
+                "currently constructs a PublicationService from it -- this setting has zero "
+                "observable effect on real archive writes today."
+            ),
+            next_action=(
+                "The durable obligation ledger and transport contract exist and are tested "
+                "(polylogue/sinex/, Ref polylogue-303r.2), but hot-path wiring into "
+                "ingest/daemon/CLI is deferred follow-up work, and live Sinex transport is "
+                "additionally blocked on unmerged upstream Sinex work (sinex-4j2.1.1, "
+                "sinex-r6d.11). Leave sinex_mode=off until that wiring lands."
+            ),
+            cfg=resolved,
+        )
+    ]
 
 
 def effective_config_payload(

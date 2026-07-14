@@ -583,7 +583,7 @@ def _archive_datetime_to_ms(value: datetime | None) -> int | None:
 _SCOPE_FILTER_KEYS = frozenset(
     {
         "session_ids",
-        "provider",
+        "origin",
         "source_family",
         "source_root",
         "time_range",
@@ -2748,8 +2748,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "updated_at": summary.updated_at,
             "message_count": summary.message_count,
             "word_count": summary.word_count,
-            "repo": None,
-            "cwd_display": None,
+            "repo": summary.git_repository_url,
+            "cwd_display": next(iter(summary.working_directories), None),
             "tags": list(summary.tags),
             "flags": None,
             "summary": None,

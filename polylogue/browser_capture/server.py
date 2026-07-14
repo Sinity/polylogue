@@ -17,6 +17,9 @@ from pydantic import ValidationError
 
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserBackfillCheckpointAcceptedPayload,
+    BrowserBackfillCheckpointPayload,
+    BrowserBackfillCheckpointRequest,
     BrowserCaptureAcceptedPayload,
     BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
@@ -39,7 +42,9 @@ from polylogue.browser_capture.receiver import (
     enqueue_post_command,
     existing_capture_state,
     poll_post_commands,
+    read_backfill_checkpoint,
     receiver_status_payload,
+    write_backfill_checkpoint,
     write_capture_envelope,
 )
 from polylogue.core.json import dumps_bytes
@@ -247,6 +252,25 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ).model_dump(mode="json", exclude_none=True),
             )
             return
+        if parsed.path == "/v1/backfill-checkpoint":
+            params = parse_qs(parsed.query)
+            instance_id = params.get("extension_instance_id", [""])[0]
+            if not instance_id:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
+                return
+            record = read_backfill_checkpoint(instance_id, spool_path=self.server.config.spool_path)
+            if record is None:
+                self._safe_error(HTTPStatus.NOT_FOUND, "checkpoint_not_found")
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                BrowserBackfillCheckpointPayload(
+                    extension_instance_id=record.extension_instance_id,
+                    checkpoint=record.checkpoint,
+                    stored_at=record.stored_at,
+                ).model_dump(mode="json"),
+            )
+            return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 
     def do_POST(self) -> None:
@@ -282,6 +306,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if path.startswith("/v1/post-commands/") and path.endswith("/ack"):
             command_id = path[len("/v1/post-commands/") : -len("/ack")]
             self._post_command_ack(command_id)
+            return
+        if path == "/v1/backfill-checkpoint":
+            self._backfill_checkpoint_store()
             return
         if path != "/v1/browser-captures":
             self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
@@ -414,6 +441,43 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             BrowserPostAckPayload(command_id=command.command_id, status=command.status).model_dump(mode="json"),
         )
+
+    def _backfill_checkpoint_store(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserBackfillCheckpointRequest.model_validate(payload)
+        except ValidationError:
+            logger.warning("browser_capture.invalid_backfill_checkpoint", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_backfill_checkpoint")
+            return
+        try:
+            record = write_backfill_checkpoint(request, spool_path=self.server.config.spool_path)
+        except SpoolQuotaExceededError as exc:
+            logger.warning(
+                "browser_capture.backfill_checkpoint_quota_exceeded", request_id=self._request_id(), error=str(exc)
+            )
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "backfill_checkpoint_quota_exceeded")
+            return
+        except OSError as exc:
+            logger.warning(
+                "browser_capture.backfill_checkpoint_write_failed", request_id=self._request_id(), error=repr(exc)
+            )
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        accepted = BrowserBackfillCheckpointAcceptedPayload(
+            extension_instance_id=record.extension_instance_id,
+            stored_at=record.stored_at,
+            bytes_written=len(_json_bytes(record.model_dump(mode="json"))),
+        )
+        logger.debug(
+            "browser_capture.backfill_checkpoint_stored",
+            request_id=self._request_id(),
+            extension_instance_id=record.extension_instance_id,
+            bytes_written=accepted.bytes_written,
+        )
+        self._send_json(HTTPStatus.ACCEPTED, accepted.model_dump(mode="json"))
 
 
 def make_server(

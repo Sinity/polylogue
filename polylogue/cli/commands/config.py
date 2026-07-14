@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.commands.completions import (
-    action_affordances_command,
-    completions_command,
-    query_completions_command,
-)
-from polylogue.cli.commands.paths import paths_command
+from polylogue.cli.click_command_registration import _LazyCommand
 from polylogue.cli.shared.types import AppEnv
 
 
@@ -38,10 +33,44 @@ def config_command(ctx: click.Context, output_format: str, show_layers: bool) ->
     _show_config(env, output_format, show_layers)
 
 
-config_command.add_command(completions_command)
-config_command.add_command(query_completions_command)
-config_command.add_command(action_affordances_command)
-config_command.add_command(paths_command)
+# Deferred: `completions.py` transitively imports the whole insights/storage
+# stack (polylogue.operations.action_contracts -> operations.archive ->
+# insights.archive -> storage.repair), ~650ms alone. `config --help` only
+# needs each subcommand's name + short help, not its implementation, so these
+# register as lazy proxies (matches the root-level pattern in
+# click_command_registration.py) instead of importing eagerly at module scope.
+config_command.add_command(
+    _LazyCommand(
+        "completions",
+        "polylogue.cli.commands.completions",
+        "completions_command",
+        short_help="Generate shell completion scripts.",
+    )
+)
+config_command.add_command(
+    _LazyCommand(
+        "query-completions",
+        "polylogue.cli.commands.completions",
+        "query_completions_command",
+        short_help="Print shared query-builder completion metadata as JSON.",
+    )
+)
+config_command.add_command(
+    _LazyCommand(
+        "action-affordances",
+        "polylogue.cli.commands.completions",
+        "action_affordances_command",
+        short_help="Print shared query-action affordance metadata as JSON.",
+    )
+)
+config_command.add_command(
+    _LazyCommand(
+        "paths",
+        "polylogue.cli.commands.paths",
+        "paths_command",
+        short_help="Print canonical archive paths and filesystem topology.",
+    )
+)
 
 
 def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
@@ -56,11 +85,16 @@ def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
         # ``console.print`` interprets ``[brackets]`` as Rich markup, which
         # would mangle JSON output and TOML section headers. Print without
         # markup parsing to preserve exact bytes. Secret-bearing keys are
-        # redacted by ``effective_config_payload``.
+        # redacted by ``effective_config_payload``. ``soft_wrap=True`` is
+        # load-bearing: without it Rich wraps long lines at the console
+        # width by inserting a literal newline mid-line, which corrupts any
+        # JSON string value (e.g. an inventory ``description``) long enough
+        # to exceed that width into invalid JSON.
         env.ui.console.print(
             json.dumps(payload, indent=2, default=str),
             markup=False,
             highlight=False,
+            soft_wrap=True,
         )
         return
 
