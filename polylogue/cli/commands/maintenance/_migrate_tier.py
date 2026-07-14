@@ -30,12 +30,12 @@ from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, M
 @click.argument("tier", type=click.Choice(tuple(sorted(tier.value for tier in DURABLE_MIGRATION_TIERS))))
 @click.option(
     "--backup-manifest",
-    required=True,
+    required=False,
     type=click.Path(path_type=Path, exists=True),
-    help="Verified polylogue ops backup manifest or backup directory containing manifest.json.",
+    help="Verified backup manifest. Required only when a selected migration changes existing durable data.",
 )
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
-def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -> None:
+def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format: str) -> None:
     """Apply additive migrations for one durable archive tier.
 
     Derived tiers are intentionally excluded from this command; rebuild or
@@ -58,7 +58,7 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
                         "ok": False,
                         "tier": tier,
                         "path": str(path),
-                        "backup_manifest": str(backup_manifest),
+                        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
                         "error": str(exc),
                     },
                     indent=2,
@@ -73,7 +73,7 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
         "ok": True,
         "tier": tier,
         "path": str(path),
-        "backup_manifest": str(backup_manifest),
+        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
         "backup_receipt": str(result.backup_receipt) if result.backup_receipt is not None else None,
         "from_version": result.from_version,
         "to_version": result.to_version,

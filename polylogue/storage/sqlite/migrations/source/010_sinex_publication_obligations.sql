@@ -1,3 +1,4 @@
+-- migration-safety: additive-no-backup
 -- Durable Sinex-backed-mode publication obligation ledger (polylogue-303r.2).
 --
 -- One row per (object_id, protocol_version, revision_id, manifest_digest)
