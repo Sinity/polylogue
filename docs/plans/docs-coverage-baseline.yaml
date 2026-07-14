@@ -68,8 +68,12 @@ gaps:
       reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
     - name: 'ops maintenance blob-reference-replace-from-source'
       reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance browser-canonical-authority-conflicts'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); missed in the initial baseline sweep, not a new surface"
     - name: 'ops maintenance browser-capture-origin-mismatches'
       reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance duplicate-raw-identity'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); missed in the initial baseline sweep, not a new surface"
     - name: 'ops maintenance embedding-orphan-reconcile'
       reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
     - name: 'ops maintenance gc-history'

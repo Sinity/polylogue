@@ -308,6 +308,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
     _entry(
+        "Storage Twins Divergences",
+        "plans/STORAGE_TWINS_DIVERGENCES.md",
+        "Documented sync/async storage backend divergences, tracked for the twins regression test.",
+        "design",
+    ),
+    _entry(
         "Query-Action Workflows Design",
         "design/query-action-workflows.md",
         "Historical design pointer for the workflow contract.",

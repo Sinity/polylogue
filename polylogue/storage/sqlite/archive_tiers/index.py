@@ -24,6 +24,7 @@ from polylogue.insights.run_projection import (
     RunHarness,
     RunStatus,
 )
+from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -1448,5 +1449,16 @@ ON session_context_snapshots(boundary);
 CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_run
 ON session_context_snapshots(run_ref);
 """
+
+# polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
+# storage/fts/sql.py as the single canonical source (also used by the
+# repair-path lifecycle in fts_lifecycle.py), but a fresh-database bootstrap
+# still needs them appended to the script it executescript()s -- without
+# this, a freshly created index.db has the messages_fts/threads_fts/
+# session_work_events_fts virtual tables but no triggers populating them,
+# so every insert silently produces an empty search index. Regression:
+# devtools render demo-corpus-datasheet started failing with "Search index
+# is incomplete" right after #2893 landed.
+INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
 
 __all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]
