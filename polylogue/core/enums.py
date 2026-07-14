@@ -110,6 +110,18 @@ class SessionKind(PolylogueStrEnum):
             return cls.STANDARD
 
 
+#: Role synonym vocabulary — single source of truth for role normalization.
+#: Maps each canonical role to its accepted synonyms (case-insensitive).
+#: Used by both Role.normalize() and SQL role-filter expansion.
+ROLE_SYNONYMS: dict[str, frozenset[str]] = {
+    "user": frozenset({"user", "human"}),
+    "assistant": frozenset({"assistant", "model", "ai"}),
+    "system": frozenset({"system", "developer"}),
+    "tool": frozenset({"tool", "function", "tool_use", "tool_result", "progress", "result"}),
+    "unknown": frozenset({"unknown"}),
+}
+
+
 class Role(PolylogueStrEnum):
     """Canonical session roles."""
 
@@ -126,14 +138,9 @@ class Role(PolylogueStrEnum):
         if not lowered:
             raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
 
-        if lowered in {"user", "human"}:
-            return cls.USER
-        if lowered in {"assistant", "model", "ai"}:
-            return cls.ASSISTANT
-        if lowered in {"system", "developer"}:
-            return cls.SYSTEM
-        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
-            return cls.TOOL
+        for role_name, synonyms in ROLE_SYNONYMS.items():
+            if lowered in synonyms:
+                return cls(role_name)
         return cls.UNKNOWN
 
 

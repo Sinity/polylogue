@@ -463,7 +463,8 @@ class ToolFamilyComparisonPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-def normalize_role(role: object) -> str:
+def role_label(role: object) -> str:
+    """Convert a role enum or string to a normalized label string."""
     if not role:
         return "unknown"
     if isinstance(role, Enum):
@@ -710,7 +711,7 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=str(message.id),
-            role=normalize_role(message.role),
+            role=role_label(message.role),
             text=message.text or "",
             target_ref=target_ref,
             anchor=reader_anchor("message", message.id),
@@ -770,7 +771,7 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=message_id,
-            role=normalize_role(getattr(message, "role", "")),
+            role=role_label(getattr(message, "role", "")),
             text=text,
             target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
             anchor=reader_anchor("message", message_id),
@@ -3623,7 +3624,7 @@ __all__ = [
     "build_query_unit_envelope",
     "decode_search_cursor",
     "model_json_document",
-    "normalize_role",
+    "role_label",
     "reader_anchor",
     "reader_session_actions",
     "reader_message_actions",
