@@ -1382,6 +1382,10 @@ files:
     loc: 103
     target: polylogue/daemon/embedding_readiness.py
     owner: stable
+  - path: polylogue/daemon/event_bus.py
+    loc: 190
+    target: polylogue/daemon/event_bus.py
+    owner: stable
   - path: polylogue/daemon/events.py
     loc: 439
     target: polylogue/daemon/events.py
