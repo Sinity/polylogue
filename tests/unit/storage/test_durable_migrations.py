@@ -1340,3 +1340,96 @@ def test_derived_tiers_do_not_use_migration_runner(tmp_path: Path) -> None:
             migrate_archive_tier(conn, ArchiveTier.INDEX, backup_manifest=tmp_path / "missing-manifest.json")
     finally:
         conn.close()
+
+
+def test_backup_artifact_inventory_scan_is_cached_across_both_durable_tier_migrations(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One activation authenticates the immutable backup inventory once.
+
+    Without caching, ``migrate_archive_tier`` scans and SHA-256's the whole
+    backup artifact tree (including the blob inventory) four times for one
+    source+user activation: once before ``BEGIN`` and once inside the
+    transaction, for each of the two durable tiers.  The backup directory is
+    asserted immutable for the run, so those are pure duplication -- observed
+    as 100+ GiB of repeat reads against a 35 GiB index during the 2026-07-13
+    v35->v36 cutover.  This proves the expensive scan (``_backup_artifact_inventory``)
+    now runs exactly once and both tier migrations still succeed off the
+    shared, cached result.
+    """
+    archive_root_path = workspace_env["archive_root"]
+    source_path = archive_root_path / "source.db"
+    user_path = archive_root_path / "user.db"
+    _create_source_v1(source_path)
+    _create_user_v3(user_path)
+    # Default "rebuildable_cache_exclude" profile includes source+user+embeddings.
+    manifest = _verified_backup_manifest(tmp_path / "backup")
+
+    scan_calls: list[Path] = []
+    original_scan = migration_runner._backup_artifact_inventory
+
+    def counting_scan(backup_root: Path) -> list[dict[str, object]]:
+        scan_calls.append(backup_root)
+        return original_scan(backup_root)
+
+    monkeypatch.setattr(migration_runner, "_backup_artifact_inventory", counting_scan)
+
+    with sqlite3.connect(source_path) as conn:
+        source_result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+    with sqlite3.connect(user_path) as conn:
+        user_result = migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+
+    assert source_result.to_version == SOURCE_SCHEMA_VERSION
+    assert user_result.to_version == USER_SCHEMA_VERSION
+    assert len(scan_calls) == 1
+
+
+def test_cached_backup_inventory_still_detects_tamper_between_tier_migrations(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cache hit can only skip work, never launder a mutated backup.
+
+    The source-tier migration populates the cache; tampering the backup
+    afterward must still be caught by the user-tier migration, proving the
+    cheap stat-signature check actually invalidates on real mutation instead
+    of silently trusting a stale scan.
+    """
+    archive_root_path = workspace_env["archive_root"]
+    source_path = archive_root_path / "source.db"
+    user_path = archive_root_path / "user.db"
+    _create_source_v1(source_path)
+    _create_user_v3(user_path)
+    manifest = _verified_backup_manifest(tmp_path / "backup")
+
+    with sqlite3.connect(source_path) as conn:
+        migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+
+    _tamper_backup_tier(manifest)
+    _block_migration_sql(monkeypatch)
+
+    with sqlite3.connect(user_path) as conn:
+        with pytest.raises(MigrationError, match="tier artifact .* mismatch"):
+            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=manifest)
+
+
+def test_backup_inventory_cache_signature_rejects_stale_entry_after_size_change(tmp_path: Path) -> None:
+    """Unit-level proof that a changed artifact invalidates the cached scan."""
+    backup_root = tmp_path / "backup-cache"
+    backup_root.mkdir()
+    artifact = backup_root / "example.db"
+    artifact.write_bytes(b"original-bytes")
+    migration_runner._backup_artifact_inventory_cache.clear()
+
+    first = migration_runner._cached_backup_artifact_inventory(backup_root)
+    first_hash = next(item["sha256"] for item in first if item["path"] == "example.db")
+
+    artifact.write_bytes(b"mutated-bytes-are-longer")
+    second = migration_runner._cached_backup_artifact_inventory(backup_root)
+    second_hash = next(item["sha256"] for item in second if item["path"] == "example.db")
+
+    assert first_hash != second_hash
+    assert second_hash == hashlib.sha256(b"mutated-bytes-are-longer").hexdigest()
