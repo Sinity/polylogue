@@ -19,6 +19,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
 )
@@ -1378,23 +1379,7 @@ def _archive_compute_slow_threshold_s(conn: sqlite3.Connection) -> float | None:
     if len(samples) < SLOW_MIN_SAMPLES:
         return None
     samples.sort()
-    return _percentile(samples, SLOW_P95_QUANTILE)
-
-
-def _percentile(sorted_values: list[float], q: float) -> float:
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    if q <= 0:
-        return float(sorted_values[0])
-    if q >= 1:
-        return float(sorted_values[-1])
-    position = (len(sorted_values) - 1) * q
-    lower = int(position)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    weight = position - lower
-    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+    return percentile(samples, SLOW_P95_QUANTILE)
 
 
 def _archive_latest_stage_payloads(

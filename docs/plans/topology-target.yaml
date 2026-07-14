@@ -539,7 +539,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/timing.py
-    loc: 333
+    loc: 323
     target: polylogue/archive/semantic/timing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -1338,6 +1338,11 @@ files:
     target: polylogue/core/sources.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/stats.py
+    loc: 78
+    target: polylogue/core/stats.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/timestamps.py
     loc: 167
     target: polylogue/core/timestamps.py
@@ -1426,7 +1431,7 @@ files:
     target: polylogue/daemon/cursor_lag_anomaly.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_baseline.py
-    loc: 358
+    loc: 336
     target: polylogue/daemon/cursor_lag_baseline.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_status.py
@@ -1487,7 +1492,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/daemon/live_ingest_attempt_progress.py
-    loc: 198
+    loc: 177
     target: polylogue/daemon/live_ingest_attempt_progress.py
     owner: stable
   - path: polylogue/daemon/live_ingest_attempt_workload.py
@@ -1547,7 +1552,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 2676
+    loc: 2661
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -1749,7 +1754,7 @@ files:
     target: polylogue/insights/pathology.py
     owner: stable
   - path: polylogue/insights/portfolio.py
-    loc: 412
+    loc: 404
     target: polylogue/insights/portfolio.py
     owner: stable
   - path: polylogue/insights/postmortem.py
