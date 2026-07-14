@@ -104,6 +104,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Incident 14:32 Proof World](design/incident-1432-proof-world.md) | Deterministic demo corpus and anti-circularity rules. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
+| [Storage Twins Divergences](plans/STORAGE_TWINS_DIVERGENCES.md) | Documented sync/async storage backend divergences, tracked for the twins regression test. |
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
