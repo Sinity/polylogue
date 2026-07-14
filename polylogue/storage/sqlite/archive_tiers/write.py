@@ -72,33 +72,6 @@ class ArchiveBlockRow:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveWebConstructRow:
-    construct_id: str
-    session_id: str
-    message_id: str
-    block_id: str
-    position: int
-    provider: str
-    construct_type: str
-    provider_key: str | None = None
-    title: str | None = None
-    url: str | None = None
-    text: str | None = None
-    source_id: str | None = None
-    group_id: str | None = None
-    group_title: str | None = None
-    query: str | None = None
-    asset_pointer: str | None = None
-    mime_type: str | None = None
-    status: str | None = None
-    task_id: str | None = None
-    task_type: str | None = None
-    rank: int | None = None
-    start_index: int | None = None
-    end_index: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveAttachmentRow:
     attachment_id: str
     message_id: str | None
