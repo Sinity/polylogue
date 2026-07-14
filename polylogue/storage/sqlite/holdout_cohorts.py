@@ -19,6 +19,19 @@ The actual query-planner integration (the rxdo.6 layer that would call
 that call site is deferred to whichever lane lands the rxdo.6 planner. This
 module is the durable storage + enforcement primitive that planner will
 call into.
+
+Reset/excision durability: no excision mechanism exists for ``result_sets``
+in this tree yet (see ``polylogue-layg`` for the separate source.db blob
+excision cluster, which does not touch this table). The floor this module
+ships is the migration's ``ON DELETE RESTRICT`` FK from
+``result_set_holdout_policies`` to ``result_sets`` -- a raw ``DELETE`` of a
+holdout-marked result set raises ``sqlite3.IntegrityError`` rather than
+silently dropping the policy (see
+``test_deleting_a_holdout_marked_result_set_is_blocked_by_the_durable_fk``).
+A future excision/reset mechanism must route through an explicit
+unmark-then-delete step (or a policy-aware cascade) rather than a raw
+DELETE, or it will hit this same constraint; that integration is not
+designed or implemented here.
 """
 
 from __future__ import annotations
