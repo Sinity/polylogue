@@ -26,6 +26,7 @@ from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.targets import build_maintenance_target_catalog
+from polylogue.storage.embeddings.materialization import message_prose_sql
 
 logger = get_logger(__name__)
 _TARGET_NAME = "message_type_backfill"
@@ -51,14 +52,13 @@ class BackfillResult:
 # has no ``text`` column; message text lives in ``blocks`` (one row per
 # content block). The classifier operates on the message's prose, which we
 # reconstruct by concatenating the text of its blocks in position order.
-_MESSAGE_TEXT_BY_ID_SQL = """
+# Uses the canonical message_prose_sql builder with single-newline separator
+# and text-type filter to exclude thinking/tool blocks from classification.
+_NEWLINE_SEP = "'\n'"  # SQL literal for single newline separator
+_MESSAGE_TEXT_BY_ID_SQL = f"""
     SELECT m.message_id AS message_id,
-           GROUP_CONCAT(b.text, '
-') AS text
+           {message_prose_sql("m", separator=_NEWLINE_SEP, block_types=("text",))} AS text
     FROM messages m
-    JOIN blocks b
-      ON b.message_id = m.message_id
-     AND b.text IS NOT NULL
     WHERE m.message_type = 'message'
     GROUP BY m.message_id
 """
