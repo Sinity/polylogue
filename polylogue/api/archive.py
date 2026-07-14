@@ -1561,16 +1561,18 @@ class _ArchiveInsightExportOperations:
 
 
 class _ArchiveNeighborRuntime:
-    """Minimal neighbor discovery store adapter for archive neighbor discovery."""
+    """Minimal neighbor discovery store adapter for archive neighbor discovery.
+
+    Implements: NeighborStore protocol (resolve_id, get, list_summaries_by_query, search_summary_hits)
+    """
 
     def __init__(self, archive: Any) -> None:
         self._archive = archive
 
-    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None:
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None:
         del strict
         try:
-            result = self._archive.resolve_session_id(id_prefix)
-            return cast(str, result)
+            return SessionId(self._archive.resolve_session_id(id_prefix))
         except KeyError:
             return None
 

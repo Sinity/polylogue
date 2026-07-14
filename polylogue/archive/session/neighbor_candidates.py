@@ -8,36 +8,16 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
+from polylogue.protocols import NeighborStore
 from polylogue.storage.query_models import SessionRecordQuery
 
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.domain_models import Session, SessionSummary
-
-    class NeighborStore(Protocol):
-        """Minimal store protocol for neighbor candidate discovery.
-
-        Extracted from SessionQueryRuntimeStore to narrow the interface
-        to only the 4 methods actually used by discover_neighbor_candidates.
-        """
-
-        async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None: ...
-
-        async def get(self, session_id: str) -> Session | None: ...
-
-        async def list_summaries_by_query(self, query: SessionRecordQuery) -> builtins.list[SessionSummary]: ...
-
-        async def search_summary_hits(
-            self,
-            query: str,
-            limit: int = 20,
-            origins: builtins.list[str] | None = None,
-            since: str | None = None,
-        ) -> builtins.list[SessionSearchHit]: ...
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
