@@ -1669,6 +1669,44 @@ class AssertionClaimPayload(SurfacePayloadModel):
         )
 
 
+class FindingEvidenceRefState(SurfacePayloadModel):
+    """Live resolution state for one evidence ref cited by a finding."""
+
+    ref: str
+    resolvable: bool
+    reason: str | None = None
+
+
+class FindingProvenancePayload(SurfacePayloadModel):
+    """Queryable provenance projection over one ``AssertionKind.FINDING`` claim.
+
+    Surfaces the evidence-ancestry fields the finding-provenance doctrine
+    calls for (finding id, claim key, target, query/result/baseline/current
+    refs, detector ref) as structured data instead of prose, plus a live
+    per-ref resolution check and an honest staleness verdict. This is
+    deliberately *not* the full W3C-PROV-style stanza requested alongside it
+    (no code SHA / corpus-datasheet hash -- those need build-info threading
+    tracked separately as follow-up); it is the bounded slice of "queryable,
+    not prose" provenance available from the finding's own durable evidence
+    refs today.
+    """
+
+    assertion_id: str
+    claim_key: str | None
+    target_ref: str
+    finding_kind: str | None
+    query_ref: str | None
+    result_set_ref: str | None
+    baseline_ref: str | None
+    current_ref: str | None
+    detector_ref: str | None
+    status: AssertionStatus
+    evidence: tuple[FindingEvidenceRefState, ...]
+    staleness_verdict: Literal["current", "stale", "unknown"]
+    created_at_ms: int
+    updated_at_ms: int
+
+
 class AssertionClaimListPayload(SurfacePayloadModel):
     """Shared list envelope for assertion-backed lifecycle claims."""
 
@@ -3537,6 +3575,8 @@ __all__ = [
     "FacetTimeRange",
     "FacetFamilyStatusPayload",
     "FacetsResponse",
+    "FindingEvidenceRefState",
+    "FindingProvenancePayload",
     "ArchiveDebtActionPayload",
     "ArchiveDebtKind",
     "ArchiveDebtListPayload",
