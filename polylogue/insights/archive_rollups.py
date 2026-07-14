@@ -428,15 +428,15 @@ def tool_call_latency_distribution_payload(
     """Distribution of materialized per-session tool-call latency (#1691).
 
     Reuses the nearest-rank percentile from
-    :mod:`polylogue.insights.portfolio` (``_percentile``/``DistributionStat``)
+    :mod:`polylogue.core.stats` (``percentile(..., method='nearest')``)
     rather than a second percentile algorithm.
     """
-    from polylogue.insights.portfolio import _percentile
+    from polylogue.core.stats import percentile
 
     def _nearest_rank(values: list[int], p: float) -> int:
         if not values:
             return 0
-        return int(_percentile(sorted(values), p / 100.0))
+        return int(percentile(sorted(values), p / 100.0, method="nearest"))
 
     filtered = insights
     if tool_category:

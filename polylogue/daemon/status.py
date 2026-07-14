@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
 )
@@ -1399,23 +1400,7 @@ def _archive_compute_slow_threshold_s(conn: sqlite3.Connection) -> float | None:
     if len(samples) < SLOW_MIN_SAMPLES:
         return None
     samples.sort()
-    return _percentile(samples, SLOW_P95_QUANTILE)
-
-
-def _percentile(sorted_values: list[float], q: float) -> float:
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    if q <= 0:
-        return float(sorted_values[0])
-    if q >= 1:
-        return float(sorted_values[-1])
-    position = (len(sorted_values) - 1) * q
-    lower = int(position)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    weight = position - lower
-    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+    return percentile(samples, SLOW_P95_QUANTILE)
 
 
 def _archive_latest_stage_payloads(

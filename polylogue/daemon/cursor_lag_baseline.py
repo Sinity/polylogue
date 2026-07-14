@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from polylogue.core.stats import percentile
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
 from polylogue.logging import get_logger
 from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
@@ -209,8 +210,8 @@ def _record_archive_cursor_lag_samples(
         family_items = per_family_items.get(family_summary.family, [])
         lags = [item.lag_s for item in family_items]
         if lags:
-            p50 = _percentile(lags, 0.5)
-            p95 = _percentile(lags, 0.95)
+            p50 = percentile(lags, 0.5)
+            p95 = percentile(lags, 0.95)
             representative = max(family_items, key=lambda item: item.lag_s).source_path
         else:
             p50 = p95 = family_summary.max_lag_s
@@ -306,8 +307,8 @@ def _load_archive_family_baseline(
     return FamilyBaseline(
         family=family,
         sample_count=count,
-        rolling_median_lag_s=round(_percentile(lags, 0.5), 3) if lags else 0.0,
-        rolling_p95_lag_s=round(_percentile(lags, 0.95), 3) if lags else 0.0,
+        rolling_median_lag_s=round(percentile(lags, 0.5), 3) if lags else 0.0,
+        rolling_p95_lag_s=round(percentile(lags, 0.95), 3) if lags else 0.0,
         window_started_at=window_start.isoformat(),
         confident=count >= max(1, min_samples),
     )
@@ -324,28 +325,6 @@ def _epoch_ms(moment: datetime) -> int:
 def _database_is_locked(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
 
-
-def _percentile(sorted_values: list[float], q: float) -> float:
-    """Linear-interpolation percentile over a pre-sorted list.
-
-    Returns 0.0 for an empty list. ``q`` is in ``[0, 1]``. Matches the
-    "linear" interpolation used by numpy.percentile so a baseline computed
-    here can be compared against externally-collected metrics without an
-    impedance mismatch.
-    """
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    if q <= 0:
-        return float(sorted_values[0])
-    if q >= 1:
-        return float(sorted_values[-1])
-    position = q * (len(sorted_values) - 1)
-    lo = int(position)
-    hi = min(lo + 1, len(sorted_values) - 1)
-    frac = position - lo
-    return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
 __all__ = [
