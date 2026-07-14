@@ -1569,7 +1569,8 @@ class _ArchiveNeighborRuntime:
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None:
         del strict
         try:
-            return self._archive.resolve_session_id(id_prefix)
+            result = self._archive.resolve_session_id(id_prefix)
+            return cast(str, result)
         except KeyError:
             return None
 
