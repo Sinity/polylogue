@@ -1,4 +1,7 @@
-"""Shared display/title/tags mixin for Session and SessionSummary models."""
+"""Shared display/title/tags mixin for Session and SessionSummary models.
+
+@owner archive-session
+"""
 
 from __future__ import annotations
 

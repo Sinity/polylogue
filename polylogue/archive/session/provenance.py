@@ -1,4 +1,7 @@
-"""Provenance vocabulary helpers for session attributes."""
+"""Provenance vocabulary helpers for session attributes.
+
+@owner archive-session
+"""
 
 from __future__ import annotations
 

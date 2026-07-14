@@ -48,7 +48,7 @@ def latest_stage_events(
             attempt_id,
             LiveIngestStageEventInfo(
                 archive_write_bytes_delta=_row_int(row[1]),
-                total_time_s=_row_float(row[2]),
+                total_time_s=_row_float(row[2]) or 0.0,
                 stage_timings_s=_stage_timings(row[3]),
             ),
         )

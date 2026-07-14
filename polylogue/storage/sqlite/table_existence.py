@@ -1,4 +1,7 @@
-"""Centralized table existence checks for SQLite connections."""
+"""Centralized table existence checks for SQLite connections.
+
+@owner storage-root
+"""
 
 from __future__ import annotations
 
