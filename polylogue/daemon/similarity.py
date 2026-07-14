@@ -322,12 +322,11 @@ def _clamp_limit(requested: int | None) -> int:
 
 
 def _archive_index_path_for() -> str | None:
+    from polylogue.paths import sibling_index_db
+
     path = active_index_db_path()
-    if path.name != "index.db":
-        path = path.with_name("index.db")
-    if path.exists():
-        return str(path)
-    return None
+    index_db = sibling_index_db(path, require_exists=True)
+    return str(index_db) if index_db is not None else None
 
 
 def _build_archive_similar_payload(

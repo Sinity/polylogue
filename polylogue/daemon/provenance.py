@@ -198,11 +198,13 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
     "no raw artifact" state explicitly.
     """
 
+    from polylogue.paths import sibling_index_db
+
     dbp = active_index_db_path()
-    archive_db = dbp if dbp.name == "index.db" else dbp.with_name("index.db")
-    if archive_db.exists():
+    archive_db = sibling_index_db(dbp, require_exists=False)
+    if archive_db is not None and archive_db.exists():
         return _fetch_archive_provenance_row(archive_db, session_id)
-    if not dbp.exists():
+    if not dbp.exists() and archive_db is not None:
         return _fetch_archive_provenance_row(archive_db, session_id)
     conn = sqlite3.connect(str(dbp))
     try:

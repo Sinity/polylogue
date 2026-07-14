@@ -84,10 +84,9 @@ def _hook_epoch_ms(event: dict[str, object]) -> float:
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    if db_path.name == "index.db":
-        return db_path if db_path.exists() else None
-    index_db = db_path.with_name("index.db")
-    return index_db if index_db.exists() else None
+    from polylogue.paths import sibling_index_db
+
+    return sibling_index_db(db_path, require_exists=True)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
