@@ -486,7 +486,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -500,6 +500,18 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_session_memberships'"
         ).fetchone()
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sinex_publication_obligations'"
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO sinex_publication_obligations (
+                object_id, protocol_version, revision_id, manifest_digest, mode,
+                created_at_ms, updated_at_ms
+            ) VALUES ('claude-code-session:migrated', 'polylogue.material-protocol/v1', 'rev-1', 'digest-1', 'mirror', 1, 1)
+            """
+        )
+        assert conn.execute("SELECT status FROM sinex_publication_obligations").fetchone()[0] == "pending"
 
         index_rows = conn.execute("PRAGMA index_list('raw_sessions')").fetchall()
         origin_native_index = next(row for row in index_rows if row[1] == "idx_raw_sessions_origin_native")
@@ -539,7 +551,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     """The Beads origin copy-forward retains v7 evidence and accepts new raws."""
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
-    old_ddl = SOURCE_DDL.replace(", 'beads-issue'", "")
+    # sinex_publication_obligations (migration 010) postdates v7; migration
+    # 010 issues its own CREATE TABLE, so the v7 fixture must not already
+    # carry it (unlike the tables migrations 8/9 rebuild in place, this one
+    # is untouched by the origin-CHECK copy-forward under test).
+    sinex_obligations_marker = "\nCREATE TABLE IF NOT EXISTS sinex_publication_obligations"
+    old_ddl = SOURCE_DDL[: SOURCE_DDL.index(sinex_obligations_marker)] + "\n"
+    old_ddl = old_ddl.replace(", 'beads-issue'", "")
     old_ddl = old_ddl.replace(
         "    capture_mode            TEXT CHECK ((capture_mode IN "
         "('chatgpt', 'claude-ai', 'claude-code', 'codex', 'gemini', 'gemini-cli', "
@@ -607,8 +625,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 9
-        assert result.applied_versions == (8, 9)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 10
+        assert result.applied_versions == (8, 9, 10)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -769,7 +787,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -827,7 +845,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """

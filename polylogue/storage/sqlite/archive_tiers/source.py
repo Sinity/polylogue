@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 9
+SOURCE_SCHEMA_VERSION = 10
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -206,6 +206,31 @@ CREATE TABLE IF NOT EXISTS history_sidecars (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_history_sidecars_path_hash
 ON history_sidecars(origin, source_path, content_hash);
+
+CREATE TABLE IF NOT EXISTS sinex_publication_obligations (
+    object_id           TEXT NOT NULL,
+    protocol_version     TEXT NOT NULL CHECK(protocol_version != ''),
+    revision_id          TEXT NOT NULL,
+    manifest_digest      TEXT NOT NULL,
+    mode                 TEXT NOT NULL CHECK(mode IN ('mirror', 'primary')),
+    status               TEXT NOT NULL DEFAULT 'pending'
+                             CHECK(status IN ('pending', 'publishing', 'confirmed', 'durable_debt', 'rejected')),
+    attempt_count        INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    last_attempt_at_ms   INTEGER,
+    last_receipt_state   TEXT,
+    last_error           TEXT,
+    created_at_ms        INTEGER NOT NULL,
+    updated_at_ms        INTEGER NOT NULL,
+    retired_at_ms        INTEGER,
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_pending
+ON sinex_publication_obligations(status, created_at_ms)
+WHERE status IN ('pending', 'publishing', 'durable_debt');
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_object
+ON sinex_publication_obligations(object_id, created_at_ms DESC);
 
 """
 

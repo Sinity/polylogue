@@ -21,7 +21,7 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 7` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
@@ -49,7 +49,10 @@ carrying `origin`, `native_id`, `blob_hash`, and parse/validation state),
 (content-addressed blob references, in-flight publication protection, and the
 GC bookkeeping described in
 [Internals § Blob Store Model](internals.md#blob-store-model)),
-`raw_hook_events`, and `history_sidecars`.
+`raw_hook_events`, `history_sidecars`, and `sinex_publication_obligations` (the
+durable Sinex-backed-mode publication-obligation ledger — see
+[Architecture § Sinex Publication](architecture.md#sinex-publication) and
+[docs/sinex-interop.md](sinex-interop.md)).
 
 ### `index.db` — parsed tree, search, and insights (rebuildable)
 
