@@ -24,7 +24,7 @@ files:
     target: polylogue/annotations/importer.py
     owner: stable
   - path: polylogue/annotations/join.py
-    loc: 438
+    loc: 439
     target: polylogue/annotations/join.py
     owner: stable
   - path: polylogue/annotations/schema.py
@@ -50,26 +50,11 @@ files:
     target: polylogue/api/contracts/__init__.py
     owner: stable
     cross_cut: { api: async }
-  - path: polylogue/api/contracts/api_write_surface.py
-    loc: 126
-    target: polylogue/api/contracts/api_write_surface.py
-    owner: stable
-    cross_cut: { api: async, layer: write }
   - path: polylogue/api/contracts/assertions.py
     loc: 54
     target: polylogue/api/contracts/assertions.py
     owner: stable
     cross_cut: { api: async }
-  - path: polylogue/api/contracts/cli_write_surface.py
-    loc: 150
-    target: polylogue/api/contracts/cli_write_surface.py
-    owner: stable
-    cross_cut: { api: async, layer: write }
-  - path: polylogue/api/contracts/mcp_write_surface.py
-    loc: 147
-    target: polylogue/api/contracts/mcp_write_surface.py
-    owner: stable
-    cross_cut: { api: async, layer: write }
   - path: polylogue/api/contracts/read_surface.py
     loc: 165
     target: polylogue/api/contracts/read_surface.py
@@ -78,11 +63,6 @@ files:
   - path: polylogue/api/contracts/tui_surface.py
     loc: 108
     target: polylogue/api/contracts/tui_surface.py
-    owner: stable
-    cross_cut: { api: async }
-  - path: polylogue/api/contracts/write_surface.py
-    loc: 171
-    target: polylogue/api/contracts/write_surface.py
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/embeddings.py
@@ -807,7 +787,7 @@ files:
     target: polylogue/cli/commands/diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/embed.py
-    loc: 867
+    loc: 868
     target: polylogue/cli/commands/embed.py
     owner: stable
   - path: polylogue/cli/commands/excise.py
@@ -1351,11 +1331,11 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1677
+    loc: 1657
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
-    loc: 335
+    loc: 336
     target: polylogue/daemon/convergence_standing_queries.py
     owner: stable
   - path: polylogue/daemon/cursor_lag_alert.py
@@ -1934,7 +1914,7 @@ files:
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
-    loc: 51
+    loc: 47
     target: polylogue/operations/__init__.py
     owner: stable
   - path: polylogue/operations/action_contracts.py
@@ -1958,11 +1938,11 @@ files:
     target: polylogue/operations/import_contracts.py
     owner: stable
   - path: polylogue/operations/import_operations.py
-    loc: 172
+    loc: 204
     target: polylogue/operations/import_operations.py
     owner: stable
   - path: polylogue/operations/operation_contract.py
-    loc: 277
+    loc: 99
     target: polylogue/operations/operation_contract.py
     owner: stable
   - path: polylogue/operations/specs.py
@@ -2851,7 +2831,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1083
+    loc: 1084
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3024,7 +3004,7 @@ files:
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/sqlite_snapshot.py
-    loc: 187
+    loc: 191
     target: polylogue/sources/sqlite_snapshot.py
     owner: stable
   - path: polylogue/sources/token_store.py
@@ -3045,7 +3025,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 685
+    loc: 686
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3079,12 +3059,12 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_gc.py
-    loc: 572
+    loc: 573
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_integrity.py
-    loc: 2095
+    loc: 2096
     target: polylogue/storage/blob_integrity.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3202,7 +3182,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/index_generation.py
-    loc: 250
+    loc: 251
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/insights/__init__.py
@@ -3267,11 +3247,11 @@ files:
     target: polylogue/storage/insights/session/run_projection_rows.py
     owner: stable
   - path: polylogue/storage/insights/session/runtime.py
-    loc: 198
+    loc: 238
     target: polylogue/storage/insights/session/runtime.py
     owner: stable
   - path: polylogue/storage/insights/session/status.py
-    loc: 955
+    loc: 959
     target: polylogue/storage/insights/session/status.py
     owner: stable
   - path: polylogue/storage/insights/session/storage.py
@@ -3331,7 +3311,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 6566
+    loc: 6571
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3539,7 +3519,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 11381
+    loc: 11382
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3667,7 +3647,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 636
+    loc: 637
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py
