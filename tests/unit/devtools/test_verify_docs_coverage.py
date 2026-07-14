@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from devtools import verify_docs_coverage
 
 
@@ -10,7 +12,7 @@ def test_collect_coverage_passes_on_current_tree() -> None:
     assert report.ok, [f"{g.surface}: {g.name}" for g in report.gaps]
 
 
-def test_collect_coverage_flags_an_undocumented_cli_command(monkeypatch) -> None:
+def test_collect_coverage_flags_an_undocumented_cli_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: a CLI command absent from both the docs tree and the
     baseline must fail the lane, naming the exact missing command."""
     monkeypatch.setattr(verify_docs_coverage, "_cli_inventory", lambda: ("totally-unfamiliar-verb",))
@@ -24,7 +26,7 @@ def test_collect_coverage_flags_an_undocumented_cli_command(monkeypatch) -> None
     assert report.gaps == (verify_docs_coverage.CoverageGap(surface="cli", name="totally-unfamiliar-verb"),)
 
 
-def test_collect_coverage_baseline_entry_suppresses_a_gap(monkeypatch) -> None:
+def test_collect_coverage_baseline_entry_suppresses_a_gap(monkeypatch: pytest.MonkeyPatch) -> None:
     """A surface explicitly recorded in the baseline is tracked debt, not a
     failure -- this is what lets the gate ship without a full doc-writing pass
     for the existing backlog."""
@@ -39,7 +41,7 @@ def test_collect_coverage_baseline_entry_suppresses_a_gap(monkeypatch) -> None:
     assert report.ok
 
 
-def test_collect_coverage_reports_stale_baseline_entries(monkeypatch) -> None:
+def test_collect_coverage_reports_stale_baseline_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     """A baseline entry whose surface is now documented is reported as stale
     (should be removed) but does not fail the lane -- keeps the baseline from
     silently outliving the debt it records."""
@@ -66,5 +68,7 @@ def test_baseline_file_parses_and_matches_live_gaps() -> None:
     for surface, entries in baseline.items():
         assert surface in {"cli", "mcp", "config", "route"}
         for name, reason in entries.items():
-            assert isinstance(name, str) and name
-            assert isinstance(reason, str) and reason
+            assert isinstance(name, str)
+            assert name
+            assert isinstance(reason, str)
+            assert reason
