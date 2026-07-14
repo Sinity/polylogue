@@ -583,7 +583,7 @@ def _archive_datetime_to_ms(value: datetime | None) -> int | None:
 _SCOPE_FILTER_KEYS = frozenset(
     {
         "session_ids",
-        "provider",
+        "origin",
         "source_family",
         "source_root",
         "time_range",
