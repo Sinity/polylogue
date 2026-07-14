@@ -77,3 +77,7 @@ files:
     reason: "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). frozen_clock cannot substitute for real time when waiting on OS process state."
   - path: tests/integration/test_ingest_pipeline_correctness.py
     reason: "Ingest pipeline correctness tests (#1736) use time.monotonic for real process wait/retry timing that cannot be satisfied by a frozen clock."
+  - path: tests/benchmarks/test_daemon_uds.py
+    reason: "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
+  - path: tests/unit/cli/test_daemon_golden_parity.py
+    reason: "polylogue-20d.1 golden-parity test starts a real UDS daemon server in a background thread and polls its readiness with a bounded wall-clock deadline before comparing direct vs daemon-proxied CLI output; frozen_clock cannot substitute for waiting on real socket/thread startup."
