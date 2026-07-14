@@ -1562,23 +1562,11 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveAssertionQueryRow) -> AssertionQueryRowPayload:
-        return cls(
-            assertion_id=row.assertion_id,
-            target_ref=row.target_ref,
-            scope_ref=row.scope_ref,
+        return cls._from_row_generic(
+            row,
             kind=AssertionKind.from_string(row.kind),
-            key=row.key,
-            body_text=row.body_text,
-            value=row.value,
-            author_ref=row.author_ref,
-            author_kind=row.author_kind,
             status=AssertionStatus.from_string(row.status),
             visibility=AssertionVisibility.from_string(row.visibility),
-            evidence_refs=row.evidence_refs,
-            staleness=row.staleness,
-            context_policy=row.context_policy,
-            created_at_ms=row.created_at_ms,
-            updated_at_ms=row.updated_at_ms,
         )
 
 
@@ -2296,35 +2284,12 @@ class DelegationAttemptPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationAttemptPayload:
-        return cls(
-            parent_session_id=row.parent_session_id,
-            child_session_id=row.child_session_id,
-            mapping_state=row.mapping_state,
-            link_confidence=row.link_confidence,
-            link_method=row.link_method,
-            inheritance=row.inheritance,
-            branch_point_message_id=row.branch_point_message_id,
-            instruction_message_id=row.instruction_message_id,
-            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+        return cls._from_row_generic(
+            row,
             instruction_payload=_bounded_delegation_text(row.instruction_payload),
-            dispatch_turn_model=row.dispatch_turn_model,
-            requested_model=row.requested_model,
-            artifact_block_id=row.artifact_block_id,
             artifact_text=_bounded_delegation_text(row.artifact_text),
             result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
-            result_exit_code=row.result_exit_code,
-            result_status=row.result_status,
-            parent_origin=row.parent_origin,
-            parent_session_dominant_model=row.parent_session_dominant_model,
-            parent_session_dominant_model_family=row.parent_session_dominant_model_family,
-            parent_terminal_state=row.parent_terminal_state,
-            child_session_dominant_model=row.child_session_dominant_model,
-            child_session_dominant_model_family=row.child_session_dominant_model_family,
-            child_cost_usd=row.child_cost_usd,
             child_cost_is_estimated=None if row.child_cost_is_estimated is None else bool(row.child_cost_is_estimated),
-            child_tokens=row.child_tokens,
-            child_wall_ms=row.child_wall_ms,
-            child_terminal_state=row.child_terminal_state,
         )
 
 
@@ -2660,12 +2625,7 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:
-        return cls(
-            unit=cast(QueryUnitKind, row.unit),
-            group_by=row.group_by,
-            group_key=row.group_key,
-            count=row.count,
-        )
+        return cls._from_row_generic(row, unit=cast(QueryUnitKind, row.unit))
 
 
 class QueryUnitEnvelope(SurfacePayloadModel):
