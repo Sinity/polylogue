@@ -326,7 +326,6 @@ def _database_is_locked(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
 
 
-
 __all__ = [
     "FamilyBaseline",
     "ensure_lag_sample_table",

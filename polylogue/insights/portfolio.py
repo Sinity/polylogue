@@ -19,7 +19,6 @@ already-fetched profiles and session digests and performs no I/O.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
