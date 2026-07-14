@@ -27,7 +27,7 @@ from polylogue.archive.query.production_evaluator import (
     UnsupportedEvaluationGrainError,
 )
 from polylogue.core.enums import BlockType, Provider
-from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION
+from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION, JsonValue
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -65,7 +65,7 @@ def _seed_archive(archive_root: Path) -> None:
 
 
 def _origin_query(conn: sqlite3.Connection, *, origin: str) -> QueryObject:
-    ast = {
+    ast: dict[str, JsonValue] = {
         "kind": "field",
         "field": "origin",
         "op": "=",
@@ -162,7 +162,7 @@ def test_evaluate_rejects_unsupported_grain(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _seed_archive(archive_root)
     with sqlite3.connect(archive_root / "user.db") as conn:
-        ast = {"kind": "field", "field": "tool_name", "op": "=", "values": ["Bash"]}
+        ast: dict[str, JsonValue] = {"kind": "field", "field": "tool_name", "op": "=", "values": ["Bash"]}
         query = put_query(conn, ast, grain="action", lane="dialogue", rank_policy="mixed", created_at_ms=1)
         conn.commit()
 
