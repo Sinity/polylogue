@@ -47,14 +47,13 @@ def test_request_id_is_deterministic_and_distinguishes_every_key_component() -> 
     same = dataclasses.replace(base)
     assert base.request_id == same.request_id
 
-    variants = [
-        {"object_id": "codex-session:xyz"},
-        {"protocol_version": "polylogue.material-protocol/v2"},
-        {"revision_id": "rev-2"},
-        {"manifest_digest": "digest-2"},
-    ]
+    variants = (
+        dataclasses.replace(base, object_id="codex-session:xyz"),
+        dataclasses.replace(base, protocol_version="polylogue.material-protocol/v2"),
+        dataclasses.replace(base, revision_id="rev-2"),
+        dataclasses.replace(base, manifest_digest="digest-2"),
+    )
     request_ids = {base.request_id}
-    for overrides in variants:
-        mutated = dataclasses.replace(base, **overrides)
-        assert mutated.request_id not in request_ids, overrides
+    for mutated in variants:
+        assert mutated.request_id not in request_ids, mutated
         request_ids.add(mutated.request_id)

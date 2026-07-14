@@ -15,6 +15,7 @@ import pytest
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
+from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.material_protocol.v1 import decode_session_revision, encode_session_revision
@@ -26,13 +27,13 @@ def _real_session() -> Session:
     messages = [
         Message(
             id="claude-code-session:s1:0",
-            role="user",
+            role=Role.USER,
             text="hello there",
             timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         ),
         Message(
             id="claude-code-session:s1:1",
-            role="assistant",
+            role=Role.ASSISTANT,
             text="hi!",
             timestamp=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
             blocks=[
