@@ -715,19 +715,19 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 411
+    loc: 491
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 895
+    loc: 983
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 141
+    loc: 165
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 446
+    loc: 510
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -739,7 +739,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2443
+    loc: 2488
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -779,7 +779,7 @@ files:
     target: polylogue/cli/commands/backup.py
     owner: stable
   - path: polylogue/cli/commands/check.py
-    loc: 118
+    loc: 116
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
@@ -787,7 +787,7 @@ files:
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
-    loc: 97
+    loc: 126
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/dashboard.py
@@ -835,7 +835,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2789
+    loc: 2788
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/note.py
@@ -1004,7 +1004,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/cli/shared/check_options.py
-    loc: 149
+    loc: 127
     target: polylogue/cli/shared/check_options.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_json.py
@@ -1073,7 +1073,7 @@ files:
     target: polylogue/cli/shared/latest_resolver.py
     owner: stable
   - path: polylogue/cli/shared/machine_errors.py
-    loc: 367
+    loc: 365
     target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/shared/resume_rendering.py
@@ -1117,7 +1117,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 1766
+    loc: 1825
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1876,7 +1876,7 @@ files:
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 305
+    loc: 304
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
@@ -2626,7 +2626,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/sinex/__init__.py
-    loc: 59
+    loc: 66
     target: polylogue/sinex/__init__.py
     owner: stable
   - path: polylogue/sinex/material_adapter.py
@@ -3618,7 +3618,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 577
+    loc: 636
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py
