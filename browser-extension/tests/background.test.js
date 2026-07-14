@@ -551,8 +551,15 @@ describe("background receiver diagnostics", () => {
       func: expect.any(Function),
       args: [expect.objectContaining({ provider: "chatgpt", operation: "inventory" })],
     })));
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-    expect(fetchCalls[0].url).toContain("/v1/browser-captures/capabilities");
+    // Provider inventory/conversation fetches route through the page bridge
+    // (chrome.scripting.executeScript above), never through this
+    // service-worker `fetch`. The receiver capability preflight and the
+    // best-effort backfill-checkpoint mirror/restore traffic (polylogue-06zm)
+    // are the only legitimate service-worker fetches for this flow.
+    for (const call of fetchCalls) {
+      expect(call.url).toMatch(/\/v1\/(browser-captures\/capabilities|backfill-checkpoint)/);
+    }
+    expect(fetchCalls.filter((call) => String(call.url).includes("/v1/browser-captures/capabilities"))).toHaveLength(1);
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
@@ -571,8 +578,9 @@ describe("background receiver diagnostics", () => {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
     });
     await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
-    expect(fetchCalls[0]).toMatchObject({ url: expect.stringContaining("/v1/browser-captures/capabilities") });
-    expect(fetchCalls[0].options.signal).toBeDefined();
+    const capabilityCall = fetchCalls.find((call) => String(call.url).includes("/v1/browser-captures/capabilities"));
+    expect(capabilityCall).toBeDefined();
+    expect(capabilityCall.options.signal).toBeDefined();
   });
 
   it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
@@ -604,6 +612,120 @@ describe("background receiver diagnostics", () => {
     alarmListener({ name: "polylogueBackfillWake:recovered-job" });
     await Promise.resolve();
     expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("mirrors every backfill-ledger checkpoint persist to the receiver (polylogue-06zm)", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      if (String(url).includes("/v1/backfill-checkpoint")) {
+        return responseJson(
+          { extension_instance_id: "mirrored", stored_at: "2026-01-01T00:00:00Z", bytes_written: 42 },
+          { status: 202 },
+        );
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+
+    const mirrorCall = fetchCalls.find(
+      (call) => String(call.url).includes("/v1/backfill-checkpoint") && call.options.method === "POST",
+    );
+    expect(mirrorCall).toBeDefined();
+    const body = JSON.parse(mirrorCall.options.body);
+    expect(body.extension_instance_id).toBe(stored.polylogueExtensionInstanceId);
+    expect(body.checkpoint).toMatchObject({ version: 1, jobs: [expect.objectContaining({ provider: "chatgpt" })] });
+    // The local chrome.storage.local copy stays authoritative and is written
+    // regardless of the receiver mirror's reachability -- confirmed here by
+    // the fact the start() call above still returned a running job even
+    // though this fetch mock is a fresh handler with no bearing on local
+    // storage.
+    expect(stored.polylogueBackfillRecoveryCheckpoint).toMatchObject({ version: 1 });
+  });
+
+  it("never lets a receiver mirror failure surface as a checkpoint error", async () => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      if (String(url).includes("/v1/backfill-checkpoint")) {
+        throw new Error("synthetic_receiver_unreachable");
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+
+    expect(started.job.recovery_checkpoint_error).toBeNull();
+    expect(started.job.status).toBe("running");
+  });
+
+  it("restores the backfill ledger from the receiver mirror when local checkpoint state is gone", async () => {
+    const remoteCheckpoint = {
+      version: 1,
+      jobs: [{
+        id: "remote-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+        inventory_cursor: "5", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+        learned_cadence_ms: 40000, daily_requests: 2, last_ack: null,
+      }],
+      queue: [],
+      revisions: [],
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      if (String(url).includes("/v1/backfill-checkpoint")) {
+        return responseJson({
+          extension_instance_id: "remote-instance",
+          checkpoint: remoteCheckpoint,
+          stored_at: "2026-01-01T00:00:00Z",
+        });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+
+    expect(status.jobs[0]).toMatchObject({
+      id: "remote-job",
+      status: "paused",
+      cooldown_reason: "browser_profile_recovery_required",
+      inventory_cursor: "5",
+    });
+    const restoreCall = fetchCalls.find(
+      (call) => String(call.url).includes("/v1/backfill-checkpoint") && (call.options.method || "GET") === "GET",
+    );
+    expect(restoreCall).toBeDefined();
+  });
+
+  it("does not query the receiver mirror when a local recovery checkpoint already restored jobs", async () => {
+    await loadBackground({
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [{
+          id: "local-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
+          inventory_cursor: "3", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          learned_cadence_ms: 40000, daily_requests: 1, last_ack: null,
+        }],
+        queue: [],
+        revisions: [],
+      },
+    });
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return responseJson({ error: "should_not_be_called" }, { ok: false, status: 500 });
+    });
+
+    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+
+    expect(fetchCalls.some((call) => String(call.url).includes("/v1/backfill-checkpoint") && (call.options.method || "GET") === "GET")).toBe(false);
   });
 
   it("does not reuse unsupported provider subdomains as authenticated transport roots", async () => {
@@ -845,7 +967,7 @@ describe("background receiver diagnostics", () => {
     });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/common.js", "src/content/chatgpt.js"],
+      files: ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"],
     });
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
