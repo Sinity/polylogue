@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 8
+USER_SCHEMA_VERSION = 9
 
 USER_DDL = """
 -- Unified evidence-linked user assertion. Marks, annotations,
@@ -176,6 +176,39 @@ WHEN (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id
 BEGIN
     SELECT RAISE(ABORT, 'watched query baseline result set must belong to the same query');
 END;
+
+-- Holdout is an access POLICY on an existing result-set manifest, not a
+-- second cohort/result relation type (rxdo.9.4): a result set keeps its own
+-- persistence_class (e.g. 'cohort'), and marking it as a holdout layers an
+-- exclusion policy on top via this table. Exploratory planning must exclude
+-- holdout members by default; only a declared confirmation access reads
+-- them, and every access -- declared or not -- leaves a receipt.
+CREATE TABLE IF NOT EXISTS result_set_holdout_policies (
+    result_set_id              TEXT PRIMARY KEY NOT NULL REFERENCES result_sets(result_set_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    frame                      TEXT NOT NULL CHECK(length(trim(frame)) > 0),
+    selection_definition_json  TEXT NOT NULL CHECK(json_valid(selection_definition_json) AND json_type(selection_definition_json) = 'object'),
+    intended_confirmation_use  TEXT NOT NULL CHECK(length(trim(intended_confirmation_use)) > 0),
+    authority                  TEXT NOT NULL CHECK(length(trim(authority)) > 0),
+    created_epoch               TEXT NOT NULL CHECK(length(trim(created_epoch)) > 0),
+    created_at_ms               INTEGER NOT NULL CHECK(created_at_ms >= 0)
+) STRICT;
+
+-- Every read of a holdout's members -- declared confirmation or not --
+-- leaves a permanent, append-only receipt. An undeclared/unauthorized
+-- access is recorded with contamination=1 and can never be retroactively
+-- cleared: once contaminated, the relation can no longer back an
+-- "untouched holdout" claim.
+CREATE TABLE IF NOT EXISTS holdout_access_receipts (
+    receipt_id             TEXT PRIMARY KEY NOT NULL CHECK(length(trim(receipt_id)) > 0),
+    result_set_id           TEXT NOT NULL REFERENCES result_set_holdout_policies(result_set_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    accessor_ref             TEXT NOT NULL CHECK(length(trim(accessor_ref)) > 0),
+    declared_confirmation    INTEGER NOT NULL CHECK(declared_confirmation IN (0, 1)),
+    contamination            INTEGER NOT NULL CHECK(contamination IN (0, 1)),
+    reason                   TEXT,
+    accessed_at_ms            INTEGER NOT NULL CHECK(accessed_at_ms >= 0)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_holdout_access_receipts_result_set
+ON holdout_access_receipts(result_set_id, accessed_at_ms DESC);
 
 -- Immutable versioned annotation construct definitions. Definition JSON is
 -- canonical and fingerprinted in Python; the row-level identity cannot be
