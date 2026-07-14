@@ -123,6 +123,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root as initialize_archive_root,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -215,6 +216,12 @@ class _ArchiveFullWriteResult:
     session_count: int = 0
     message_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
+    # The archive can forget on purpose (polylogue-27m): a record whose blob
+    # hash is durably excised is a deliberate skip, not a failure -- tracked
+    # separately from ordinary parse/write failures so operators can tell
+    # the two apart (mirrors ParseResult.excised_skips on the CLI import
+    # path in pipeline/services/archive_ingest.py).
+    excised_skips: int = 0
 
 
 class LiveBatchProcessor:
@@ -1755,6 +1762,24 @@ class LiveBatchProcessor:
                     result.session_count += record_session_count
                     result.message_count += record_message_count
                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                except ContentExcisedError as exc:
+                    # The archive can forget on purpose (polylogue-27m): this
+                    # record's blob hash is durably excised, so acquire
+                    # refuses to re-store it via the streaming/blob-ref
+                    # write route. This is deliberate, not a failure -- log
+                    # at info (not the warning level used for real ingest
+                    # failures below) and count it separately so operators
+                    # don't mistake it for a broken file. source_raw_id is
+                    # still None here (the write never completed), so the
+                    # record is correctly left out of result.raw_ids and the
+                    # caller's cursor bookkeeping treats it the same as any
+                    # other unavailable content.
+                    result.excised_skips += 1
+                    logger.info(
+                        "live.watcher: skipping durably excised content for %s: %s",
+                        record.source_path,
+                        exc,
+                    )
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         if provider is not None and source_raw_id is not None:

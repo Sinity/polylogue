@@ -12,14 +12,14 @@ Read one session by ID with a root filter that narrows the archive to a single
 match:
 
 ```bash
-polylogue --id claude-ai:abc123 read
+polylogue --id claude-ai-export:abc123 read
 ```
 
 Specify format:
 
 ```bash
-polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format yaml
+polylogue --id claude-ai-export:abc123 read --format json
+polylogue --id claude-ai-export:abc123 read --format yaml
 ```
 
 ## Query-Set Reads

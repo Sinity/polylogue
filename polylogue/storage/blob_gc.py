@@ -385,7 +385,12 @@ def run_blob_gc_report(
     if not candidates:
         return report
 
-    sibling_index_db = db_path_obj if db_path_obj.name == "index.db" else db_path_obj.with_name("index.db")
+    from polylogue.paths import sibling_index_db as get_sibling_index_db
+
+    sibling_index_db = get_sibling_index_db(db_path_obj, require_exists=False)
+    if sibling_index_db is None:
+        # Fallback: derive manually (shouldn't normally happen with require_exists=False)
+        sibling_index_db = db_path_obj if db_path_obj.name == "index.db" else db_path_obj.with_name("index.db")
     evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
     shortlist: list[tuple[str, float]] = []
 

@@ -486,7 +486,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -585,6 +585,38 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))\n"
         "    ,predecessor_source_revision TEXT\n",
     )
+    # Migration 010 adds `excised_content` (polylogue-27m) -- a v7 snapshot
+    # predates it, same as it predates the beads-origin/capture_mode diffs
+    # stripped above. Without this, the fixture (built from the CURRENT
+    # SOURCE_DDL) already contains the table, and migration 010's
+    # non-`IF NOT EXISTS` `CREATE TABLE excised_content` collides with it.
+    old_ddl = old_ddl.replace(
+        "\n"
+        "-- Durable removed-content ledger (polylogue-27m). A row here is the\n"
+        '-- authoritative "this content is forgotten on purpose" marker for\n'
+        "-- standalone/off-mode excision: the acquire-time write chokepoint\n"
+        "-- (``write_source_raw_session``) refuses to re-store a raw payload whose\n"
+        "-- ``blob_hash`` matches ``removed_hash``, so an ordinary re-ingest of\n"
+        "-- unmodified source files cannot resurrect excised content even after an\n"
+        "-- index.db rebuild. ``span_start``/``span_end`` are populated only for a\n"
+        "-- sub-payload excision (e.g. a detected secret candidate span); both are\n"
+        "-- NULL for a whole-raw-session excision. This table is never queried for\n"
+        "-- its own sake by a reader -- it exists purely as a write-time gate plus\n"
+        "-- forensic trail, so no secret span coordinates ever carry the removed\n"
+        "-- literal, only byte offsets into the (now-deleted) payload.\n"
+        "CREATE TABLE IF NOT EXISTS excised_content (\n"
+        "    removed_hash    BLOB NOT NULL CHECK(length(removed_hash) = 32),\n"
+        "    hash_kind       TEXT NOT NULL DEFAULT 'blob_hash' CHECK(hash_kind IN ('blob_hash')),\n"
+        "    reason          TEXT NOT NULL,\n"
+        "    actor           TEXT NOT NULL,\n"
+        "    prior_revision  TEXT,\n"
+        "    span_start      INTEGER CHECK(span_start IS NULL OR span_start >= 0),\n"
+        "    span_end        INTEGER CHECK(span_end IS NULL OR span_end > span_start),\n"
+        "    excised_at_ms   INTEGER NOT NULL,\n"
+        "    PRIMARY KEY(removed_hash, hash_kind)\n"
+        ") STRICT;\n",
+        "",
+    )
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
@@ -625,8 +657,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 10
-        assert result.applied_versions == (8, 9, 10)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 11
+        assert result.applied_versions == (8, 9, 10, 11)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -787,7 +819,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -845,7 +877,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """

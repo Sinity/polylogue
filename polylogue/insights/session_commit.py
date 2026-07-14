@@ -452,38 +452,6 @@ def build_correlation_result(
 # ── Database operations ─────────────────────────────────────────────────
 
 
-async def persist_session_commits(
-    edges: list[SessionCommitEdge],
-    *,
-    repo_id: int | None = None,
-) -> None:
-    """Persist session_commits to the database (placeholder).
-
-    This is called by the MCP tool after detection. The actual write
-    path is through the Polylogue facade / repository. This function
-    exists as the contract declaration; the inline write in the MCP
-    tool is used for the initial implementation.
-    """
-    del edges, repo_id
-
-
-def session_commit_edge_to_row(
-    edge: SessionCommitEdge,
-    *,
-    repo_id: int | None = None,
-) -> dict[str, object]:
-    """Convert a SessionCommitEdge to a row dict for SQLite insert."""
-    return {
-        "session_id": edge.session_id,
-        "commit_sha": edge.commit_sha,
-        "repo_id": repo_id,
-        "detection_method": edge.detection_method,
-        "confidence": edge.confidence,
-        "file_overlap_count": edge.file_overlap_count,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
 def correlation_result_to_payload(
     result: SessionCorrelationResult,
 ) -> dict[str, object]:

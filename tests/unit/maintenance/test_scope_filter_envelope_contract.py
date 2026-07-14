@@ -113,9 +113,9 @@ def _invoke_cli_plan(operation: BackfillOperation, tmp_path: Path) -> tuple[dict
     config_obj = Config(archive_root=archive, render_root=render, sources=[])
 
     with (
-        patch("polylogue.cli.commands.maintenance.preview_backfill", side_effect=_capture),
-        patch("polylogue.cli.commands.maintenance.archive_root", return_value=archive),
-        patch("polylogue.cli.commands.maintenance.render_root", return_value=render),
+        patch("polylogue.cli.commands.maintenance._plan.preview_backfill", side_effect=_capture),
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=render),
     ):
         result = runner.invoke(
             maintenance_group,

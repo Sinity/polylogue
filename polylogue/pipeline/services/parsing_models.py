@@ -111,6 +111,11 @@ class ParseResult:
         }
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
+        # Files skipped because their raw bytes are durably excised
+        # (polylogue-27m ContentExcisedError). Distinct from parse_failures:
+        # this is the archive deliberately refusing to resurrect content the
+        # operator excised, not an error.
+        self.excised_skips: int = 0
         self._lock = asyncio.Lock()
         # Tracks session IDs whose content changed so downstream
         # materialization can refresh derived session-insight rows explicitly.
