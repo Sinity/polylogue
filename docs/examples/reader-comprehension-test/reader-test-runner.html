@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Polylogue reader-comprehension test runner</title>
+<style>
+:root{color-scheme:dark;--bg:#07101d;--panel:#111c2e;--line:#2b3c59;--text:#f5f7fb;--muted:#aab6c7;--blue:#6ca9ff;--green:#55d8ac}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:Inter,system-ui,sans-serif;color:var(--text)}
+main{max-width:1200px;margin:auto;padding:36px 24px 80px}
+h1{font-size:32px}
+h2{font-size:19px}
+section{border:1px solid var(--line);background:var(--panel);border-radius:16px;padding:22px;margin:18px 0}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+label{display:grid;gap:7px;color:var(--muted);font-size:14px}
+input,select,textarea{width:100%;background:#081321;color:var(--text);border:1px solid var(--line);border-radius:9px;padding:11px;font:inherit}
+textarea{min-height:88px}
+button{border:1px solid var(--line);background:#183760;color:white;border-radius:9px;padding:11px 16px;font-weight:700;cursor:pointer;margin:4px 4px 4px 0}
+.danger{background:#552c36}
+.secondary{background:#172235}
+.preview{background:white;border-radius:12px;overflow:auto;text-align:center;min-height:120px;display:flex;align-items:center;justify-content:center}
+.preview img{max-width:100%;display:block;margin:auto}
+.preview .missing{color:#334;padding:32px;font-family:ui-monospace,monospace;font-size:13px;max-width:640px}
+.hidden{display:none}
+.timer{font:700 26px ui-monospace,monospace;color:var(--green)}
+.scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.note{color:var(--muted);line-height:1.55}
+.warn{color:#f3c969}
+code{background:#081321;padding:.15em .4em;border-radius:5px}
+</style>
+</head>
+<body>
+<main>
+<h1>Reader-comprehension test runner (polylogue-3tl.19)</h1>
+<p class="note">
+  Single-blind, N-arm cold-reader test for a README/positioning candidate. Randomize an arm,
+  expose it for a fixed duration, hide it, capture <strong>unaided</strong> answers, then
+  re-show for the first-action and false-belief questions. Sessions persist in this browser
+  only (<code>localStorage</code>) until exported. This tool measures comprehension of a
+  <em>fixed visual exposure</em>, not the full live README experience (scrolling, following
+  links, running commands) &mdash; see the companion doc's non-claims section before treating a
+  result as decision-grade.
+</p>
+
+<section>
+  <h2>Arm configuration</h2>
+  <p class="note">
+    Point each arm at a real, already-generated screenshot (a full-page capture of the
+    candidate README's first fold, not a hand-drawn mockup &mdash; see
+    <code>docs/examples/reader-comprehension-test/README.md</code> for how to produce one).
+    An arm with no configured image shows an explicit placeholder instead of a broken
+    <code>&lt;img&gt;</code>, so a missing screenshot cannot be silently scored as "read fine."
+  </p>
+  <div id="armEditor" class="row"></div>
+  <p><button id="addArm" class="secondary">Add arm</button></p>
+</section>
+
+<section>
+  <div class="row">
+    <label>Participant ID<input id="participant" placeholder="P-001"></label>
+    <label>Exposure seconds<input id="duration" type="number" min="10" value="45"></label>
+    <label>Optional fixed arm<select id="fixed"><option value="">Random</option></select></label>
+  </div>
+  <p>
+    <button id="start">Start randomized exposure</button>
+    <button id="show" class="secondary">Show selected</button>
+    <button id="hide" class="danger">Hide now</button>
+  </p>
+  <div class="timer" id="timer">Not started</div>
+  <div id="armLabel" class="note"></div>
+</section>
+
+<section id="previewWrap" class="preview hidden"><img id="preview" alt="README first fold candidate"></section>
+
+<section>
+  <h2>Unaided answers</h2>
+  <p class="note">Ask before re-showing the image. Free text, no prompting.</p>
+  <div class="row">
+    <label>What kind of thing is this? (category)<textarea id="category"></textarea></label>
+    <label>What human outcome does it produce? (outcome)<textarea id="outcome"></textarea></label>
+    <label>Most distinctive claim remembered (differentiator)<textarea id="differentiator"></textarea></label>
+    <label>What does the visible proof establish? (claim)<textarea id="proof"></textarea></label>
+    <label>What does it explicitly say it does NOT establish? (non-claim / boundary)<textarea id="boundary"></textarea></label>
+    <label>What felt unclear or unbelievable? (falsifier signal)<textarea id="confusion"></textarea></label>
+  </div>
+</section>
+
+<section>
+  <h2>After re-showing</h2>
+  <div class="row">
+    <label>First action / command they would run<textarea id="action"></textarea></label>
+    <label>Material false beliefs formed (one per line)<textarea id="falseBeliefs" placeholder="e.g. &quot;thought results ship to the cloud&quot;"></textarea></label>
+    <label>Verbatim project-specific probe answer<textarea id="projectProbe"></textarea></label>
+  </div>
+</section>
+
+<section>
+  <h2>Independent scoring</h2>
+  <p class="note">
+    Scored by someone other than the participant, against the rubric in the companion doc
+    (not against the scorer's own opinion of the copy). Each dimension anchors to one of
+    docs/demos.md's four doctrine terms: <strong>category/outcome/differentiator</strong> =
+    claim recognition; <strong>boundary</strong> = whether the reader noticed the material
+    non-claim; <strong>false beliefs</strong> = the falsifier (any hit here means the arm
+    failed regardless of the numeric scores).
+  </p>
+  <div class="scores">
+    <label>Category 0-2<input id="sCategory" type="number" min="0" max="2"></label>
+    <label>Outcome 0-2<input id="sOutcome" type="number" min="0" max="2"></label>
+    <label>Differentiator 0-2<input id="sDiff" type="number" min="0" max="2"></label>
+    <label>First action 0-2<input id="sAction" type="number" min="0" max="2"></label>
+    <label>Boundary noticed 0-2<input id="sBoundary" type="number" min="0" max="2"></label>
+    <label>False beliefs (count, 0 is best)<input id="sFalse" type="number" min="0" max="3"></label>
+    <label>Scorer confidence 1-5<input id="confidence" type="number" min="1" max="5"></label>
+  </div>
+  <p>
+    <button id="save">Save session</button>
+    <button id="exportJson" class="secondary">Export JSON</button>
+    <button id="exportCsv" class="secondary">Export CSV</button>
+    <button id="clear" class="danger">Clear local sessions</button>
+  </p>
+  <p id="saved" class="note"></p>
+</section>
+
+<section>
+  <h2 class="warn">Non-claims (read before running a real study)</h2>
+  <ul class="note">
+    <li>A handful of sessions from this tool is not a population-prevalence claim about how
+      README readers in general respond &mdash; sample size and selection must be stated
+      alongside any result (polylogue-3tl.19 AC4).</li>
+    <li>This tool does not measure downstream agent performance or task success; it measures
+      stated comprehension and recall after a timed visual exposure.</li>
+    <li>A candidate advances only when it wins or ties comprehension <em>without introducing a
+      new false belief</em> &mdash; a higher category/outcome score with a nonzero false-belief
+      count is not a win.</li>
+  </ul>
+</section>
+
+<script>
+// Arms are polylogue-only and intentionally start with NO configured images.
+// Point each arm's path at a real, already-generated full-fold screenshot before
+// running a session -- see docs/examples/reader-comprehension-test/README.md.
+// A relative path is resolved against this file's location; an absolute URL works too.
+let arms = [
+  ['current', ''],
+  ['receipts-first', ''],
+  ['search-first', ''],
+];
+
+const $ = id => document.getElementById(id);
+let selected = null, startAt = null, timerId = null, order = 0;
+
+function renderArmEditor() {
+  $('armEditor').innerHTML = arms.map((a, i) => `
+    <label>Arm ${i + 1} name
+      <input data-arm-name="${i}" value="${a[0]}">
+    </label>
+    <label>Arm ${i + 1} screenshot path
+      <input data-arm-path="${i}" value="${a[1]}" placeholder="../visual-tapes/some-candidate.png">
+    </label>`).join('');
+  document.querySelectorAll('[data-arm-name]').forEach(el => el.onchange = e => {
+    arms[+e.target.dataset.armName][0] = e.target.value; fillFixedSelect();
+  });
+  document.querySelectorAll('[data-arm-path]').forEach(el => el.onchange = e => {
+    arms[+e.target.dataset.armPath][1] = e.target.value;
+  });
+}
+
+function fillFixedSelect() {
+  $('fixed').innerHTML = '<option value="">Random</option>' +
+    arms.map(a => `<option value="${a[0]}">${a[0]}</option>`).join('');
+}
+
+$('addArm').onclick = () => { arms.push([`arm-${arms.length + 1}`, '']); renderArmEditor(); fillFixedSelect(); };
+
+renderArmEditor();
+fillFixedSelect();
+
+function choose() {
+  const fixedName = $('fixed').value;
+  selected = fixedName ? arms.find(a => a[0] === fixedName) : arms[Math.floor(Math.random() * arms.length)];
+  const [name, path] = selected;
+  if (path) {
+    $('preview').style.display = '';
+    $('preview').src = path;
+    $('previewWrap').querySelectorAll('.missing').forEach(n => n.remove());
+  } else {
+    $('preview').style.display = 'none';
+    $('previewWrap').querySelectorAll('.missing').forEach(n => n.remove());
+    const missing = document.createElement('div');
+    missing.className = 'missing';
+    missing.textContent = `No screenshot configured for arm "${name}". Configure a real generated image path above before running this arm -- do not score a blank exposure.`;
+    $('previewWrap').appendChild(missing);
+  }
+  $('armLabel').textContent = `Assigned arm: ${name}`;
+  return selected;
+}
+
+function show() { if (!selected) choose(); $('previewWrap').classList.remove('hidden'); }
+function hide() { $('previewWrap').classList.add('hidden'); if (timerId) clearInterval(timerId); }
+$('show').onclick = show;
+$('hide').onclick = hide;
+$('start').onclick = () => {
+  choose(); show(); startAt = performance.now(); order++;
+  const dur = Number($('duration').value) || 45;
+  timerId = setInterval(() => {
+    const left = Math.max(0, dur - (performance.now() - startAt) / 1000);
+    $('timer').textContent = `${left.toFixed(1)} s`;
+    if (left <= 0) { hide(); $('timer').textContent = 'Exposure complete'; }
+  }, 100);
+};
+
+function sessions() { return JSON.parse(localStorage.getItem('polylogue-reader-test-sessions') || '[]'); }
+function val(id) { return $(id).value.trim(); }
+
+$('save').onclick = () => {
+  if (!selected) choose();
+  const row = {
+    schema_version: 1,
+    saved_at: new Date().toISOString(),
+    participant: val('participant'),
+    arm: selected[0],
+    order,
+    exposure_seconds: Number($('duration').value),
+    category: val('category'),
+    outcome: val('outcome'),
+    differentiator: val('differentiator'),
+    proof: val('proof'),
+    boundary: val('boundary'),
+    confusion: val('confusion'),
+    first_action: val('action'),
+    false_beliefs: val('falseBeliefs'),
+    project_probe: val('projectProbe'),
+    scores: {
+      category: Number(val('sCategory')),
+      outcome: Number(val('sOutcome')),
+      differentiator: Number(val('sDiff')),
+      first_action: Number(val('sAction')),
+      boundary: Number(val('sBoundary')),
+      false_beliefs: Number(val('sFalse')),
+      confidence: Number(val('confidence')),
+    },
+  };
+  const s = sessions();
+  s.push(row);
+  localStorage.setItem('polylogue-reader-test-sessions', JSON.stringify(s));
+  $('saved').textContent = `Saved ${s.length} session(s) locally.`;
+};
+
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('exportJson').onclick = () => download(
+  'polylogue-reader-test-sessions.json', JSON.stringify(sessions(), null, 2), 'application/json'
+);
+$('exportCsv').onclick = () => {
+  const s = sessions();
+  const cols = ['saved_at', 'participant', 'arm', 'order', 'exposure_seconds', 'category', 'outcome',
+    'differentiator', 'proof', 'boundary', 'confusion', 'first_action', 'false_beliefs', 'project_probe',
+    'score_category', 'score_outcome', 'score_differentiator', 'score_first_action', 'score_boundary',
+    'score_false_beliefs', 'confidence'];
+  const q = x => '"' + String(x ?? '').replaceAll('"', '""') + '"';
+  const rows = [cols.join(',')].concat(s.map(r => [
+    r.saved_at, r.participant, r.arm, r.order, r.exposure_seconds, r.category, r.outcome,
+    r.differentiator, r.proof, r.boundary, r.confusion, r.first_action, r.false_beliefs, r.project_probe,
+    r.scores.category, r.scores.outcome, r.scores.differentiator, r.scores.first_action,
+    r.scores.boundary, r.scores.false_beliefs, r.scores.confidence,
+  ].map(q).join(',')));
+  download('polylogue-reader-test-sessions.csv', rows.join('\n'), 'text/csv');
+};
+$('clear').onclick = () => {
+  if (confirm('Delete all locally saved sessions?')) {
+    localStorage.removeItem('polylogue-reader-test-sessions');
+    $('saved').textContent = 'Local sessions cleared.';
+  }
+};
+$('saved').textContent = `${sessions().length} saved session(s) in this browser.`;
+</script>
+</main>
+</body>
+</html>

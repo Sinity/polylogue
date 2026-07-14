@@ -90,6 +90,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Demo Tour Report](examples/demo-tour/report.md) | Recorded output and receipts from the demo tour. |
 | [UVX Installation Proof](examples/demo-tour/uvx-proof.md) | Recorded installation proof for the uvx distribution path. |
 | [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
+| [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
 | [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
 
 ## Design Notes
