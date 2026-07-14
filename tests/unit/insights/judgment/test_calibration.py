@@ -114,6 +114,61 @@ def test_order_swapped_items_with_same_raw_label_but_different_winner_disagree()
     assert reports[key].agreement_rate == 0.0
 
 
+def test_nwise_ordering_gold_agrees_with_pairwise_candidate_same_winner() -> None:
+    """A 2-item n-wise ORDERING gold verdict and a pairwise PREFER_LEFT/RIGHT
+    candidate verdict on the same item pair are both legal per
+    ComparativeJudgment's own validation. When they name the same
+    real-world winner they must agree -- not be silently scored as
+    disagreement because one is stored as an ordering tuple and the other
+    as a bare verdict label."""
+
+    gold = [
+        ComparativeJudgment(
+            judgment_id="gold-1",
+            items=("finding:a", "finding:b"),
+            dimension="correctness",
+            verdict=("finding:a", "finding:b"),  # n-wise ordering: a beats b
+            judge=_GOLD_JUDGE,
+            blinded=True,
+            rubric_id="rubric-1",
+            rubric_version=1,
+        )
+    ]
+    candidates = [
+        # pairwise verdict on the same pair, same winner ("finding:a")
+        _judgment(_AGENT_CTX_A, ("finding:a", "finding:b"), ComparativeVerdict.PREFER_LEFT, "a-1"),
+    ]
+    reports = compute_calibration(candidates, gold)
+    key = CalibrationKey(actor_ref="agent:sonnet", execution_context_id="ctx-a", dimension="correctness")
+    assert reports[key].agreement_rate == 1.0
+
+
+def test_nwise_ordering_gold_disagrees_with_pairwise_candidate_different_winner() -> None:
+    """Same cross-representation overlap as above, but the pairwise
+    candidate names the opposite winner -- must be scored as disagreement,
+    not accidentally coerced to agreement by the shared representation."""
+
+    gold = [
+        ComparativeJudgment(
+            judgment_id="gold-1",
+            items=("finding:a", "finding:b"),
+            dimension="correctness",
+            verdict=("finding:a", "finding:b"),  # n-wise ordering: a beats b
+            judge=_GOLD_JUDGE,
+            blinded=True,
+            rubric_id="rubric-1",
+            rubric_version=1,
+        )
+    ]
+    candidates = [
+        # pairwise verdict on the same pair, opposite winner ("finding:b")
+        _judgment(_AGENT_CTX_A, ("finding:a", "finding:b"), ComparativeVerdict.PREFER_RIGHT, "a-1"),
+    ]
+    reports = compute_calibration(candidates, gold)
+    key = CalibrationKey(actor_ref="agent:sonnet", execution_context_id="ctx-a", dimension="correctness")
+    assert reports[key].agreement_rate == 0.0
+
+
 def test_no_cross_context_pooling_function_is_exposed() -> None:
     """AC: reports refuse unsupported cross-context pooling -- there is no pooling API."""
 

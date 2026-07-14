@@ -47,31 +47,35 @@ def _overlap_key(judgment: ComparativeJudgment) -> tuple[str, ...]:
     return (judgment.dimension, *sorted(judgment.items))
 
 
-def _winner_identity(judgment: ComparativeJudgment) -> tuple[str, ...] | str | ComparativeVerdict:
-    """Order-independent identity for one verdict.
+def _winner_identity(judgment: ComparativeJudgment) -> frozenset[tuple[str, str]] | ComparativeVerdict:
+    """Order-independent, representation-independent identity for one verdict.
 
     Blinding randomizes which item lands at ``items[0]`` (left) vs
     ``items[1]`` (right) per judgment, so ``PREFER_LEFT``/``PREFER_RIGHT``
     are only meaningful relative to *this judgment's own* ``items`` order --
     the same real-world winner can be recorded as ``PREFER_LEFT`` in one
     judgment and ``PREFER_RIGHT`` in another that happened to draw the
-    opposite left/right placement. Resolve to the winning item ref (via
-    :func:`decompose_to_pairwise`) before comparing two judgments on the
-    same (order-independent, see :func:`_overlap_key`) comparison. An
-    n-wise ordering verdict already names item refs best-to-worst, so it is
-    inherently order-independent and compared as-is. A non-directed verdict
-    (tie/incomparable/abstain/insufficient-evidence) carries no winner and
-    is compared by its own label.
+    opposite left/right placement. A directed verdict -- pairwise
+    ``PREFER_LEFT``/``PREFER_RIGHT`` *or* an n-wise ordering -- is resolved
+    to the full set of implied ``(winner_ref, loser_ref)`` edges via
+    :func:`decompose_to_pairwise` before comparing two judgments on the same
+    (order-independent, see :func:`_overlap_key`) comparison. This is what
+    makes a 2-item n-wise ordering and a pairwise ``PREFER_LEFT``/
+    ``PREFER_RIGHT`` verdict on the same item pair comparable: both name the
+    same real-world winner via the same edge-set representation, not two
+    incompatible shapes (a raw ordering tuple vs a bare item ref) that can
+    never compare equal. A non-directed verdict (tie/incomparable/abstain/
+    insufficient-evidence) carries no winner and is compared by its own
+    label.
     """
 
-    if judgment.is_ordering:
-        return tuple(judgment.verdict)
     verdict = judgment.verdict
-    assert isinstance(verdict, ComparativeVerdict)
-    if verdict in (ComparativeVerdict.PREFER_LEFT, ComparativeVerdict.PREFER_RIGHT):
-        (component,) = decompose_to_pairwise(judgment)
-        return component.winner_ref
-    return verdict
+    if isinstance(verdict, ComparativeVerdict) and verdict not in (
+        ComparativeVerdict.PREFER_LEFT,
+        ComparativeVerdict.PREFER_RIGHT,
+    ):
+        return verdict
+    return frozenset((component.winner_ref, component.loser_ref) for component in decompose_to_pairwise(judgment))
 
 
 def _verdicts_agree(candidate: ComparativeJudgment, gold: ComparativeJudgment) -> bool:
