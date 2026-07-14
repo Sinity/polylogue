@@ -2122,7 +2122,7 @@ files:
     target: polylogue/product/workflows.py
     owner: stable
   - path: polylogue/protocols.py
-    loc: 466
+    loc: 453
     target: polylogue/protocols.py
     owner: kernel
     reason: kernel root rule
@@ -3479,20 +3479,12 @@ files:
     target: polylogue/storage/search/runtime.py
     owner: stable
   - path: polylogue/storage/search_providers/__init__.py
-    loc: 117
+    loc: 96
     target: polylogue/storage/search_providers/__init__.py
     owner: stable
-  - path: polylogue/storage/search_providers/fts5.py
-    loc: 105
-    target: polylogue/storage/search_providers/fts5.py
-    owner: stable
   - path: polylogue/storage/search_providers/hybrid.py
-    loc: 216
+    loc: 54
     target: polylogue/storage/search_providers/hybrid.py
-    owner: stable
-  - path: polylogue/storage/search_providers/hybrid_factory.py
-    loc: 34
-    target: polylogue/storage/search_providers/hybrid_factory.py
     owner: stable
   - path: polylogue/storage/search_providers/hybrid_sessions.py
     loc: 87

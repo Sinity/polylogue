@@ -1,8 +1,12 @@
 """Protocol definitions for pluggable backends in Polylogue.
 
 Only protocols with 2+ implementations earn their existence here:
-- SearchProvider: FTS5, Hybrid
 - VectorProvider: sqlite-vec (optional, requires `VOYAGE_API_KEY`)
+
+``SearchProvider`` (FTS5, Hybrid) was removed (polylogue-a7xr.10): both
+implementations had zero production consumers — production full-text and
+hybrid retrieval has always queried FTS5/vector tables and fused results
+inline rather than through a swappable provider abstraction.
 """
 
 from __future__ import annotations
@@ -37,22 +41,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
     from polylogue.types import SessionId
-
-
-@runtime_checkable
-class SearchProvider(Protocol):
-    """Full-text search provider for message content.
-
-    Implementations: FTS5 (polylogue.storage.index), Hybrid (polylogue.storage.search_providers.hybrid)
-    """
-
-    def index(self, messages: list[MessageRecord]) -> None:
-        """Add messages to the search index."""
-        ...
-
-    def search(self, query: str) -> list[str]:
-        """Search indexed messages, returning matching message IDs ranked by relevance."""
-        ...
 
 
 @runtime_checkable
@@ -449,7 +437,6 @@ class RawValidationStore(Protocol):
 
 
 __all__ = [
-    "SearchProvider",
     "VectorProvider",
     "ProgressCallback",
     "SessionReader",

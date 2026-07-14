@@ -257,7 +257,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 |-------------|----------|------|
 | `Polylogue` | `api/__init__.py` | Async entry point. Wraps storage + search + pipeline. |
 | `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (10 mixins: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology). |
-| `SearchProvider` protocol | `protocols.py` | FTS5 and Hybrid (RRF fusion) implementations. |
+| `VectorProvider` protocol | `protocols.py` | `SqliteVecProvider` implementation (sqlite-vec + Voyage AI embeddings). FTS/hybrid retrieval has no provider abstraction — production lexical search queries FTS5 directly and hybrid retrieval fuses results inline (`reciprocal_rank_fusion` in `storage/search_providers/hybrid.py`) against live query-plan state (`archive/query/archive_execution.py`, `cli/archive_query.py`); a prior `SearchProvider` protocol with FTS5/Hybrid provider classes was removed (polylogue-a7xr.10) after an audit found zero production consumers. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |

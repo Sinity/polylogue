@@ -1,8 +1,11 @@
 """Search provider implementations and factory functions.
 
-This package provides concrete implementations of the SearchProvider and
-VectorProvider protocols defined in polylogue.protocols. It also includes
-factory functions for creating provider instances from configuration.
+This package provides the concrete ``VectorProvider`` implementation
+(``SqliteVecProvider``) and its factory function, plus the shared
+Reciprocal Rank Fusion primitive that production hybrid retrieval composes
+directly. It no longer provides a ``SearchProvider`` implementation or
+factory — see :mod:`polylogue.storage.search_providers.hybrid` for why
+(polylogue-a7xr.10).
 """
 
 from __future__ import annotations
@@ -13,16 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.search_providers.hybrid import (
-    HybridSearchProvider,
-    create_hybrid_provider,
-    reciprocal_rank_fusion,
-)
+from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.protocols import SearchProvider, VectorProvider
+    from polylogue.protocols import VectorProvider
 
 logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False
@@ -30,21 +28,6 @@ _sqlite_vec_missing_warned = False
 
 def _sqlite_vec_available() -> bool:
     return importlib.util.find_spec("sqlite_vec") is not None
-
-
-def create_search_provider(config: Config | None = None, db_path: Path | None = None) -> SearchProvider:
-    """Create a search provider instance.
-
-    Currently returns FTS5Provider as the default implementation.
-
-    Args:
-        config: Application configuration (unused currently)
-        db_path: Optional database path override
-
-    Returns:
-        SearchProvider instance (currently always FTS5Provider)
-    """
-    return FTS5Provider(db_path=db_path)
 
 
 def create_vector_provider(
@@ -108,10 +91,6 @@ def create_vector_provider(
 
 
 __all__ = [
-    "FTS5Provider",
-    "HybridSearchProvider",
     "reciprocal_rank_fusion",
-    "create_search_provider",
     "create_vector_provider",
-    "create_hybrid_provider",
 ]
