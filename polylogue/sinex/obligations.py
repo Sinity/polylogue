@@ -192,4 +192,46 @@ def mark_attempt(
     return updated
 
 
-__all__ = ["get_obligation", "list_obligations", "mark_attempt", "record_obligation"]
+def mark_publishing(
+    conn: sqlite3.Connection,
+    obligation: PublicationObligation,
+    *,
+    now_ms: int,
+) -> PublicationObligation:
+    """Mark an obligation as actively in-flight to a transport attempt.
+
+    Distinct from :func:`mark_attempt`: this is the pre-attempt transition,
+    written durably *before* the (possibly slow, possibly crashing) transport
+    call starts, so a crash mid-attempt leaves the row at ``publishing``
+    instead of indistinguishable from a still-untried ``pending`` row. It
+    deliberately does not touch ``attempt_count``/``last_receipt_state``/
+    ``last_error`` -- those describe an attempt's *outcome*, which this call
+    precedes and does not yet know.
+    """
+    conn.execute(
+        """
+        UPDATE sinex_publication_obligations
+        SET status = ?, updated_at_ms = ?
+        WHERE object_id = ? AND protocol_version = ? AND revision_id = ? AND manifest_digest = ?
+        """,
+        (
+            ObligationStatus.PUBLISHING.value,
+            now_ms,
+            obligation.object_id,
+            obligation.protocol_version,
+            obligation.revision_id,
+            obligation.manifest_digest,
+        ),
+    )
+    updated = get_obligation(
+        conn,
+        object_id=obligation.object_id,
+        protocol_version=obligation.protocol_version,
+        revision_id=obligation.revision_id,
+        manifest_digest=obligation.manifest_digest,
+    )
+    assert updated is not None
+    return updated
+
+
+__all__ = ["get_obligation", "list_obligations", "mark_attempt", "mark_publishing", "record_obligation"]

@@ -11,6 +11,7 @@ from devtools import (
     render_demo_corpus_datasheet,
     render_devtools_reference,
     render_docs_surface,
+    render_mcp_tool_index,
     render_openapi,
     render_pages,
     render_product_workflows,
@@ -180,6 +181,14 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "docs/",
             "README.md",
         ),
+    ),
+    GeneratedSurface(
+        name="mcp-tool-index",
+        label="MCP tool index",
+        description="Render the exhaustive generated tool-name appendix into docs/mcp-reference.md.",
+        command=control_plane_argv("render mcp-tool-index"),
+        main=render_mcp_tool_index.main,
+        inputs=("devtools/render_mcp_tool_index.py", "tests/infra/mcp.py"),
     ),
     GeneratedSurface(
         name="topology-status",

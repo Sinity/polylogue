@@ -70,14 +70,17 @@ def _build_preflight_report(
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, sibling_index_db
 
     candidates = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
+    # Try sibling_index_db first
+    sibling_db = sibling_index_db(db_path, require_exists=True)
+    if sibling_db is not None:
+        candidates.append(sibling_db)
+    # Also try archive_root as fallback
     candidates.append(archive_root() / "index.db")
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+
+    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
     if index_db is None:
         return None
     try:

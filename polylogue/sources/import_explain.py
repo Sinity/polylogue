@@ -24,7 +24,7 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
-from polylogue.sources.parsers import hermes_state
+from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
@@ -616,11 +616,17 @@ def _explain_bytes(
             detected_provider=detected_provider,
         )
 
-    fidelity = (
-        _fidelity_payload(hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback"))
-        if detected_provider is Provider.HERMES
-        else None
-    )
+    fidelity = None
+    if detected_provider is Provider.HERMES:
+        atif_session = next(
+            (session for session in sessions if "hermes:atif-trajectory" in session.ingest_flags),
+            None,
+        )
+        fidelity = _fidelity_payload(
+            hermes_spans.import_fidelity_declaration(atif_session)
+            if atif_session is not None
+            else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
+        )
     return ImportExplainEntryPayload(
         source_path=source_path,
         artifact_kind=artifact.kind.value,

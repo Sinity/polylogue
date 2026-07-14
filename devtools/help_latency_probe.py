@@ -19,8 +19,11 @@ because import cost is deterministic given the source tree, not host load.
 
 Targets marked ``gate="informational"`` are measured and reported but never
 fail the check — they document a known-slow path with an open follow-up
-(currently: the ``ops maintenance`` command group; see the module docstring
-in ``polylogue/cli/commands/maintenance.py``).
+(currently: ``ops maintenance migrate-tier``, whose own ``--help`` needs
+``DURABLE_MIGRATION_TIERS`` at Click-decoration time to render its argument
+choices, forcing the ``polylogue.storage.sqlite.archive_tiers`` package's
+eager DDL-import chain even for `--help`; see
+``polylogue/cli/commands/maintenance/_migrate_tier.py``'s module docstring).
 """
 
 from __future__ import annotations
@@ -62,17 +65,26 @@ TARGETS: tuple[HelpLatencyTarget, ...] = (
     HelpLatencyTarget("dashboard", ("dashboard", "--help"), _DEFAULT_BUDGET_MS, "required"),
     HelpLatencyTarget("ops", ("ops", "--help"), _DEFAULT_BUDGET_MS, "required"),
     HelpLatencyTarget("reset", ("reset", "--help"), _DEFAULT_BUDGET_MS, "required"),
-    # `ops maintenance` (any leaf) fully imports the ~2800-line maintenance
-    # command module at module scope (ArchiveStore, blob_gc, blob_integrity,
-    # embeddings.reconcile, migration_runner, ...) because `_LazyGroup`
-    # resolution needs the module to enumerate subcommands. Known slow;
-    # informational until the module's imports are pushed into per-command
-    # bodies. Do not silently promote to "required" without doing that work
-    # first — it will flap the gate red on every host.
-    HelpLatencyTarget("ops-maintenance", ("ops", "maintenance", "--help"), _DEFAULT_BUDGET_MS, "informational"),
+    # `ops maintenance` is now a package of one lazily-dispatched submodule
+    # per subcommand (polylogue-sod7): the group listing and every subcommand
+    # except migrate-tier import only click/paths/config at `--help` time,
+    # deferring ArchiveStore/blob_gc/blob_integrity/embeddings.reconcile/
+    # migration_runner/the archive_tiers DDL stack into each command's own
+    # function body.
+    HelpLatencyTarget("ops-maintenance", ("ops", "maintenance", "--help"), _DEFAULT_BUDGET_MS, "required"),
     HelpLatencyTarget(
         "ops-maintenance-archive-read",
         ("ops", "maintenance", "archive-read", "--help"),
+        _DEFAULT_BUDGET_MS,
+        "required",
+    ),
+    # migrate-tier is the one documented exception: its --help needs
+    # DURABLE_MIGRATION_TIERS at Click-decoration time (to render the `tier`
+    # argument's valid choices), which forces the archive_tiers package's
+    # eager DDL-import chain even for --help. See _migrate_tier.py.
+    HelpLatencyTarget(
+        "ops-maintenance-migrate-tier",
+        ("ops", "maintenance", "migrate-tier", "--help"),
         _DEFAULT_BUDGET_MS,
         "informational",
     ),

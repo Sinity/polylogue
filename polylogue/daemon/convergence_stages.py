@@ -557,11 +557,13 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+
     return (
         make_fts_stage(db_path),
         make_embed_stage(db_path),
         make_insights_stage(db_path),
-        make_standing_query_stage(db_path),
+        make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
     )
 
 
@@ -860,11 +862,9 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    candidates: list[Path] = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+    from polylogue.paths import sibling_index_db
+
+    index_db = sibling_index_db(db_path, require_exists=True)
     if index_db is None:
         return None
     try:

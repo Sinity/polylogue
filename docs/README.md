@@ -91,6 +91,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Demo Tour Report](examples/demo-tour/report.md) | Recorded output and receipts from the demo tour. |
 | [UVX Installation Proof](examples/demo-tour/uvx-proof.md) | Recorded installation proof for the uvx distribution path. |
 | [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
+| [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
 | [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
 
 ## Design Notes
@@ -104,6 +105,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Incident 14:32 Proof World](design/incident-1432-proof-world.md) | Deterministic demo corpus and anti-circularity rules. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
+| [Storage Twins Divergences](plans/STORAGE_TWINS_DIVERGENCES.md) | Documented sync/async storage backend divergences, tracked for the twins regression test. |
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
@@ -136,3 +138,4 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and verification entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
+| [Security Policy](../SECURITY.md) | Trust-boundary summary, supported versions, and vulnerability reporting contact. |

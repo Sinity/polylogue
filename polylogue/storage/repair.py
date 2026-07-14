@@ -4485,46 +4485,49 @@ def repair_duplicate_raw_identity(
     if apply and proof_digest != aggregate:
         raise RuntimeError("apply proof digest does not match the exact dry-run target list")
     if apply:
+        from polylogue.storage.index_generation import RebuildLease
+
         assert receipt_path is not None
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        receipt = _lock_duplicate_raw_identity_repair_receipt(receipt_path, items)
-        try:
-            with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-                conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA foreign_keys = ON")
-                conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    locked = inspect(conn)
-                    locked_digest = hashlib.sha256(
-                        json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
-                    ).hexdigest()
-                    if locked_digest != proof_digest:
-                        raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                    if any(item.status == "ineligible" for item in locked):
-                        raise RuntimeError("a duplicate raw identity target became ineligible")
-                    if receipt.terminal and any(item.status != "already_repaired" for item in locked):
-                        raise RuntimeError("terminal operator receipt disagrees with durable index authority")
-                    if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked):
-                        raise RuntimeError("torn terminal receipt has no matching committed index refinement")
-                    for item in locked:
-                        if item.status == "eligible":
-                            _apply_duplicate_raw_identity_repair(conn, item)
-                    after = inspect(conn)
-                    if any(item.status != "already_repaired" for item in after):
-                        raise RuntimeError("duplicate raw identity repair did not reach terminal state")
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-            items = [
-                dataclasses.replace(after_item, repaired=before.status == "eligible")
-                for before, after_item in zip(locked, after, strict=True)
-            ]
-            if not receipt.terminal:
-                _finish_duplicate_raw_identity_repair_receipt(receipt, items=items)
-        finally:
-            receipt.close()
+        with RebuildLease(archive_root):
+            receipt = _lock_duplicate_raw_identity_repair_receipt(receipt_path, items)
+            try:
+                with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        locked = inspect(conn)
+                        locked_digest = hashlib.sha256(
+                            json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
+                        ).hexdigest()
+                        if locked_digest != proof_digest:
+                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                        if any(item.status == "ineligible" for item in locked):
+                            raise RuntimeError("a duplicate raw identity target became ineligible")
+                        if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                            raise RuntimeError("terminal operator receipt disagrees with durable index authority")
+                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked):
+                            raise RuntimeError("torn terminal receipt has no matching committed index refinement")
+                        for item in locked:
+                            if item.status == "eligible":
+                                _apply_duplicate_raw_identity_repair(conn, item)
+                        after = inspect(conn)
+                        if any(item.status != "already_repaired" for item in after):
+                            raise RuntimeError("duplicate raw identity repair did not reach terminal state")
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                items = [
+                    dataclasses.replace(after_item, repaired=before.status == "eligible")
+                    for before, after_item in zip(locked, after, strict=True)
+                ]
+                if not receipt.terminal:
+                    _finish_duplicate_raw_identity_repair_receipt(receipt, items=items)
+            finally:
+                receipt.close()
     return DuplicateRawIdentityRepairReport(
         mode="apply" if apply else "dry-run",
         requested_count=len(items),

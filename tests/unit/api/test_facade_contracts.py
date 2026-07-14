@@ -2522,7 +2522,6 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         ("query", "sha256:deadbeef"),
         ("query-run", "sha256:deadbeef:run-1"),
         ("result-set", "sha256:deadbeef:run-1:result-1"),
-        ("finding", "finding-hash-1"),
         ("cohort", "cohort-1"),
         ("analysis", "analysis-1"),
     ],
@@ -2532,12 +2531,15 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
 ) -> None:
     """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
 
-    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``
+    ``query``/``query-run``/``result-set``/``cohort``/``analysis``
     are registered ObjectRefKind values with no backing table yet
-    (polylogue-rxdo.2/.3/.4/.8). resolve_ref must not raise and
-    must not silently pretend to resolve them — it returns a typed pending
-    payload carrying reason=substrate-pending so a client can distinguish
-    "not implemented yet" from "does not exist".
+    (polylogue-rxdo.2/.3/.8). ``finding`` graduated out of this pending set
+    in polylogue-rxdo.4 -- see
+    ``test_resolve_ref_returns_finding_provenance_payload`` below.
+    resolve_ref must not raise and must not silently pretend to resolve
+    these remaining kinds — it returns a typed pending payload carrying
+    reason=substrate-pending so a client can distinguish "not implemented
+    yet" from "does not exist".
     """
     archive = _archive(tmp_path)
     try:
@@ -2853,6 +2855,87 @@ async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
         assert payload.payload is not None
         assert payload.payload["assertion_id"] == "assertion-ref-resolution"
         assert payload.evidence_refs == ("codex-session:ref-resolution-v1",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_finding_provenance_payload(tmp_path: Path) -> None:
+    """polylogue-rxdo.4: ``finding:`` refs resolve to a queryable provenance projection.
+
+    Evidence refs (the finding's own declared ``query_ref``/``result_set_ref``
+    plus generic ``evidence_refs``) are re-resolved live, so the payload
+    reports an honest current/stale/unknown staleness verdict rather than
+    prose.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
+    from polylogue.storage.sqlite.query_objects import put_query, put_result_set
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            query = put_query(
+                conn,
+                {"field": "origin", "value": "codex-session"},
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+                created_at_ms=1,
+            )
+            result_set = put_result_set(
+                conn,
+                result_set_id="finding-ref-resolution-rs",
+                query_hash=query.query_hash,
+                grain="session",
+                corpus_epoch="index:g1",
+                member_refs=("session:codex-session:ref-resolution-finding",),
+                exactness="exact",
+                persistence_class="finding",
+                created_at_ms=1,
+            )
+            envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="ref-resolution-claim",
+                        target_ref=f"query:{query.query_hash}",
+                        body_text="One session matched.",
+                        finding_kind="measure",
+                        statistic={"op": "count", "value": 1, "unit": "members"},
+                        n=1,
+                        query_ref=f"query:{query.query_hash}",
+                        result_set_ref=f"result-set:{result_set.result_set_id}",
+                        detector_ref="agent:ref-resolution-detector",
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        assertion_id = envelopes[0].assertion_id
+
+        payload = await archive.resolve_ref(f"finding:{assertion_id}")
+
+        assert payload.resolved is True
+        assert payload.kind == "finding"
+        assert payload.payload_kind == "finding-provenance"
+        assert payload.payload is not None
+        assert payload.payload["assertion_id"] == assertion_id
+        assert payload.payload["finding_kind"] == "measure"
+        assert payload.payload["query_ref"] == f"query:{query.query_hash}"
+        assert payload.payload["result_set_ref"] == f"result-set:{result_set.result_set_id}"
+        assert payload.payload["staleness_verdict"] == "current"
+        evidence_states = {item["ref"]: item["resolvable"] for item in payload.payload["evidence"]}
+        assert evidence_states[f"query:{query.query_hash}"] is True
+        assert evidence_states[f"result-set:{result_set.result_set_id}"] is True
+        assert payload.caveats == ()
+
+        missing = await archive.resolve_ref("finding:does-not-exist")
+        assert missing.resolved is False
+        assert missing.kind == "finding"
+        assert missing.payload is None
     finally:
         await archive.close()
 

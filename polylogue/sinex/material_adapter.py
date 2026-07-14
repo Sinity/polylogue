@@ -47,6 +47,21 @@ def _json_safe(value: object) -> JSONValue:
     return str(value)
 
 
+def _dropped_block_gap(
+    session_id: str, message_index: int, block_position: int, block: dict[str, object]
+) -> FidelityGapInput:
+    raw_type = block.get("type")
+    return FidelityGapInput(
+        scope="block",
+        record_id=f"{session_id}:message[{message_index}]:block[{block_position}]",
+        gap_kind="dropped_block",
+        detail=(
+            f"block type {raw_type!r} is missing or not recognized by BlockType.from_string; "
+            "this block was omitted from the exported material, not silently kept"
+        ),
+    )
+
+
 def _block_input(position: int, block: dict[str, object]) -> BlockInput | None:
     raw_type = block.get("type")
     if raw_type is None:
@@ -94,29 +109,34 @@ def session_material_from_session(session: Session) -> SessionMaterial:
     native_id = native_id_from_session_id(session.id)
     if native_id is None:
         raise ValueError(f"session.id {session.id!r} is not a well-formed 'origin:native_id' session id")
-    messages = tuple(
-        MessageInput(
-            native_id=None,
-            position=index,
-            role=message.role,
-            text=message.text,
-            message_type=message.message_type,
-            material_origin=message.material_origin,
-            occurred_at_ms=_timestamp_ms(message.timestamp),
-            model_name=message.model_name,
-            input_tokens=message.input_tokens,
-            output_tokens=message.output_tokens,
-            cache_read_tokens=message.cache_read_tokens,
-            cache_write_tokens=message.cache_write_tokens,
-            duration_ms=message.duration_ms or None,
-            blocks=tuple(
-                block_input
-                for block_position, raw_block in enumerate(message.blocks)
-                if (block_input := _block_input(block_position, raw_block)) is not None
-            ),
+    dropped_block_gaps: list[FidelityGapInput] = []
+    messages: list[MessageInput] = []
+    for index, message in enumerate(session.messages):
+        blocks: list[BlockInput] = []
+        for block_position, raw_block in enumerate(message.blocks):
+            block_input = _block_input(block_position, raw_block)
+            if block_input is None:
+                dropped_block_gaps.append(_dropped_block_gap(session.id, index, block_position, raw_block))
+                continue
+            blocks.append(block_input)
+        messages.append(
+            MessageInput(
+                native_id=None,
+                position=index,
+                role=message.role,
+                text=message.text,
+                message_type=message.message_type,
+                material_origin=message.material_origin,
+                occurred_at_ms=_timestamp_ms(message.timestamp),
+                model_name=message.model_name,
+                input_tokens=message.input_tokens,
+                output_tokens=message.output_tokens,
+                cache_read_tokens=message.cache_read_tokens,
+                cache_write_tokens=message.cache_write_tokens,
+                duration_ms=message.duration_ms or None,
+                blocks=tuple(blocks),
+            )
         )
-        for index, message in enumerate(session.messages)
-    )
     fidelity_gaps = (
         FidelityGapInput(
             scope="session",
@@ -127,6 +147,7 @@ def session_material_from_session(session: Session) -> SessionMaterial:
                 "or session_events -- see module docstring"
             ),
         ),
+        *dropped_block_gaps,
     )
     return SessionMaterial(
         origin=session.origin,
@@ -141,7 +162,7 @@ def session_material_from_session(session: Session) -> SessionMaterial:
         working_directories=session.working_directories,
         metadata={key: _json_safe(value) for key, value in session.metadata.items()},
         tags=session.tags_m2m,
-        messages=messages,
+        messages=tuple(messages),
         lineage=(),
         usage=(),
         session_events=(),
