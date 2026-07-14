@@ -148,13 +148,13 @@ function injectionPlanForUrl(url) {
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
         { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/chatgpt.js"] },
+        { files: ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"] },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
         { files: ["src/content/claude_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/claude.js"] },
+        { files: ["src/common.js", "src/content/message_layer.js", "src/content/claude.js"] },
       ];
     }
     if (

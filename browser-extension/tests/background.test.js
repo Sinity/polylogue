@@ -845,7 +845,7 @@ describe("background receiver diagnostics", () => {
     });
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 42 },
-      files: ["src/common.js", "src/content/chatgpt.js"],
+      files: ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"],
     });
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",

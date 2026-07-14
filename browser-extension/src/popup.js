@@ -57,10 +57,10 @@ function contentScriptFiles(url) {
   try {
     const parsed = new URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
-      return ["src/common.js", "src/content/chatgpt.js"];
+      return ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
-      return ["src/common.js", "src/content/claude.js"];
+      return ["src/common.js", "src/content/message_layer.js", "src/content/claude.js"];
     }
     if (
       parsed.hostname === "grok.com" ||
