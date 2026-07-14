@@ -22,6 +22,8 @@ import orjson
 
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserBackfillCheckpointRecord,
+    BrowserBackfillCheckpointRequest,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
@@ -48,6 +50,10 @@ BROWSER_POST_ENABLED_ENV = "POLYLOGUE_BROWSER_POST_ENABLED"
 
 #: Subdirectory of the capture spool that holds queued post commands.
 POST_COMMAND_QUEUE_DIRNAME = "post-commands"
+
+#: Subdirectory of the capture spool that holds mirrored backfill-ledger
+#: checkpoints (polylogue-06zm). One file per extension_instance_id.
+BACKFILL_CHECKPOINT_DIRNAME = "backfill-checkpoints"
 
 # Backfill scheduling identifies the observer that acquired a snapshot rather
 # than a semantic property of the provider session.  Keep it out of the spool
@@ -868,7 +874,86 @@ def ack_post_command(
     return command
 
 
+# ---- Backfill-ledger checkpoint mirror (polylogue-06zm) --------------------
+#
+# The extension's IndexedDB backfill ledger is the fast primary source; a
+# local chrome.storage.local copy already survives an ordinary profile
+# restart (polylogue-jlme.4). This mirror is the second fallback: a
+# receiver-owned, credential-free copy that outlives BOTH of those when a
+# profile is destructively re-seeded or the extension is fully reinstalled,
+# so recovery has a durable place to look beyond the browser profile itself.
+# One JSON file per extension_instance_id, overwritten on every checkpoint
+# (last write wins) -- the service worker is single-threaded and only ever
+# checkpoints its own ledger, so there is exactly one legitimate writer per
+# instance id at a time. The file-count bound still guards against a buggy
+# or hostile caller minting unbounded distinct instance ids.
+BACKFILL_CHECKPOINT_MAX_FILES = 2_000
+BACKFILL_CHECKPOINT_MAX_BYTES = 200 * 1024 * 1024  # 200 MiB
+
+
+def backfill_checkpoint_root(spool_path: Path | None = None) -> Path:
+    """Return the directory that holds mirrored backfill-ledger checkpoints."""
+    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
+    return root / BACKFILL_CHECKPOINT_DIRNAME
+
+
+def _backfill_checkpoint_path(root: Path, instance_id: str) -> Path:
+    return root / f"{_safe_token(instance_id)}.json"
+
+
+def write_backfill_checkpoint(
+    request: BrowserBackfillCheckpointRequest,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserBackfillCheckpointRecord:
+    """Persist a credential-free backfill-ledger checkpoint mirror.
+
+    Overwrites any prior checkpoint for the same ``extension_instance_id``
+    (last write wins; see module comment above). Guarded by the same write
+    lock and quota-check pattern the capture spool and post-command queue
+    use, so a concurrent write cannot bypass the quota check (TOCTOU).
+    """
+    root = backfill_checkpoint_root(spool_path)
+    with _SPOOL_WRITE_LOCK:
+        target = _backfill_checkpoint_path(root, request.extension_instance_id)
+        if not target.exists():
+            _check_spool_quota(
+                root,
+                max_files=BACKFILL_CHECKPOINT_MAX_FILES,
+                max_bytes=BACKFILL_CHECKPOINT_MAX_BYTES,
+                label="backfill-checkpoint mirror",
+            )
+        record = BrowserBackfillCheckpointRecord(
+            extension_instance_id=request.extension_instance_id,
+            checkpoint=request.checkpoint,
+            stored_at=datetime.now(UTC).isoformat(),
+        )
+        _atomic_write_json(target, record.model_dump(mode="json"))
+    return record
+
+
+def read_backfill_checkpoint(
+    instance_id: str,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserBackfillCheckpointRecord | None:
+    """Return the mirrored checkpoint for an extension instance, if any."""
+    root = backfill_checkpoint_root(spool_path)
+    path = _backfill_checkpoint_path(root, instance_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return BrowserBackfillCheckpointRecord.model_validate(payload)
+    except Exception:
+        return None
+
+
 __all__ = [
+    "BACKFILL_CHECKPOINT_DIRNAME",
+    "BACKFILL_CHECKPOINT_MAX_BYTES",
+    "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
     "BROWSER_POST_ENABLED_ENV",
     "POST_COMMAND_QUEUE_DIRNAME",
@@ -879,6 +964,7 @@ __all__ = [
     "BrowserPostCommandStateError",
     "BrowserPostDisabledError",
     "ack_post_command",
+    "backfill_checkpoint_root",
     "browser_post_enabled",
     "capture_artifact_ref",
     "capture_response_id",
@@ -889,7 +975,9 @@ __all__ = [
     "load_or_mint_receiver_token",
     "poll_post_commands",
     "post_command_queue_root",
+    "read_backfill_checkpoint",
     "receiver_status_payload",
     "resolve_receiver_auth_token",
+    "write_backfill_checkpoint",
     "write_capture_envelope",
 ]
