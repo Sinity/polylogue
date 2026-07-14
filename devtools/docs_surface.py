@@ -263,6 +263,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Reader-Comprehension Test Harness",
+        "examples/reader-comprehension-test/README.md",
+        "Single-blind N-arm cold-reader test harness for README/positioning candidates.",
+        "evidence",
+    ),
+    _entry(
         "Example and Proof Index",
         "examples/README.md",
         "Index of recorded proof artifacts and worked examples.",
@@ -388,6 +394,12 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
         "Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints.", "operations"
     ),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules.", "operations"),
+    DocsEntry(
+        "Security Policy",
+        "SECURITY.md",
+        "Trust-boundary summary, supported versions, and vulnerability reporting contact.",
+        "operations",
+    ),
 )
 
 README_DOC_TITLES: tuple[str, ...] = (

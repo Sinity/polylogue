@@ -15,6 +15,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab lanes",
     "lab policy backlog-hygiene",
     "lab policy demo-packet-registry",
+    "lab policy demo-tour-freshness",
     "lab policy docs-drift",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
@@ -173,6 +174,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "generated surfaces",
         "Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
+    ),
+    CommandSpec(
+        "render mcp-tool-index",
+        "generated surfaces",
+        "Render the generated exhaustive tool-name appendix into docs/mcp-reference.md.",
+        "devtools.render_mcp_tool_index",
+        use_when=(
+            "Keep every registered MCP tool name individually reachable from the docs tree "
+            "(tests/infra/mcp.py:EXPECTED_TOOL_NAMES) after adding or removing a tool, so "
+            "`devtools verify docs-coverage` stays clean without hand-duplicating the list."
+        ),
+        examples=("devtools render mcp-tool-index", "devtools render mcp-tool-index --check"),
     ),
     CommandSpec(
         "render product-workflows",
@@ -821,6 +834,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
     ),
     CommandSpec(
+        "verify docs-coverage",
+        "verification",
+        "Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree.",
+        "devtools.verify_docs_coverage",
+        use_when=(
+            "Catch doc drift in the other direction from doc-commands: a real public surface "
+            "(CLI command, MCP tool, config key, stable daemon route) shipped with zero doc-tree "
+            "mention. Fails naming the exact missing entry (polylogue-3tl.9). Pre-existing gaps "
+            "are tracked in docs/plans/docs-coverage-baseline.yaml as a ratchet, not an allowlist "
+            "to extend."
+        ),
+        examples=("devtools verify docs-coverage", "devtools verify docs-coverage --json"),
+    ),
+    CommandSpec(
         "verify ci-workflows",
         "verification",
         "Verify CI workflow files reference locally-known devtools commands and existing paths.",
@@ -890,6 +917,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "or malformed packet before it silently drops out of the demo shelf."
         ),
         examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
+    ),
+    CommandSpec(
+        "lab policy demo-tour-freshness",
+        "verification lab",
+        "Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts.",
+        "devtools.verify_demo_tour_freshness",
+        use_when=(
+            "Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, "
+            "report, per-step command output, recording tape) and the committed copies under "
+            "docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). "
+            "Runs the real tour (~10s), so it lives in the lab tier rather than --quick."
+        ),
+        examples=("devtools lab policy demo-tour-freshness",),
     ),
     CommandSpec(
         "lab policy docs-drift",
