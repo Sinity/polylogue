@@ -99,6 +99,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Design Direction](design/README.md) | Beads-first design doctrine and standing domain-model references. |
 | [Agent-First MCP](design/agent-first-mcp.md) | Agent-facing MCP surface doctrine. |
 | [Archive Storytelling](design/archive-storytelling.md) | Narrative and artifact design for archives. |
+| [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Incident 14:32 Proof World](design/incident-1432-proof-world.md) | Deterministic demo corpus and anti-circularity rules. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |

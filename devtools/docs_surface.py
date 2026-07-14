@@ -283,6 +283,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Hermes Archival Export Contract",
+        "design/hermes-archival-export-contract.md",
+        "Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation.",
+        "design",
+    ),
+    _entry(
         "Browser Capture Redesign",
         "design/browser-capture-redesign/README.md",
         "Browser-capture redesign rationale and verification artifacts.",

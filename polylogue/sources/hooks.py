@@ -1,10 +1,21 @@
-"""Durable local spool for Claude Code and Codex hook events.
+"""Durable local spool for Claude Code, Codex, and Hermes hook events.
 
 Hook commands must return promptly and cannot rely on the archive daemon being
 up.  They therefore atomically place one immutable envelope in ``pending``.
 The daemon drains those envelopes into ``source.db`` and only moves a file to
 ``acknowledged`` after its ``raw_hook_events`` row has committed.  A crash in
 between is safe: replay uses the stable event id as the source-tier key.
+
+Hermes support (fs1.7) reuses this exact mechanism rather than inventing a
+parallel spool: Hermes lifecycle hooks are best-effort in the same way Claude
+Code/Codex hooks are (a synchronous call can be lost during an outage), so the
+same atomic-enqueue/idempotent-drain contract applies unchanged. The one
+Hermes-specific addition is a payload hygiene guard
+(``_reject_duplicated_transcript``) enforcing that lifecycle events carry
+ids/hashes/timings/outcomes, never a second copy of message text. See
+``polylogue.sources.parsers.hermes_lifecycle`` for the event-type taxonomy and
+snapshot reconciliation, and ``docs/design/hermes-archival-export-contract.md``
+for the durability/finalization semantics this spool exists to capture.
 """
 
 from __future__ import annotations
@@ -28,14 +39,29 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 
 logger = get_logger(__name__)
 
-_SUPPORTED_PROVIDERS = frozenset({"claude-code", "codex"})
+_SUPPORTED_PROVIDERS = frozenset({"claude-code", "codex", "hermes"})
+_ORIGIN_TOKEN_BY_PROVIDER: dict[str, str] = {
+    "claude-code": "claude-code-session",
+    "codex": "codex-session",
+    "hermes": "hermes-session",
+}
 _PENDING_DIRNAME = "pending"
 _ACKNOWLEDGED_DIRNAME = "acknowledged"
 _SAFE_EVENT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# Event bodies carry ids/hashes/timings/outcomes, never a duplicate transcript
+# (fs1.7 AC: "event bodies contain no duplicated transcript"). Enforced at the
+# validation boundary so a violation fails loudly at enqueue/drain time
+# instead of silently bloating source.db with a second copy of conversation
+# content. The threshold is generous (short tool argument previews, error
+# messages, and ids are all well under it) but catches an accidental full
+# message/turn body.
+_TRANSCRIPT_LIKE_KEYS = ("text", "content", "transcript", "messages", "message_body", "reasoning")
+_MAX_TRANSCRIPT_LIKE_FIELD_CHARS = 2000
+
 
 class HookSpoolRecordError(ValueError):
-    """A pending spool file is not a valid Claude Code/Codex hook envelope."""
+    """A pending spool file is not a valid Claude Code/Codex/Hermes hook envelope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +180,7 @@ def _validated_record(value: dict[str, object]) -> dict[str, object]:
     payload = value.get("payload")
     if not isinstance(payload, dict):
         raise HookSpoolRecordError("hook spool envelope payload must be an object")
+    _reject_duplicated_transcript(payload)
     observed_at_ms = _timestamp_ms(str(value["timestamp"]))
     return {
         "event_id": str(value["event_id"]),
@@ -166,6 +193,22 @@ def _validated_record(value: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _reject_duplicated_transcript(payload: dict[str, object]) -> None:
+    """Reject a hook payload that looks like it duplicates transcript content.
+
+    Applies to every provider, not only Hermes: hook events are evidence
+    records, not a second copy of the conversation the archive already
+    retains in full through session parsing.
+    """
+    for key in _TRANSCRIPT_LIKE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and len(value) > _MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
+            raise HookSpoolRecordError(
+                f"hook spool payload field {key!r} looks like a duplicated transcript "
+                f"({len(value)} chars > {_MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
+            )
+
+
 def _timestamp_ms(value: str) -> int:
     try:
         return int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).timestamp() * 1000)
@@ -175,8 +218,9 @@ def _timestamp_ms(value: str) -> int:
 
 def _persist_record(archive_root: Path, path: Path, record: dict[str, object]) -> None:
     initialize_active_archive_root(archive_root)
-    provider = Provider.from_string(str(record["provider"]))
-    origin = Origin.from_string("claude-code-session" if provider is Provider.CLAUDE_CODE else "codex-session")
+    provider_token = str(record["provider"])
+    provider = Provider.from_string(provider_token)
+    origin = Origin.from_string(_ORIGIN_TOKEN_BY_PROVIDER.get(provider_token, "codex-session"))
     payload = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     observed_at_ms_value = record["observed_at_ms"]
     if not isinstance(observed_at_ms_value, int):

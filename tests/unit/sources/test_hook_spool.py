@@ -19,6 +19,7 @@ from watchfiles import Change
 
 from polylogue.hooks import hook_main
 from polylogue.sources.hooks import (
+    HookSpoolRecordError,
     acknowledged_hook_spool_dir,
     drain_hook_event_spool,
     enqueue_hook_event,
@@ -27,6 +28,7 @@ from polylogue.sources.hooks import (
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
 
 
 @pytest.mark.parametrize(
@@ -34,6 +36,7 @@ from polylogue.sources.live.cursor import CursorStore
     [
         ("claude-code", "PostToolUse", "claude-session", "claude-code-session"),
         ("codex", "PostToolUse", "codex-session", "codex-session"),
+        ("hermes", "tool_finish", "hermes-session", "hermes-session"),
     ],
 )
 def test_hook_spool_acknowledges_only_after_source_tier_materialization(
@@ -255,6 +258,11 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
             {"PYTHONPATH": str(Path("packaging/polylogue-hooks/src").resolve())},
         ),
         ((str(Path("contrib/polylogue-hook").resolve()), "PostToolUse", "--provider", "codex"), {}),
+        (
+            (sys.executable, "-m", "polylogue_hooks.cli", "tool_finish", "--provider", "hermes"),
+            {"PYTHONPATH": str(Path("packaging/polylogue-hooks/src").resolve())},
+        ),
+        ((str(Path("contrib/polylogue-hook").resolve()), "tool_finish", "--provider", "hermes"), {}),
     ],
 )
 def test_published_hook_adapters_spool_then_materialize(
@@ -262,7 +270,7 @@ def test_published_hook_adapters_spool_then_materialize(
     command: tuple[str, ...],
     extra_env: dict[str, str],
 ) -> None:
-    """Both documented non-bundled executables reach the durable receipt path."""
+    """Every documented non-bundled executable (incl. the Hermes prototype) reaches the durable receipt path."""
 
     spool_root = tmp_path / "hooks"
     archive_root = tmp_path / "archive"
@@ -282,3 +290,141 @@ def test_published_hook_adapters_spool_then_materialize(
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("external-session",)
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_env"),
+    [
+        (
+            (sys.executable, "-m", "polylogue_hooks.cli", "tool_finish", "--provider", "hermes"),
+            {"PYTHONPATH": str(Path("packaging/polylogue-hooks/src").resolve())},
+        ),
+        ((str(Path("contrib/polylogue-hook").resolve()), "tool_finish", "--provider", "hermes"), {}),
+    ],
+)
+def test_published_hook_adapters_refuse_duplicated_transcript_payloads(
+    tmp_path: Path,
+    command: tuple[str, ...],
+    extra_env: dict[str, str],
+) -> None:
+    """The standalone (non-bundled) producers enforce the same no-transcript-duplication rule."""
+
+    spool_root = tmp_path / "hooks"
+    environment = os.environ | extra_env | {"POLYLOGUE_HOOK_SIDECAR_DIR": str(spool_root), "TMPDIR": "/realm/tmp"}
+    oversized_payload = json.dumps({"session_id": "external-session", "text": "x" * 5000})
+    result = subprocess.run(
+        command,
+        input=oversized_payload,
+        text=True,
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
+    assert "duplicated transcript" in result.stderr
+    assert list(pending_hook_spool_dir(spool_root).glob("*.json")) == []
+
+
+# ── Hermes lifecycle-event spool (fs1.7) ──────────────────────────────────
+
+
+def test_hermes_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement(tmp_path: Path) -> None:
+    """Killing Polylogue mid-delivery and restarting drains the spool exactly once (fs1.7 AC)."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    event_path = enqueue_hook_event(
+        event_id="hermes-stable-event-id",
+        provider="hermes",
+        event_type="tool_start",
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "tool_name": "read_file"},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+
+    # Simulate a crash after persistence but before acknowledgement: replay
+    # the same envelope from "pending" again.
+    replay_path = pending_hook_spool_dir(spool_root) / event_path.name
+    (acknowledged_hook_spool_dir(spool_root) / event_path.name).replace(replay_path)
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events WHERE origin = 'hermes-session'").fetchone() == (1,)
+
+
+def test_hermes_per_turn_end_and_durable_finalize_remain_distinct_event_types(tmp_path: Path) -> None:
+    """fs1.7 AC: on_session_end (per turn) is never conflated with on_session_finalize (durable)."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    enqueue_hook_event(
+        event_id="turn-end-1",
+        provider="hermes",
+        event_type=PER_TURN_END,
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"turn_id": "turn-1"},
+        root=spool_root,
+    )
+    enqueue_hook_event(
+        event_id="turn-end-2",
+        provider="hermes",
+        event_type=PER_TURN_END,
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:05:00Z",
+        payload={"turn_id": "turn-2"},
+        root=spool_root,
+    )
+    enqueue_hook_event(
+        event_id="finalize-1",
+        provider="hermes",
+        event_type=DURABLE_FINALIZE,
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:10:00Z",
+        payload={},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 3
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT event_type, COUNT(*) FROM raw_hook_events WHERE session_native_id = 'hermes-session-1' "
+            "GROUP BY event_type ORDER BY event_type"
+        ).fetchall()
+    assert rows == [(PER_TURN_END, 2), (DURABLE_FINALIZE, 1)]
+
+
+def test_hermes_hook_payload_rejects_duplicated_transcript_text(tmp_path: Path) -> None:
+    """fs1.7 AC: event bodies carry ids/hashes/timings/outcomes, never a duplicated transcript."""
+
+    spool_root = tmp_path / "hooks"
+    with pytest.raises(HookSpoolRecordError, match="duplicated transcript"):
+        enqueue_hook_event(
+            event_id="oversized-payload",
+            provider="hermes",
+            event_type="tool_finish",
+            session_id="hermes-session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"text": "x" * 5000},
+            root=spool_root,
+        )
+
+
+def test_hermes_hook_payload_allows_short_evidence_fields(tmp_path: Path) -> None:
+    """Ordinary short ids/summaries are not mistaken for duplicated transcripts."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    enqueue_hook_event(
+        event_id="short-payload",
+        provider="hermes",
+        event_type="tool_finish",
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "content": "exit 0"},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
