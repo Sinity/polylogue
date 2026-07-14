@@ -1313,6 +1313,47 @@ def _daemon_query_pairs(query_params: Mapping[str, object]) -> Iterable[tuple[st
             yield key, str(value)
 
 
+_DAEMON_LIST_ITEM_KEEP_KEYS = (
+    "id",
+    "origin",
+    "title",
+    "target_ref",
+    "anchor",
+    "actions",
+    "created_at",
+    "updated_at",
+    "message_count",
+    "tags",
+    "summary",
+    "words",
+    "repo",
+    "cwd_display",
+    "flags",
+)
+
+
+def _normalize_daemon_list_item(item: Mapping[str, object]) -> dict[str, object]:
+    """Reshape a daemon web-reader session row into the CLI's native list-row shape.
+
+    The daemon's ``/api/sessions`` wire contract (``_archive_summary_payload`` /
+    ``_do_list`` in ``daemon/http.py``) is the stable webui row shape —
+    ``word_count`` naming, a ``date`` convenience field, and a ``session_id``
+    duplicate of ``id``. The CLI's direct-path renderer
+    (``archive_query._summary_payload`` -> ``SessionListRowPayload``) predates
+    that contract and uses ``words`` with no ``date``/``session_id`` fields.
+    Golden parity (polylogue-20d.1) requires the two to render identically, so
+    the CLI-side proxy adapts the wire shape here rather than either surface
+    changing its stable contract.
+    """
+
+    normalized = dict(item)
+    if "words" not in normalized and "word_count" in normalized:
+        normalized["words"] = normalized.get("word_count")
+    return {
+        key: normalized[key] for key in _DAEMON_LIST_ITEM_KEEP_KEYS if key in normalized and normalized[key] is not None
+    }
+
+
 def _emit_daemon_list_payload(
     payload: Mapping[str, object],
     *,
@@ -1322,7 +1363,11 @@ def _emit_daemon_list_payload(
     origin: str | None,
     fields: str | None,
 ) -> None:
-    items = [dict(item) for item in cast(list[object], payload.get("items") or []) if isinstance(item, Mapping)]
+    items = [
+        _normalize_daemon_list_item(item)
+        for item in cast(list[object], payload.get("items") or [])
+        if isinstance(item, Mapping)
+    ]
     total = _object_int(payload.get("total") or len(items))
     next_offset = offset + limit if total > offset + limit else None
     envelope: dict[str, object] = {
