@@ -73,7 +73,8 @@ areas:
       hypothesis: false
     notes: >
       This log-boundary control is distinct from captured-content secret
-      detection, which remains unimplemented and is tracked as a coverage gap.
+      detection (see the captured_content_secret_detection area below,
+      polylogue-27m).
 
   redaction:
     description: PII/private-content redaction in schema inference
@@ -146,6 +147,87 @@ areas:
       Tests verify no traceback, no "File ", no /realm/ or
       polylogue/ paths in error responses.
 
+  captured_content_secret_detection:
+    description: >
+      Candidate-only secret detection in captured content, with an excision
+      handoff (polylogue-27m: "the archive can forget on purpose")
+    implemented: true
+    controls:
+      - secret_candidate_scanner: >
+          polylogue/security/secret_scan.py scans captured content for
+          credential-shaped spans (AWS/GitHub/Slack/OpenAI/Anthropic key
+          shapes, PEM private-key headers, JWTs, an entropy-filtered generic
+          key=value assignment rule) and records them as non-injectable
+          AssertionKind.SECRET_CANDIDATE assertions. The matched literal is
+          never returned, stored, or logged -- only a SHA-256 fingerprint,
+          byte length, pattern id, and span offsets survive.
+      - production_caller: >
+          scan_session_for_secret_candidates (same module) is the real
+          entrypoint: it reads a session's block text/tool-input from
+          index.db, scans it, and records candidates in user.db. Wired to
+          `polylogue ops scan-secrets --session <id>`
+          (polylogue/cli/commands/scan_secrets.py). Fix-round note
+          (2026-07-14): an earlier revision of this PR marked this area
+          implemented with the scanner functions defined but zero
+          production callers -- an operator running the archive got no
+          candidates ever, only a test calling the functions directly did.
+          This caller closes that gap.
+      - detector_candidate_gate: >
+          author_kind="detector" is unconditionally coerced to
+          status=CANDIDATE with {"inject": false, "promotion_required": true}
+          by the shared upsert_assertion write chokepoint (the same
+          invariant PATHOLOGY/TRANSFORM_CANDIDATE findings already use) --
+          a detector can never self-promote a finding to authoritative or
+          injectable context.
+      - local_excision: >
+          polylogue/security/excision.py (standalone/off mode, locally
+          authoritative) gives an operator `polylogue ops excise` to act on
+          a candidate: cross-tier removal (source.db/index.db/
+          embeddings.db/blob_refs/user.db) plus a durable removed-hash
+          marker consulted at the acquire-time write choke point
+          (write_source_raw_session) so ordinary re-ingest of unmodified
+          source files cannot resurrect the content.
+      - mirror_primary_lifecycle_mechanism: >
+          polylogue/security/lifecycle.py implements the durable local
+          request/outbox mechanics for Sinex-backed mirror/primary modes,
+          proven against a fault-injecting versioned contract fake
+          (SinexContractFake): pending-through-network-loss, restart
+          recovers state from the durable row not client memory, an
+          ops.db reset cannot erase the request, rejection can never report
+          success, and primary-mode local invalidation happens only after a
+          synthetic confirmation.
+    test_coverage:
+      location: >
+        tests/unit/security/test_secret_scan.py and
+        tests/unit/security/test_excision.py and
+        tests/unit/security/test_excision_lifecycle.py and
+        tests/unit/cli/test_excise.py and
+        tests/unit/cli/test_scan_secrets.py
+      hypothesis: false
+    notes: >
+      Standalone/off-mode excision is locally authoritative and proven
+      end-to-end, including a real parse_sources_archive re-ingest round
+      trip through the synthetic-corpus fixture (not a hand-rolled
+      literal). Mirror/primary-mode excision is mechanism-only by explicit
+      design: this bead (polylogue-27m) does not claim a real Sinex purge,
+      clean Sinex rebuild, disconnected-replica closure, or backup-restore
+      proof -- polylogue-303r.6 owns binding the durable request/outbox
+      mechanics proven here to a real Sinex confirmation, and a
+      contract-fake-only test run must never be read as satisfying that
+      separate scope.
+
+      Explicit scope note on `implemented: true` (fix-round verification,
+      2026-07-14, polylogue-layg): the claim covers the *mechanism* --
+      credential-shaped spans are actually detected, recorded as
+      non-injectable candidates, and reachable by an operator through a real
+      production entrypoint (`polylogue ops scan-secrets --session <id>`).
+      It does NOT mean archive-wide or automatic coverage: there is no
+      bulk/all-sessions scan command and no daemon convergence stage wires
+      this in automatically, so an operator must invoke it per session id.
+      That gap is real but is a coverage-breadth follow-up, not evidence
+      that the mechanism itself is unimplemented or fake -- tracked
+      separately as polylogue-layg.1.
+
   dependency_audit:
     description: Dependency vulnerability auditing
     implemented: true
@@ -165,13 +247,6 @@ areas:
       omitted until the GitHub Dependency Graph feature is enabled
       on the repo; see the comment block in dep-audit.yml.
 
-coverage_gaps:
-   - id: security.captured-content-secret-detection
-     area: captured_content_secret_detection
-     gap: Captured-content secrets have no candidate-only scanner or excision handoff
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-07-12"
-     review_after: "2026-08-12"
-     bead: polylogue-27m
-     next_evidence: devtools test -k secret_candidate
+# security.captured-content-secret-detection resolved 2026-07-14 by
+# polylogue-27m: see the captured_content_secret_detection area above.
+coverage_gaps: []

@@ -8,13 +8,13 @@ work retroactively on all historical data.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.stats import percentile
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
@@ -32,16 +32,6 @@ def _gap_ms(earlier: datetime | None, later: datetime | None) -> int:
     if earlier is None or later is None:
         return 0
     return max(int((later - earlier).total_seconds() * 1000), 0)
-
-
-def _percentile(values: list[int], p: float) -> int:
-    """Return the *p*-th percentile of a sorted list of ints (nearest-rank)."""
-    if not values:
-        return 0
-    if len(values) == 1:
-        return values[0]
-    rank = max(0, int(math.ceil(p / 100.0 * len(values))) - 1)
-    return values[rank]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,9 +121,9 @@ def compute_session_timing(
     # ------------------------------------------------------------------
     sorted_gaps = sorted(g for g in gaps if g > 0)
     latency_percentiles_ms = {
-        "p50": _percentile(sorted_gaps, 50),
-        "p95": _percentile(sorted_gaps, 95),
-        "p99": _percentile(sorted_gaps, 99),
+        "p50": int(percentile(sorted_gaps, 0.5, method="nearest")),
+        "p95": int(percentile(sorted_gaps, 0.95, method="nearest")),
+        "p99": int(percentile(sorted_gaps, 0.99, method="nearest")),
     }
 
     # ------------------------------------------------------------------
@@ -315,7 +305,7 @@ def compute_session_latency_profile(
     sorted_tool_durations = sorted(tool_durations)
     return SessionLatencyProfileFacts(
         median_tool_call_ms=_median_ms(tool_durations),
-        p90_tool_call_ms=_percentile(sorted_tool_durations, 90),
+        p90_tool_call_ms=int(percentile(sorted_tool_durations, 0.9, method="nearest")),
         max_tool_call_ms=max(tool_durations) if tool_durations else 0,
         stuck_tool_count=stuck_tool_count,
         median_agent_response_ms=_median_ms(agent_response_ms),

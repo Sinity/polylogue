@@ -121,6 +121,47 @@ def int_pair(value: object, default: tuple[int, int] = (0, 0)) -> tuple[int, int
     return (first, second)
 
 
+# Row-value coercion helpers (for DataFrame/query result payloads)
+def required_str(value: object) -> str:
+    """Coerce a value to a string; raise if None."""
+    if value is None:
+        raise ValueError("Required string value is None")
+    return value if isinstance(value, str) else str(value)
+
+
+def optional_str(value: object) -> str | None:
+    """Coerce a value to a string or None; strict on type."""
+    return value if isinstance(value, str) else None
+
+
+def row_int(value: object) -> int:
+    """Coerce a value to int; default to 0 for unparseable or bool."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def row_float(value: object) -> float | None:
+    """Coerce a value to float or None; strict on bool (returns None)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 __all__ = [
     "PayloadMapping",
     "coerce_float",
@@ -131,7 +172,11 @@ __all__ = [
     "mapping_sequence",
     "optional_date",
     "optional_datetime",
+    "optional_str",
     "optional_string",
+    "required_str",
+    "row_float",
+    "row_int",
     "string_int_mapping",
     "string_sequence",
 ]

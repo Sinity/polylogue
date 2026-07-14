@@ -1484,6 +1484,7 @@ def build_verify_steps(
                 ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
+                ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify test-clock-hygiene", _devtools_cmd("verify test-clock-hygiene")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
@@ -1563,6 +1564,7 @@ def build_verify_steps(
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
+        steps.append(("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")))
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
         steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
     return steps

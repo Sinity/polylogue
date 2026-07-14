@@ -18,6 +18,89 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 
+class ContentExcisedError(RuntimeError):
+    """Raised when acquire attempts to re-store a durably excised blob.
+
+    The archive can forget on purpose (polylogue-27m): once a blob hash is
+    recorded in ``excised_content``, ordinary re-ingest of unmodified source
+    bytes must not resurrect it, even across an ``index.db`` rebuild. There
+    are two acquire-time raw-session write functions that gate on this --
+    ``write_source_raw_session`` (payload held in memory; used by the CLI
+    import path via ``ArchiveStore.write_raw_and_parsed_result`` /
+    ``pipeline.services.archive_ingest.parse_sources_archive``) and
+    ``write_source_raw_session_blob_ref`` (payload already published as a
+    blob, not held in memory; used by the daemon's memory-bounded streaming
+    path for multi-GiB files -- ``ArchiveStore.write_raw_blob_ref`` /
+    ``sources.live.batch.LiveBatchProcessor._ingest_full_records_archive``).
+    Both must gate identically or the blob-ref route silently resurrects
+    excised content that arrives via the streaming path (polylogue-27m fix
+    round). Callers at the batch orchestration layer catch this and skip the
+    one file (count it, continue the batch) rather than aborting the whole
+    run.
+    """
+
+    def __init__(self, *, blob_hash: bytes, source_path: str) -> None:
+        self.blob_hash = blob_hash
+        self.source_path = source_path
+        super().__init__(
+            f"content at {source_path!r} (blob_hash={blob_hash.hex()}) was durably excised; refusing to re-acquire"
+        )
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
+    """Return ``True`` if ``blob_hash`` is recorded in the durable excision ledger.
+
+    A cheap primary-key lookup; a no-op fast path when the table does not
+    exist (an archive whose ``source.db`` predates migration 010) or is
+    empty (the overwhelming common case -- excision is rare).
+    """
+    if not _table_exists(conn, "excised_content"):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
+        (blob_hash,),
+    ).fetchone()
+    return row is not None
+
+
+def record_excised_blob_hash(
+    conn: sqlite3.Connection,
+    *,
+    blob_hash: bytes,
+    reason: str,
+    actor: str,
+    prior_revision: str | None = None,
+    span: tuple[int, int] | None = None,
+    excised_at_ms: int,
+) -> None:
+    """Idempotently record a durable removed-content marker.
+
+    ``INSERT ... ON CONFLICT DO NOTHING``: re-excising the same blob hash
+    (e.g. a retried apply) must not overwrite the original reason/actor/
+    timestamp of record.
+    """
+    span_start, span_end = span if span is not None else (None, None)
+    conn.execute(
+        """
+        INSERT INTO excised_content (
+            removed_hash, hash_kind, reason, actor, prior_revision, span_start, span_end, excised_at_ms
+        ) VALUES (?, 'blob_hash', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(removed_hash, hash_kind) DO NOTHING
+        """,
+        (blob_hash, reason, actor, prior_revision, span_start, span_end, excised_at_ms),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveSourceBlobRef:
     """A compact raw blob reference row."""
@@ -354,6 +437,8 @@ def write_source_raw_session(
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
     blob_hash = deterministic_blob_hash(payload)
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
@@ -484,6 +569,8 @@ def write_source_raw_session_blob_ref(
     origin_value = _enum_value(origin)
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
         source_path,
@@ -969,15 +1056,18 @@ __all__ = [
     "ArchiveRawSessionEnvelope",
     "ArchiveSourceArtifact",
     "ArchiveSourceBlobRef",
+    "ContentExcisedError",
     "deterministic_blob_hash",
     "deterministic_history_sidecar_id",
     "deterministic_raw_session_id",
+    "is_blob_hash_excised",
     "list_hook_events",
     "list_raw_artifacts",
     "read_history_sidecar",
     "read_hook_event",
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
+    "record_excised_blob_hash",
     "write_history_sidecar",
     "write_source_raw_session",
     "write_source_raw_session_blob_ref",

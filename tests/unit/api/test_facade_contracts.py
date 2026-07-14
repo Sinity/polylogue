@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import Iterable
@@ -244,6 +245,8 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "archive_debt",
         "list_assertion_claim_payloads",
         "get_context_delivery",
+        "correlate_hermes_context_deliveries",
+        "reconcile_hermes_session_lifecycle",
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "judge_assertion_candidates",
@@ -1064,6 +1067,204 @@ async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: 
         assert receipt.context_image_sha256 == record.metadata["context_image_sha256"]
         assert receipt.evidence_refs == ("codex-session:source::m1",)
         assert wrong_recipient is None
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.11 x fs1.7: the facade method reaches the real spool + delivery ledger."""
+
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("hermes-session:hermes-conv-1@profile-abc",), read_views=(), max_tokens=2000),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:hermes-conv-1:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="hermes-turn-start")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        written = write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-conv-1",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="ctx-inject-facade-1",
+        provider="hermes",
+        event_type=CONTEXT_INJECTED,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"snapshot_ref": written.snapshot_ref},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 1
+
+    try:
+        correlations = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+
+        assert len(correlations) == 1
+        assert correlations[0].available is True
+        assert correlations[0].receipt is not None
+        assert correlations[0].receipt.context_image == image
+        assert correlations[0].rendered_bytes_sha256 == written.context_image_sha256
+        assert correlations[0].token_budget == "2000"
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.7: the facade method reaches the real spool + ingested snapshot.
+
+    Reproduces the review finding directly: ``reconcile_lifecycle_events``
+    was unit-tested but unreachable from any production surface. This drains
+    real events through the durable ``sources.hooks`` spool and seeds a real
+    ingested Hermes session snapshot (index.db ``sessions``/``messages``,
+    same direct-insert pattern ``_seed_import_explain_archive`` uses above),
+    then asserts the facade method surfaces both known gap kinds: an
+    unpaired ``tool_start`` and an event referencing a message id absent
+    from the snapshot.
+    """
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_START
+
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, message_count) VALUES (?, ?, ?, ?, ?)",
+            ("hermes-conv-1@profile-abc", "hermes-session", "Hermes recon test", _HASH, 1),
+        )
+        index_conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("hermes-session:hermes-conv-1@profile-abc", "m1", 0, "assistant", "message", _HASH),
+        )
+        index_conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="lifecycle-facade-1",
+        provider="hermes",
+        event_type=TOOL_START,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "message_id": "m1"},
+        root=spool_root,
+    )
+    enqueue_hook_event(
+        event_id="lifecycle-facade-2",
+        provider="hermes",
+        event_type=DURABLE_FINALIZE,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:05Z",
+        payload={"message_id": "message-not-in-snapshot"},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 2
+
+    try:
+        report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+
+        assert report is not None
+        assert report.total_events == 2
+        assert report.finalized is True
+        # tool_start never observed its tool_finish counterpart.
+        assert report.unpaired_event_ids == ("hook:lifecycle-facade-1",)
+        # the finalize event references a message id the snapshot never ingested.
+        assert report.events_referencing_unknown_messages == ("hook:lifecycle-facade-2",)
+        assert not report.complete
+        assert any("paired counterpart" in caveat for caveat in report.caveats)
+        assert any("absent from the retained snapshot" in caveat for caveat in report.caveats)
+
+        # No events drained yet for a different session: a well-formed empty
+        # report, not None -- "not available" and "zero events" are distinct.
+        empty_report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-unrelated")
+        assert empty_report is not None
+        assert empty_report.total_events == 0
+        assert empty_report.complete
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review fix: 'archive not initialized' and 'archive present but corrupt' both
+    return an empty tuple (unchanged, backward-compatible contract) but must not be
+    silently indistinguishable -- only the corruption case logs a warning."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            # Not-yet-initialized case: no user.db at all for a *different* fresh root.
+            never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
+            try:
+                absent = await never_initialized.correlate_hermes_context_deliveries("hermes-conv-1")
+                assert absent == ()
+            finally:
+                await never_initialized.close()
+        assert "hermes_context_deliveries read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the correlation's first read touches source.db unconditionally, before
+        # it ever reaches user.db, so this is the tier whose corruption reproduces
+        # the finding).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+        assert corrupted == ()
+        assert "hermes_context_deliveries read failed" in caplog.text
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Same review fix as the context-delivery correlation, for the lifecycle reconciliation seam."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            never_initialized = Polylogue(
+                archive_root=tmp_path / "never-initialized-2", db_path=tmp_path / "unused2.db"
+            )
+            try:
+                absent = await never_initialized.reconcile_hermes_session_lifecycle("hermes-conv-1")
+                assert absent is None
+            finally:
+                await never_initialized.close()
+        assert "hermes_session_lifecycle reconciliation read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the reconciliation's first read touches source.db unconditionally).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+        assert corrupted is None
+        assert "hermes_session_lifecycle reconciliation read failed" in caplog.text
     finally:
         await archive.close()
 

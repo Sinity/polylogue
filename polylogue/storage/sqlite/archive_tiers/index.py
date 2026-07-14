@@ -24,7 +24,7 @@ from polylogue.insights.run_projection import (
     RunHarness,
     RunStatus,
 )
-from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
+from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -394,24 +394,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_ai
-AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
-    INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_ad
-AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.rowid;
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_au
-AFTER UPDATE ON blocks BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.rowid;
-    INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
-    WHERE new.search_text != '';
-END;
+-- FTS triggers for messages_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 -- ohbx: trigram-tokenized (not unicode61) so `detail LIKE '%pattern%'` gets
 -- SQLite's built-in trigram LIKE-acceleration for arbitrary substrings, not
@@ -665,23 +649,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS threads_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS threads_fts_ai
-AFTER INSERT ON threads BEGIN
-    INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
-END;
-
-CREATE TRIGGER IF NOT EXISTS threads_fts_ad
-AFTER DELETE ON threads BEGIN
-    DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS threads_fts_au
-AFTER UPDATE ON threads BEGIN
-    DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-    INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
-END;
+-- FTS triggers for threads_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 CREATE TABLE IF NOT EXISTS thread_sessions (
     thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
@@ -945,11 +914,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
     tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
-AFTER INSERT ON session_work_events BEGIN
-    INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
-END;
+-- FTS triggers for session_work_events_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 CREATE TABLE IF NOT EXISTS session_phases (
     phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE,
@@ -972,18 +938,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
 
 CREATE INDEX IF NOT EXISTS idx_session_phases_session
 ON session_phases(session_id, position);
-
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
-AFTER DELETE ON session_work_events BEGIN
-    DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
-AFTER UPDATE ON session_work_events BEGIN
-    DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-    INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
-END;
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
     session_id                       TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -1495,5 +1449,16 @@ ON session_context_snapshots(boundary);
 CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_run
 ON session_context_snapshots(run_ref);
 """
+
+# polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
+# storage/fts/sql.py as the single canonical source (also used by the
+# repair-path lifecycle in fts_lifecycle.py), but a fresh-database bootstrap
+# still needs them appended to the script it executescript()s -- without
+# this, a freshly created index.db has the messages_fts/threads_fts/
+# session_work_events_fts virtual tables but no triggers populating them,
+# so every insert silently produces an empty search index. Regression:
+# devtools render demo-corpus-datasheet started failing with "Search index
+# is incomplete" right after #2893 landed.
+INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
 
 __all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]

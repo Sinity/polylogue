@@ -24,7 +24,7 @@ from polylogue.surfaces.payloads import (
     SurfacePayloadModel,
     build_search_envelope,
     model_json_document,
-    normalize_role,
+    role_label,
 )
 from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload as MCPReaderActionAvailabilityPayload,
@@ -1055,7 +1055,7 @@ __all__ = [
     "model_json_document",
     "neighbor_candidates_payload",
     "logical_session_payload",
-    "normalize_role",
+    "role_label",
     "session_tree_payload",
     "session_topology_payload",
 ]
