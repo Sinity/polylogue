@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
 import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.core.enums import Origin
 from polylogue.errors import PolylogueError
@@ -16,7 +17,27 @@ from polylogue.storage.query_models import SessionRecordQuery
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.protocols import SessionQueryRuntimeStore
+
+    class NeighborStore(Protocol):
+        """Minimal store protocol for neighbor candidate discovery.
+
+        Extracted from SessionQueryRuntimeStore to narrow the interface
+        to only the 4 methods actually used by discover_neighbor_candidates.
+        """
+
+        async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> str | None: ...
+
+        async def get(self, session_id: str) -> Session | None: ...
+
+        async def list_summaries_by_query(self, query: SessionRecordQuery) -> builtins.list[SessionSummary]: ...
+
+        async def search_summary_hits(
+            self,
+            query: str,
+            limit: int = 20,
+            origins: builtins.list[str] | None = None,
+            since: str | None = None,
+        ) -> builtins.list[SessionSearchHit]: ...
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
@@ -265,7 +286,7 @@ def _query_hits_reason(hit: SessionSearchHit, query: str) -> NeighborReason:
 
 
 async def _load_target(
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     session_id: str | None,
 ) -> Session | None:
     if session_id is None:
@@ -280,7 +301,7 @@ async def _load_target(
 
 async def _add_same_title_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
     origin: str | None,
@@ -313,7 +334,7 @@ async def _add_same_title_candidates(
 
 async def _add_nearby_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
     origin: str | None,
@@ -354,10 +375,10 @@ async def _add_nearby_candidates(
 
 async def _add_query_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     query: str | None,
-    origins: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str | None,
     pool_limit: int,
 ) -> None:
@@ -372,10 +393,10 @@ async def _add_query_candidates(
 
 async def _add_shared_attachment_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    origins: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
@@ -398,10 +419,10 @@ async def _add_shared_attachment_candidates(
 
 async def _add_source_content_search_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    origins: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
@@ -426,7 +447,7 @@ async def _add_source_content_search_candidates(
 
 async def _add_content_similarity_reasons(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session | None,
     query: str | None,
@@ -490,9 +511,9 @@ def _rank_candidates(
 
 
 async def discover_neighbor_candidates(
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     request: NeighborDiscoveryRequest,
-) -> list[SessionNeighborCandidate]:
+) -> builtins.list[SessionNeighborCandidate]:
     """Return ranked, explainable neighboring-session candidates."""
     if request.limit <= 0:
         return []
