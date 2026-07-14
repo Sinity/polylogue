@@ -48,7 +48,7 @@ def _capture_connections(monkeypatch: pytest.MonkeyPatch, module_path: str) -> l
     real_connect = sqlite3.connect
 
     def _tracking_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = real_connect(*args, **kwargs)
+        conn: sqlite3.Connection = real_connect(*args, **kwargs)
         captured.append(conn)
         return conn
 
