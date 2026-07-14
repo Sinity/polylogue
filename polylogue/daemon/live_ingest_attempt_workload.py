@@ -7,6 +7,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_float as _row_float
+from polylogue.core.payload_coercion import row_int as _row_int
+
 
 @dataclass(frozen=True, slots=True)
 class LiveIngestStageEventInfo:
@@ -43,7 +48,7 @@ def latest_stage_events(
             attempt_id,
             LiveIngestStageEventInfo(
                 archive_write_bytes_delta=_row_int(row[1]),
-                total_time_s=_row_float(row[2]),
+                total_time_s=_row_float(row[2]) or 0.0,
                 stage_timings_s=_stage_timings(row[3]),
             ),
         )
@@ -101,37 +106,3 @@ def _attempt_elapsed_s(*, started_at: str, ended_at: str) -> float:
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=UTC)
     return max(0.0, round((ended.astimezone(UTC) - started.astimezone(UTC)).total_seconds(), 3))
-
-
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _row_float(value: object) -> float:
-    if isinstance(value, bool):
-        return 0.0
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return 0.0
-    return 0.0
