@@ -12,7 +12,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing_extensions import TypedDict
+from typing_extensions import Self, TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
@@ -119,6 +119,34 @@ class SurfacePayloadModel(BaseModel):
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return serialize_surface_payload(self, exclude_none=exclude_none)
+
+    @classmethod
+    def _from_row_generic(cls, row: object, **field_overrides: object) -> Self:
+        """Generic from_row implementation: copy matching fields from row, allow overrides.
+
+        This implements the pattern used across 70+ simple field assignments in payloads:
+        - For each model field, try to get the value from row if it exists
+        - Allow explicit overrides for fields that need transformations or renames
+        - Ignore row fields that don't exist on the model
+
+        Args:
+            row: A row object (dataclass, namedtuple, or similar) with field attributes
+            **field_overrides: Explicit field assignments to override defaults
+
+        Returns:
+            Instance of cls with fields populated from row + overrides
+
+        Example:
+            return cls._from_row_generic(row, kind=AssertionKind.from_string(row.kind))
+        """
+        # Collect all fields from row that match model fields
+        payload_fields = {}
+        for field_name in cls.model_fields:
+            if hasattr(row, field_name):
+                payload_fields[field_name] = getattr(row, field_name)
+        # Apply overrides
+        payload_fields.update(field_overrides)
+        return cls(**payload_fields)
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -463,7 +491,8 @@ class ToolFamilyComparisonPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-def normalize_role(role: object) -> str:
+def role_label(role: object) -> str:
+    """Convert a role enum or string to a normalized label string."""
     if not role:
         return "unknown"
     if isinstance(role, Enum):
@@ -710,7 +739,7 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=str(message.id),
-            role=normalize_role(message.role),
+            role=role_label(message.role),
             text=message.text or "",
             target_ref=target_ref,
             anchor=reader_anchor("message", message.id),
@@ -770,7 +799,7 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=message_id,
-            role=normalize_role(getattr(message, "role", "")),
+            role=role_label(getattr(message, "role", "")),
             text=text,
             target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
             anchor=reader_anchor("message", message_id),
@@ -1322,19 +1351,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveMessageQueryRow) -> MessageQueryRowPayload:
-        return cls(
-            message_id=row.message_id,
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            role=row.role,
-            message_type=row.message_type,
-            material_origin=row.material_origin,
-            occurred_at_ms=row.occurred_at_ms,
-            position=row.position,
-            word_count=row.word_count,
-            text=row.text,
-        )
+        return cls._from_row_generic(row)
 
 
 class ActionQueryRowPayload(SurfacePayloadModel):
@@ -1360,24 +1377,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
-        return cls(
-            session_id=row.session_id,
-            message_id=row.message_id,
-            origin=row.origin,
-            title=row.title,
-            tool_use_block_id=row.tool_use_block_id,
-            tool_result_block_id=row.tool_result_block_id,
-            tool_name=row.tool_name,
-            semantic_type=row.semantic_type,
-            tool_command=row.tool_command,
-            tool_path=row.tool_path,
-            occurred_at_ms=row.occurred_at_ms,
-            output_text=row.output_text,
-            is_error=row.is_error,
-            exit_code=row.exit_code,
-            followup_class=row.followup_class,
-            followup_message_ref=row.followup_message_ref,
-        )
+        return cls._from_row_generic(row)
 
 
 def _delegation_instruction_text(payload: str | None) -> str | None:
@@ -1503,20 +1503,7 @@ class BlockQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveBlockQueryRow) -> BlockQueryRowPayload:
-        return cls(
-            block_id=row.block_id,
-            message_id=row.message_id,
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            block_type=row.block_type,
-            position=row.position,
-            text=row.text,
-            tool_name=row.tool_name,
-            semantic_type=row.semantic_type,
-            tool_command=row.tool_command,
-            tool_path=row.tool_path,
-        )
+        return cls._from_row_generic(row)
 
 
 class FileQueryRowPayload(SurfacePayloadModel):
@@ -1536,18 +1523,7 @@ class FileQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveFileQueryRow) -> FileQueryRowPayload:
-        return cls(
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            path=row.path,
-            action_count=row.action_count,
-            first_message_id=row.first_message_id,
-            first_tool_use_block_id=row.first_tool_use_block_id,
-            last_tool_use_block_id=row.last_tool_use_block_id,
-            first_seen_ms=row.first_seen_ms,
-            last_seen_ms=row.last_seen_ms,
-        )
+        return cls._from_row_generic(row)
 
 
 class AssertionQueryRowPayload(SurfacePayloadModel):
@@ -1588,23 +1564,11 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveAssertionQueryRow) -> AssertionQueryRowPayload:
-        return cls(
-            assertion_id=row.assertion_id,
-            target_ref=row.target_ref,
-            scope_ref=row.scope_ref,
+        return cls._from_row_generic(
+            row,
             kind=AssertionKind.from_string(row.kind),
-            key=row.key,
-            body_text=row.body_text,
-            value=row.value,
-            author_ref=row.author_ref,
-            author_kind=row.author_kind,
             status=AssertionStatus.from_string(row.status),
             visibility=AssertionVisibility.from_string(row.visibility),
-            evidence_refs=row.evidence_refs,
-            staleness=row.staleness,
-            context_policy=row.context_policy,
-            created_at_ms=row.created_at_ms,
-            updated_at_ms=row.updated_at_ms,
         )
 
 
@@ -2360,35 +2324,12 @@ class DelegationAttemptPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationAttemptPayload:
-        return cls(
-            parent_session_id=row.parent_session_id,
-            child_session_id=row.child_session_id,
-            mapping_state=row.mapping_state,
-            link_confidence=row.link_confidence,
-            link_method=row.link_method,
-            inheritance=row.inheritance,
-            branch_point_message_id=row.branch_point_message_id,
-            instruction_message_id=row.instruction_message_id,
-            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+        return cls._from_row_generic(
+            row,
             instruction_payload=_bounded_delegation_text(row.instruction_payload),
-            dispatch_turn_model=row.dispatch_turn_model,
-            requested_model=row.requested_model,
-            artifact_block_id=row.artifact_block_id,
             artifact_text=_bounded_delegation_text(row.artifact_text),
             result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
-            result_exit_code=row.result_exit_code,
-            result_status=row.result_status,
-            parent_origin=row.parent_origin,
-            parent_session_dominant_model=row.parent_session_dominant_model,
-            parent_session_dominant_model_family=row.parent_session_dominant_model_family,
-            parent_terminal_state=row.parent_terminal_state,
-            child_session_dominant_model=row.child_session_dominant_model,
-            child_session_dominant_model_family=row.child_session_dominant_model_family,
-            child_cost_usd=row.child_cost_usd,
             child_cost_is_estimated=None if row.child_cost_is_estimated is None else bool(row.child_cost_is_estimated),
-            child_tokens=row.child_tokens,
-            child_wall_ms=row.child_wall_ms,
-            child_terminal_state=row.child_terminal_state,
         )
 
 
@@ -2724,12 +2665,7 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:
-        return cls(
-            unit=cast(QueryUnitKind, row.unit),
-            group_by=row.group_by,
-            group_key=row.group_key,
-            count=row.count,
-        )
+        return cls._from_row_generic(row, unit=cast(QueryUnitKind, row.unit))
 
 
 class QueryUnitEnvelope(SurfacePayloadModel):
@@ -3663,7 +3599,7 @@ __all__ = [
     "build_query_unit_envelope",
     "decode_search_cursor",
     "model_json_document",
-    "normalize_role",
+    "role_label",
     "reader_anchor",
     "reader_session_actions",
     "reader_message_actions",

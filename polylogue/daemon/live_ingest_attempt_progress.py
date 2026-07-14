@@ -32,6 +32,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Literal
 
+from polylogue.core.stats import percentile
+
 # Public typed vocabulary -----------------------------------------------------
 
 ProgressClassification = Literal["healthy", "slow", "stuck"]
@@ -161,30 +163,7 @@ def compute_slow_threshold_s(
     if len(samples) < min_samples:
         return None
     samples.sort()
-    return _percentile(samples, quantile)
-
-
-def _percentile(sorted_values: list[float], q: float) -> float:
-    """Linear-interpolation percentile over a pre-sorted list.
-
-    Matches ``polylogue.daemon.cursor_lag_baseline._percentile`` so that
-    operator-facing percentiles stay comparable across daemon
-    subsystems.
-    """
-
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    if q <= 0:
-        return float(sorted_values[0])
-    if q >= 1:
-        return float(sorted_values[-1])
-    position = q * (len(sorted_values) - 1)
-    lo = int(position)
-    hi = min(lo + 1, len(sorted_values) - 1)
-    frac = position - lo
-    return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
+    return percentile(samples, quantile)
 
 
 __all__ = [

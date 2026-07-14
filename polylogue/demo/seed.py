@@ -25,7 +25,7 @@ from polylogue.scenarios import (
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.storage.embeddings.materialization import archive_embeddable_message_where
+from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
@@ -890,10 +890,11 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
         if not loaded:
             raise RuntimeError("demo embedding seeding requires sqlite-vec") from error
         index_conn.row_factory = sqlite3.Row
+        prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
         rows = index_conn.execute(
             f"""
             SELECT m.message_id, m.session_id, s.origin, m.content_hash,
-                   GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                   {prose_expr} AS text
             FROM messages AS m
             JOIN sessions AS s
               ON s.session_id = m.session_id

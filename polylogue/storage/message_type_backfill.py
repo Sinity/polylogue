@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from functools import lru_cache
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
@@ -51,17 +52,32 @@ class BackfillResult:
 # has no ``text`` column; message text lives in ``blocks`` (one row per
 # content block). The classifier operates on the message's prose, which we
 # reconstruct by concatenating the text of its blocks in position order.
-_MESSAGE_TEXT_BY_ID_SQL = """
-    SELECT m.message_id AS message_id,
-           GROUP_CONCAT(b.text, '
-') AS text
-    FROM messages m
-    JOIN blocks b
-      ON b.message_id = m.message_id
-     AND b.text IS NOT NULL
-    WHERE m.message_type = 'message'
-    GROUP BY m.message_id
-"""
+# Uses the canonical message_prose_sql builder with single-newline separator
+# and text-type filter to exclude thinking/tool blocks from classification.
+_NEWLINE_SEP = "'\n'"  # SQL literal for single newline separator
+
+
+@lru_cache(maxsize=1)
+def _message_text_by_id_sql() -> str:
+    """Lazily build the per-message text reconstruction query.
+
+    ``message_prose_sql`` is imported here, not at module scope: this
+    module is reachable from ``polylogue.insights.archive`` (via
+    ``storage.repair``), and ``polylogue.storage.embeddings.materialization``
+    -- via its package ``__init__.py``, which eagerly imports
+    ``storage.embeddings.reconcile`` -- transitively re-imports
+    ``insights.archive`` while it is still initializing. A module-scope
+    import here is a circular import; deferring it to first call is not.
+    """
+    from polylogue.storage.embeddings.materialization import message_prose_sql
+
+    return f"""
+        SELECT m.message_id AS message_id,
+               {message_prose_sql("m", separator=_NEWLINE_SEP, block_types=("text",))} AS text
+        FROM messages m
+        WHERE m.message_type = 'message'
+        GROUP BY m.message_id
+    """
 
 
 def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
@@ -85,7 +101,7 @@ def count_unclassified_message_type_sync(conn: sqlite3.Connection) -> int:
     from polylogue.archive.message.artifacts import classify_text_message_type
 
     candidates = 0
-    for _message_id, text in conn.execute(_MESSAGE_TEXT_BY_ID_SQL):
+    for _message_id, text in conn.execute(_message_text_by_id_sql()):
         if text and classify_text_message_type(text) is not None:
             candidates += 1
     return candidates
@@ -123,7 +139,7 @@ def _backfill_pass(conn: sqlite3.Connection) -> int:
 
     context_ids: list[str] = []
     protocol_ids: list[str] = []
-    for message_id, text in conn.execute(_MESSAGE_TEXT_BY_ID_SQL):
+    for message_id, text in conn.execute(_message_text_by_id_sql()):
         if not text:
             continue
         mt = classify_text_message_type(text)

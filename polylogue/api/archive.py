@@ -45,6 +45,7 @@ from polylogue.insights.feedback import LearningCorrection, parse_correction_kin
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -98,7 +99,7 @@ if TYPE_CHECKING:
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
-    from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
+    from polylogue.protocols import ProgressCallback
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
@@ -1673,7 +1674,10 @@ class _ArchiveInsightExportOperations:
 
 
 class _ArchiveNeighborRuntime:
-    """Repository-shaped read adapter for archive neighbor discovery."""
+    """Minimal neighbor discovery store adapter for archive neighbor discovery.
+
+    Implements: NeighborStore protocol (resolve_id, get, list_summaries_by_query, search_summary_hits)
+    """
 
     def __init__(self, archive: Any) -> None:
         self._archive = archive
@@ -1692,178 +1696,36 @@ class _ArchiveNeighborRuntime:
         except KeyError:
             return None
 
-    async def get_eager(self, session_id: str) -> Session | None:
-        return await self.get(session_id)
-
-    async def get_summary(self, session_id: str) -> SessionSummary | None:
-        try:
-            resolved = self._archive.resolve_session_id(session_id)
-            return _archive_summary_to_domain(self._archive.read_summary(resolved))
-        except KeyError:
-            return None
-
-    async def list_summaries_by_query(self, query: object) -> builtins.list[SessionSummary]:
-        return [
-            _archive_summary_to_domain(summary)
-            for summary in self._archive.list_summaries(**self._query_kwargs(query, default_limit=50))
-        ]
-
-    async def list_by_query(self, query: object) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for summary in await self.list_summaries_by_query(query):
-            session = await self.get(str(summary.id))
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def list(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for summary in await self.list_summaries(
-            limit=limit,
-            offset=offset,
-            origin=origin,
-            origins=origins,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            referenced_path=referenced_path,
-            cwd_prefix=cwd_prefix,
-            action_terms=action_terms,
-            excluded_action_terms=excluded_action_terms,
-            tool_terms=tool_terms,
-            excluded_tool_terms=excluded_tool_terms,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            max_words=max_words,
-            message_type=message_type,
-        ):
-            session = await self.get(str(summary.id))
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def list_summaries(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[SessionSummary]:
-        del source
-        filter_origin, filter_origins = self._origin_filters(origin=origin, origins=origins)
+    async def list_summaries_by_query(self, query: SessionRecordQuery) -> builtins.list[SessionSummary]:
+        origin, origins = self._origin_filters(
+            origin=query.origin,
+            origins=builtins.list(query.origins) if query.origins else [],
+        )
         return [
             _archive_summary_to_domain(summary)
             for summary in self._archive.list_summaries(
-                limit=limit or 50,
-                offset=offset,
-                origin=filter_origin,
-                origins=filter_origins,
-                referenced_paths=tuple(referenced_path or ()),
-                cwd_prefix=cwd_prefix,
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                message_type=_archive_message_type(message_type),
-                title=title_contains,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since_ms=_archive_query_date_ms("since", since),
-                until_ms=_archive_query_date_ms("until", until),
+                limit=query.limit or 50,
+                offset=query.offset or 0,
+                origin=origin,
+                origins=origins,
+                referenced_paths=tuple(query.referenced_path or ()),
+                cwd_prefix=query.cwd_prefix,
+                action_terms=tuple(query.action_terms or ()),
+                excluded_action_terms=tuple(query.excluded_action_terms or ()),
+                tool_terms=tuple(query.tool_terms or ()),
+                excluded_tool_terms=tuple(query.excluded_tool_terms or ()),
+                has_tool_use=query.has_tool_use or False,
+                has_thinking=query.has_thinking or False,
+                message_type=_archive_message_type(query.message_type),
+                title=query.title_contains,
+                min_messages=query.min_messages,
+                max_messages=query.max_messages,
+                min_words=query.min_words,
+                max_words=query.max_words,
+                since_ms=_archive_query_date_ms("since", query.since),
+                until_ms=_archive_query_date_ms("until", query.until),
             )
         ]
-
-    async def count(
-        self,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> int:
-        filter_origin, filter_origins = self._origin_filters(origin=origin, origins=origins)
-        return cast(
-            int,
-            self._archive.count_sessions(
-                origin=filter_origin,
-                origins=filter_origins,
-                referenced_paths=tuple(referenced_path or ()),
-                cwd_prefix=cwd_prefix,
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                message_type=_archive_message_type(message_type),
-                title=title_contains,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since_ms=_archive_query_date_ms("since", since),
-                until_ms=_archive_query_date_ms("until", until),
-            ),
-        )
 
     async def search_summary_hits(
         self,
@@ -1871,17 +1733,17 @@ class _ArchiveNeighborRuntime:
         limit: int = 20,
         origins: builtins.list[str] | None = None,
         since: str | None = None,
-    ) -> builtins.list[Any]:
+    ) -> builtins.list[SessionSearchHit]:
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
 
-        _origin, filter_origins = self._origin_filters(origin=None, origins=origins)
+        _origin, filter_origins = self._origin_filters(origin=None, origins=origins if origins else [])
         hits = self._archive.search_summaries(
             query,
             limit=limit,
             origins=filter_origins,
             since_ms=_archive_query_date_ms("since", since),
         )
-        results: builtins.list[Any] = []
+        results: builtins.list[SessionSearchHit] = []
         for hit in hits:
             try:
                 summary = _archive_summary_to_domain(self._archive.read_summary(hit.session_id))
@@ -1900,98 +1762,14 @@ class _ArchiveNeighborRuntime:
             )
         return results
 
-    async def search(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for hit in await self.search_summary_hits(query, limit=limit, origins=origins):
-            session = await self.get(hit.session_id)
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def search_summaries(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[SessionSummary]:
-        return [hit.summary for hit in await self.search_summary_hits(query, limit=limit, origins=origins)]
-
-    def iter_messages(
-        self,
-        session_id: str,
-        *,
-        message_roles: MessageRoleFilter = (),
-        material_origin: tuple[MaterialOrigin, ...] = (),
-        limit: int | None = None,
-    ) -> AsyncIterator[Message]:
-        async def _iter() -> AsyncIterator[Message]:
-            session = await self.get(session_id)
-            if session is None:
-                return
-            count = 0
-            for message in session.messages:
-                if message_roles and message.role not in message_roles:
-                    continue
-                if material_origin and message.material_origin not in material_origin:
-                    continue
-                if limit is not None and count >= limit:
-                    break
-                count += 1
-                yield message
-
-        return _iter()
-
-    async def search_similar(
-        self,
-        text: str,
-        limit: int = 10,
-        vector_provider: object | None = None,
-    ) -> builtins.list[Session]:
-        del text, limit, vector_provider
-        return []
-
-    def _query_kwargs(self, query: object, *, default_limit: int) -> dict[str, object]:
-        origin, origins = self._origin_filters(
-            origin=getattr(query, "origin", None),
-            origins=builtins.list(getattr(query, "origins", ()) or ()),
-        )
-        return {
-            "limit": getattr(query, "limit", None) or default_limit,
-            "offset": int(getattr(query, "offset", 0) or 0),
-            "origin": origin,
-            "origins": origins,
-            "referenced_paths": tuple(getattr(query, "referenced_path", ()) or ()),
-            "cwd_prefix": getattr(query, "cwd_prefix", None),
-            "action_terms": tuple(getattr(query, "action_terms", ()) or ()),
-            "excluded_action_terms": tuple(getattr(query, "excluded_action_terms", ()) or ()),
-            "tool_terms": tuple(getattr(query, "tool_terms", ()) or ()),
-            "excluded_tool_terms": tuple(getattr(query, "excluded_tool_terms", ()) or ()),
-            "has_tool_use": bool(getattr(query, "has_tool_use", False)),
-            "has_thinking": bool(getattr(query, "has_thinking", False)),
-            "has_paste": bool(getattr(query, "has_paste", False)),
-            "message_type": _archive_message_type(getattr(query, "message_type", None)),
-            "title": getattr(query, "title_contains", None),
-            "min_messages": getattr(query, "min_messages", None),
-            "max_messages": getattr(query, "max_messages", None),
-            "min_words": getattr(query, "min_words", None),
-            "max_words": getattr(query, "max_words", None),
-            "since_ms": _archive_query_date_ms("since", getattr(query, "since", None)),
-            "until_ms": _archive_query_date_ms("until", getattr(query, "until", None)),
-        }
-
     def _origin_filters(
         self,
         *,
         origin: str | None,
-        origins: builtins.list[str] | None,
+        origins: builtins.list[str],
     ) -> tuple[str | None, tuple[str, ...]]:
         validated_origin = Origin(origin).value if origin is not None else None
-        validated_origins = tuple(Origin(value).value for value in origins or [])
+        validated_origins = tuple(Origin(value).value for value in origins)
         return validated_origin, validated_origins
 
 
@@ -4935,7 +4713,7 @@ class PolylogueArchiveMixin:
 
         with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
             return await discover_neighbor_candidates(
-                cast("SessionQueryRuntimeStore", _ArchiveNeighborRuntime(archive)),
+                _ArchiveNeighborRuntime(archive),
                 NeighborDiscoveryRequest(
                     session_id=session_id,
                     query=query,

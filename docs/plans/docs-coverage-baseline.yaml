@@ -1,0 +1,194 @@
+# Docs-coverage baseline (polylogue-3tl.9)
+#
+# Pre-existing public surfaces (CLI commands, MCP tools, config keys, stable
+# daemon routes) with no doc-tree mention as of the introduction of
+# `devtools verify docs-coverage`. This is TRACKED DEBT, not an allowlist to
+# extend: new surfaces must be documented, not added here. Remove an entry
+# once the surface is documented anywhere in README.md or docs/**/*.md -- the
+# lint reports stale baseline entries so this stays honest.
+#
+# Schema: gaps.<surface> is a list of {name, reason} entries. Surfaces:
+# cli (command display name), mcp (tool name), config (flat config key),
+# route (daemon HTTP route pattern).
+#
+# Follow-up: polylogue-ccma (full claim-by-claim docs sweep) and future docs
+# passes should retire entries here rather than leaving the baseline static.
+
+gaps:
+  cli:
+    - name: 'agents conflicts'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents current'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents handoff'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents overlap'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents self'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents status'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'agents work-item'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'analyze insights debt'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'analyze insights timeline'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'analyze insights tool-usage'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'analyze pace'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'analyze turns'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'annotations import'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'annotations join'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'config query-completions'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops diagnostics space'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops embed resolve-failure'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops insights export'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops insights status'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance assertion-export'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance attachment-acquisition-debt'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance backup-plan'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance blob-gc'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance blob-reference-prune-orphans'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance blob-reference-recovery-plan'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance blob-reference-replace-from-source'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance browser-canonical-authority-conflicts'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); missed in the initial baseline sweep, not a new surface"
+    - name: 'ops maintenance browser-capture-origin-mismatches'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance duplicate-raw-identity'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); missed in the initial baseline sweep, not a new surface"
+    - name: 'ops maintenance embedding-orphan-reconcile'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance gc-history'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance legacy-browser-capture-missing-native-id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance missing-raw-blob-cursors'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance quarantined-accepted-raws'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance rebuild-index'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'ops maintenance status'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+  config:
+    - name: 'browser_capture_host'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'browser_capture_port'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'daemon_host'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'daemon_port'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'embedding_dimension'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'embedding_model'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'health_blob_integrity_sample_size'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'health_convergence_debt'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'health_cursor_lag'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'log_level'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_apprise_urls'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_from'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_host'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_max_per_hour'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_password'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_port'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_subject_prefix'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_to'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_use_starttls'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_use_tls'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_email_username'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_webhook_secret'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'notification_webhook_url'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'source_roots'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'subscription_plans'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: 'watch_debounce_s'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+  route:
+    - name: '/api/agents/coordination'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/import/explain'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/insights/sessions/:id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/maintenance/operations'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/maintenance/status/:id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/overview'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/provider-usage'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/query-completions'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/read-view-profiles'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/attachments'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/cost'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/evidence-summary'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/raw'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/similar'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/topology'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/sessions/:id/topology/parent-chain'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/thread-continue-templates'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/annotations'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/annotations/:id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/recall-packs'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/recall-packs/:id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/workspaces'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/api/user/workspaces/:id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/s/:session_id'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"
+    - name: '/w/:mode'
+      reason: "pre-existing gap at gate introduction (polylogue-3tl.9); needs a doc entry, not baseline growth"

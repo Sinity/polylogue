@@ -868,11 +868,9 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    candidates: list[Path] = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+    from polylogue.paths import sibling_index_db
+
+    index_db = sibling_index_db(db_path, require_exists=True)
     if index_db is None:
         return None
     try:

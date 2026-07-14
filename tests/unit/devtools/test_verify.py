@@ -65,9 +65,11 @@ def test_quick_verify_omits_pytest() -> None:
         "verify manifests",
         "verify ci-workflows",
         "verify doc-commands",
+        "verify docs-coverage",
         "verify test-infra-currency",
         "verify test-clock-hygiene",
         "verify pytest-timeout-overrides",
+        "verify degrade-loudly",
     ]
 
 
@@ -257,6 +259,25 @@ def test_lab_verify_delegates_to_lab_smoke() -> None:
         "lab smoke",
         [sys.executable, "-m", "devtools", "lab", "smoke", "run", "archive-smoke", "--tier", "0"],
     )
+
+
+def test_lab_verify_runs_every_registered_lab_policy_command() -> None:
+    """Every `lab policy <name>` CommandSpec must appear as a `--lab` verify
+    step, or it is registered/documented but never actually runs as part of
+    any standing gate -- reachable only by a human remembering the exact
+    standalone command (the demo-tour-freshness gap CodeRabbit flagged:
+    registered in the catalog + docs but absent from build_verify_steps'
+    `if lab:` block, so `devtools verify --lab`/`--all` never exercised it)."""
+    from devtools.command_catalog import COMMAND_SPECS
+
+    registered_lab_policies = {spec.name for spec in COMMAND_SPECS if spec.name.startswith("lab policy ")}
+    assert registered_lab_policies, "expected at least one registered `lab policy *` command"
+
+    steps = build_verify_steps(quick=False, lab=True, skip_slow=False)
+    step_labels = {label for label, _command in steps}
+
+    missing = registered_lab_policies - step_labels
+    assert not missing, f"lab policy commands registered but never run by `devtools verify --lab`: {sorted(missing)}"
 
 
 def test_testmon_preflight_requires_seed_when_database_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -16,7 +16,7 @@ The dev shell exposes three executables:
 
 | Executable | Purpose |
 |------------|---------|
-| `polylogue` | Query CLI — search, list, stats, export |
+| `polylogue` | Query-first CLI — `find`/`read`/`analyze`/`mark`/`select`/`delete`/`continue` |
 | `polylogued` | Ingest and convergence daemon |
 | `polylogue-mcp` | MCP server bridge for AI agents |
 
@@ -78,7 +78,7 @@ polylogued status
 ```bash
 polylogue "css refactor"
 polylogue --since yesterday read --all
-polylogue --latest open
+polylogue --latest read
 ```
 
 See [Getting Started](getting-started.md) for the full quickstart and

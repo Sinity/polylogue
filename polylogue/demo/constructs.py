@@ -6,7 +6,10 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.storage.embeddings.materialization import archive_embeddable_message_where
+from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
+
+# Canonical message prose SQL for embedding candidate selection (used in verification constructs).
+_MESSAGE_PROSE_EMBEDDING = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,7 +361,7 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql=f"""
             SELECT COUNT(*)
             FROM (
-                SELECT m.message_id, GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                SELECT m.message_id, {_MESSAGE_PROSE_EMBEDDING} AS text
                 FROM messages AS m
                 JOIN blocks AS b
                   ON b.session_id = m.session_id
