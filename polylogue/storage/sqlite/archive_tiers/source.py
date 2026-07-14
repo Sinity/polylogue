@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 9
+SOURCE_SCHEMA_VERSION = 10
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -206,6 +206,30 @@ CREATE TABLE IF NOT EXISTS history_sidecars (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_history_sidecars_path_hash
 ON history_sidecars(origin, source_path, content_hash);
+
+-- Durable removed-content ledger (polylogue-27m). A row here is the
+-- authoritative "this content is forgotten on purpose" marker for
+-- standalone/off-mode excision: the acquire-time write chokepoint
+-- (``write_source_raw_session``) refuses to re-store a raw payload whose
+-- ``blob_hash`` matches ``removed_hash``, so an ordinary re-ingest of
+-- unmodified source files cannot resurrect excised content even after an
+-- index.db rebuild. ``span_start``/``span_end`` are populated only for a
+-- sub-payload excision (e.g. a detected secret candidate span); both are
+-- NULL for a whole-raw-session excision. This table is never queried for
+-- its own sake by a reader -- it exists purely as a write-time gate plus
+-- forensic trail, so no secret span coordinates ever carry the removed
+-- literal, only byte offsets into the (now-deleted) payload.
+CREATE TABLE IF NOT EXISTS excised_content (
+    removed_hash    BLOB NOT NULL CHECK(length(removed_hash) = 32),
+    hash_kind       TEXT NOT NULL DEFAULT 'blob_hash' CHECK(hash_kind IN ('blob_hash')),
+    reason          TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    prior_revision  TEXT,
+    span_start      INTEGER CHECK(span_start IS NULL OR span_start >= 0),
+    span_end        INTEGER CHECK(span_end IS NULL OR span_end > span_start),
+    excised_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY(removed_hash, hash_kind)
+) STRICT;
 
 """
 

@@ -538,6 +538,7 @@ Commands:
   diagnostics  Run archive and session diagnostics.
   doctor       Run archive health checks and repairs.
   embed        Enable, preflight, and backfill the embedding pipeline.
+  excise       Excise a session: durable cross-tier removal (polylogue-27m).
   insights     Check and export derived insight materialization.
   maintenance  Preview and run maintenance backfill operations.
   reset        Reset local archive state.

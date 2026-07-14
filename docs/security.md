@@ -136,6 +136,113 @@ no local process other than the paired extension can read receiver
 state or post captures. `--browser-capture-allow-no-auth` is the
 explicit, logged opt-out (polylogue-gnie).
 
+## Excision and Secret Hygiene
+
+"The archive can forget on purpose" (polylogue-27m). Two related but
+distinct mechanisms live under `polylogue/security/`:
+
+### Candidate-only secret detection
+
+`polylogue/security/secret_scan.py` finds credential-shaped spans
+(AWS/GitHub/Slack/OpenAI/Anthropic key shapes, PEM private-key headers, JWTs,
+and an entropy-filtered generic `key=value` rule) in captured content and
+records them as `AssertionKind.SECRET_CANDIDATE` assertions. This is a
+**triage aid, not a leak-prevention boundary** — it is fully consistent with
+"Raw artifacts are not content-redacted" above: the scanner does not gate or
+redact reads, it surfaces candidates for an operator to review and, if
+warranted, excise.
+
+- The scanner **never returns, stores, or logs the matched literal**. Callers
+  only ever see a SHA-256 fingerprint (one-way, for idempotent re-detection),
+  a byte length, a pattern id, and span offsets into the source text.
+- Written assertions use `author_kind="detector"`, which the shared
+  `upsert_assertion` write chokepoint unconditionally coerces to
+  `status=CANDIDATE` with `{"inject": false, "promotion_required": true}` —
+  a detector can never self-promote a finding to authoritative/injectable
+  context (the same invariant `PATHOLOGY`/`TRANSFORM_CANDIDATE` findings use).
+- Coverage: `tests/unit/security/test_secret_scan.py` (also the
+  `devtools test -k secret_candidate` anchor cited by
+  `docs/plans/security-privacy-coverage.yaml`).
+
+### Local excision (standalone/off mode — authoritative)
+
+`polylogue ops excise --session <id> --reason "..."` (`--dry-run` to
+preview, `--yes` to apply) removes a session across every local tier:
+
+1. `embeddings.db` — the session's message vectors (if embedded).
+2. `index.db` — `sessions` cascades to `messages`/`blocks`/`session_links`
+   via `ON DELETE CASCADE`; the FTS triggers clean the contentless search
+   index automatically.
+3. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
+   `raw_session_memberships`/`raw_membership_census`), then a durable
+   removed-hash marker is recorded in the new `excised_content` table
+   (migration `010_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 10).
+4. `user.db` — content-bearing assertions targeting the excised
+   session/messages/blocks are removed, and one durable
+   `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,
+   removed hashes, per-tier counts).
+
+**Ordinary re-ingest cannot resurrect excised content.** The removed-hash
+marker is consulted at the single acquire-time write choke point,
+`write_source_raw_session` (`polylogue/storage/sqlite/archive_tiers/
+source_write.py`) — shared by the CLI import path and the daemon watch path
+via `parse_sources_archive`. A re-acquire attempt whose payload hashes to a
+recorded `removed_hash` raises `ContentExcisedError`; the batch orchestration
+layer (`pipeline/services/archive_ingest.py:write_pair`) catches this
+specifically and skips just that one file (counted in
+`ParseResult.excised_skips`) rather than aborting the whole ingest run.
+
+Blob *bytes* are never force-unlinked out from under a lease by excision
+itself: removing the `blob_refs`/`raw_sessions` rows un-references the blob,
+and the existing reference-counted blob GC (`polylogue/storage/blob_gc.py`)
+reclaims the physical bytes on its next run using its own lease discipline.
+
+Coverage: `tests/unit/security/test_excision.py`, including a real
+`parse_sources_archive` round trip (synthetic-corpus fixture, not a hand-
+rolled JSONL literal) proving the batch-skip behavior end to end.
+
+### Mirror/primary lifecycle (Sinex-backed modes — mechanism only)
+
+When Polylogue is Sinex-backed (mirror or primary mode — see the
+Sinex-backed evidence mode work tracked separately), local excision cannot be
+authoritative on its own: another replica may still hold the content.
+`polylogue/security/lifecycle.py` implements the **local half** of that
+lifecycle:
+
+- `polylogue ops excise --mode mirror|primary --yes` writes a durable
+  lifecycle-request/outbox row as an `AssertionKind.EXCISION_REQUEST`
+  assertion in `user.db` — **never in `ops.db`**, so deleting or resetting
+  the disposable ops tier cannot erase a pending request.
+- The request state machine (`pending -> acknowledged -> confirmed`, or
+  `pending -> rejected`, both terminal) is driven by
+  `drive_lifecycle_request` against any `ExcisionLifecycleContract`
+  implementation. `SinexContractFake` is a fault-injecting **test-only**
+  implementation — it can drop N requests (simulated network loss) or force
+  a rejection.
+- **Primary mode invalidates the local replica only after a `confirmed`
+  state** (`apply_primary_invalidation_if_confirmed`); a rejected, still-
+  pending, or unknown request always returns `success=False` with an
+  explicit reason and never touches the archive. A network fault leaves the
+  request `pending` (retryable), never silently reinterpreted as a
+  rejection or a confirmation.
+- A "process restart" is modeled in tests by constructing a **new**
+  `SinexContractFake` instance and re-driving the same durable request id —
+  the outcome is identical because the durable row, not the client's
+  in-memory state, is authoritative.
+
+**Explicit non-goal:** this bead (polylogue-27m) does not claim a real Sinex
+purge, a clean Sinex rebuild, disconnected-replica closure, or a backup-
+restore proof — `polylogue ops excise --mode mirror|primary` only records
+the durable local request today; nothing in this repository yet drives it
+against a real Sinex confirmation. Binding this mechanism to Sinex's real
+`privacy_invalidation_scope`, purge authority, and non-resurrection proof
+across backups/replicas is tracked separately (polylogue-303r.6) and a
+contract-fake-only test run must never be read as satisfying that scope.
+
+Coverage: `tests/unit/security/test_excision_lifecycle.py` (network-loss
+retry, restart-recovers-from-durable-row, `ops.db`-deletion survival,
+rejection-cannot-report-success, confirm-gated invalidation).
+
 ## Non-Threats
 
 Out of scope:
@@ -162,3 +269,9 @@ Out of scope:
   security matrix.
 - `tests/unit/daemon/test_daemon_cli_remote_bind.py` — remote-bind
   refusal coverage.
+- `polylogue/security/secret_scan.py`, `polylogue/security/excision.py`,
+  `polylogue/security/lifecycle.py` — excision and secret-hygiene mechanics
+  (polylogue-27m).
+- `tests/unit/security/test_secret_scan.py`,
+  `tests/unit/security/test_excision.py`,
+  `tests/unit/security/test_excision_lifecycle.py`.
