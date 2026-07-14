@@ -1564,6 +1564,7 @@ def build_verify_steps(
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
+        steps.append(("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")))
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
         steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
     return steps
