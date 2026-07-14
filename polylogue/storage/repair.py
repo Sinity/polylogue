@@ -47,7 +47,10 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
-from polylogue.storage.insights.session.runtime import SESSION_INSIGHT_MATERIALIZATION_TYPES
+from polylogue.storage.insights.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    session_profile_stale_predicate,
+)
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
     count_messages_by_type_sync,
@@ -5214,6 +5217,8 @@ def _targeted_session_insight_rebuild_ids(
         if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
+    profile_stale_predicate = session_profile_stale_predicate("s", "p")
+    latency_stale_predicate = session_profile_stale_predicate("s", "lp")
     rows = conn.execute(
         f"""
         SELECT DISTINCT session_id
@@ -5228,7 +5233,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM sessions AS s
             JOIN session_profiles AS p ON p.session_id = s.session_id
             WHERE p.materializer_version != ?
-               OR ABS(COALESCE(p.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {profile_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5241,7 +5246,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM session_latency_profiles AS lp
             JOIN sessions AS s ON s.session_id = lp.session_id
             WHERE lp.materializer_version != ?
-               OR ABS(COALESCE(lp.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {latency_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
