@@ -143,23 +143,34 @@ def reconcile_lifecycle_events(
     2. Events whose payload references a ``message_id`` the snapshot does not
        retain (the runtime event arrived, but the corresponding conversational
        revision has not been ingested yet, or was rewound).
+
+    Pairing is order-independent by design: a real drained stream can have a
+    finish event whose producer-supplied ``timestamp`` is earlier than its
+    start event's (clock skew across processes, or a delayed-but-earlier-
+    stamped delivery) -- membership in "did this correlation id ever see a
+    finish-type event anywhere in the stream" is what matters, not which
+    event happened to sort first. Duplicate start markers for the same
+    correlation id (at-least-once hook redelivery) collapse onto the same
+    pairing slot rather than each demanding its own counterpart.
     """
     ordered = sorted(events, key=lambda event: event.observed_at_ms)
     counts = Counter(event.event_type for event in ordered)
 
-    open_by_start_type: dict[str, dict[str, str]] = {start: {} for start, _finish in _PAIRED_EVENT_TYPES}
     unpaired: list[str] = []
-    for event in ordered:
-        for start_type, finish_type in _PAIRED_EVENT_TYPES:
-            correlation = event.correlation_id
-            if correlation is None:
-                continue
-            if event.event_type == start_type:
-                open_by_start_type[start_type][correlation] = event.event_id
-            elif event.event_type == finish_type and correlation in open_by_start_type[start_type]:
-                del open_by_start_type[start_type][correlation]
-    for pending in open_by_start_type.values():
-        unpaired.extend(pending.values())
+    for start_type, finish_type in _PAIRED_EVENT_TYPES:
+        finish_correlations = {
+            event.correlation_id for event in ordered if event.event_type == finish_type and event.correlation_id
+        }
+        start_event_id_by_correlation: dict[str, str] = {}
+        for event in ordered:
+            if event.event_type == start_type and event.correlation_id:
+                # First occurrence wins: a duplicate (redelivered) start marker
+                # for the same correlation id shares one pairing slot, so its
+                # event id doesn't overwrite the original evidence pointer.
+                start_event_id_by_correlation.setdefault(event.correlation_id, event.event_id)
+        for correlation, event_id in start_event_id_by_correlation.items():
+            if correlation not in finish_correlations:
+                unpaired.append(event_id)
 
     unknown_message_refs: list[str] = []
     if snapshot_message_ids:

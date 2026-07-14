@@ -100,6 +100,7 @@ if TYPE_CHECKING:
     from polylogue.operations import ArchiveStats
     from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
+    from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
@@ -1104,8 +1105,16 @@ def _archive_correlate_hermes_context_deliveries(
     Read-only audit seam over two durable tiers (fs1.7 spool + fs1.11
     delivery ledger); see ``context.hermes_delivery_correlation`` for the
     join semantics. Returns an empty tuple, never raises, when either tier is
-    unavailable (archive not yet initialized) -- consistent with the
-    explicit-unavailable-state AC this correlation exists to satisfy.
+    unavailable -- consistent with the explicit-unavailable-state AC this
+    correlation exists to satisfy. "Archive not yet initialized" (no
+    source.db/user.db file at all) and "archive present but the read failed"
+    (corrupt file, missing table, decode failure) both still return the same
+    empty-tuple shape to the caller -- this facade method's contract predates
+    this fix and changing its return type is a separate, larger decision --
+    but the two cases are distinguished in the logs: only the second case
+    logs a warning, so an operator/on-call scan for "hermes_context_deliveries
+    read failed" is never confused with the ordinary "nothing ingested yet"
+    path (review finding: these were previously collapsed into total silence).
     """
 
     from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
@@ -1132,7 +1141,71 @@ def _archive_correlate_hermes_context_deliveries(
         finally:
             source_conn.close()
     except (sqlite3.Error, ValueError):
+        logger.warning(
+            "hermes_context_deliveries read failed (archive present but unreadable): "
+            "hermes_session_native_id=%s source_db=%s user_db=%s",
+            hermes_session_native_id,
+            source_db,
+            user_db,
+            exc_info=True,
+        )
         return ()
+
+
+def _archive_reconcile_hermes_session_lifecycle(
+    config: Config,
+    *,
+    hermes_session_native_id: str,
+) -> HermesLifecycleReconciliation | None:
+    """Reconcile a Hermes session's drained lifecycle-event stream (fs1.7 AC).
+
+    Read-only audit seam over two durable tiers (source.db lifecycle spool +
+    index.db ingested snapshot); see
+    ``context.hermes_lifecycle_reconciliation`` for the join semantics.
+    Returns ``None``, never raises, when either tier is unavailable -- the
+    caller distinguishes "not available yet" from "reconciled, zero events
+    observed" (``total_events == 0``). "Archive not yet initialized" (no
+    source.db/index.db file at all) and "archive present but the read
+    failed" (corrupt file, missing table) both still return ``None`` to the
+    caller -- this facade method's contract predates this fix and changing
+    its return type is a separate, larger decision -- but the two cases are
+    distinguished in the logs: only the second case logs a warning (mirrors
+    ``_archive_correlate_hermes_context_deliveries``'s same review fix).
+    """
+
+    from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return None
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn.row_factory = sqlite3.Row
+            try:
+                return reconcile_hermes_session_lifecycle(
+                    source_conn,
+                    index_conn,
+                    hermes_session_native_id=hermes_session_native_id,
+                )
+            finally:
+                index_conn.close()
+        finally:
+            source_conn.close()
+    except sqlite3.Error:
+        logger.warning(
+            "hermes_session_lifecycle reconciliation read failed (archive present but unreadable): "
+            "hermes_session_native_id=%s source_db=%s index_db=%s",
+            hermes_session_native_id,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
 
 
 def _archive_list_assertion_candidate_reviews(
@@ -2421,6 +2494,26 @@ class PolylogueArchiveMixin:
         """
 
         return _archive_correlate_hermes_context_deliveries(
+            self.config,
+            hermes_session_native_id=hermes_session_native_id,
+        )
+
+    async def reconcile_hermes_session_lifecycle(
+        self, hermes_session_native_id: str
+    ) -> HermesLifecycleReconciliation | None:
+        """Reconcile a Hermes session's drained lifecycle-event stream (fs1.7 AC).
+
+        Read-only audit seam over the durable spool (source.db
+        ``raw_hook_events``) and the ingested session snapshot (index.db
+        ``messages``): renders unpaired start/finish events, per-turn-end
+        without durable finalization, and events referencing a message id
+        the snapshot does not retain -- all *visible* in one report rather
+        than left as an assumption. Returns ``None`` only when the archive
+        itself is not yet initialized; a session with zero drained events
+        still returns a well-formed report (``total_events == 0``).
+        """
+
+        return _archive_reconcile_hermes_session_lifecycle(
             self.config,
             hermes_session_native_id=hermes_session_native_id,
         )
