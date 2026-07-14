@@ -1254,7 +1254,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/enums.py
-    loc: 521
+    loc: 548
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
@@ -1319,7 +1319,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 295
+    loc: 308
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1747,6 +1747,46 @@ files:
   - path: polylogue/insights/improvement_loops.py
     loc: 215
     target: polylogue/insights/improvement_loops.py
+    owner: stable
+  - path: polylogue/insights/judgment/__init__.py
+    loc: 36
+    target: polylogue/insights/judgment/__init__.py
+    owner: stable
+  - path: polylogue/insights/judgment/blinding.py
+    loc: 128
+    target: polylogue/insights/judgment/blinding.py
+    owner: stable
+  - path: polylogue/insights/judgment/calibration.py
+    loc: 140
+    target: polylogue/insights/judgment/calibration.py
+    owner: stable
+  - path: polylogue/insights/judgment/cascades.py
+    loc: 113
+    target: polylogue/insights/judgment/cascades.py
+    owner: stable
+  - path: polylogue/insights/judgment/comparative.py
+    loc: 163
+    target: polylogue/insights/judgment/comparative.py
+    owner: stable
+  - path: polylogue/insights/judgment/controls.py
+    loc: 135
+    target: polylogue/insights/judgment/controls.py
+    owner: stable
+  - path: polylogue/insights/judgment/elicitation.py
+    loc: 205
+    target: polylogue/insights/judgment/elicitation.py
+    owner: stable
+  - path: polylogue/insights/judgment/experiments.py
+    loc: 140
+    target: polylogue/insights/judgment/experiments.py
+    owner: stable
+  - path: polylogue/insights/judgment/rankers.py
+    loc: 335
+    target: polylogue/insights/judgment/rankers.py
+    owner: stable
+  - path: polylogue/insights/judgment/types.py
+    loc: 199
+    target: polylogue/insights/judgment/types.py
     owner: stable
   - path: polylogue/insights/measurement/__init__.py
     loc: 30
@@ -3739,7 +3779,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2229
+    loc: 2318
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py

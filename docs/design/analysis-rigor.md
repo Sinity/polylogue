@@ -1,7 +1,13 @@
 # Analysis rigor for agent claims
 
 Status: ADOPTED 2026-07-13 (operator). Program tracker: polylogue-rxdo.9;
-mechanisms materialized as polylogue-rxdo.9.1 – rxdo.9.10.
+mechanisms materialized as polylogue-rxdo.9.1 – rxdo.9.10, plus the
+comparative-judgment extensions polylogue-rxdo.9.11 – rxdo.9.16 (Part II,
+mechanisms K-O). The judgment-mechanism core (K/L/M/F/G/N/O logic, plus a J
+projection against a structural stc-definition protocol) landed under
+`polylogue/insights/judgment/`; the rxdo.9.16 designed-UX-surface layer
+(inbox, micro-moments, deliberate sessions) is tracked separately as
+polylogue-7ome pending p5g and rxdo.11 L10.
 
 Operator prompt: "we want to design some more useful abstractions/mechanisms
 here. maybe stats adjacent... experimental methods, blinding and such."

@@ -451,9 +451,36 @@ class AssertionKind(PolylogueStrEnum):
     ``value_json`` carries the request state machine (pending/acknowledged/
     confirmed/rejected), retry count, and target. Lives in ``user.db`` so the
     request survives an ``ops.db`` reset -- see ``polylogue/security/lifecycle.py``."""
+    COMPARATIVE_JUDGMENT = "comparative_judgment"
 
     @classmethod
     def from_string(cls, value: str | AssertionKind) -> AssertionKind:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
+class ComparativeVerdict(PolylogueStrEnum):
+    """Closed verdict vocabulary for comparative judgments (rxdo.9.11, mechanism K).
+
+    ``PREFER_LEFT``/``PREFER_RIGHT`` apply only to pairwise (two-item)
+    comparisons. ``TIE`` and ``INCOMPARABLE`` are semantically distinct: a tie
+    means both items were judged equal on the dimension; incomparable means
+    the dimension does not meaningfully apply to this pair. ``ABSTAIN`` and
+    ``INSUFFICIENT_EVIDENCE`` must never be treated as weak preferences by
+    downstream aggregation (:mod:`polylogue.insights.judgment.rankers`) --
+    they contribute zero directed preference edges.
+    """
+
+    PREFER_LEFT = "prefer_left"
+    PREFER_RIGHT = "prefer_right"
+    TIE = "tie"
+    INCOMPARABLE = "incomparable"
+    ABSTAIN = "abstain"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+    @classmethod
+    def from_string(cls, value: str | ComparativeVerdict) -> ComparativeVerdict:
         if isinstance(value, cls):
             return value
         return cls(str(value).strip().lower())

@@ -47,6 +47,15 @@ ObjectRefKind: TypeAlias = Literal[
     "cohort",
     "analysis",
     "annotation-batch",
+    # rxdo.9.11-.16 comparative-judgment mechanisms (K-O). ``ranker`` and
+    # ``judgment-set`` follow the same content-address discipline as
+    # ``query``/``metric``: two rankers citing different hashes are visibly
+    # incomparable. ``elicitation-session`` and ``experiment-analysis`` are
+    # durable receipt/analysis-artifact identities, not new lifecycle stores.
+    "judgment-set",
+    "ranker",
+    "elicitation-session",
+    "experiment-analysis",
     # polylogue-lph4: delegation attempt identity, reusing the polylogue-y964
     # `delegations` view vocabulary. Two id shapes share this one kind:
     #   - action-observed (resolved/unresolved/ambiguous): object_id is the
@@ -103,6 +112,10 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "analysis": "analysis",
     "annotation-batch": "annotation-batch",
     "delegation": "delegation",
+    "judgment-set": "judgment-set",
+    "ranker": "ranker",
+    "elicitation-session": "elicitation-session",
+    "experiment-analysis": "experiment-analysis",
 }
 
 
