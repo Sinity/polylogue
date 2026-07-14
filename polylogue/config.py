@@ -259,6 +259,16 @@ class PolylogueConfig:
         return v if isinstance(v, str) and v else None
 
     @property
+    def sinex_mode(self) -> str:
+        """Sinex-backed evidence-mode authority profile: ``off``/``mirror``/``primary``.
+
+        See ``polylogue.sinex.models.PublicationMode`` and
+        ``docs/sinex-interop.md``. Default ``off``: standalone SQLite is
+        canonical and permanent, per operator directive.
+        """
+        return str(self._data.get("sinex_mode", "off")).strip().lower() or "off"
+
+    @property
     def log_level(self) -> str:
         return str(self._data.get("log_level", "INFO"))
 
@@ -663,6 +673,19 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Voyage provider API key presence; always redacted in inspection output.",
     ),
     ConfigInventoryEntry(
+        "sinex_mode",
+        toml_path="sinex.mode",
+        env_var="POLYLOGUE_SINEX_MODE",
+        owner_class="network-security",
+        reload_behavior="daemon-loop",
+        description=(
+            "Sinex-backed evidence-mode authority profile: off (default; SQLite is "
+            "canonical, zero Sinex transport work), mirror (durable local commit plus "
+            "a best-effort publication obligation), or primary (local projection "
+            "advance waits for a confirming Sinex receipt). See docs/sinex-interop.md."
+        ),
+    ),
+    ConfigInventoryEntry(
         "observability_enabled",
         toml_path="observability.enabled",
         env_var="POLYLOGUE_OBSERVABILITY_ENABLED",
@@ -1010,6 +1033,10 @@ def _default_config_values() -> dict[str, object]:
         # first-time user without an explicit configuration.
         "embedding_max_cost_usd": 5.0,
         "voyage_api_key": None,
+        # Standalone SQLite is the permanent, canonical default (operator
+        # directive, docs/sinex-interop.md) -- off performs zero Sinex
+        # transport work and creates no publication obligations.
+        "sinex_mode": "off",
         "log_level": "INFO",
         "force_plain": False,
         "no_color": False,

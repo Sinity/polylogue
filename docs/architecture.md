@@ -371,6 +371,19 @@ attachments, exports):
   `storage/sqlite/archive_tiers/`.
 - FTS5 with `unicode61` tokenizer (no porter stemmer in this SQLite build).
 
+## Sinex Publication
+
+`polylogue/sinex/` (polylogue-303r.2) owns the durable publication-obligation
+ledger and transport contract for Sinex-backed evidence mode: `mode`
+(`off`/`mirror`/`primary`, `polylogue.toml` `[sinex] mode`, config key
+`sinex_mode`, default `off`) gates whether a normalized-session material
+revision (`polylogue/material_protocol/v1/`) gets a durable `source.db`
+obligation row and an attempted publish through an injected
+`SinexTransport`. Off mode performs zero transport work and writes zero
+obligation rows — standalone SQLite is the permanent default. See
+[docs/sinex-interop.md](sinex-interop.md) for the full design, current scope,
+and the cross-repo blocker on live Sinex transport.
+
 ## Placement Rules
 
 ### Substrate (archive meaning)

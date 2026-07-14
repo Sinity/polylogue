@@ -56,11 +56,16 @@ def _show_config(env: AppEnv, output_format: str, show_layers: bool) -> None:
         # ``console.print`` interprets ``[brackets]`` as Rich markup, which
         # would mangle JSON output and TOML section headers. Print without
         # markup parsing to preserve exact bytes. Secret-bearing keys are
-        # redacted by ``effective_config_payload``.
+        # redacted by ``effective_config_payload``. ``soft_wrap=True`` is
+        # load-bearing: without it Rich wraps long lines at the console
+        # width by inserting a literal newline mid-line, which corrupts any
+        # JSON string value (e.g. an inventory ``description``) long enough
+        # to exceed that width into invalid JSON.
         env.ui.console.print(
             json.dumps(payload, indent=2, default=str),
             markup=False,
             highlight=False,
+            soft_wrap=True,
         )
         return
 
