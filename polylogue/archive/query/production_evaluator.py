@@ -134,7 +134,20 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
 
         started_at_ms = int(time.time() * 1000)
         try:
-            summaries = run_coroutine_sync(session_filter.list_summaries())
+            # NOT list_summaries(): that caps at the default page limit (50,
+            # see SessionFilter.list_summaries docstring) and this evaluation
+            # is unconditionally labeled exactness="exact" below. A watched
+            # query matching more than 50 sessions would silently drop
+            # members past the first page from both the returned evaluation
+            # and the query_runs telemetry row while still claiming an exact
+            # enumeration -- and standing-query drift detection computes its
+            # membership merkle root directly from member_refs, so it would
+            # never notice new members added past the cap. list_all_summaries
+            # resolves every matching summary (default_limit=1_000_000,
+            # functionally unbounded for any real archive), mirroring the
+            # same exact-enumeration requirement count_archive/delete/mark
+            # already rely on (#1873).
+            summaries = run_coroutine_sync(session_filter.list_all_summaries())
         except Exception:
             logger.warning("production-evaluator: evaluation failed for query:%s", query.query_hash, exc_info=True)
             raise
