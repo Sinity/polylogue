@@ -169,7 +169,7 @@ def _patched_preview(operation: BackfillOperation) -> Iterator[None]:
     """Replace preview_backfill at every surface entry point."""
     with (
         patch(
-            "polylogue.cli.commands.maintenance.preview_backfill",
+            "polylogue.cli.commands.maintenance._plan.preview_backfill",
             return_value=operation,
         ),
         patch(
@@ -313,8 +313,8 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
 
     with (
         _patched_preview(operation),
-        patch("polylogue.cli.commands.maintenance.archive_root", return_value=archive),
-        patch("polylogue.cli.commands.maintenance.render_root", return_value=render),
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=render),
     ):
         result = runner.invoke(
             maintenance_group,
