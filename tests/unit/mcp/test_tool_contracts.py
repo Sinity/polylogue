@@ -31,6 +31,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport import read_view_profile_payloads
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.types import SessionId
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveEnrichmentProvenance,
@@ -66,7 +67,6 @@ from polylogue.mcp.server_tools import _MCP_READ_TOOL_SPECS
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
-from polylogue.types import SessionId
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,

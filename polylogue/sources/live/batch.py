@@ -28,6 +28,7 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
 from polylogue.core.enums import Provider
+from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_cgroup_memory_current_mb,
@@ -39,7 +40,6 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary

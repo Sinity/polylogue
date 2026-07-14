@@ -24,6 +24,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import (
@@ -36,7 +37,6 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
 from tests.infra.storage_records import (
     _prune_attachment_refs,
     make_attachment,

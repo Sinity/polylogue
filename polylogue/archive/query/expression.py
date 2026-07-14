@@ -161,9 +161,9 @@ from polylogue.archive.query.spec import (
     normalize_retrieval_lane,
 )
 from polylogue.core.enums import Origin
+from polylogue.core.errors import PolylogueError
 from polylogue.core.query_identity import query_ref, query_run_ref, result_set_ref
 from polylogue.core.refs import ObjectRef
-from polylogue.errors import PolylogueError
 
 
 def _count_field_regex() -> str:

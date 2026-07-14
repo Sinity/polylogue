@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import SessionId
 from tests.unit.pipeline.test_ingest_batch import (
     _block_tuple,
     _message_tuple,

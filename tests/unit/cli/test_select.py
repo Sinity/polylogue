@@ -27,7 +27,7 @@ from polylogue.cli.select import (
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _row(index: int = 1) -> SelectSessionRow:

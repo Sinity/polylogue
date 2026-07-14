@@ -66,9 +66,9 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.protocols import ProgressCallback
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from polylogue.pipeline.services.ingest_batch._memory import (

@@ -19,7 +19,7 @@ from polylogue.storage.search.cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.protocols import ProgressCallback
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)

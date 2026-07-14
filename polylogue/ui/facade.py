@@ -12,7 +12,7 @@ from rich import box
 from rich.console import Console
 from rich.theme import Theme
 
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.ui.facade_console import ConsoleLike, PlainConsole
 from polylogue.ui.facade_prompts import (
     _NO_STUB_RESPONSE,

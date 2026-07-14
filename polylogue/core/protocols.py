@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
     from polylogue.core.enums import MaterialOrigin
+    from polylogue.core.types import SessionId
     from polylogue.storage.archive_views import SessionRenderProjection
     from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
-    from polylogue.types import SessionId
 
 
 @runtime_checkable

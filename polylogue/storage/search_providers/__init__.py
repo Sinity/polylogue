@@ -20,7 +20,7 @@ from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 logger = get_logger(__name__)
 _sqlite_vec_missing_warned = False

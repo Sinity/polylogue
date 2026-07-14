@@ -20,7 +20,7 @@ from pathlib import Path
 import aiosqlite
 
 import polylogue.paths as _paths
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
     MessageRecord,

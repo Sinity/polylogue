@@ -81,7 +81,7 @@ class RepositoryArchiveSearchMixin:
         since: str | None = None,
     ) -> builtins.list[SessionSearchHit]:
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
-        from polylogue.errors import DatabaseError
+        from polylogue.core.errors import DatabaseError
         from polylogue.storage.hydrators import session_summary_from_record
 
         attachment_hits = await self.queries.search_attachment_identity_evidence_hits(

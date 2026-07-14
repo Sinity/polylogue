@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from polylogue.api.sync import SyncPolylogue
     from polylogue.archive.message.models import Message
     from polylogue.archive.session.domain_models import Session
-    from polylogue.errors import PolylogueError
+    from polylogue.core.errors import PolylogueError
     from polylogue.storage.search import SearchResult
 
 
@@ -52,7 +52,7 @@ def __getattr__(name: str) -> object:
         "Session": ("polylogue.archive.session.domain_models", "Session"),
         "Message": ("polylogue.archive.message.models", "Message"),
         "Polylogue": ("polylogue.api", "Polylogue"),
-        "PolylogueError": ("polylogue.errors", "PolylogueError"),
+        "PolylogueError": ("polylogue.core.errors", "PolylogueError"),
         "SearchResult": ("polylogue.storage.search", "SearchResult"),
         "SyncPolylogue": ("polylogue.api.sync", "SyncPolylogue"),
     }

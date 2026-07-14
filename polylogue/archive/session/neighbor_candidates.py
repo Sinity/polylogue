@@ -10,13 +10,13 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.storage.query_models import SessionRecordQuery
 
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.protocols import SessionQueryRuntimeStore
+    from polylogue.core.protocols import SessionQueryRuntimeStore
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)

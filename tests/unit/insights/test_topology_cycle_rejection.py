@@ -38,6 +38,7 @@ from polylogue.archive.topology.edge import (
     TopologyEdgeType,
 )
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.queries.session_links import (
     count_quarantined_session_links,
     resolve_session_links_for_session,
@@ -45,7 +46,6 @@ from polylogue.storage.sqlite.queries.session_links import (
     upsert_session_links,
 )
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, SCHEMA_VERSION
-from polylogue.types import SessionId
 from tests.infra.frozen_clock import fixed_now
 
 

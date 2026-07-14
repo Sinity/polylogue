@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.pipeline.payload_types import IngestDiagnostics, ParseBatchObservation
 
 if TYPE_CHECKING:

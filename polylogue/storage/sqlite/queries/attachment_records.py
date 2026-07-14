@@ -7,9 +7,9 @@ from datetime import datetime
 import aiosqlite
 
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.search.models import SessionSearchEvidenceRow
-from polylogue.types import SessionId
 
 
 def _row_value(row: aiosqlite.Row, key: str) -> object | None:

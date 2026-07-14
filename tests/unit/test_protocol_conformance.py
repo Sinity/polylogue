@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.protocols import VectorProvider
+from polylogue.core.protocols import VectorProvider
 from polylogue.ui.facade import ConsoleLike, PlainConsole
 
 # ---------------------------------------------------------------------------

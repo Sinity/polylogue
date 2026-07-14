@@ -27,6 +27,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.protocols import ProgressCallback
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
@@ -40,7 +41,6 @@ from polylogue.maintenance.targets import (
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.protocols import ProgressCallback
 from polylogue.sources.dispatch import detect_provider, is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore

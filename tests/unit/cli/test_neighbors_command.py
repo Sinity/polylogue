@@ -20,7 +20,7 @@ from polylogue.cli.read_view_handlers import ReadViewInvocation, ReadViewNeighbo
 from polylogue.cli.read_views.neighbors import run_read_neighbors
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.core.enums import Origin
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _candidate() -> SessionNeighborCandidate:

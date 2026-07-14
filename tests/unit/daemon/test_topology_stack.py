@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+from polylogue.core.types import SessionId
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.daemon.topology_http import build_parent_chain_envelope
 from polylogue.daemon.web_shell import WEB_SHELL_HTML
@@ -32,7 +33,6 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.types import SessionId
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 

@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sources import source_name_to_origin
@@ -68,7 +69,6 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
 )
-from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,

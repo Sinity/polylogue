@@ -13,7 +13,7 @@ from polylogue.storage.embeddings.materialization import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import _EmbedSessionStore
 
 

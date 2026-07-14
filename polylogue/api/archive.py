@@ -30,12 +30,13 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
+from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
-from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
@@ -71,7 +72,6 @@ from polylogue.surfaces.temporal_evidence import (
     message_row_to_temporal_event,
     summary_to_temporal_event,
 )
-from polylogue.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
+    from polylogue.core.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
@@ -98,7 +99,6 @@ if TYPE_CHECKING:
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
-    from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.insights.session.runtime import SessionInsightCounts

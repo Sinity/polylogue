@@ -23,6 +23,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.projection_spec import ProjectionSpec
 from polylogue.surfaces.temporal_evidence import (
@@ -33,7 +34,6 @@ from polylogue.surfaces.temporal_evidence import (
     message_row_to_temporal_event,
     summary_to_temporal_event,
 )
-from polylogue.types import SessionId
 
 TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
 

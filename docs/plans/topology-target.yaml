@@ -1199,6 +1199,11 @@ files:
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/errors.py
+    loc: 97
+    target: polylogue/core/errors.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/hashing.py
     loc: 65
     target: polylogue/core/hashing.py
@@ -1239,6 +1244,11 @@ files:
     target: polylogue/core/payload_coercion.py
     owner: core-primitive
     reason: core primitive
+  - path: polylogue/core/protocols.py
+    loc: 453
+    target: polylogue/core/protocols.py
+    owner: core-primitive
+    reason: core primitive
   - path: polylogue/core/provider_identity.py
     loc: 177
     target: polylogue/core/provider_identity.py
@@ -1267,6 +1277,11 @@ files:
   - path: polylogue/core/timestamps.py
     loc: 167
     target: polylogue/core/timestamps.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/types.py
+    loc: 20
+    target: polylogue/core/types.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/user_state_targets.py
@@ -1592,11 +1607,6 @@ files:
     loc: 432
     target: polylogue/demo/workspace.py
     owner: stable
-  - path: polylogue/errors.py
-    loc: 97
-    target: polylogue/errors.py
-    owner: kernel
-    reason: kernel root rule
   - path: polylogue/hooks/__init__.py
     loc: 889
     target: polylogue/hooks/__init__.py
@@ -2121,11 +2131,6 @@ files:
     loc: 523
     target: polylogue/product/workflows.py
     owner: stable
-  - path: polylogue/protocols.py
-    loc: 453
-    target: polylogue/protocols.py
-    owner: kernel
-    reason: kernel root rule
   - path: polylogue/readiness/__init__.py
     loc: 1007
     target: polylogue/readiness/__init__.py
@@ -3942,11 +3947,6 @@ files:
     loc: 239
     target: polylogue/telemetry/otel_projection.py
     owner: stable
-  - path: polylogue/types.py
-    loc: 20
-    target: polylogue/types.py
-    owner: kernel
-    reason: kernel root rule
   - path: polylogue/ui/__init__.py
     loc: 228
     target: polylogue/ui/__init__.py

@@ -13,9 +13,9 @@ import httpx
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
-from polylogue.types import ContentHash, MessageId, SessionId
 
 Embedding: TypeAlias = list[float]
 

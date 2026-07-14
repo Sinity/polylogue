@@ -24,7 +24,7 @@ from polylogue.config import load_polylogue_config
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
 

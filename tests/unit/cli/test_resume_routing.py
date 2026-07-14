@@ -6,7 +6,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.resume_routing import route_resume
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _session(origin: Origin, native_id: str = "native-session") -> Session:

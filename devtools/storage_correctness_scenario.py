@@ -14,9 +14,9 @@ from tempfile import TemporaryDirectory
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.errors import DatabaseError
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence_stages import repair_messages_fts_surface
-from polylogue.errors import DatabaseError
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report

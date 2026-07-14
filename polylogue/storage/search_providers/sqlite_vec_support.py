@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)

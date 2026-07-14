@@ -647,7 +647,7 @@ def _run_archive_backfill(
     min_messages: int | None = None,
     output_format: str = "text",
 ) -> BackfillResultPayload:
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
         select_pending_archive_session_window,

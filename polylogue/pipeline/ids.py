@@ -10,9 +10,9 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import ContentHash, MessageId, SessionEventId, SessionId
 from polylogue.sources import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock
-from polylogue.types import ContentHash, MessageId, SessionEventId, SessionId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"

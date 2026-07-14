@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 
 class SessionFilter(SessionFilterBuilderMixin):

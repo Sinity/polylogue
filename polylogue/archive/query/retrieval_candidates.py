@@ -9,7 +9,7 @@ from polylogue.archive.query.support import _canonical_origins
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.protocols import SessionQueryRuntimeStore
+    from polylogue.core.protocols import SessionQueryRuntimeStore
     from polylogue.storage.query_models import SessionRecordQuery
 
 

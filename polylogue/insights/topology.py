@@ -28,7 +28,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 class TopologyEdgeKind(str, Enum):

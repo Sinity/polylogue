@@ -68,6 +68,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.types import SessionId
 from polylogue.insights.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
 )
@@ -251,7 +252,6 @@ from polylogue.storage.sqlite.run_projection_relations import (
     table_exists_sync as _run_projection_table_exists,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-from polylogue.types import SessionId
 
 
 @dataclass(slots=True)

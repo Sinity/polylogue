@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup

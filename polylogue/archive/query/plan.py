@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.runtime_filters import FilterableSessionLike
     from polylogue.config import Config
-    from polylogue.protocols import SessionQueryRuntimeStore, VectorProvider
+    from polylogue.core.protocols import SessionQueryRuntimeStore, VectorProvider
 
 _T = TypeVar("_T")
 _FilterableT = TypeVar("_FilterableT", bound="FilterableSessionLike")
