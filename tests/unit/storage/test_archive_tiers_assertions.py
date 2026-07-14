@@ -11,6 +11,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -48,7 +49,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_pathology_findings_as_assertions,
     upsert_transform_candidate_assertions,
 )
-from polylogue.types import SessionId
 
 
 def _connect(path: Path) -> sqlite3.Connection:

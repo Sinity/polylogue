@@ -21,6 +21,7 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -69,14 +70,17 @@ def _build_preflight_report(
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, sibling_index_db
 
     candidates = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
+    # Try sibling_index_db first
+    sibling_db = sibling_index_db(db_path, require_exists=True)
+    if sibling_db is not None:
+        candidates.append(sibling_db)
+    # Also try archive_root as fallback
     candidates.append(archive_root() / "index.db")
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+
+    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
     if index_db is None:
         return None
     try:
@@ -297,7 +301,7 @@ def resolve_failure_subcommand(
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
     try:
-        with sqlite3.connect(embeddings_db, timeout=30.0) as conn:
+        with closing(sqlite3.connect(embeddings_db, timeout=30.0)) as conn:
             failure = resolve_embedding_failure(
                 conn,
                 failure_id=failure_id,
@@ -646,7 +650,7 @@ def _run_archive_backfill(
     min_messages: int | None = None,
     output_format: str = "text",
 ) -> BackfillResultPayload:
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
         select_pending_archive_session_window,
@@ -821,7 +825,7 @@ def _record_archive_backfill_run(
     ops_db = index_db.with_name("ops.db")
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     terminal_status = "cancelled" if status == "stopped" else "completed"
-    with sqlite3.connect(ops_db, timeout=30.0) as conn:
+    with closing(sqlite3.connect(ops_db, timeout=30.0)) as conn:
         upsert_embedding_catchup_run(
             conn,
             started_at_ms=started_at_ms,

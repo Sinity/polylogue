@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.errors import SchemaVersionMismatchError
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.schema import (

@@ -26,6 +26,7 @@ from polylogue.archive.query.search_hits import (
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.query_output import format_search_envelope
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
@@ -34,7 +35,6 @@ from polylogue.surfaces.payloads import (
     SessionSearchHitPayload,
     build_search_envelope,
 )
-from polylogue.types import SessionId
 
 # Canonical fields every surface MUST expose on the search envelope.
 REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(

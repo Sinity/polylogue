@@ -18,9 +18,9 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.material_protocol.v1 import decode_session_revision, encode_session_revision
 from polylogue.sinex.material_adapter import session_material_from_session
-from polylogue.types import SessionId
 
 
 def _real_session() -> Session:
@@ -64,10 +64,15 @@ def test_adapter_output_round_trips_through_the_real_v1_encoder() -> None:
     assert material.messages[0].text == "hello there"
     assert material.messages[1].blocks[0].block_type.value == "text"
     assert material.messages[1].blocks[1].tool_name == "Bash"
-    # The invalid block type was silently dropped, not raised or mis-mapped.
+    # The invalid block type was dropped, not raised or mis-mapped -- but the
+    # drop itself must be a declared fidelity gap, not silent (polylogue-ihwv).
     assert len(material.messages[1].blocks) == 2
-    assert len(material.fidelity_gaps) == 1
+    assert len(material.fidelity_gaps) == 2
     assert material.fidelity_gaps[0].gap_kind == "omitted_relation"
+    dropped_block_gap = material.fidelity_gaps[1]
+    assert dropped_block_gap.gap_kind == "dropped_block"
+    assert dropped_block_gap.scope == "block"
+    assert dropped_block_gap.record_id == "claude-code-session:s1:message[1]:block[2]"
 
     encoded = encode_session_revision(material, revision_created_at="2026-01-01T00:00:02+00:00")
     assert encoded.manifest.session_id == "claude-code-session:s1"

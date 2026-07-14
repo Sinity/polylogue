@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import Iterable
@@ -41,9 +42,9 @@ from polylogue.annotations.schema import AnnotationField, AnnotationSchema, Anno
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import delegation_edge_object_id
-from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -244,6 +245,8 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "archive_debt",
         "list_assertion_claim_payloads",
         "get_context_delivery",
+        "correlate_hermes_context_deliveries",
+        "reconcile_hermes_session_lifecycle",
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "judge_assertion_candidates",
@@ -1064,6 +1067,204 @@ async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: 
         assert receipt.context_image_sha256 == record.metadata["context_image_sha256"]
         assert receipt.evidence_refs == ("codex-session:source::m1",)
         assert wrong_recipient is None
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.11 x fs1.7: the facade method reaches the real spool + delivery ledger."""
+
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("hermes-session:hermes-conv-1@profile-abc",), read_views=(), max_tokens=2000),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:hermes-conv-1:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="hermes-turn-start")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        written = write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-conv-1",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="ctx-inject-facade-1",
+        provider="hermes",
+        event_type=CONTEXT_INJECTED,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"snapshot_ref": written.snapshot_ref},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 1
+
+    try:
+        correlations = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+
+        assert len(correlations) == 1
+        assert correlations[0].available is True
+        assert correlations[0].receipt is not None
+        assert correlations[0].receipt.context_image == image
+        assert correlations[0].rendered_bytes_sha256 == written.context_image_sha256
+        assert correlations[0].token_budget == "2000"
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.7: the facade method reaches the real spool + ingested snapshot.
+
+    Reproduces the review finding directly: ``reconcile_lifecycle_events``
+    was unit-tested but unreachable from any production surface. This drains
+    real events through the durable ``sources.hooks`` spool and seeds a real
+    ingested Hermes session snapshot (index.db ``sessions``/``messages``,
+    same direct-insert pattern ``_seed_import_explain_archive`` uses above),
+    then asserts the facade method surfaces both known gap kinds: an
+    unpaired ``tool_start`` and an event referencing a message id absent
+    from the snapshot.
+    """
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_START
+
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, message_count) VALUES (?, ?, ?, ?, ?)",
+            ("hermes-conv-1@profile-abc", "hermes-session", "Hermes recon test", _HASH, 1),
+        )
+        index_conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("hermes-session:hermes-conv-1@profile-abc", "m1", 0, "assistant", "message", _HASH),
+        )
+        index_conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="lifecycle-facade-1",
+        provider="hermes",
+        event_type=TOOL_START,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "message_id": "m1"},
+        root=spool_root,
+    )
+    enqueue_hook_event(
+        event_id="lifecycle-facade-2",
+        provider="hermes",
+        event_type=DURABLE_FINALIZE,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:05Z",
+        payload={"message_id": "message-not-in-snapshot"},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 2
+
+    try:
+        report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+
+        assert report is not None
+        assert report.total_events == 2
+        assert report.finalized is True
+        # tool_start never observed its tool_finish counterpart.
+        assert report.unpaired_event_ids == ("hook:lifecycle-facade-1",)
+        # the finalize event references a message id the snapshot never ingested.
+        assert report.events_referencing_unknown_messages == ("hook:lifecycle-facade-2",)
+        assert not report.complete
+        assert any("paired counterpart" in caveat for caveat in report.caveats)
+        assert any("absent from the retained snapshot" in caveat for caveat in report.caveats)
+
+        # No events drained yet for a different session: a well-formed empty
+        # report, not None -- "not available" and "zero events" are distinct.
+        empty_report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-unrelated")
+        assert empty_report is not None
+        assert empty_report.total_events == 0
+        assert empty_report.complete
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review fix: 'archive not initialized' and 'archive present but corrupt' both
+    return an empty tuple (unchanged, backward-compatible contract) but must not be
+    silently indistinguishable -- only the corruption case logs a warning."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            # Not-yet-initialized case: no user.db at all for a *different* fresh root.
+            never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
+            try:
+                absent = await never_initialized.correlate_hermes_context_deliveries("hermes-conv-1")
+                assert absent == ()
+            finally:
+                await never_initialized.close()
+        assert "hermes_context_deliveries read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the correlation's first read touches source.db unconditionally, before
+        # it ever reaches user.db, so this is the tier whose corruption reproduces
+        # the finding).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+        assert corrupted == ()
+        assert "hermes_context_deliveries read failed" in caplog.text
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Same review fix as the context-delivery correlation, for the lifecycle reconciliation seam."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            never_initialized = Polylogue(
+                archive_root=tmp_path / "never-initialized-2", db_path=tmp_path / "unused2.db"
+            )
+            try:
+                absent = await never_initialized.reconcile_hermes_session_lifecycle("hermes-conv-1")
+                assert absent is None
+            finally:
+                await never_initialized.close()
+        assert "hermes_session_lifecycle reconciliation read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the reconciliation's first read touches source.db unconditionally).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+        assert corrupted is None
+        assert "hermes_session_lifecycle reconciliation read failed" in caplog.text
     finally:
         await archive.close()
 
@@ -2321,7 +2522,6 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         ("query", "sha256:deadbeef"),
         ("query-run", "sha256:deadbeef:run-1"),
         ("result-set", "sha256:deadbeef:run-1:result-1"),
-        ("finding", "finding-hash-1"),
         ("cohort", "cohort-1"),
         ("analysis", "analysis-1"),
     ],
@@ -2331,12 +2531,15 @@ async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance
 ) -> None:
     """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
 
-    ``query``/``query-run``/``result-set``/``finding``/``cohort``/``analysis``
+    ``query``/``query-run``/``result-set``/``cohort``/``analysis``
     are registered ObjectRefKind values with no backing table yet
-    (polylogue-rxdo.2/.3/.4/.8). resolve_ref must not raise and
-    must not silently pretend to resolve them — it returns a typed pending
-    payload carrying reason=substrate-pending so a client can distinguish
-    "not implemented yet" from "does not exist".
+    (polylogue-rxdo.2/.3/.8). ``finding`` graduated out of this pending set
+    in polylogue-rxdo.4 -- see
+    ``test_resolve_ref_returns_finding_provenance_payload`` below.
+    resolve_ref must not raise and must not silently pretend to resolve
+    these remaining kinds — it returns a typed pending payload carrying
+    reason=substrate-pending so a client can distinguish "not implemented
+    yet" from "does not exist".
     """
     archive = _archive(tmp_path)
     try:
@@ -2652,6 +2855,87 @@ async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
         assert payload.payload is not None
         assert payload.payload["assertion_id"] == "assertion-ref-resolution"
         assert payload.evidence_refs == ("codex-session:ref-resolution-v1",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_finding_provenance_payload(tmp_path: Path) -> None:
+    """polylogue-rxdo.4: ``finding:`` refs resolve to a queryable provenance projection.
+
+    Evidence refs (the finding's own declared ``query_ref``/``result_set_ref``
+    plus generic ``evidence_refs``) are re-resolved live, so the payload
+    reports an honest current/stale/unknown staleness verdict rather than
+    prose.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
+    from polylogue.storage.sqlite.query_objects import put_query, put_result_set
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            query = put_query(
+                conn,
+                {"field": "origin", "value": "codex-session"},
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+                created_at_ms=1,
+            )
+            result_set = put_result_set(
+                conn,
+                result_set_id="finding-ref-resolution-rs",
+                query_hash=query.query_hash,
+                grain="session",
+                corpus_epoch="index:g1",
+                member_refs=("session:codex-session:ref-resolution-finding",),
+                exactness="exact",
+                persistence_class="finding",
+                created_at_ms=1,
+            )
+            envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="ref-resolution-claim",
+                        target_ref=f"query:{query.query_hash}",
+                        body_text="One session matched.",
+                        finding_kind="measure",
+                        statistic={"op": "count", "value": 1, "unit": "members"},
+                        n=1,
+                        query_ref=f"query:{query.query_hash}",
+                        result_set_ref=f"result-set:{result_set.result_set_id}",
+                        detector_ref="agent:ref-resolution-detector",
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        assertion_id = envelopes[0].assertion_id
+
+        payload = await archive.resolve_ref(f"finding:{assertion_id}")
+
+        assert payload.resolved is True
+        assert payload.kind == "finding"
+        assert payload.payload_kind == "finding-provenance"
+        assert payload.payload is not None
+        assert payload.payload["assertion_id"] == assertion_id
+        assert payload.payload["finding_kind"] == "measure"
+        assert payload.payload["query_ref"] == f"query:{query.query_hash}"
+        assert payload.payload["result_set_ref"] == f"result-set:{result_set.result_set_id}"
+        assert payload.payload["staleness_verdict"] == "current"
+        evidence_states = {item["ref"]: item["resolvable"] for item in payload.payload["evidence"]}
+        assert evidence_states[f"query:{query.query_hash}"] is True
+        assert evidence_states[f"result-set:{result_set.result_set_id}"] is True
+        assert payload.caveats == ()
+
+        missing = await archive.resolve_ref("finding:does-not-exist")
+        assert missing.resolved is False
+        assert missing.kind == "finding"
+        assert missing.payload is None
     finally:
         await archive.close()
 

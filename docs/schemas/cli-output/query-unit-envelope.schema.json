@@ -204,7 +204,11 @@
         "prompt_eval",
         "transform_candidate",
         "pathology",
-        "finding"
+        "finding",
+        "secret_candidate",
+        "excision_record",
+        "excision_request",
+        "comparative_judgment"
       ],
       "title": "AssertionKind",
       "type": "string"

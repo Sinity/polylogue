@@ -53,6 +53,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.core.types import SessionId
 from polylogue.daemon import (
     web_shell_lineage,
     web_shell_realtime,
@@ -67,7 +68,6 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.types import SessionId
 
 
 def _cid(value: str) -> SessionId:

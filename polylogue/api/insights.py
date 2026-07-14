@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 from polylogue.api.archive import _active_archive_root, _provider_for_archive_origin
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.types import SessionId
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
 from polylogue.cost.plans import resolve_plan
@@ -48,7 +49,6 @@ from polylogue.insights.topology import (
     TopologyNode,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.config import Config

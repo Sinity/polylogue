@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
@@ -16,7 +17,6 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import SessionId
 
 
 class SessionWorkEventRecord(BaseModel):

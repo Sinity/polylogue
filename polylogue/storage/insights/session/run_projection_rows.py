@@ -10,6 +10,7 @@ source pydantic model; typed columns are projected from it on write and the full
 from __future__ import annotations
 
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.types import SessionId
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun, RunProjection
 from polylogue.storage.insights.session.profiles import now_iso
 from polylogue.storage.runtime import (
@@ -18,7 +19,6 @@ from polylogue.storage.runtime import (
     SessionRunRecord,
 )
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.types import SessionId
 
 
 def _join_search_text(*parts: str | None) -> str:

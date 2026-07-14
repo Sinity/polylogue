@@ -21,7 +21,7 @@ import json
 
 import pytest
 
-from polylogue.errors import (
+from polylogue.core.errors import (
     DatabaseError,
     EmbeddingRetrievalNotReadyError,
     PolylogueError,

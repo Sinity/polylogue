@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date, split_csv
 from polylogue.core.enums import Origin
+from polylogue.core.errors import PolylogueError
 from polylogue.core.sources import provider_from_origin
-from polylogue.errors import PolylogueError
 from polylogue.insights.registry import InsightType
 
 if TYPE_CHECKING:

@@ -6,7 +6,9 @@ import click
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as root_cli
-from polylogue.cli.commands.maintenance import plan_command, run_command, status_command
+from polylogue.cli.commands.maintenance._plan import plan_command
+from polylogue.cli.commands.maintenance._run import run_command
+from polylogue.cli.commands.maintenance._status import status_command
 
 
 def _registered_maintenance_command() -> click.Command:

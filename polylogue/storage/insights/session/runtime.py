@@ -39,6 +39,46 @@ SESSION_INSIGHT_MATERIALIZATION_TYPES: tuple[str, ...] = (
 )
 
 
+def session_profile_stale_predicate(sessions_alias: str, profile_alias: str) -> str:
+    """SQL boolean fragment: true when ``profile_alias``'s cached sort key is
+    stale relative to ``sessions_alias``.
+
+    Single source of truth for the sort-key staleness comparison, shared by
+    the daemon converger (``daemon/convergence_stages.py``), ops repair
+    (``storage/repair.py``), and the repair-candidate prefilter
+    (``storage/insights/session/status.py``) — see polylogue-a7xr.2.
+
+    ``sessions_alias.sort_key_ms`` is milliseconds; ``profile_alias`` caches it
+    in ``source_sort_key`` seconds, so the common case compares the two within
+    a microsecond epsilon after unit conversion.
+
+    ``sort_key_ms`` can be NULL — a session with no derivable temporal sort
+    key (the "timeless session" case). There is then no numeric sort key to
+    compare, so staleness instead compares the profile's cached
+    ``source_updated_at`` against the session's ``updated_at_ms`` (both
+    reduced to whole seconds). This NULL-branch semantics is deliberately the
+    converger's original choice, not repair's: repair previously and
+    independently reimplemented this branch by COALESCEing the missing sort
+    key to ``0.0`` and comparing it against ``source_sort_key``, which
+    permanently flagged any NULL-``sort_key_ms`` session with a nonzero cached
+    ``source_sort_key`` as stale — causing repair to re-flag rows the
+    converger already considered fresh (repeated churn) or vice versa
+    (missed rebuilds).
+    """
+    return (
+        "(\n"
+        f"    ({sessions_alias}.sort_key_ms IS NOT NULL\n"
+        f"     AND ABS(COALESCE({profile_alias}.source_sort_key, 0.0) - "
+        f"(CAST({sessions_alias}.sort_key_ms AS REAL) / 1000.0)) > 0.000001)\n"
+        "    OR\n"
+        f"    ({sessions_alias}.sort_key_ms IS NULL\n"
+        f"     AND COALESCE(strftime('%s', {profile_alias}.source_updated_at), "
+        f"{profile_alias}.source_updated_at, '') != "
+        f"COALESCE(CAST({sessions_alias}.updated_at_ms / 1000 AS TEXT), ''))\n"
+        ")"
+    )
+
+
 class SessionInsightRefreshChunkPayload(TypedDict):
     session_count: int
     estimated_message_count: int

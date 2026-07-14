@@ -156,10 +156,8 @@ rows:
 
   - domain: storage.fts5
     target_files:
-      - polylogue/storage/search_providers/fts5.py
       - polylogue/storage/fts/
     representative_tests:
-      - tests/unit/storage/test_fts5.py
       - tests/unit/storage/test_archive_search_contracts.py
     gate: required
 
@@ -167,7 +165,8 @@ rows:
     target_files:
       - polylogue/storage/search_providers/hybrid.py
     representative_tests:
-      - tests/unit/storage/test_hybrid_laws.py
+      - tests/unit/core/test_filters_props.py
+      - tests/unit/archive/test_query_search_runtime.py
     gate: required
 
   - domain: storage.blob_store

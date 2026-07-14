@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary

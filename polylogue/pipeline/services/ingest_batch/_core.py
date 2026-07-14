@@ -17,7 +17,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,9 +66,9 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.protocols import ProgressCallback
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from polylogue.pipeline.services.ingest_batch._memory import (
@@ -1201,7 +1201,7 @@ def _process_ingest_batch_sync(
                 repair_message_fts=repair_message_fts,
             )
             if pending_attachment_receipts:
-                with sqlite3.connect(archive_root / "source.db") as source_conn:
+                with closing(sqlite3.connect(archive_root / "source.db")) as source_conn, source_conn:
                     source_conn.execute("BEGIN IMMEDIATE")
                     for publication_id, blob_hash in pending_attachment_receipts:
                         consume_blob_publication_receipt(source_conn, publication_id, blob_hash)

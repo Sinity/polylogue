@@ -27,6 +27,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
 
 if TYPE_CHECKING:
+    from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyFinding
     from polylogue.insights.transforms import DecisionCandidate, SessionDigest, TransformRawRef
 
@@ -1277,6 +1278,92 @@ def upsert_pathology_findings_as_assertions(
     return envelopes
 
 
+def upsert_comparative_judgment_assertion(
+    conn: sqlite3.Connection,
+    judgment: ComparativeJudgment,
+    *,
+    author_kind: str,
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope:
+    """Store one comparative judgment (rxdo.9.11, mechanism K) as an assertion row.
+
+    ``judgment.judgment_id`` (a content hash -- see
+    :func:`polylogue.insights.judgment.comparative.build_comparative_judgment`)
+    is used verbatim as the assertion id, so recording an identical verdict
+    twice is idempotent rather than duplicative.
+
+    ``author_kind`` follows the existing promotion gate
+    (:func:`upsert_assertion`): a non-``"user"`` author (an agent judge) is
+    coerced to a CANDIDATE, non-injected row regardless of the caller's
+    request -- agent judgments stay candidates awaiting operator promotion,
+    per the recursive-safety spine (rxdo.9.15's cascade routes THOSE verdicts
+    to the operator; this function does not decide routing).
+    """
+
+    from polylogue.insights.judgment.comparative import comparative_judgment_to_value
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    value = comparative_judgment_to_value(judgment)
+    evidence_refs = list(dict.fromkeys((*judgment.items, *judgment.evidence_refs)))
+    is_user_authored = author_kind == ASSERTION_DEFAULT_AUTHOR_KIND
+    return upsert_assertion(
+        conn,
+        assertion_id=judgment.judgment_id,
+        scope_ref="insight:comparative-judgment@v1",
+        target_ref=judgment.items[0],
+        key=judgment.dimension,
+        kind=AssertionKind.COMPARATIVE_JUDGMENT,
+        value=value,
+        body_text=judgment.rationale if judgment.rationale_visible else None,
+        author_ref=judgment.judge.actor_ref,
+        author_kind=author_kind,
+        evidence_refs=evidence_refs,
+        status=AssertionStatus.ACTIVE if is_user_authored else AssertionStatus.CANDIDATE,
+        visibility=AssertionVisibility.PRIVATE,
+        context_policy={"inject": False, "promotion_required": not is_user_authored},
+        now_ms=timestamp,
+    )
+
+
+def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudgment]:
+    """Read back every live comparative-judgment assertion row.
+
+    ``list_assertions_by_kind`` only excludes ``DELETED`` rows, but the
+    candidate-judgment lifecycle this kind reuses as-is
+    (:func:`judge_assertion_candidate`) never deletes: a rejected verdict is
+    left at ``status=REJECTED`` (a terminal, non-live row) and an accepted
+    verdict leaves the original candidate at ``status=ACCEPTED`` while
+    writing a *separate*, differently-id'd promoted row at
+    ``status=ACTIVE`` (:func:`_promote_candidate_assertion`). Filtering only
+    on non-``DELETED`` would therefore resurrect rejected verdicts as live
+    judgments and double-count accepted ones (original ``ACCEPTED`` row plus
+    the promoted ``ACTIVE`` row, parsed into two distinct
+    :class:`ComparativeJudgment` objects). ``ACTIVE`` is the sole live
+    status here: user-authored judgments are written directly as ``ACTIVE``
+    (see :func:`upsert_comparative_judgment_assertion`), and agent-authored
+    candidates only reach ``ACTIVE`` via the promoted row once accepted.
+    """
+
+    from polylogue.insights.judgment.comparative import comparative_judgment_from_value
+
+    judgments: list[ComparativeJudgment] = []
+    for envelope in list_assertions_by_kind(conn, AssertionKind.COMPARATIVE_JUDGMENT):
+        if envelope.status != AssertionStatus.ACTIVE:
+            continue
+        if not isinstance(envelope.value, dict):
+            continue
+        raw_items = envelope.value.get("items", ())
+        item_refs = {str(item) for item in raw_items} if isinstance(raw_items, list) else set()
+        # evidence_refs_json is stored as items UNION evidence_refs (so every
+        # comparison subject resolves as ordinary evidence); strip the item
+        # refs back out to reconstruct the original standalone evidence_refs.
+        extra_evidence_refs = [ref for ref in envelope.evidence_refs if ref not in item_refs]
+        judgments.append(
+            comparative_judgment_from_value(envelope.assertion_id, envelope.value, evidence_refs=extra_evidence_refs)
+        )
+    return judgments
+
+
 _FINDING_KINDS: Final[frozenset[str]] = frozenset(
     {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
 )
@@ -1470,6 +1557,7 @@ ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.FINDING,
     AssertionKind.NOTE,
     AssertionKind.CORRECTION,
+    AssertionKind.COMPARATIVE_JUDGMENT,
 )
 
 
@@ -2020,6 +2108,7 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.TRANSFORM_CANDIDATE,
     AssertionKind.PATHOLOGY,
     AssertionKind.FINDING,
+    AssertionKind.COMPARATIVE_JUDGMENT,
 )
 
 

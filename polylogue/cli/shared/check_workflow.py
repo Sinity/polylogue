@@ -20,8 +20,8 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.protocols import ProgressCallback
 from polylogue.daemon.status import daemon_status_payload
-from polylogue.protocols import ProgressCallback
 from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
     list_artifact_cohorts,

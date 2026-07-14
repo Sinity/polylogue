@@ -15,7 +15,7 @@ from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import canonical_timestamp_text
-from polylogue.types import AttachmentId, ContentHash, MessageId, SessionEventId, SessionId
+from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionEventId, SessionId
 
 JSONObject = dict[str, object]
 

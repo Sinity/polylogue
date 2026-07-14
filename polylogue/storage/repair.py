@@ -27,6 +27,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.protocols import ProgressCallback
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
@@ -40,14 +41,16 @@ from polylogue.maintenance.targets import (
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.protocols import ProgressCallback
 from polylogue.sources.dispatch import detect_provider, is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
-from polylogue.storage.insights.session.runtime import SESSION_INSIGHT_MATERIALIZATION_TYPES
+from polylogue.storage.insights.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    session_profile_stale_predicate,
+)
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
     count_messages_by_type_sync,
@@ -219,6 +222,45 @@ class _SemanticCanonicalWitness:
     historical_raw_ids: tuple[str, ...]
     head_snapshot: dict[str, object]
     digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserCanonicalAuthorityConflictWitness:
+    """Read-only evidence packet for one unresolved browser-capture authority conflict.
+
+    Built for polylogue-lkrc.3: unlike :class:`BrowserCaptureOriginRepairItem`,
+    which collapses every rejection into a terse ``reason`` string, this packet
+    keeps the competing-head evidence that ``_inspect_browser_capture_origin_mismatch``
+    computes but discards on the ineligible path, so an operator can adjudicate
+    without re-deriving it by hand. Building this packet never mutates state and
+    never chooses an authority -- see ``record_browser_canonical_authority_conflict_blockers``
+    for the separate, explicit step that persists it as a durable candidate blocker.
+    """
+
+    raw_id: str
+    status: str
+    reason: str
+    session_id: str | None = None
+    old_logical_source_key: str | None = None
+    canonical_logical_source_key: str | None = None
+    unknown_raw_content_hash: str | None = None
+    unknown_raw_message_count: int | None = None
+    competing_raw_id: str | None = None
+    competing_content_hash: str | None = None
+    competing_frontier_kind: str | None = None
+    competing_decision: str | None = None
+    competing_message_count: int | None = None
+    divergent_message_index: int | None = None
+    divergence_note: str | None = None
+    evidence_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserCanonicalAuthorityConflictReport:
+    requested_count: int
+    conflict_count: int
+    resolved_count: int
+    items: tuple[BrowserCanonicalAuthorityConflictWitness, ...]
 
 
 def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
@@ -3522,6 +3564,983 @@ def repair_byte_proven_browser_capture_null_native_ids(
     )
 
 
+def _browser_canonical_authority_conflict_witness(
+    archive_root: Path, conn: sqlite3.Connection, raw_id: str, base_reason: str
+) -> BrowserCanonicalAuthorityConflictWitness:
+    """Re-derive competing-authority evidence for one ineligible byte-proven-rekey raw.
+
+    Kept independent of ``_inspect_browser_capture_origin_mismatch`` (rather than
+    threading extra return fields through it): that function's job is to prove
+    or refuse a repair, and its many early-return branches deliberately discard
+    partial state once refused. This function's only job is to look, so it
+    re-derives the handful of facts a human adjudicator needs and fails soft
+    (``divergence_note`` explains any gap) instead of failing closed.
+    """
+
+    def ineligible(reason: str) -> BrowserCanonicalAuthorityConflictWitness:
+        return BrowserCanonicalAuthorityConflictWitness(
+            raw_id=raw_id, status="ineligible", reason=base_reason, divergence_note=reason
+        )
+
+    raw = conn.execute(
+        """
+        SELECT origin, source_path, blob_hash, blob_size
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if raw is None or str(raw["origin"]) != Origin.UNKNOWN_EXPORT.value:
+        return ineligible("raw is missing or not typed unknown-export; cannot re-derive evidence")
+    source_path = str(raw["source_path"])
+    blob_hash = _bytes_value(raw["blob_hash"])
+    blob_size = int(raw["blob_size"])
+    try:
+        store = BlobStore(archive_root / "blob")
+        payload = store.read_all(blob_hash.hex())
+        if len(payload) != blob_size or hashlib.sha256(payload).digest() != blob_hash:
+            return ineligible("retained blob no longer matches the declared source envelope")
+        decoded = json.loads(payload)
+        provider = detect_provider(decoded)
+        if provider is None or provider is Provider.UNKNOWN:
+            return ineligible("retained envelope has no canonical provider identity")
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, source_path)
+        if len(sessions) != 1:
+            return ineligible(f"retained envelope normalized to {len(sessions)} sessions, expected 1")
+        session = sessions[0]
+        canonical_key = f"{provider.value}:{session.provider_session_id}"
+        session_id = str(make_session_id(provider, session.provider_session_id))
+        accepted_hash = bytes.fromhex(session_content_hash(session))
+        projection = session_revision_projection(session)
+    except Exception as exc:
+        logger.warning(
+            "browser canonical authority conflict evidence build failed",
+            raw_id=raw_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return ineligible(f"could not re-parse the retained envelope: {type(exc).__name__}")
+
+    head = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind
+        FROM raw_revision_heads WHERE logical_source_key = ?
+        """,
+        (canonical_key,),
+    ).fetchone()
+    # Deliberately not scoped to ``canonical_key``: the byte-proven-rekey
+    # actuator's precondition rejects on *any* retained membership row for
+    # this raw id (``COUNT(*) ... WHERE raw_id = ?`` with no key filter,
+    # ``_inspect_browser_capture_origin_mismatch``), including a stale row
+    # still keyed under the historical unknown-origin key. Matching that
+    # broader predicate here is what lets this function explain a
+    # ``superseded_equivalent``-shaped conflict instead of reporting a false
+    # "no competing evidence found".
+    membership = conn.execute(
+        """
+        SELECT decision, normalized_content_hash, message_count, logical_source_key
+        FROM source.raw_session_memberships
+        WHERE raw_id = ?
+        ORDER BY logical_source_key
+        LIMIT 1
+        """,
+        (raw_id,),
+    ).fetchone()
+
+    competing_raw_id: str | None = None
+    competing_content_hash: str | None = None
+    competing_frontier_kind: str | None = None
+    competing_decision: str | None = None
+    competing_message_count: int | None = None
+    divergent_message_index: int | None = None
+    divergence_note: str | None = None
+
+    if head is not None:
+        competing_raw_id = str(head["accepted_raw_id"])
+        competing_content_hash = _bytes_value(head["accepted_content_hash"]).hex()
+        competing_frontier_kind = str(head["accepted_frontier_kind"])
+        application = conn.execute(
+            """
+            SELECT decision FROM raw_revision_applications
+            WHERE logical_source_key = ? AND accepted_raw_id = ?
+            ORDER BY decision_id DESC LIMIT 1
+            """,
+            (canonical_key, competing_raw_id),
+        ).fetchone()
+        if application is not None:
+            competing_decision = str(application["decision"])
+        if competing_content_hash == accepted_hash.hex():
+            divergence_note = (
+                "competing head content hash matches; conflict is membership/precondition-shaped, not a hash divergence"
+            )
+        elif competing_frontier_kind == "byte" and competing_raw_id != raw_id:
+            try:
+                competing_source = conn.execute(
+                    "SELECT source_path FROM source.raw_sessions WHERE raw_id = ?", (competing_raw_id,)
+                ).fetchone()
+                competing_source_revision = str(head["accepted_source_revision"])
+                competing_payload = store.read_all(competing_source_revision)
+                competing_provider = detect_provider(json.loads(competing_payload))
+                if competing_provider is not None and competing_source is not None:
+                    competing_sessions = _parse_one(
+                        competing_provider, competing_payload, str(competing_source["source_path"])
+                    )
+                    if len(competing_sessions) == 1:
+                        competing_projection = session_revision_projection(competing_sessions[0])
+                        competing_message_count = len(competing_projection.message_hashes)
+                        divergent_message_index = next(
+                            (
+                                index
+                                for index, (left, right) in enumerate(
+                                    zip(projection.message_hashes, competing_projection.message_hashes, strict=False)
+                                )
+                                if left != right
+                            ),
+                            min(len(projection.message_hashes), len(competing_projection.message_hashes)),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "browser canonical authority conflict competing-head diff unavailable",
+                    raw_id=raw_id,
+                    competing_raw_id=competing_raw_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                divergence_note = (
+                    f"competing head content hash differs; message-level diff unavailable: {type(exc).__name__}"
+                )
+        else:
+            divergence_note = (
+                "competing head content hash differs (semantic frontier; no single-raw message diff available)"
+            )
+    elif membership is not None:
+        divergence_note = (
+            f"no competing byte/semantic head at {canonical_key}; a retained membership row "
+            f"(decision={membership['decision']!r}) blocks the null-membership precondition instead"
+        )
+    else:
+        divergence_note = "no competing head or membership row found; re-run the ordinary rekey actuator"
+
+    packet = {
+        "raw_id": raw_id,
+        "session_id": session_id,
+        "canonical_logical_source_key": canonical_key,
+        "unknown_raw_content_hash": accepted_hash.hex(),
+        "competing_raw_id": competing_raw_id,
+        "competing_content_hash": competing_content_hash,
+        "competing_decision": competing_decision,
+        "divergent_message_index": divergent_message_index,
+    }
+    evidence_digest = hashlib.sha256(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return BrowserCanonicalAuthorityConflictWitness(
+        raw_id=raw_id,
+        status="ineligible",
+        reason=base_reason,
+        session_id=session_id,
+        old_logical_source_key=f"{Provider.UNKNOWN.value}:{session.provider_session_id}",
+        canonical_logical_source_key=canonical_key,
+        unknown_raw_content_hash=accepted_hash.hex(),
+        unknown_raw_message_count=len(projection.message_hashes),
+        competing_raw_id=competing_raw_id,
+        competing_content_hash=competing_content_hash,
+        competing_frontier_kind=competing_frontier_kind,
+        competing_decision=competing_decision,
+        competing_message_count=competing_message_count,
+        divergent_message_index=divergent_message_index,
+        divergence_note=divergence_note,
+        evidence_digest=evidence_digest,
+    )
+
+
+def inspect_browser_canonical_authority_conflicts(
+    config: Config, raw_ids: list[str]
+) -> BrowserCanonicalAuthorityConflictReport:
+    """Build read-only evidence packets for browser-capture raws a safe rekey refuses.
+
+    Companion to :func:`repair_byte_proven_browser_capture_null_native_ids`
+    (polylogue-lkrc.3): re-runs that actuator's exact eligibility proof for each
+    raw id. A raw that comes back ``eligible``/``already_repaired`` is not a
+    conflict -- the ordinary actuator already owns it -- and is only counted in
+    ``resolved_count``. A raw that stays ``ineligible`` gets an enriched
+    :class:`BrowserCanonicalAuthorityConflictWitness`: the competing canonical
+    head's content hash/frontier kind/decision, any blocking membership row, and
+    -- when both sides are single-session byte-frontier raws -- the first
+    diverging message index.
+
+    Never mutates state and never selects an authority between the two
+    histories; see :func:`record_browser_canonical_authority_conflict_blockers`
+    for the separate, explicit step that persists this as a durable,
+    operator-reviewable candidate blocker in ``user.db``.
+    """
+    if len(set(raw_ids)) != len(raw_ids):
+        raise ValueError("duplicate raw ids are not allowed")
+    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError("raw-id list must contain 1..100 entries")
+    if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
+        raise ValueError("raw ids must be lowercase SHA-256 identifiers")
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        raise RuntimeError("source or index tier is missing")
+
+    items: list[BrowserCanonicalAuthorityConflictWitness] = []
+    resolved_count = 0
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        for raw_id in raw_ids:
+            # Hold one read transaction across the base eligibility proof and
+            # the witness's own re-reads of the same tables (raw_revision_heads,
+            # raw_session_memberships, raw_revision_applications) so both see
+            # one consistent snapshot. Without this, ``base.reason`` (the
+            # eligibility proof) and the witness's competing-head evidence
+            # are independent point-in-time reads on an autocommit
+            # connection -- a concurrent writer landing between the two
+            # calls could make the exported evidence packet describe a
+            # state inconsistent with the reason it's explaining. This is
+            # cheap read-snapshot isolation, not the apply-time CAS/receipt
+            # ceremony: this function never mutates state, so there is
+            # nothing to roll back -- COMMIT just releases the read lock.
+            conn.execute("BEGIN DEFERRED")
+            try:
+                base = _inspect_browser_capture_origin_mismatch(
+                    archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
+                )
+                if base.status != "ineligible":
+                    resolved_count += 1
+                    continue
+                items.append(_browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason))
+            finally:
+                conn.execute("COMMIT")
+    return BrowserCanonicalAuthorityConflictReport(
+        requested_count=len(raw_ids),
+        conflict_count=len(items),
+        resolved_count=resolved_count,
+        items=tuple(items),
+    )
+
+
+def record_browser_canonical_authority_conflict_blockers(
+    config: Config, raw_ids: list[str], *, now_ms: int | None = None
+) -> tuple[BrowserCanonicalAuthorityConflictReport, tuple[str, ...]]:
+    """Persist each unresolved conflict as a durable, non-injected ``BLOCKER`` candidate.
+
+    This is the explicit, separate step the lkrc.3 design requires: it never
+    picks an authority itself.  Each conflict becomes one
+    ``AssertionKind.BLOCKER`` candidate assertion in ``user.db``, keyed by a
+    deterministic id over the raw id and its evidence digest so re-running the
+    census after new evidence appears creates a new row instead of silently
+    overwriting the old one, while re-running it unchanged is idempotent. Like
+    every other automated writer through ``upsert_assertion``, the row is
+    written ``author_kind="detector"`` and is therefore always forced to
+    ``status=candidate`` with ``inject: false`` -- it can never self-promote to
+    an authoritative, context-injectable claim; an operator must explicitly
+    judge it (mirrors ``upsert_pathology_findings_as_assertions``, #2383).
+
+    Deliberately exempt from this file's apply-flag/proof-digest/receipt
+    ceremony (unlike ``repair_duplicate_raw_identity`` and every other
+    actuator in this module): that ceremony exists because those actuators
+    repoint *authoritative* identity state (``raw_revision_heads``,
+    ``sessions``) where an error is expensive to detect and reverse, so they
+    need a CAS re-proof under an exclusive transaction plus a crash-durable
+    receipt trail. This function never touches authoritative state -- it
+    writes exactly one ``candidate``/non-injected/private assertion, through
+    ``upsert_assertion``'s single write chokepoint, which already refuses to
+    resurrect a judged-terminal row (accepted/rejected/deferred/superseded)
+    back to candidate on a later automated write (see that function's
+    docstring). Concretely: (1) the row can never be read as an authoritative
+    claim (``inject: false``, ``promotion_required: true``); (2) an operator's
+    judgment on a previously-recorded blocker is never silently clobbered by a
+    re-run, even one racing this same function; (3) re-running with unchanged
+    evidence is a no-op (deterministic id), and re-running after new evidence
+    creates a new row rather than mutating the old one. This is the same
+    write-safety posture as every other detector-authored candidate writer in
+    this codebase (``upsert_pathology_findings_as_assertions``,
+    ``digest``-derived ``TRANSFORM_CANDIDATE`` rows) -- none of which carry an
+    apply flag either. Adding one here would be ceremony without a
+    corresponding risk to gate.
+    """
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        AssertionKind,
+        AssertionStatus,
+        AssertionVisibility,
+        read_assertion_envelope,
+        upsert_assertion,
+    )
+
+    report = inspect_browser_canonical_authority_conflicts(config, raw_ids)
+    archive_root = _raw_materialization_archive_root(config)
+    user_db = archive_root / "user.db"
+    if not user_db.exists():
+        raise RuntimeError("user tier is not initialized")
+    timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
+    scope_ref = "insight:browser-canonical-authority-conflict@v1"
+    assertion_ids: list[str] = []
+    conn = sqlite3.connect(user_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        for item in report.items:
+            if item.session_id is None or item.evidence_digest is None:
+                continue
+            assertion_id = hashlib.sha256(
+                f"assertion-blocker-browser-canonical-authority-conflict\0{item.raw_id}\0{item.evidence_digest}".encode()
+            ).hexdigest()
+            full_assertion_id = f"blocker:{assertion_id}"
+            existing = read_assertion_envelope(conn, full_assertion_id)
+            if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+                # Mirror ``upsert_pathology_findings_as_assertions``: once an
+                # operator has judged a blocker (accepted/rejected/deferred/
+                # superseded), a re-run over unchanged evidence must not
+                # overwrite its display fields (value/body_text/evidence_refs
+                # are plain ``ON CONFLICT DO UPDATE`` columns in
+                # ``upsert_assertion`` -- only ``status`` itself is protected
+                # by that function's terminal-judgment chokepoint). Leave the
+                # judged row exactly as the operator left it.
+                assertion_ids.append(existing.assertion_id)
+                continue
+            envelope = upsert_assertion(
+                conn,
+                assertion_id=full_assertion_id,
+                scope_ref=scope_ref,
+                target_ref=f"session:{item.session_id}",
+                key=f"raw/{item.raw_id}",
+                kind=AssertionKind.BLOCKER,
+                value={
+                    "raw_id": item.raw_id,
+                    "canonical_logical_source_key": item.canonical_logical_source_key,
+                    "unknown_raw_content_hash": item.unknown_raw_content_hash,
+                    "unknown_raw_message_count": item.unknown_raw_message_count,
+                    "competing_raw_id": item.competing_raw_id,
+                    "competing_content_hash": item.competing_content_hash,
+                    "competing_frontier_kind": item.competing_frontier_kind,
+                    "competing_decision": item.competing_decision,
+                    "competing_message_count": item.competing_message_count,
+                    "divergent_message_index": item.divergent_message_index,
+                    "reason": item.reason,
+                },
+                body_text=item.divergence_note or item.reason,
+                author_ref=scope_ref,
+                author_kind="detector",
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=timestamp,
+            )
+            assertion_ids.append(envelope.assertion_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return report, tuple(assertion_ids)
+
+
+# --- polylogue-t0dy: reconcile pre-#2729 duplicate-raw scheme ---
+
+_DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA = "polylogue.duplicate-raw-identity-repair.v1"
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateRawIdentityRepairItem:
+    stale_raw_id: str
+    canonical_raw_id: str
+    status: str
+    reason: str
+    session_id: str | None = None
+    logical_source_key: str | None = None
+    origin: str | None = None
+    source_path: str | None = None
+    accepted_source_revision: str | None = None
+    accepted_content_hash: str | None = None
+    accepted_frontier_kind: str | None = None
+    accepted_frontier: int | None = None
+    accepted_decided_at_ms: int | None = None
+    proof_digest: str | None = None
+    repaired: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateRawIdentityRepairReport:
+    mode: str
+    requested_count: int
+    eligible_count: int
+    repaired_count: int
+    already_repaired_count: int
+    ineligible_count: int
+    proof_digest: str
+    receipt_path: str | None
+    items: tuple[DuplicateRawIdentityRepairItem, ...]
+
+
+def _duplicate_raw_identity_repair_targets(
+    items: list[DuplicateRawIdentityRepairItem],
+) -> list[dict[str, object]]:
+    """Identify each locked target by its requested ``(stale, canonical)`` pair only.
+
+    Deliberately narrower than the quarantined-raw receipt's full-item-proof
+    targets: for that actuator the accepted head is never touched by repair,
+    so a proven item's payload (including its head snapshot) is invariant
+    across "eligible" and "already_repaired" states and can safely anchor the
+    receipt. Here, repair *repoints* the accepted head (a fresh
+    ``decided_at_ms`` lands on every apply), so an item's full payload is NOT
+    invariant across states. Anchoring the receipt to the stable requested
+    identity instead lets a resumed invocation -- which necessarily re-proves
+    the CAS witness via a fresh ``proof_digest``, not a stale one -- validate
+    against the SAME on-disk receipt without a spurious "targets changed"
+    rejection caused only by the head's own repair-induced timestamp change.
+    """
+    return [{"stale_raw_id": item.stale_raw_id, "canonical_raw_id": item.canonical_raw_id} for item in items]
+
+
+@dataclass(slots=True)
+class _LockedDuplicateRawIdentityRepairReceipt:
+    path: Path
+    descriptor: int
+    target_hash: str
+    terminal: bool
+    repair_intent_stale_raw_ids: tuple[str, ...]
+    torn_terminals: tuple[bytes, ...] = ()
+    receipt_terminated: bool = True
+
+    def close(self) -> None:
+        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+        os.close(self.descriptor)
+
+
+def _validate_duplicate_raw_identity_repair_receipt_records(
+    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
+    *,
+    targets: list[dict[str, object]],
+    target_hash: str,
+) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
+    """Mirror ``_validate_repair_receipt_records`` keyed on ``stale_raw_id``.
+
+    Same planned/applied two-phase JSONL shape and torn-terminal recovery as
+    the quarantined-accepted-raw receipt (see that function's docstring) --
+    ``repair_duplicate_raw_identity`` needs the identical crash/audit
+    guarantees as every other live-archive actuator in this file.
+    """
+    records, terminated = parsed_receipt
+    if not records:
+        raise RuntimeError("existing repair receipt is empty")
+    planned = records[0]
+    if not isinstance(planned, dict):
+        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
+    planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_stale_raw_ids", "planned_at_ms"}
+    if set(planned) != planned_keys or planned.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid planned record schema")
+    if planned.get("state") != "planned":
+        raise RuntimeError("existing repair receipt must start with a planned record")
+    if planned.get("target_hash") != target_hash or planned.get("targets") != targets:
+        raise RuntimeError("existing repair receipt targets do not match the proven repair set")
+    planned_at_ms = planned.get("planned_at_ms")
+    if not isinstance(planned_at_ms, int) or planned_at_ms < 0:
+        raise RuntimeError("existing repair receipt planned timestamp is invalid")
+    stale_raw_ids = tuple(str(target["stale_raw_id"]) for target in targets)
+    intent = planned.get("repair_intent_stale_raw_ids")
+    if not isinstance(intent, list) or any(not isinstance(raw_id, str) for raw_id in intent):
+        raise RuntimeError("existing repair receipt repair intent is invalid")
+    intent_ids = tuple(cast(list[str], intent))
+    if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in stale_raw_ids for raw_id in intent_ids):
+        raise RuntimeError("existing repair receipt repair intent does not match its targets")
+    if len(records) == 1:
+        if not terminated:
+            raise RuntimeError("existing repair receipt has a torn planned record")
+        return False, intent_ids, (), terminated
+    tail = records[1:]
+    applied = tail[-1] if isinstance(tail[-1], dict) else None
+    torn_terminals = (
+        tuple(record for record in tail[:-1] if isinstance(record, bytes))
+        if applied
+        else tuple(record for record in tail if isinstance(record, bytes))
+    )
+    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
+    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
+        raise RuntimeError("existing repair receipt has an invalid state transition")
+    if applied is None:
+        return False, intent_ids, torn_terminals, terminated
+    if not terminated:
+        raise RuntimeError("existing repair receipt has an unterminated applied record")
+    recovered = bool(torn_terminals)
+    applied_keys = {
+        "schema",
+        "state",
+        "target_hash",
+        "applied_at_ms",
+        "repaired_stale_raw_ids",
+        "proven_stale_raw_ids",
+    }
+    if recovered:
+        applied_keys |= {"torn_terminals"}
+    if set(applied) != applied_keys or applied.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid applied record schema")
+    if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
+        raise RuntimeError("existing repair receipt has an invalid applied target transition")
+    applied_at_ms = applied.get("applied_at_ms")
+    if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
+        raise RuntimeError("existing repair receipt applied timestamp is invalid")
+    repaired_ids = applied.get("repaired_stale_raw_ids")
+    if (
+        applied.get("proven_stale_raw_ids") != list(stale_raw_ids)
+        or not isinstance(repaired_ids, list)
+        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
+        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
+        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
+    ):
+        raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
+    expected_torn_witnesses = [
+        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
+    ]
+    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
+        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
+    return True, intent_ids, torn_terminals, terminated
+
+
+def _lock_duplicate_raw_identity_repair_receipt(
+    path: Path,
+    items: list[DuplicateRawIdentityRepairItem],
+) -> _LockedDuplicateRawIdentityRepairReceipt:
+    """Lock one stable receipt inode and create or validate its planned record.
+
+    Same flock(LOCK_EX|LOCK_NB) + O_NOFOLLOW + fsync(file, then parent dir)
+    contract as ``_lock_quarantined_raw_repair_receipt`` -- a concurrent
+    ``--apply`` invocation against the same receipt path fails closed instead
+    of racing a bare ``Path.exists()`` check, and the planned record is
+    durable on disk (not merely in the process) before any mutation begins.
+    """
+    if path.is_symlink():
+        raise RuntimeError("repair receipt path must not be a symbolic link")
+    targets = _duplicate_raw_identity_repair_targets(items)
+    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    repair_intent_stale_raw_ids = tuple(item.stale_raw_id for item in items if item.status == "eligible")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(descriptor)
+        raise RuntimeError("operator repair receipt is already locked by another apply") from exc
+    try:
+        opened = os.fstat(descriptor)
+        named = path.stat(follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise RuntimeError("operator repair receipt path changed while it was being locked")
+        if opened.st_size:
+            terminal, existing_intent, torn_terminals, terminated = (
+                _validate_duplicate_raw_identity_repair_receipt_records(
+                    _receipt_records(descriptor), targets=targets, target_hash=target_hash
+                )
+            )
+            return _LockedDuplicateRawIdentityRepairReceipt(
+                path,
+                descriptor,
+                target_hash,
+                terminal,
+                existing_intent,
+                torn_terminals,
+                terminated,
+            )
+        planned = {
+            "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
+            "state": "planned",
+            "target_hash": target_hash,
+            "targets": targets,
+            "repair_intent_stale_raw_ids": list(repair_intent_stale_raw_ids),
+            "planned_at_ms": int(time.time() * 1000),
+        }
+        encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        _write_receipt_all(descriptor, encoded)
+        os.fsync(descriptor)
+        _fsync_parent(path)
+        return _LockedDuplicateRawIdentityRepairReceipt(
+            path, descriptor, target_hash, False, repair_intent_stale_raw_ids
+        )
+    except Exception:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+
+
+def _finish_duplicate_raw_identity_repair_receipt(
+    receipt: _LockedDuplicateRawIdentityRepairReceipt,
+    *,
+    items: list[DuplicateRawIdentityRepairItem],
+) -> None:
+    opened = os.fstat(receipt.descriptor)
+    named = receipt.path.stat(follow_symlinks=False)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise RuntimeError("operator repair receipt path changed before terminal append")
+    os.lseek(receipt.descriptor, 0, os.SEEK_END)
+    preserved_torn_terminals = list(receipt.torn_terminals)
+    if preserved_torn_terminals and not receipt.receipt_terminated:
+        # Make even a complete-JSON prefix permanently distinguishable from a
+        # terminal record after the newline is appended, matching the
+        # quarantined-raw receipt's torn-write recovery contract.
+        _write_receipt_all(receipt.descriptor, b"\xff\n")
+        preserved_torn_terminals[-1] += b"\xff"
+    terminal: dict[str, object] = {
+        "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
+        "state": "applied",
+        "target_hash": receipt.target_hash,
+        "applied_at_ms": int(time.time() * 1000),
+        "repaired_stale_raw_ids": [item.stale_raw_id for item in items if item.repaired],
+        "proven_stale_raw_ids": [item.stale_raw_id for item in items],
+    }
+    if preserved_torn_terminals:
+        terminal["torn_terminals"] = [
+            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
+            for fragment in preserved_torn_terminals
+        ]
+    _write_receipt_all(
+        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    os.fsync(receipt.descriptor)
+    _fsync_parent(receipt.path)
+
+
+def _duplicate_raw_identity_ineligible(
+    stale_raw_id: str, canonical_raw_id: str, reason: str
+) -> DuplicateRawIdentityRepairItem:
+    return DuplicateRawIdentityRepairItem(
+        stale_raw_id=stale_raw_id, canonical_raw_id=canonical_raw_id, status="ineligible", reason=reason
+    )
+
+
+def _duplicate_raw_identity_proof_digest(item: DuplicateRawIdentityRepairItem) -> str:
+    payload = {
+        key: value
+        for key, value in dataclasses.asdict(item).items()
+        if key not in {"proof_digest", "reason", "repaired", "status"}
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _inspect_duplicate_raw_identity(
+    conn: sqlite3.Connection, archive_root: Path, stale_raw_id: str, canonical_raw_id: str
+) -> DuplicateRawIdentityRepairItem:
+    """Prove one ``(stale, canonical)`` raw pair is the exact pre-/post-#2729 duplicate shape.
+
+    Both raws must carry byte-identical content; each raw id must equal the
+    deterministic id its own recorded fields predict under its own scheme
+    (``native_id``-inclusive for the stale raw, ``native_id=NULL`` for the
+    canonical raw -- see ``deterministic_raw_session_id``, #2729); the stale
+    raw must be the *current* accepted head and session pointer; and the
+    canonical raw must be a genuinely dangling duplicate -- not itself an
+    accepted head or session pointer anywhere. Read-only; never mutates state.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
+
+    def ineligible(reason: str) -> DuplicateRawIdentityRepairItem:
+        return _duplicate_raw_identity_ineligible(stale_raw_id, canonical_raw_id, reason)
+
+    if stale_raw_id == canonical_raw_id:
+        return ineligible("stale and canonical raw ids must differ")
+    fields = "origin, native_id, source_path, source_index, blob_hash, blob_size"
+    stale = conn.execute(f"SELECT {fields} FROM source.raw_sessions WHERE raw_id = ?", (stale_raw_id,)).fetchone()
+    canonical = conn.execute(
+        f"SELECT {fields} FROM source.raw_sessions WHERE raw_id = ?", (canonical_raw_id,)
+    ).fetchone()
+    if stale is None or canonical is None:
+        return ineligible("one or both raw rows are missing")
+    if stale["native_id"] is None:
+        return ineligible("stale raw must carry the pre-#2729 native_id-inclusive scheme")
+    if canonical["native_id"] is not None:
+        return ineligible("canonical raw must carry the post-#2729 native_id=NULL scheme")
+    identity_fields = ("origin", "source_path", "source_index", "blob_hash", "blob_size")
+    if tuple(stale[name] for name in identity_fields) != tuple(canonical[name] for name in identity_fields):
+        return ineligible("stale and canonical raws do not share identical origin/source_path/blob content")
+    stale_blob_hash = _bytes_value(stale["blob_hash"])
+    blob_size = int(stale["blob_size"])
+    expected_stale_id = deterministic_raw_session_id(
+        str(stale["origin"]),
+        str(stale["source_path"]),
+        int(stale["source_index"]),
+        stale_blob_hash,
+        native_id=str(stale["native_id"]),
+    )
+    expected_canonical_id = deterministic_raw_session_id(
+        str(canonical["origin"]),
+        str(canonical["source_path"]),
+        int(canonical["source_index"]),
+        stale_blob_hash,
+        native_id=None,
+    )
+    if expected_stale_id != stale_raw_id:
+        return ineligible("stale raw id does not match the deterministic pre-#2729 id for its own fields")
+    if expected_canonical_id != canonical_raw_id:
+        return ineligible("canonical raw id does not match the deterministic post-#2729 id for its own fields")
+    try:
+        # BlobStore is content-addressed by ``blob_hash``, and the equality
+        # check above already proved both raws declare the identical hash, so
+        # a single read resolves to the one physical blob file either raw
+        # would read -- there is no separate "canonical blob" to diverge from
+        # it short of a SHA-256 collision. This still proves the retained
+        # bytes genuinely match the declared digest/size rather than trusting
+        # the ``raw_sessions`` columns blindly.
+        store = BlobStore(archive_root / "blob")
+        payload = store.read_all(stale_blob_hash.hex())
+        if len(payload) != blob_size or hashlib.sha256(payload).digest() != stale_blob_hash:
+            return ineligible("retained blob content does not match its declared digest/size")
+    except (OSError, ValueError):
+        return ineligible("retained blob for one or both raws is missing or unreadable")
+
+    stale_head = conn.execute(
+        """
+        SELECT logical_source_key, session_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, decided_at_ms
+        FROM raw_revision_heads WHERE accepted_raw_id = ?
+        """,
+        (stale_raw_id,),
+    ).fetchone()
+    canonical_head = conn.execute(
+        "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id = ?", (canonical_raw_id,)
+    ).fetchone()
+
+    if stale_head is None:
+        if canonical_head is not None:
+            head_key = str(canonical_head["logical_source_key"])
+            session = conn.execute(
+                "SELECT session_id, raw_id FROM sessions WHERE raw_id = ?", (canonical_raw_id,)
+            ).fetchone()
+            # An immutable ``raw_revision_applications`` row is append-only and
+            # its ``decision_id`` is a content hash, not a sequence -- ordering
+            # by it to find the "latest" decision for this (raw_id, key) is
+            # meaningless. The stale raw legitimately carries both an old
+            # ``selected_baseline`` receipt (from before repair) and the new
+            # ``superseded`` receipt (from repair); only presence of the
+            # latter proves this exact pair was already repaired.
+            stale_superseded = conn.execute(
+                """
+                SELECT 1 FROM raw_revision_applications
+                WHERE raw_id = ? AND logical_source_key = ? AND decision = ? AND accepted_raw_id = ?
+                """,
+                (stale_raw_id, head_key, ApplicationDecision.SUPERSEDED.value, canonical_raw_id),
+            ).fetchone()
+            if session is not None and stale_superseded is not None:
+                return DuplicateRawIdentityRepairItem(
+                    stale_raw_id=stale_raw_id,
+                    canonical_raw_id=canonical_raw_id,
+                    status="already_repaired",
+                    reason="",
+                    session_id=str(session["session_id"]),
+                    logical_source_key=head_key,
+                )
+        return ineligible("stale raw is not the currently accepted head of any logical source key")
+    if canonical_head is not None:
+        return ineligible("canonical raw is already an accepted head; not a dangling duplicate")
+    session = conn.execute(
+        "SELECT session_id, raw_id FROM sessions WHERE session_id = ?", (stale_head["session_id"],)
+    ).fetchone()
+    if session is None or str(session["raw_id"]) != stale_raw_id:
+        return ineligible("session raw pointer does not match the accepted head")
+    if conn.execute("SELECT 1 FROM sessions WHERE raw_id = ?", (canonical_raw_id,)).fetchone() is not None:
+        return ineligible("canonical raw is already referenced by a different session pointer")
+
+    item = DuplicateRawIdentityRepairItem(
+        stale_raw_id=stale_raw_id,
+        canonical_raw_id=canonical_raw_id,
+        status="eligible",
+        reason="",
+        session_id=str(stale_head["session_id"]),
+        logical_source_key=str(stale_head["logical_source_key"]),
+        origin=str(stale["origin"]),
+        source_path=str(stale["source_path"]),
+        accepted_source_revision=str(stale_head["accepted_source_revision"]),
+        accepted_content_hash=_bytes_value(stale_head["accepted_content_hash"]).hex(),
+        accepted_frontier_kind=str(stale_head["accepted_frontier_kind"]),
+        accepted_frontier=int(stale_head["accepted_frontier"]),
+        accepted_decided_at_ms=int(stale_head["decided_at_ms"]),
+    )
+    return dataclasses.replace(item, proof_digest=_duplicate_raw_identity_proof_digest(item))
+
+
+def _apply_duplicate_raw_identity_repair(conn: sqlite3.Connection, item: DuplicateRawIdentityRepairItem) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_application import (
+        RevisionApplicationReceipt,
+        record_revision_application_sync,
+    )
+
+    assert item.session_id is not None
+    assert item.logical_source_key is not None
+    assert item.accepted_source_revision is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier_kind is not None
+    assert item.accepted_frontier is not None
+    decided_at_ms = int(time.time() * 1000)
+    accepted_hash = bytes.fromhex(item.accepted_content_hash)
+    # Reuse the ordinary revision-application CAS (rather than a hand-written
+    # ``UPDATE raw_revision_heads``, per the design note): session_id,
+    # accepted_content_hash, accepted_frontier_kind, and accepted_frontier are
+    # all unchanged from the current head (the two raws are byte-identical),
+    # so this is exactly the "equivalent-content" acceptance path -- only
+    # accepted_raw_id repoints, from the stale raw to its canonical twin.
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.canonical_raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.logical_source_key,
+            source_revision=item.accepted_source_revision,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SELECTED_BASELINE,
+            accepted_raw_id=item.canonical_raw_id,
+            accepted_source_revision=item.accepted_source_revision,
+            accepted_content_hash=accepted_hash,
+            accepted_frontier_kind=item.accepted_frontier_kind,
+            accepted_frontier=item.accepted_frontier,
+            baseline_raw_id=item.canonical_raw_id if item.accepted_frontier_kind == "byte" else None,
+            detail=f"duplicate_raw_identity_repair:{item.stale_raw_id}->{item.canonical_raw_id}",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+    cursor = conn.execute(
+        "UPDATE sessions SET raw_id = ? WHERE session_id = ? AND raw_id = ?",
+        (item.canonical_raw_id, item.session_id, item.stale_raw_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"session raw pointer CAS failed for {item.stale_raw_id}")
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.stale_raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.logical_source_key,
+            source_revision=item.accepted_source_revision,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SUPERSEDED,
+            accepted_raw_id=item.canonical_raw_id,
+            accepted_source_revision=item.accepted_source_revision,
+            accepted_content_hash=accepted_hash,
+            accepted_frontier_kind=item.accepted_frontier_kind,
+            accepted_frontier=item.accepted_frontier,
+            detail=f"duplicate_raw_identity_supersession:{item.stale_raw_id}",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+
+
+def repair_duplicate_raw_identity(
+    config: Config,
+    pairs: list[tuple[str, str]],
+    *,
+    apply: bool = False,
+    receipt_path: Path | None = None,
+    proof_digest: str | None = None,
+) -> DuplicateRawIdentityRepairReport:
+    """Repoint an accepted head from a pre-#2729 duplicate raw to its post-fix twin.
+
+    polylogue-t0dy: PR #2729 aligned the one-shot importer and the live daemon
+    watcher on one deterministic raw-id scheme (no ``native_id``) so *new*
+    ingests of a grouped/split-session file converge on one raw row instead of
+    duplicating. It explicitly does not retroactively repair raw pairs that
+    already duplicated under the OLD, native_id-inclusive scheme before that
+    fix landed: the accepted head stays bound to the stale raw, and its
+    post-fix, correctly-keyed twin sits orphaned, so every later daemon
+    catch-up pass over that file hits ``RuntimeError: membership replay cannot
+    retire an unrelated accepted head`` (archive.py).
+
+    Each ``(stale_raw_id, canonical_raw_id)`` pair is proven independently by
+    :func:`_inspect_duplicate_raw_identity`: both raws must be verified
+    byte-identical, each raw id must equal the deterministic id its own fields
+    (and native_id shape) predict, the stale raw must be the CURRENT accepted
+    head/session pointer, and the canonical raw must not already be referenced
+    by any head or session -- a genuinely dangling duplicate, never a
+    competing authority. No durable raw/blob row is ever deleted or mutated in
+    place; the stale raw keeps its bytes and gains an immutable ``superseded``
+    application receipt.
+    """
+    if len(pairs) != len({stale for stale, _ in pairs}) or len(pairs) != len({canonical for _, canonical in pairs}):
+        raise ValueError("duplicate stale or canonical raw ids are not allowed")
+    if not pairs or len(pairs) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError("raw-id pair list must contain 1..100 entries")
+    for stale_raw_id, canonical_raw_id in pairs:
+        for raw_id in (stale_raw_id, canonical_raw_id):
+            if re.fullmatch(r"[0-9a-f]{64}", raw_id) is None:
+                raise ValueError("raw ids must be lowercase SHA-256 identifiers")
+    block_reason = offline_maintenance_block_reason(config, active=apply, dry_run=not apply)
+    if block_reason is not None:
+        raise RuntimeError(block_reason)
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        raise RuntimeError("source or index tier is missing")
+
+    def inspect(connection: sqlite3.Connection) -> list[DuplicateRawIdentityRepairItem]:
+        return [
+            _inspect_duplicate_raw_identity(connection, archive_root, stale, canonical) for stale, canonical in pairs
+        ]
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+        items = inspect(conn)
+    aggregate = hashlib.sha256(
+        json.dumps([item.proof_digest for item in items], separators=(",", ":")).encode()
+    ).hexdigest()
+    if apply and any(item.status == "ineligible" for item in items):
+        raise RuntimeError("duplicate raw identity repair refused because one or more targets are ineligible")
+    if apply and receipt_path is None:
+        raise ValueError("apply requires an explicit operator repair receipt path")
+    if apply and proof_digest != aggregate:
+        raise RuntimeError("apply proof digest does not match the exact dry-run target list")
+    if apply:
+        from polylogue.storage.index_generation import RebuildLease
+
+        assert receipt_path is not None
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        with RebuildLease(archive_root):
+            receipt = _lock_duplicate_raw_identity_repair_receipt(receipt_path, items)
+            try:
+                with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        locked = inspect(conn)
+                        locked_digest = hashlib.sha256(
+                            json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
+                        ).hexdigest()
+                        if locked_digest != proof_digest:
+                            raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                        if any(item.status == "ineligible" for item in locked):
+                            raise RuntimeError("a duplicate raw identity target became ineligible")
+                        if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                            raise RuntimeError("terminal operator receipt disagrees with durable index authority")
+                        if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked):
+                            raise RuntimeError("torn terminal receipt has no matching committed index refinement")
+                        for item in locked:
+                            if item.status == "eligible":
+                                _apply_duplicate_raw_identity_repair(conn, item)
+                        after = inspect(conn)
+                        if any(item.status != "already_repaired" for item in after):
+                            raise RuntimeError("duplicate raw identity repair did not reach terminal state")
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                items = [
+                    dataclasses.replace(after_item, repaired=before.status == "eligible")
+                    for before, after_item in zip(locked, after, strict=True)
+                ]
+                if not receipt.terminal:
+                    _finish_duplicate_raw_identity_repair_receipt(receipt, items=items)
+            finally:
+                receipt.close()
+    return DuplicateRawIdentityRepairReport(
+        mode="apply" if apply else "dry-run",
+        requested_count=len(items),
+        eligible_count=sum(item.status == "eligible" for item in items),
+        repaired_count=sum(item.repaired for item in items),
+        already_repaired_count=sum(item.status == "already_repaired" for item in items),
+        ineligible_count=sum(item.status == "ineligible" for item in items),
+        proof_digest=aggregate,
+        receipt_path=str(receipt_path) if receipt_path is not None else None,
+        items=tuple(items),
+    )
+
+
 def _format_bytes(value: int) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     amount = float(max(value, 0))
@@ -4078,7 +5097,7 @@ def _resolve_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -4111,7 +5130,7 @@ def _resolve_session_insight_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -4201,6 +5220,8 @@ def _targeted_session_insight_rebuild_ids(
         if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
+    profile_stale_predicate = session_profile_stale_predicate("s", "p")
+    latency_stale_predicate = session_profile_stale_predicate("s", "lp")
     rows = conn.execute(
         f"""
         SELECT DISTINCT session_id
@@ -4215,7 +5236,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM sessions AS s
             JOIN session_profiles AS p ON p.session_id = s.session_id
             WHERE p.materializer_version != ?
-               OR ABS(COALESCE(p.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {profile_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -4228,7 +5249,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM session_latency_profiles AS lp
             JOIN sessions AS s ON s.session_id = lp.session_id
             WHERE lp.materializer_version != ?
-               OR ABS(COALESCE(lp.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {latency_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -4265,7 +5286,7 @@ def _archive_index_present(config: Config) -> bool:
     if not index_db.exists():
         return False
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     except sqlite3.Error:
         return False

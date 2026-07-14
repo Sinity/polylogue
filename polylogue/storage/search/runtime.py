@@ -7,7 +7,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult

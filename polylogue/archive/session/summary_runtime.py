@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _metadata_string(metadata: dict[str, object], key: str) -> str | None:

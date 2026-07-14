@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+from polylogue.core.types import SessionId
 from polylogue.insights.topology import LogicalSession, SessionRef
-from polylogue.types import SessionId
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface, make_polylogue_mock
 
 

@@ -6,9 +6,9 @@ import sqlite3
 
 import aiosqlite
 
+from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.sqlite.queries.mappers_support import _row_float, _row_int, _row_text
-from polylogue.types import SessionId
 
 
 def _row_to_session_latency_profile_record(row: sqlite3.Row) -> SessionLatencyProfileRecord:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.protocols import ProgressCallback
+from polylogue.core.protocols import ProgressCallback
 
 
 @dataclass(frozen=True)

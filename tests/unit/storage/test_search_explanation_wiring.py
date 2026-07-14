@@ -22,9 +22,9 @@ from polylogue.archive.query.search_hits import (
 )
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.storage.search.query_support import extract_match_terms
 from polylogue.surfaces.payloads import SessionSearchHitPayload
-from polylogue.types import SessionId
 
 
 def _summary(session_id: str = "chatgpt:hit") -> SessionSummary:

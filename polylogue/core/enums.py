@@ -110,6 +110,18 @@ class SessionKind(PolylogueStrEnum):
             return cls.STANDARD
 
 
+#: Role synonym vocabulary — single source of truth for role normalization.
+#: Maps each canonical role to its accepted synonyms (case-insensitive).
+#: Used by both Role.normalize() and SQL role-filter expansion.
+ROLE_SYNONYMS: dict[str, frozenset[str]] = {
+    "user": frozenset({"user", "human"}),
+    "assistant": frozenset({"assistant", "model", "ai"}),
+    "system": frozenset({"system", "developer"}),
+    "tool": frozenset({"tool", "function", "tool_use", "tool_result", "progress", "result"}),
+    "unknown": frozenset({"unknown"}),
+}
+
+
 class Role(PolylogueStrEnum):
     """Canonical session roles."""
 
@@ -126,14 +138,9 @@ class Role(PolylogueStrEnum):
         if not lowered:
             raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
 
-        if lowered in {"user", "human"}:
-            return cls.USER
-        if lowered in {"assistant", "model", "ai"}:
-            return cls.ASSISTANT
-        if lowered in {"system", "developer"}:
-            return cls.SYSTEM
-        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
-            return cls.TOOL
+        for role_name, synonyms in ROLE_SYNONYMS.items():
+            if lowered in synonyms:
+                return cls(role_name)
         return cls.UNKNOWN
 
 
@@ -429,9 +436,51 @@ class AssertionKind(PolylogueStrEnum):
     TRANSFORM_CANDIDATE = "transform_candidate"
     PATHOLOGY = "pathology"
     FINDING = "finding"
+    SECRET_CANDIDATE = "secret_candidate"
+    """Candidate-only secret-detector finding (polylogue-27m). Never carries the
+    matched literal -- ``value_json`` holds only a fingerprint hash, matched
+    length, pattern id, and span coordinates. Always written with
+    ``author_kind="detector"``, which the ``upsert_assertion`` chokepoint
+    coerces to a non-injectable ``CANDIDATE`` status."""
+    EXCISION_RECORD = "excision_record"
+    """Durable, operator-authored receipt of a completed local excision: the
+    removed content-hash markers, reason, actor, prior revision, and per-tier
+    row counts. Written only after a standalone/off-mode apply commits."""
+    EXCISION_REQUEST = "excision_request"
+    """Durable mirror/primary-mode lifecycle-request/outbox row (polylogue-27m).
+    ``value_json`` carries the request state machine (pending/acknowledged/
+    confirmed/rejected), retry count, and target. Lives in ``user.db`` so the
+    request survives an ``ops.db`` reset -- see ``polylogue/security/lifecycle.py``."""
+    COMPARATIVE_JUDGMENT = "comparative_judgment"
 
     @classmethod
     def from_string(cls, value: str | AssertionKind) -> AssertionKind:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
+class ComparativeVerdict(PolylogueStrEnum):
+    """Closed verdict vocabulary for comparative judgments (rxdo.9.11, mechanism K).
+
+    ``PREFER_LEFT``/``PREFER_RIGHT`` apply only to pairwise (two-item)
+    comparisons. ``TIE`` and ``INCOMPARABLE`` are semantically distinct: a tie
+    means both items were judged equal on the dimension; incomparable means
+    the dimension does not meaningfully apply to this pair. ``ABSTAIN`` and
+    ``INSUFFICIENT_EVIDENCE`` must never be treated as weak preferences by
+    downstream aggregation (:mod:`polylogue.insights.judgment.rankers`) --
+    they contribute zero directed preference edges.
+    """
+
+    PREFER_LEFT = "prefer_left"
+    PREFER_RIGHT = "prefer_right"
+    TIE = "tie"
+    INCOMPARABLE = "incomparable"
+    ABSTAIN = "abstain"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+    @classmethod
+    def from_string(cls, value: str | ComparativeVerdict) -> ComparativeVerdict:
         if isinstance(value, cls):
             return value
         return cls(str(value).strip().lower())

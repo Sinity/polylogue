@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.pipeline.services.parsing_models import (
     IngestPhase,
     IngestResult,
@@ -16,7 +16,7 @@ from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_f
 
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
-    from polylogue.protocols import ProgressCallback
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 

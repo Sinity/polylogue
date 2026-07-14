@@ -273,7 +273,8 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             CREATE TABLE session_latency_profiles (
                 session_id TEXT PRIMARY KEY,
                 materializer_version INTEGER NOT NULL,
-                source_sort_key REAL
+                source_sort_key REAL,
+                source_updated_at TEXT
             );
             CREATE TABLE insight_materialization (
                 insight_type TEXT NOT NULL,

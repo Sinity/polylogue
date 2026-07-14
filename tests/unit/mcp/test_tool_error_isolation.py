@@ -23,7 +23,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.errors import SchemaVersionMismatchError
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
 from tests.infra.mcp import MCPServerUnderTest

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
@@ -29,7 +30,6 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.types import SessionId
 
 
 def _row_to_session_work_event_record(row: sqlite3.Row) -> SessionWorkEventRecord:

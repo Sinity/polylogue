@@ -27,7 +27,7 @@ from polylogue.archive.query.search_hits import (
 )
 from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
-from polylogue.protocols import VectorProvider
+from polylogue.core.protocols import VectorProvider
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import SessionBuilder
@@ -129,7 +129,7 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
 
 @pytest.mark.asyncio
 async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.errors import DatabaseError
+    from polylogue.core.errors import DatabaseError
 
     repository = SimpleNamespace(search_actions=AsyncMock())
     direct = [_session("conv-direct")]

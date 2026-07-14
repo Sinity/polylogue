@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup

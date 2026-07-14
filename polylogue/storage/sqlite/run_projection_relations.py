@@ -14,13 +14,13 @@ from typing import Protocol
 
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.types import SessionId
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.runtime import (
     SessionContextSnapshotRecord,
     SessionObservedEventRecord,
     SessionRunRecord,
 )
-from polylogue.types import SessionId
 
 
 class RowLike(Protocol):
@@ -153,7 +153,7 @@ def run_relation_sql(*, include_materialized: bool = False) -> str:
             "session_runs materialized table is no longer written to (polylogue-dab). "
             "Pass include_materialized=False or omit the argument."
         )
-    return f"""
+    return """
 WITH source_runs AS (
     SELECT
         'source' AS row_source,
@@ -339,7 +339,7 @@ def context_snapshot_relation_sql(*, include_materialized: bool = False) -> str:
             "session_context_snapshots materialized table is no longer written to (polylogue-dab). "
             "Pass include_materialized=False or omit the argument."
         )
-    return f"""
+    return """
 WITH source_context_snapshots AS (
     SELECT
         'source' AS row_source,

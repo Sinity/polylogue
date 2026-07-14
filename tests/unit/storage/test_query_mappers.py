@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 from polylogue.core.enums import Origin
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.runtime import (
     MessageRecord,
     RawSessionRecord,

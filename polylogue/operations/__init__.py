@@ -15,9 +15,7 @@ from .import_operations import (
     ImportRequest,
 )
 from .operation_contract import (
-    OperationAck,
     OperationFollowUp,
-    OperationRequest,
     OperationStatus,
 )
 from .specs import (
@@ -36,11 +34,9 @@ __all__ = [
     "ImportAck",
     "ImportOperation",
     "ImportRequest",
-    "OperationAck",
     "OperationCatalog",
     "OperationFollowUp",
     "OperationKind",
-    "OperationRequest",
     "OperationSpec",
     "OperationStatus",
     "RawFailureSample",

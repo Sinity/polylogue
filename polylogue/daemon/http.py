@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sources import source_name_to_origin
@@ -68,7 +69,6 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
 )
-from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
@@ -447,7 +447,7 @@ def _web_reader_archive_root() -> Path | None:
         if not path.exists():
             return None
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         except sqlite3.Error as exc:
             logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
@@ -2128,7 +2128,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not dbp.exists():
                 quick_check_ok = False
             else:
-                with sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25) as conn:
+                with contextlib.closing(sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25)) as conn:
                     conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         except (OSError, sqlite3.Error):
             quick_check_ok = False

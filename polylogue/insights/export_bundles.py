@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from polylogue.config import Config
+from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument, dumps, require_json_document
-from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveInsightUnavailableError,

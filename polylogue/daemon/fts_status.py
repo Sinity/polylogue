@@ -158,10 +158,9 @@ def _payload_int(surface: dict[str, int | bool | str | None], key: str) -> int:
 
 
 def _archive_index_path_for(dbf: Path) -> Path | None:
-    if dbf.name == "index.db":
-        return dbf
-    index_db = dbf.with_name("index.db")
-    return index_db if index_db.exists() else None
+    from polylogue.paths import sibling_index_db
+
+    return sibling_index_db(dbf, require_exists=True)
 
 
 def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:

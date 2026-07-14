@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
