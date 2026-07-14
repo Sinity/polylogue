@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from polylogue.archive.message.roles import Role
+from polylogue.archive.message.roles import ROLE_SQL_VALUES, Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
+    ROLE_SYNONYMS,
     BlockType,
     Origin,
     PasteBoundary,
@@ -71,3 +72,30 @@ def test_provider_aliases_still_normalize_during_transition() -> None:
     assert Provider.from_string("openai") is Provider.CHATGPT
     assert Provider.from_string("claude") is Provider.CLAUDE_AI
     assert str(Provider.CODEX) == "codex"
+
+
+def test_role_synonyms_and_sql_values_are_coupled() -> None:
+    """Verify ROLE_SYNONYMS and ROLE_SQL_VALUES stay in sync (coupling test).
+
+    ROLE_SYNONYMS in core/enums.py is the single source of truth for role synonyms.
+    ROLE_SQL_VALUES in archive/message/roles.py is derived from ROLE_SYNONYMS.
+    This test ensures they remain coupled.
+    """
+    # Every canonical role in ROLE_SYNONYMS has corresponding entry in ROLE_SQL_VALUES
+    assert set(ROLE_SYNONYMS.keys()) == set(ROLE_SQL_VALUES.keys())
+
+    # Every synonym in ROLE_SYNONYMS round-trips through Role.normalize
+    for canonical_role, synonyms in ROLE_SYNONYMS.items():
+        for synonym in synonyms:
+            normalized = Role.normalize(synonym)
+            assert normalized is canonical_role, (
+                f"Synonym {synonym!r} normalized to {normalized}, expected {canonical_role}"
+            )
+
+    # ROLE_SQL_VALUES values match ROLE_SYNONYMS (as sorted tuples)
+    for canonical_role, synonyms in ROLE_SYNONYMS.items():
+        sql_values = ROLE_SQL_VALUES[canonical_role]
+        expected_values = tuple(sorted(synonyms))
+        assert sql_values == expected_values, (
+            f"ROLE_SQL_VALUES[{canonical_role}] = {sql_values}, expected {expected_values}"
+        )

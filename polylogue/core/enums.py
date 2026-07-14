@@ -126,15 +126,21 @@ class Role(PolylogueStrEnum):
         if not lowered:
             raise ValueError("Role cannot be empty. Handle missing roles at parse time.")
 
-        if lowered in {"user", "human"}:
-            return cls.USER
-        if lowered in {"assistant", "model", "ai"}:
-            return cls.ASSISTANT
-        if lowered in {"system", "developer"}:
-            return cls.SYSTEM
-        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
-            return cls.TOOL
+        for canonical, synonyms in ROLE_SYNONYMS.items():
+            if lowered in synonyms:
+                return canonical
         return cls.UNKNOWN
+
+
+# Single source of truth for role synonym mapping (canonical -> provider strings).
+# Used by Role.normalize and derived by archive/message/roles.py for SQL filtering.
+ROLE_SYNONYMS: dict[Role, frozenset[str]] = {
+    Role.USER: frozenset(("user", "human")),
+    Role.ASSISTANT: frozenset(("assistant", "model", "ai")),
+    Role.SYSTEM: frozenset(("system", "developer")),
+    Role.TOOL: frozenset(("tool", "function", "tool_use", "tool_result", "progress", "result")),
+    Role.UNKNOWN: frozenset(("unknown",)),
+}
 
 
 class MessageType(PolylogueStrEnum):

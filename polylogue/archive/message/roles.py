@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import TypeAlias
 
-from polylogue.core.enums import Role
+from polylogue.core.enums import ROLE_SYNONYMS, Role
 
 
 def normalize_role(raw: str) -> str:
@@ -15,12 +15,10 @@ def normalize_role(raw: str) -> str:
 
 MessageRoleFilter: TypeAlias = tuple[Role, ...]
 
+# Derive SQL values for role filtering from the single source of truth in core/enums.py.
+# Maps each canonical role to its provider string synonyms for SQL WHERE clause expansion.
 ROLE_SQL_VALUES: dict[Role, tuple[str, ...]] = {
-    Role.USER: ("user", "human"),
-    Role.ASSISTANT: ("assistant", "model", "ai"),
-    Role.SYSTEM: ("system", "developer"),
-    Role.TOOL: ("tool", "function", "tool_use", "tool_result", "progress", "result"),
-    Role.UNKNOWN: ("unknown",),
+    role: tuple(sorted(synonyms)) for role, synonyms in ROLE_SYNONYMS.items()
 }
 
 
