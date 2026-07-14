@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 if TYPE_CHECKING:
     pass
