@@ -793,7 +793,12 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         plan_active=_not_none,
         spec_description=_label("cursor"),
         plan_description=_label("cursor"),
-        record_attr="cursor",
+        # No record_attr: SessionRecordQuery has no `cursor` field (no
+        # result-set-pagination concept exists yet). A `record_attr="cursor"`
+        # mapping here was dangling dead code -- session_record_query_for_plan
+        # would TypeError on dataclasses.replace(..., cursor=...) the moment
+        # any plan ever carried a non-None cursor. Wire this properly (add a
+        # real `cursor` field to SessionRecordQuery) if/when pagination lands.
         storage_value=lambda v: str(v) if v else None,
         selection_filter=False,
         mcp_names=("cursor",),

@@ -7,6 +7,14 @@ Only protocols with 2+ implementations earn their existence here:
 implementations had zero production consumers — production full-text and
 hybrid retrieval has always queried FTS5/vector tables and fused results
 inline rather than through a swappable provider abstraction.
+
+``SessionReader``, ``SearchStore``, ``ArchiveMessageQueryStore``,
+``SemanticArchiveQueryStore``, ``SessionSemanticStatsStore``, and
+``SessionArchiveReadStore`` were removed (polylogue-a7xr.11): each had zero
+consumers anywhere in the tree. Their methods that surviving protocols
+actually needed (``SessionQueryRuntimeStore``, ``SessionOutputStore``,
+``SessionArchiveStatsStore``) are inlined directly rather than inherited
+from a now-deleted shared base.
 """
 
 from __future__ import annotations
@@ -39,7 +47,6 @@ if TYPE_CHECKING:
         RawSessionRecord,
         SessionRecord,
     )
-    from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
 
 
@@ -84,12 +91,33 @@ class ProgressCallback(Protocol):
 
 
 @runtime_checkable
-class SessionReader(Protocol):
-    """Read-only interface for session retrieval.
+class NeighborStore(Protocol):
+    """Minimal session access protocol for neighboring-session discovery.
 
-    Subset of SessionRepository used by filters and query specs that
-    only need to read sessions, not write or search them.
+    Consumed by: polylogue.archive.session.neighbor_candidates.discover_neighbor_candidates
     """
+
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
+
+    async def get(self, session_id: str) -> Session | None: ...
+
+    async def list_summaries_by_query(
+        self,
+        query: SessionRecordQuery,
+    ) -> list[SessionSummary]: ...
+
+    async def search_summary_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        origins: builtins.list[str] | None = None,
+        since: str | None = None,
+    ) -> list[SessionSearchHit]: ...
+
+
+@runtime_checkable
+class SessionQueryRuntimeStore(Protocol):
+    """Repository/query runtime surface consumed by canonical query execution."""
 
     async def get(self, session_id: str) -> Session | None: ...
 
@@ -176,24 +204,19 @@ class SessionReader(Protocol):
         limit: int | None = None,
     ) -> AsyncIterator[Message]: ...
 
-
-@runtime_checkable
-class SearchStore(Protocol):
-    """Search interface for session retrieval."""
-
     async def search(
         self,
         query: str,
         limit: int = 20,
         origins: builtins.list[str] | None = None,
-    ) -> list[Session]: ...
+    ) -> builtins.list[Session]: ...
 
     async def search_summaries(
         self,
         query: str,
         limit: int = 20,
         origins: builtins.list[str] | None = None,
-    ) -> list[SessionSummary]: ...
+    ) -> builtins.list[SessionSummary]: ...
 
     async def search_summary_hits(
         self,
@@ -201,58 +224,24 @@ class SearchStore(Protocol):
         limit: int = 20,
         origins: builtins.list[str] | None = None,
         since: str | None = None,
-    ) -> list[SessionSearchHit]: ...
+    ) -> builtins.list[SessionSearchHit]: ...
 
     async def search_similar(
         self,
         text: str,
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
-    ) -> list[Session]: ...
-
-
-@runtime_checkable
-class NeighborStore(Protocol):
-    """Minimal session access protocol for neighboring-session discovery.
-
-    Consumed by: polylogue.archive.session.neighbor_candidates.discover_neighbor_candidates
-    """
-
-    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
-
-    async def get(self, session_id: str) -> Session | None: ...
+    ) -> builtins.list[Session]: ...
 
     async def list_summaries_by_query(
         self,
         query: SessionRecordQuery,
-    ) -> list[SessionSummary]: ...
-
-    async def search_summary_hits(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-    ) -> list[SessionSearchHit]: ...
-
-
-@runtime_checkable
-class SessionQueryRuntimeStore(
-    SessionReader,
-    SearchStore,
-    Protocol,
-):
-    """Repository/query runtime surface consumed by canonical query execution."""
-
-    async def list_summaries_by_query(
-        self,
-        query: SessionRecordQuery,
-    ) -> list[SessionSummary]: ...
+    ) -> builtins.list[SessionSummary]: ...
 
     async def list_by_query(
         self,
         query: SessionRecordQuery,
-    ) -> list[Session]: ...
+    ) -> builtins.list[Session]: ...
 
     async def count_by_query(self, query: SessionRecordQuery) -> int: ...
 
@@ -263,62 +252,97 @@ class SessionQueryRuntimeStore(
         query: str,
         limit: int = 20,
         origins: builtins.list[str] | None = None,
-    ) -> list[Session]: ...
+    ) -> builtins.list[Session]: ...
 
 
 @runtime_checkable
-class ArchiveMessageQueryStore(Protocol):
-    """Low-level archive/message query band used by CLI output and stats helpers."""
+class SessionOutputStore(Protocol):
+    """Session output surface used by streaming and summary display helpers."""
 
-    async def get_messages(self, session_id: str) -> list[MessageRecord]: ...
+    async def get(self, session_id: str) -> Session | None: ...
 
-    async def get_messages_paginated(
+    async def get_eager(self, session_id: str) -> Session | None: ...
+
+    async def list(
+        self,
+        limit: int | None = 50,
+        offset: int = 0,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        referenced_path: builtins.list[str] | None = None,
+        cwd_prefix: str | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        message_type: str | None = None,
+    ) -> builtins.list[Session]: ...
+
+    async def list_summaries(
+        self,
+        limit: int | None = 50,
+        offset: int = 0,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
+        source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        referenced_path: builtins.list[str] | None = None,
+        cwd_prefix: str | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        message_type: str | None = None,
+    ) -> builtins.list[SessionSummary]: ...
+
+    async def count(
+        self,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+        referenced_path: builtins.list[str] | None = None,
+        cwd_prefix: str | None = None,
+        action_terms: builtins.list[str] | None = None,
+        excluded_action_terms: builtins.list[str] | None = None,
+        tool_terms: builtins.list[str] | None = None,
+        excluded_tool_terms: builtins.list[str] | None = None,
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        message_type: str | None = None,
+    ) -> int: ...
+
+    async def get_summary(self, session_id: str) -> SessionSummary | None: ...
+
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
+
+    def iter_messages(
         self,
         session_id: str,
         *,
-        message_role: MessageRoleFilter = (),
-        message_type: MessageTypeName | None = None,
+        message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
-        limit: int = 50,
-        offset: int = 0,
-    ) -> tuple[list[MessageRecord], int]: ...
-
-    async def get_session_stats(self, session_id: str) -> dict[str, int]: ...
-
-    async def get_message_counts_batch(self, session_ids: list[str]) -> dict[str, int]: ...
-
-    async def aggregate_message_stats(
-        self,
-        session_ids: list[str] | None = None,
-    ) -> AggregateMessageStats: ...
-
-    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]: ...
-
-
-@runtime_checkable
-class SemanticArchiveQueryStore(ArchiveMessageQueryStore, Protocol):
-    """Archive query band needed to hydrate semantic facts in batch."""
-
-    async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]: ...
-
-    async def get_messages_batch(
-        self,
-        session_ids: list[str],
-        *,
-        sort_key_since: float | None = None,
-        sort_key_until: float | None = None,
-        message_role: MessageRoleFilter = (),
-    ) -> dict[str, list[MessageRecord]]: ...
-
-    async def get_attachments_batch(
-        self,
-        session_ids: list[str],
-    ) -> dict[str, list[AttachmentRecord]]: ...
-
-
-@runtime_checkable
-class SessionOutputStore(SessionReader, Protocol):
-    """Session output surface used by streaming and summary display helpers."""
+        limit: int | None = None,
+    ) -> AsyncIterator[Message]: ...
 
     async def get_render_projection(
         self,
@@ -327,12 +351,15 @@ class SessionOutputStore(SessionReader, Protocol):
 
     async def get_session_stats(self, session_id: str) -> dict[str, int]: ...
 
-    async def get_message_counts_batch(self, session_ids: list[str]) -> dict[str, int]: ...
+    async def get_message_counts_batch(self, session_ids: builtins.list[str]) -> dict[str, int]: ...
 
 
 @runtime_checkable
-class SessionSemanticStatsStore(Protocol):
-    """Semantic stats surface derived from sessions, messages, and blocks."""
+class SessionArchiveStatsStore(
+    SessionOutputStore,
+    Protocol,
+):
+    """Archive stats/profile surface consumed by grouped CLI output helpers."""
 
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]: ...
 
@@ -354,15 +381,6 @@ class SessionSemanticStatsStore(Protocol):
         self,
         session_ids: list[str],
     ) -> dict[str, tuple[Action, ...]]: ...
-
-
-@runtime_checkable
-class SessionArchiveStatsStore(
-    SessionOutputStore,
-    SessionSemanticStatsStore,
-    Protocol,
-):
-    """Archive stats/profile surface consumed by grouped CLI output helpers."""
 
     async def aggregate_message_stats(
         self,
@@ -412,17 +430,6 @@ class TagStore(Protocol):
 
 
 @runtime_checkable
-class SessionArchiveReadStore(SessionReader, SearchStore, Protocol):
-    """Small read-side surface used by UI and resource adapters."""
-
-    async def get_archive_stats(
-        self,
-        *,
-        conn: aiosqlite.Connection | None = None,
-    ) -> ArchiveStats: ...
-
-
-@runtime_checkable
 class RawPersistenceStore(Protocol):
     """Minimal raw-persistence surface used during acquisition."""
 
@@ -464,13 +471,8 @@ class RawValidationStore(Protocol):
 __all__ = [
     "VectorProvider",
     "ProgressCallback",
-    "SessionReader",
-    "SearchStore",
     "SessionQueryRuntimeStore",
-    "ArchiveMessageQueryStore",
-    "SemanticArchiveQueryStore",
     "SessionOutputStore",
-    "SessionSemanticStatsStore",
     "SessionArchiveStatsStore",
     "TagStore",
     "RawPersistenceStore",
