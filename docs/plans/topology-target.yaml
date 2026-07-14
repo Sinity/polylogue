@@ -1748,6 +1748,38 @@ files:
     loc: 215
     target: polylogue/insights/improvement_loops.py
     owner: stable
+  - path: polylogue/insights/measurement/__init__.py
+    loc: 30
+    target: polylogue/insights/measurement/__init__.py
+    owner: stable
+  - path: polylogue/insights/measurement/alert_budget.py
+    loc: 229
+    target: polylogue/insights/measurement/alert_budget.py
+    owner: stable
+  - path: polylogue/insights/measurement/canon.py
+    loc: 78
+    target: polylogue/insights/measurement/canon.py
+    owner: stable
+  - path: polylogue/insights/measurement/evidence_ancestry.py
+    loc: 232
+    target: polylogue/insights/measurement/evidence_ancestry.py
+    owner: stable
+  - path: polylogue/insights/measurement/metric.py
+    loc: 184
+    target: polylogue/insights/measurement/metric.py
+    owner: stable
+  - path: polylogue/insights/measurement/ratio.py
+    loc: 143
+    target: polylogue/insights/measurement/ratio.py
+    owner: stable
+  - path: polylogue/insights/measurement/registration.py
+    loc: 107
+    target: polylogue/insights/measurement/registration.py
+    owner: stable
+  - path: polylogue/insights/measurement/uncertainty.py
+    loc: 174
+    target: polylogue/insights/measurement/uncertainty.py
+    owner: stable
   - path: polylogue/insights/otlp_correlation.py
     loc: 509
     target: polylogue/insights/otlp_correlation.py
@@ -3691,7 +3723,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/types.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user.py
-    loc: 290
+    loc: 323
     target: polylogue/storage/sqlite/archive_tiers/user.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_annotations.py
@@ -3737,6 +3769,10 @@ files:
   - path: polylogue/storage/sqlite/finding_provenance.py
     loc: 134
     target: polylogue/storage/sqlite/finding_provenance.py
+    owner: stable
+  - path: polylogue/storage/sqlite/holdout_cohorts.py
+    loc: 260
+    target: polylogue/storage/sqlite/holdout_cohorts.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
     loc: 250
