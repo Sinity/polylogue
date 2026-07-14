@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final, cast
 
+from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
@@ -29,6 +30,11 @@ from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 RECEIPT_SCHEMA: Final = "polylogue.archive-schema-fast-forward.v1"
+# A smaller receipt written immediately after one index clone proof succeeds
+# -- before embeddings/ops work -- so a later prepare attempt can reuse a
+# fully-proven clone without re-running its table census, foreign-key check,
+# and quick_check against the (potentially tens-of-GiB) clone file.
+INDEX_CLONE_CHECKPOINT_SCHEMA: Final = "polylogue.archive-schema-fast-forward.index-clone-checkpoint.v1"
 _BEADS_ORIGIN: Final = "beads-issue"
 _INDEX_COPY_FORWARD_TABLES: Final = ("sessions", "session_links")
 _SQLITE_SIDECARS: Final = ("-wal", "-shm", "-journal")
@@ -53,6 +59,7 @@ class CloneForwardResult:
     clone: DatabaseEvidence
     foreign_key_declarations_preserved: bool
     foreign_key_check: tuple[str, ...]
+    quick_check: tuple[str, ...] = ()
 
 
 def _now_ms() -> int:
@@ -144,6 +151,20 @@ def _database_evidence(path: Path) -> DatabaseEvidence:
             size_bytes=path.stat().st_size,
             table_counts=_table_counts(conn),
         )
+
+
+def _database_evidence_from_payload(payload: dict[str, object]) -> DatabaseEvidence:
+    """Reconstruct ``DatabaseEvidence`` from a JSON-decoded receipt field."""
+    raw_table_counts = payload.get("table_counts")
+    if not isinstance(raw_table_counts, dict):
+        raise SchemaFastForwardError("checkpoint clone evidence is missing table_counts")
+    return DatabaseEvidence(
+        path=str(payload.get("path", "")),
+        user_version=int(cast(int, payload.get("user_version", -1))),
+        sha256=str(payload.get("sha256", "")),
+        size_bytes=int(cast(int, payload.get("size_bytes", -1))),
+        table_counts={str(name): int(cast(int, count)) for name, count in raw_table_counts.items()},
+    )
 
 
 def _require_receipt_identity(payload: dict[str, object], key: str, path: Path) -> None:
@@ -347,6 +368,7 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
     require_no_beads_evidence(source)
     reflink_clone(source, destination)
     canonical_tables, canonical_indexes = _canonical_index_objects()
+    quick_check: tuple[str, ...] = ()
     try:
         with sqlite3.connect(destination) as conn:
             before_fk = _foreign_key_declarations(conn)
@@ -379,7 +401,7 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
     if clone_after.table_counts != source_before.table_counts:
         destination.unlink(missing_ok=True)
         raise SchemaFastForwardError("index copy-forward changed structural row counts")
-    return CloneForwardResult(source_before, clone_after, True, ())
+    return CloneForwardResult(source_before, clone_after, True, (), quick_check)
 
 
 def fast_forward_embeddings_clone(source: Path, destination: Path) -> CloneForwardResult:
@@ -388,6 +410,7 @@ def fast_forward_embeddings_clone(source: Path, destination: Path) -> CloneForwa
     if source_before.user_version != 1:
         raise SchemaFastForwardError(f"embeddings clone requires v1, found v{source_before.user_version}")
     reflink_clone(source, destination)
+    quick_check: tuple[str, ...] = ()
     try:
         with sqlite3.connect(destination) as conn:
             loaded, error = try_load_sqlite_vec(conn)
@@ -415,7 +438,114 @@ def fast_forward_embeddings_clone(source: Path, destination: Path) -> CloneForwa
     if comparable != source_before.table_counts:
         destination.unlink(missing_ok=True)
         raise SchemaFastForwardError("embeddings clone changed existing row counts")
-    return CloneForwardResult(source_before, clone_after, True, ())
+    return CloneForwardResult(source_before, clone_after, True, (), quick_check)
+
+
+def _canonical_ddl_sha256() -> str:
+    """Cheap in-memory identity of the target index copy-forward DDL.
+
+    Guards a checkpoint against reuse across a code change that alters the
+    canonical target schema between a failed attempt and its retry: no file
+    I/O beyond the ``:memory:`` DDL execution ``_canonical_index_objects``
+    already performs.
+    """
+    tables, indexes = _canonical_index_objects()
+    body = json.dumps({"tables": tables, "indexes": indexes}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _index_clone_checkpoint_path(clone_path: Path) -> Path:
+    return clone_path.with_name(f"{clone_path.name}.clone-checkpoint.json")
+
+
+def _lightweight_database_identity(path: Path) -> tuple[str, int, int]:
+    """Return (sha256, size_bytes, user_version) without a table census.
+
+    ``_database_evidence`` additionally runs ``_table_counts``, which walks
+    every table's rows -- exactly the duplicate work a checkpoint reuse is
+    meant to skip.  Byte identity (sha256) is still computed in full; only the
+    derived SQL-level census is omitted, and only when a checkpoint already
+    recorded it against these same bytes.
+    """
+    with _open_immutable_readonly(path) as conn:
+        _load_vec_if_required(conn)
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    return _sha256(path), path.stat().st_size, user_version
+
+
+def write_index_clone_checkpoint(result: CloneForwardResult, *, clone_path: Path) -> dict[str, object]:
+    """Persist a self-checking index clone-proof checkpoint beside ``clone_path``.
+
+    Called immediately after one index clone proof succeeds, before
+    embeddings/ops work -- so a crash before the run's final receipt still
+    leaves behind a fully-verified checkpoint a later ``reuse_index_clone``
+    call can trust instead of re-deriving.
+    """
+    clone_beads_findings = beads_evidence(clone_path)
+    if clone_beads_findings:
+        raise SchemaFastForwardError(
+            f"index clone checkpoint found Beads evidence in the clone: {clone_beads_findings}"
+        )
+    payload: dict[str, object] = {
+        "schema": INDEX_CLONE_CHECKPOINT_SCHEMA,
+        "checkpointed_at_ms": _now_ms(),
+        "source": asdict(result.source),
+        "clone": asdict(result.clone),
+        "foreign_key_declarations_preserved": result.foreign_key_declarations_preserved,
+        "foreign_key_check": list(result.foreign_key_check),
+        "quick_check": list(result.quick_check),
+        "clone_beads_findings": clone_beads_findings,
+        "canonical_ddl_sha256": _canonical_ddl_sha256(),
+    }
+    _write_receipt(_index_clone_checkpoint_path(clone_path), payload)
+    return payload
+
+
+def _load_valid_index_clone_checkpoint(
+    clone_path: Path, *, source_evidence: DatabaseEvidence
+) -> dict[str, object] | None:
+    """Return a checkpoint payload only when self-integrity and source identity hold.
+
+    Any failure here (missing file, tampered hash, drifted source, stale DDL,
+    recorded Beads evidence) returns ``None`` and the caller falls back to a
+    full reprove -- a checkpoint can only skip work, never launder a tampered
+    or stale one into acceptance.
+    """
+    checkpoint_path = _index_clone_checkpoint_path(clone_path)
+    if not checkpoint_path.exists():
+        return None
+    try:
+        raw = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    payload = cast(dict[str, object], raw)
+    if payload.get("schema") != INDEX_CLONE_CHECKPOINT_SCHEMA:
+        return None
+    stored_hash = payload.get("receipt_sha256")
+    body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
+    recomputed = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if not isinstance(stored_hash, str) or stored_hash != recomputed:
+        return None
+    if payload.get("canonical_ddl_sha256") != _canonical_ddl_sha256():
+        return None
+    if payload.get("clone_beads_findings"):
+        return None
+    source_payload = payload.get("source")
+    if not isinstance(source_payload, dict):
+        return None
+    expected_source = asdict(source_evidence)
+    if any(
+        source_payload.get(field) != expected_source.get(field) for field in ("user_version", "sha256", "size_bytes")
+    ):
+        return None
+    clone_payload = payload.get("clone")
+    if not isinstance(clone_payload, dict) or not isinstance(payload.get("foreign_key_check"), list):
+        return None
+    if not isinstance(payload.get("quick_check"), list):
+        return None
+    return payload
 
 
 def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> CloneForwardResult:
@@ -425,6 +555,14 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
     It does not resume arbitrary phases: the active source must still be the
     observed v35 snapshot, and the supplied clone must independently satisfy
     the same structural and integrity proof before its atomic move.
+
+    When a checkpoint written by the original ``fast_forward_index_clone``
+    call is present beside ``staged_clone`` and its recorded source identity
+    still matches, this trusts the checkpoint's already-proven table census,
+    FK check, and quick_check instead of re-deriving them -- verifying only
+    that the clone's bytes (sha256+size+user_version) still match what the
+    checkpoint recorded.  A missing or mismatched checkpoint falls back to
+    the full reprove unchanged.
     """
     source_before = _database_evidence(source)
     if source_before.user_version != 35:
@@ -437,16 +575,37 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
         raise SchemaFastForwardError(f"invalid reused index clone: {staged_clone}")
     if destination.exists():
         raise SchemaFastForwardError(f"reused index destination already exists: {destination}")
-    _finalize_clone_database(staged_clone)
-    require_no_beads_evidence(staged_clone)
-    clone_after = _database_evidence(staged_clone)
+
+    checkpoint = _load_valid_index_clone_checkpoint(staged_clone, source_evidence=source_before)
+    checkpoint_clone: DatabaseEvidence | None = None
+    if checkpoint is not None:
+        _require_no_sidecars(staged_clone)
+        checkpoint_clone = _database_evidence_from_payload(cast(dict[str, object], checkpoint["clone"]))
+        clone_sha256, clone_size, clone_version = _lightweight_database_identity(staged_clone)
+        if (clone_sha256, clone_size, clone_version) != (
+            checkpoint_clone.sha256,
+            checkpoint_clone.size_bytes,
+            checkpoint_clone.user_version,
+        ):
+            checkpoint = None
+            checkpoint_clone = None
+
+    if checkpoint is not None and checkpoint_clone is not None:
+        clone_after = checkpoint_clone
+        foreign_key_check = tuple(str(item) for item in cast(list[object], checkpoint["foreign_key_check"]))
+        quick_check = tuple(str(item) for item in cast(list[object], checkpoint["quick_check"]))
+    else:
+        _finalize_clone_database(staged_clone)
+        require_no_beads_evidence(staged_clone)
+        clone_after = _database_evidence(staged_clone)
+        with _open_immutable_readonly(staged_clone) as conn:
+            foreign_key_check = tuple(str(row) for row in conn.execute("PRAGMA foreign_key_check"))
+            quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
+
     if clone_after.user_version != INDEX_SCHEMA_VERSION:
         raise SchemaFastForwardError(
             f"reused index clone requires v{INDEX_SCHEMA_VERSION}, found v{clone_after.user_version}"
         )
-    with _open_immutable_readonly(staged_clone) as conn:
-        foreign_key_check = tuple(str(row) for row in conn.execute("PRAGMA foreign_key_check"))
-        quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
     if foreign_key_check or quick_check != ("ok",):
         raise SchemaFastForwardError(
             f"reused index clone integrity contract failed: fk={foreign_key_check!r}, quick={quick_check!r}"
@@ -467,7 +626,7 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
     except Exception:
         local_clone.unlink(missing_ok=True)
         raise
-    return CloneForwardResult(source_before, clone_after, True, foreign_key_check)
+    return CloneForwardResult(source_before, clone_after, True, foreign_key_check, quick_check)
 
 
 def atomic_promote(clone: Path, active: Path, rollback: Path) -> dict[str, str]:
@@ -586,53 +745,65 @@ def plan_clone_forward(
     backup_manifest: Path,
     reuse_index_clone_path: Path | None = None,
 ) -> dict[str, object]:
-    """Prepare derived clones and a receipt; it never promotes or migrates durable tiers."""
+    """Prepare derived clones and a receipt; it never promotes or migrates durable tiers.
+
+    Holds the same archive-root-scoped ``RebuildLease`` every daemon and
+    direct maintenance writer honors (``polylogue.storage.index_generation``,
+    wired into ``ArchiveStore.__init__`` via ``ActiveWriterLease``) for the
+    entire prepare phase.  A writer already holding the archive (installed
+    daemon, transient unit, or direct writer) makes this fail before its
+    first read; a writer started after preflight cannot open the archive for
+    write until this phase releases the lease.
+    """
     source = archive_root / "source.db"
     user = archive_root / "user.db"
     index = archive_root / "index.db"
     embeddings = archive_root / "embeddings.db"
     ops = archive_root / "ops.db"
-    for path in (source, user, index, embeddings, ops):
-        if not path.exists():
-            raise SchemaFastForwardError(f"archive tier is missing: {path}")
-    if reuse_index_clone_path is not None:
-        _require_service_stopped("polylogued.service")
-    require_no_beads_evidence(source, index)
-    if not backup_manifest.exists():
-        raise SchemaFastForwardError(f"verified backup manifest is missing: {backup_manifest}")
-    run_root = staging_root / f"schema-forward-{uuid.uuid4().hex}"
-    run_root.mkdir(parents=True, exist_ok=False)
-    index_result = (
-        fast_forward_index_clone(index, run_root / "index.db")
-        if reuse_index_clone_path is None
-        else reuse_index_clone(index, reuse_index_clone_path, run_root / "index.db")
-    )
-    embeddings_result = fast_forward_embeddings_clone(embeddings, run_root / "embeddings.db")
-    initialize_archive_database(run_root / "ops.db", ArchiveTier.OPS)
-    payload: dict[str, object] = {
-        "schema": RECEIPT_SCHEMA,
-        "status": "prepared",
-        "prepared_at_ms": _now_ms(),
-        "archive_root": str(archive_root),
-        "backup_manifest": str(backup_manifest),
-        "staging_root": str(run_root),
-        "reused_index_clone": str(reuse_index_clone_path) if reuse_index_clone_path is not None else None,
-        "source": asdict(_database_evidence(source)),
-        "user": asdict(_database_evidence(user)),
-        "index": asdict(index_result),
-        "embeddings": asdict(embeddings_result),
-        "ops": {
-            "source": asdict(_database_evidence(ops)),
-            "clone": asdict(_database_evidence(run_root / "ops.db")),
-            "rotation": "disposable canonical reset",
-        },
-        "raw_reparse": False,
-        "fts_rebuild": False,
-        "vector_reembed": False,
-        "durable_activation": "stopped-daemon shipped migration runner with retained reflink rollback clones",
-    }
-    _write_receipt(receipt_path, payload)
-    return payload
+    try:
+        with RebuildLease(archive_root):
+            for path in (source, user, index, embeddings, ops):
+                if not path.exists():
+                    raise SchemaFastForwardError(f"archive tier is missing: {path}")
+            _require_service_stopped("polylogued.service")
+            require_no_beads_evidence(source, index)
+            if not backup_manifest.exists():
+                raise SchemaFastForwardError(f"verified backup manifest is missing: {backup_manifest}")
+            run_root = staging_root / f"schema-forward-{uuid.uuid4().hex}"
+            run_root.mkdir(parents=True, exist_ok=False)
+            if reuse_index_clone_path is None:
+                index_result = fast_forward_index_clone(index, run_root / "index.db")
+                write_index_clone_checkpoint(index_result, clone_path=run_root / "index.db")
+            else:
+                index_result = reuse_index_clone(index, reuse_index_clone_path, run_root / "index.db")
+            embeddings_result = fast_forward_embeddings_clone(embeddings, run_root / "embeddings.db")
+            initialize_archive_database(run_root / "ops.db", ArchiveTier.OPS)
+            payload: dict[str, object] = {
+                "schema": RECEIPT_SCHEMA,
+                "status": "prepared",
+                "prepared_at_ms": _now_ms(),
+                "archive_root": str(archive_root),
+                "backup_manifest": str(backup_manifest),
+                "staging_root": str(run_root),
+                "reused_index_clone": str(reuse_index_clone_path) if reuse_index_clone_path is not None else None,
+                "source": asdict(_database_evidence(source)),
+                "user": asdict(_database_evidence(user)),
+                "index": asdict(index_result),
+                "embeddings": asdict(embeddings_result),
+                "ops": {
+                    "source": asdict(_database_evidence(ops)),
+                    "clone": asdict(_database_evidence(run_root / "ops.db")),
+                    "rotation": "disposable canonical reset",
+                },
+                "raw_reparse": False,
+                "fts_rebuild": False,
+                "vector_reembed": False,
+                "durable_activation": "stopped-daemon shipped migration runner with retained reflink rollback clones",
+            }
+            _write_receipt(receipt_path, payload)
+            return payload
+    except RebuildLeaseUnavailableError as exc:
+        raise SchemaFastForwardError(f"refusing prepare while another writer owns the archive: {exc}") from exc
 
 
 def activate_prepared_forward(
@@ -648,6 +819,13 @@ def activate_prepared_forward(
     Before migration this actuator retains byte-identical source/user rollback
     clones.  No second backup, raw reparse, FTS rebuild, or vector re-embed is
     required.
+
+    Holds the archive-root-scoped ``RebuildLease`` (see ``plan_clone_forward``)
+    for the entire migrate-and-promote window, before its first write and
+    across every subsequent write.  If another writer already owns the
+    archive, this raises before mutating anything and the receipt is left
+    exactly as ``prepare`` wrote it (not marked ``rolled_back`` -- nothing was
+    attempted).
     """
     raw_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
     if not isinstance(raw_payload, dict):
@@ -665,60 +843,74 @@ def activate_prepared_forward(
     index = archive_root / "index.db"
     embeddings = archive_root / "embeddings.db"
     ops = archive_root / "ops.db"
-    _require_service_stopped(service)
-    for key, path in (("source", source), ("user", user), ("index", index), ("embeddings", embeddings), ("ops", ops)):
-        _require_receipt_identity(payload, key, path)
-    require_no_beads_evidence(source, index)
-    rollback_root = staging_root / "rollback"
-    rollback_root.mkdir(exist_ok=False)
-    snapshots: list[tuple[Path, Path]] = []
-    promoted: list[dict[str, str]] = []
     try:
-        # Keep exact old durable bytes locally before the runner commits.  The
-        # pre-existing verified manifest still authenticates active paths
-        # because these clones are not promoted before validation.
-        for path in (source, user):
-            clone = rollback_root / path.name
-            reflink_clone(path, clone)
-            snapshots.append((clone, path))
-        with sqlite3.connect(source) as conn:
-            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=backup_manifest)
-        with sqlite3.connect(user) as conn:
-            migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=backup_manifest)
-        # Durable migrations can legitimately leave a WAL behind after their
-        # connection closes.  Finalize those files before immutable evidence
-        # reads: their committed pages must be in the database file, not a
-        # transient sidecar.  This remains inside the rollback boundary.
-        for path in (source, user):
-            _finalize_clone_database(path)
-        promoted.append(_promote_index_generation(staging_root / index.name, index))
-        promoted.append(atomic_promote(staging_root / embeddings.name, embeddings, rollback_root / embeddings.name))
-        promoted.append(atomic_promote(staging_root / ops.name, ops, rollback_root / ops.name))
-        versions = {
-            "source": _database_evidence(source).user_version,
-            "user": _database_evidence(user).user_version,
-            "index": _database_evidence(index).user_version,
-            "embeddings": _database_evidence(embeddings).user_version,
-            "ops": _database_evidence(ops).user_version,
-        }
-    except Exception as exc:
-        for item in reversed(promoted):
-            _restore_promoted(item)
-        for snapshot, active in reversed(snapshots):
-            _restore_snapshot(snapshot, active)
-        payload.update({"status": "rolled_back", "activation_error": f"{type(exc).__name__}: {exc}"})
-        _write_receipt(receipt_path, payload)
-        raise
-    payload.update(
-        {
-            "status": "activated",
-            "activated_at_ms": _now_ms(),
-            "promoted": promoted,
-            "versions": versions,
-        }
-    )
-    _write_receipt(receipt_path, payload)
-    return payload
+        with RebuildLease(archive_root):
+            _require_service_stopped(service)
+            for key, path in (
+                ("source", source),
+                ("user", user),
+                ("index", index),
+                ("embeddings", embeddings),
+                ("ops", ops),
+            ):
+                _require_receipt_identity(payload, key, path)
+            require_no_beads_evidence(source, index)
+            rollback_root = staging_root / "rollback"
+            rollback_root.mkdir(exist_ok=False)
+            snapshots: list[tuple[Path, Path]] = []
+            promoted: list[dict[str, str]] = []
+            try:
+                # Keep exact old durable bytes locally before the runner
+                # commits.  The pre-existing verified manifest still
+                # authenticates active paths because these clones are not
+                # promoted before validation.
+                for path in (source, user):
+                    clone = rollback_root / path.name
+                    reflink_clone(path, clone)
+                    snapshots.append((clone, path))
+                with sqlite3.connect(source) as conn:
+                    migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=backup_manifest)
+                with sqlite3.connect(user) as conn:
+                    migrate_archive_tier(conn, ArchiveTier.USER, backup_manifest=backup_manifest)
+                # Durable migrations can legitimately leave a WAL behind after
+                # their connection closes.  Finalize those files before
+                # immutable evidence reads: their committed pages must be in
+                # the database file, not a transient sidecar.  This remains
+                # inside the rollback boundary.
+                for path in (source, user):
+                    _finalize_clone_database(path)
+                promoted.append(_promote_index_generation(staging_root / index.name, index))
+                promoted.append(
+                    atomic_promote(staging_root / embeddings.name, embeddings, rollback_root / embeddings.name)
+                )
+                promoted.append(atomic_promote(staging_root / ops.name, ops, rollback_root / ops.name))
+                versions = {
+                    "source": _database_evidence(source).user_version,
+                    "user": _database_evidence(user).user_version,
+                    "index": _database_evidence(index).user_version,
+                    "embeddings": _database_evidence(embeddings).user_version,
+                    "ops": _database_evidence(ops).user_version,
+                }
+            except Exception as exc:
+                for item in reversed(promoted):
+                    _restore_promoted(item)
+                for snapshot, active in reversed(snapshots):
+                    _restore_snapshot(snapshot, active)
+                payload.update({"status": "rolled_back", "activation_error": f"{type(exc).__name__}: {exc}"})
+                _write_receipt(receipt_path, payload)
+                raise
+            payload.update(
+                {
+                    "status": "activated",
+                    "activated_at_ms": _now_ms(),
+                    "promoted": promoted,
+                    "versions": versions,
+                }
+            )
+            _write_receipt(receipt_path, payload)
+            return payload
+    except RebuildLeaseUnavailableError as exc:
+        raise SchemaFastForwardError(f"refusing activation while another writer owns the archive: {exc}") from exc
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -767,6 +959,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "CloneForwardResult",
     "DatabaseEvidence",
+    "INDEX_CLONE_CHECKPOINT_SCHEMA",
     "RECEIPT_SCHEMA",
     "SchemaFastForwardError",
     "activate_prepared_forward",
@@ -778,5 +971,6 @@ __all__ = [
     "plan_clone_forward",
     "reflink_clone",
     "require_no_beads_evidence",
+    "write_index_clone_checkpoint",
     "main",
 ]
