@@ -3788,13 +3788,29 @@ def inspect_browser_canonical_authority_conflicts(
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
         for raw_id in raw_ids:
-            base = _inspect_browser_capture_origin_mismatch(
-                archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
-            )
-            if base.status != "ineligible":
-                resolved_count += 1
-                continue
-            items.append(_browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason))
+            # Hold one read transaction across the base eligibility proof and
+            # the witness's own re-reads of the same tables (raw_revision_heads,
+            # raw_session_memberships, raw_revision_applications) so both see
+            # one consistent snapshot. Without this, ``base.reason`` (the
+            # eligibility proof) and the witness's competing-head evidence
+            # are independent point-in-time reads on an autocommit
+            # connection -- a concurrent writer landing between the two
+            # calls could make the exported evidence packet describe a
+            # state inconsistent with the reason it's explaining. This is
+            # cheap read-snapshot isolation, not the apply-time CAS/receipt
+            # ceremony: this function never mutates state, so there is
+            # nothing to roll back -- COMMIT just releases the read lock.
+            conn.execute("BEGIN DEFERRED")
+            try:
+                base = _inspect_browser_capture_origin_mismatch(
+                    archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
+                )
+                if base.status != "ineligible":
+                    resolved_count += 1
+                    continue
+                items.append(_browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason))
+            finally:
+                conn.execute("COMMIT")
     return BrowserCanonicalAuthorityConflictReport(
         requested_count=len(raw_ids),
         conflict_count=len(items),
@@ -3819,11 +3835,35 @@ def record_browser_canonical_authority_conflict_blockers(
     ``status=candidate`` with ``inject: false`` -- it can never self-promote to
     an authoritative, context-injectable claim; an operator must explicitly
     judge it (mirrors ``upsert_pathology_findings_as_assertions``, #2383).
+
+    Deliberately exempt from this file's apply-flag/proof-digest/receipt
+    ceremony (unlike ``repair_duplicate_raw_identity`` and every other
+    actuator in this module): that ceremony exists because those actuators
+    repoint *authoritative* identity state (``raw_revision_heads``,
+    ``sessions``) where an error is expensive to detect and reverse, so they
+    need a CAS re-proof under an exclusive transaction plus a crash-durable
+    receipt trail. This function never touches authoritative state -- it
+    writes exactly one ``candidate``/non-injected/private assertion, through
+    ``upsert_assertion``'s single write chokepoint, which already refuses to
+    resurrect a judged-terminal row (accepted/rejected/deferred/superseded)
+    back to candidate on a later automated write (see that function's
+    docstring). Concretely: (1) the row can never be read as an authoritative
+    claim (``inject: false``, ``promotion_required: true``); (2) an operator's
+    judgment on a previously-recorded blocker is never silently clobbered by a
+    re-run, even one racing this same function; (3) re-running with unchanged
+    evidence is a no-op (deterministic id), and re-running after new evidence
+    creates a new row rather than mutating the old one. This is the same
+    write-safety posture as every other detector-authored candidate writer in
+    this codebase (``upsert_pathology_findings_as_assertions``,
+    ``digest``-derived ``TRANSFORM_CANDIDATE`` rows) -- none of which carry an
+    apply flag either. Adding one here would be ceremony without a
+    corresponding risk to gate.
     """
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         AssertionKind,
         AssertionStatus,
         AssertionVisibility,
+        read_assertion_envelope,
         upsert_assertion,
     )
 
@@ -3844,9 +3884,22 @@ def record_browser_canonical_authority_conflict_blockers(
             assertion_id = hashlib.sha256(
                 f"assertion-blocker-browser-canonical-authority-conflict\0{item.raw_id}\0{item.evidence_digest}".encode()
             ).hexdigest()
+            full_assertion_id = f"blocker:{assertion_id}"
+            existing = read_assertion_envelope(conn, full_assertion_id)
+            if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+                # Mirror ``upsert_pathology_findings_as_assertions``: once an
+                # operator has judged a blocker (accepted/rejected/deferred/
+                # superseded), a re-run over unchanged evidence must not
+                # overwrite its display fields (value/body_text/evidence_refs
+                # are plain ``ON CONFLICT DO UPDATE`` columns in
+                # ``upsert_assertion`` -- only ``status`` itself is protected
+                # by that function's terminal-judgment chokepoint). Leave the
+                # judged row exactly as the operator left it.
+                assertion_ids.append(existing.assertion_id)
+                continue
             envelope = upsert_assertion(
                 conn,
-                assertion_id=f"blocker:{assertion_id}",
+                assertion_id=full_assertion_id,
                 scope_ref=scope_ref,
                 target_ref=f"session:{item.session_id}",
                 key=f"raw/{item.raw_id}",
@@ -3914,6 +3967,232 @@ class DuplicateRawIdentityRepairReport:
     proof_digest: str
     receipt_path: str | None
     items: tuple[DuplicateRawIdentityRepairItem, ...]
+
+
+def _duplicate_raw_identity_repair_targets(
+    items: list[DuplicateRawIdentityRepairItem],
+) -> list[dict[str, object]]:
+    """Identify each locked target by its requested ``(stale, canonical)`` pair only.
+
+    Deliberately narrower than the quarantined-raw receipt's full-item-proof
+    targets: for that actuator the accepted head is never touched by repair,
+    so a proven item's payload (including its head snapshot) is invariant
+    across "eligible" and "already_repaired" states and can safely anchor the
+    receipt. Here, repair *repoints* the accepted head (a fresh
+    ``decided_at_ms`` lands on every apply), so an item's full payload is NOT
+    invariant across states. Anchoring the receipt to the stable requested
+    identity instead lets a resumed invocation -- which necessarily re-proves
+    the CAS witness via a fresh ``proof_digest``, not a stale one -- validate
+    against the SAME on-disk receipt without a spurious "targets changed"
+    rejection caused only by the head's own repair-induced timestamp change.
+    """
+    return [{"stale_raw_id": item.stale_raw_id, "canonical_raw_id": item.canonical_raw_id} for item in items]
+
+
+@dataclass(slots=True)
+class _LockedDuplicateRawIdentityRepairReceipt:
+    path: Path
+    descriptor: int
+    target_hash: str
+    terminal: bool
+    repair_intent_stale_raw_ids: tuple[str, ...]
+    torn_terminals: tuple[bytes, ...] = ()
+    receipt_terminated: bool = True
+
+    def close(self) -> None:
+        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
+        os.close(self.descriptor)
+
+
+def _validate_duplicate_raw_identity_repair_receipt_records(
+    parsed_receipt: tuple[list[dict[str, object] | bytes], bool],
+    *,
+    targets: list[dict[str, object]],
+    target_hash: str,
+) -> tuple[bool, tuple[str, ...], tuple[bytes, ...], bool]:
+    """Mirror ``_validate_repair_receipt_records`` keyed on ``stale_raw_id``.
+
+    Same planned/applied two-phase JSONL shape and torn-terminal recovery as
+    the quarantined-accepted-raw receipt (see that function's docstring) --
+    ``repair_duplicate_raw_identity`` needs the identical crash/audit
+    guarantees as every other live-archive actuator in this file.
+    """
+    records, terminated = parsed_receipt
+    if not records:
+        raise RuntimeError("existing repair receipt is empty")
+    planned = records[0]
+    if not isinstance(planned, dict):
+        raise RuntimeError("existing repair receipt does not start with valid planned JSON")
+    planned_keys = {"schema", "state", "target_hash", "targets", "repair_intent_stale_raw_ids", "planned_at_ms"}
+    if set(planned) != planned_keys or planned.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid planned record schema")
+    if planned.get("state") != "planned":
+        raise RuntimeError("existing repair receipt must start with a planned record")
+    if planned.get("target_hash") != target_hash or planned.get("targets") != targets:
+        raise RuntimeError("existing repair receipt targets do not match the proven repair set")
+    planned_at_ms = planned.get("planned_at_ms")
+    if not isinstance(planned_at_ms, int) or planned_at_ms < 0:
+        raise RuntimeError("existing repair receipt planned timestamp is invalid")
+    stale_raw_ids = tuple(str(target["stale_raw_id"]) for target in targets)
+    intent = planned.get("repair_intent_stale_raw_ids")
+    if not isinstance(intent, list) or any(not isinstance(raw_id, str) for raw_id in intent):
+        raise RuntimeError("existing repair receipt repair intent is invalid")
+    intent_ids = tuple(cast(list[str], intent))
+    if len(set(intent_ids)) != len(intent_ids) or any(raw_id not in stale_raw_ids for raw_id in intent_ids):
+        raise RuntimeError("existing repair receipt repair intent does not match its targets")
+    if len(records) == 1:
+        if not terminated:
+            raise RuntimeError("existing repair receipt has a torn planned record")
+        return False, intent_ids, (), terminated
+    tail = records[1:]
+    applied = tail[-1] if isinstance(tail[-1], dict) else None
+    torn_terminals = (
+        tuple(record for record in tail[:-1] if isinstance(record, bytes))
+        if applied
+        else tuple(record for record in tail if isinstance(record, bytes))
+    )
+    expected_tail_length = len(torn_terminals) + (1 if applied is not None else 0)
+    if len(tail) != expected_tail_length or any(not fragment for fragment in torn_terminals):
+        raise RuntimeError("existing repair receipt has an invalid state transition")
+    if applied is None:
+        return False, intent_ids, torn_terminals, terminated
+    if not terminated:
+        raise RuntimeError("existing repair receipt has an unterminated applied record")
+    recovered = bool(torn_terminals)
+    applied_keys = {
+        "schema",
+        "state",
+        "target_hash",
+        "applied_at_ms",
+        "repaired_stale_raw_ids",
+        "proven_stale_raw_ids",
+    }
+    if recovered:
+        applied_keys |= {"torn_terminals"}
+    if set(applied) != applied_keys or applied.get("schema") != _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA:
+        raise RuntimeError("existing repair receipt has an invalid applied record schema")
+    if applied.get("state") != "applied" or applied.get("target_hash") != target_hash:
+        raise RuntimeError("existing repair receipt has an invalid applied target transition")
+    applied_at_ms = applied.get("applied_at_ms")
+    if not isinstance(applied_at_ms, int) or applied_at_ms < 0:
+        raise RuntimeError("existing repair receipt applied timestamp is invalid")
+    repaired_ids = applied.get("repaired_stale_raw_ids")
+    if (
+        applied.get("proven_stale_raw_ids") != list(stale_raw_ids)
+        or not isinstance(repaired_ids, list)
+        or any(not isinstance(raw_id, str) for raw_id in repaired_ids)
+        or len(set(cast(list[str], repaired_ids))) != len(repaired_ids)
+        or any(raw_id not in intent_ids for raw_id in cast(list[str], repaired_ids))
+    ):
+        raise RuntimeError("existing repair receipt applied ids do not match the planned targets")
+    expected_torn_witnesses = [
+        {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()} for fragment in torn_terminals
+    ]
+    if recovered and applied.get("torn_terminals") != expected_torn_witnesses:
+        raise RuntimeError("existing repair receipt recovery does not match its preserved torn terminal")
+    return True, intent_ids, torn_terminals, terminated
+
+
+def _lock_duplicate_raw_identity_repair_receipt(
+    path: Path,
+    items: list[DuplicateRawIdentityRepairItem],
+) -> _LockedDuplicateRawIdentityRepairReceipt:
+    """Lock one stable receipt inode and create or validate its planned record.
+
+    Same flock(LOCK_EX|LOCK_NB) + O_NOFOLLOW + fsync(file, then parent dir)
+    contract as ``_lock_quarantined_raw_repair_receipt`` -- a concurrent
+    ``--apply`` invocation against the same receipt path fails closed instead
+    of racing a bare ``Path.exists()`` check, and the planned record is
+    durable on disk (not merely in the process) before any mutation begins.
+    """
+    if path.is_symlink():
+        raise RuntimeError("repair receipt path must not be a symbolic link")
+    targets = _duplicate_raw_identity_repair_targets(items)
+    target_hash = hashlib.sha256(json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    repair_intent_stale_raw_ids = tuple(item.stale_raw_id for item in items if item.status == "eligible")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(descriptor)
+        raise RuntimeError("operator repair receipt is already locked by another apply") from exc
+    try:
+        opened = os.fstat(descriptor)
+        named = path.stat(follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise RuntimeError("operator repair receipt path changed while it was being locked")
+        if opened.st_size:
+            terminal, existing_intent, torn_terminals, terminated = (
+                _validate_duplicate_raw_identity_repair_receipt_records(
+                    _receipt_records(descriptor), targets=targets, target_hash=target_hash
+                )
+            )
+            return _LockedDuplicateRawIdentityRepairReceipt(
+                path,
+                descriptor,
+                target_hash,
+                terminal,
+                existing_intent,
+                torn_terminals,
+                terminated,
+            )
+        planned = {
+            "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
+            "state": "planned",
+            "target_hash": target_hash,
+            "targets": targets,
+            "repair_intent_stale_raw_ids": list(repair_intent_stale_raw_ids),
+            "planned_at_ms": int(time.time() * 1000),
+        }
+        encoded = (json.dumps(planned, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        _write_receipt_all(descriptor, encoded)
+        os.fsync(descriptor)
+        _fsync_parent(path)
+        return _LockedDuplicateRawIdentityRepairReceipt(
+            path, descriptor, target_hash, False, repair_intent_stale_raw_ids
+        )
+    except Exception:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+
+
+def _finish_duplicate_raw_identity_repair_receipt(
+    receipt: _LockedDuplicateRawIdentityRepairReceipt,
+    *,
+    items: list[DuplicateRawIdentityRepairItem],
+) -> None:
+    opened = os.fstat(receipt.descriptor)
+    named = receipt.path.stat(follow_symlinks=False)
+    if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+        raise RuntimeError("operator repair receipt path changed before terminal append")
+    os.lseek(receipt.descriptor, 0, os.SEEK_END)
+    preserved_torn_terminals = list(receipt.torn_terminals)
+    if preserved_torn_terminals and not receipt.receipt_terminated:
+        # Make even a complete-JSON prefix permanently distinguishable from a
+        # terminal record after the newline is appended, matching the
+        # quarantined-raw receipt's torn-write recovery contract.
+        _write_receipt_all(receipt.descriptor, b"\xff\n")
+        preserved_torn_terminals[-1] += b"\xff"
+    terminal: dict[str, object] = {
+        "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
+        "state": "applied",
+        "target_hash": receipt.target_hash,
+        "applied_at_ms": int(time.time() * 1000),
+        "repaired_stale_raw_ids": [item.stale_raw_id for item in items if item.repaired],
+        "proven_stale_raw_ids": [item.stale_raw_id for item in items],
+    }
+    if preserved_torn_terminals:
+        terminal["torn_terminals"] = [
+            {"bytes": len(fragment), "sha256": hashlib.sha256(fragment).hexdigest()}
+            for fragment in preserved_torn_terminals
+        ]
+    _write_receipt_all(
+        receipt.descriptor, (json.dumps(terminal, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    os.fsync(receipt.descriptor)
+    _fsync_parent(receipt.path)
 
 
 def _duplicate_raw_identity_ineligible(
@@ -4204,50 +4483,45 @@ def repair_duplicate_raw_identity(
         raise RuntimeError("apply proof digest does not match the exact dry-run target list")
     if apply:
         assert receipt_path is not None
-        if receipt_path.exists():
-            raise RuntimeError("receipt path already exists; choose a fresh operator receipt path")
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                locked = inspect(conn)
-                locked_digest = hashlib.sha256(
-                    json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
-                ).hexdigest()
-                if locked_digest != proof_digest:
-                    raise RuntimeError("authority proof changed after acquiring the repair transaction")
-                if any(item.status == "ineligible" for item in locked):
-                    raise RuntimeError("a duplicate raw identity target became ineligible")
-                for item in locked:
-                    if item.status == "eligible":
-                        _apply_duplicate_raw_identity_repair(conn, item)
-                after = inspect(conn)
-                if any(item.status != "already_repaired" for item in after):
-                    raise RuntimeError("duplicate raw identity repair did not reach terminal state")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-        items = [
-            dataclasses.replace(after_item, repaired=before.status == "eligible")
-            for before, after_item in zip(locked, after, strict=True)
-        ]
-        receipt_path.write_text(
-            json.dumps(
-                {
-                    "schema": _DUPLICATE_RAW_IDENTITY_REPAIR_RECEIPT_SCHEMA,
-                    "state": "applied",
-                    "proof_digest": aggregate,
-                    "items": [dataclasses.asdict(item) for item in items],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
+        receipt = _lock_duplicate_raw_identity_repair_receipt(receipt_path, items)
+        try:
+            with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    locked = inspect(conn)
+                    locked_digest = hashlib.sha256(
+                        json.dumps([item.proof_digest for item in locked], separators=(",", ":")).encode()
+                    ).hexdigest()
+                    if locked_digest != proof_digest:
+                        raise RuntimeError("authority proof changed after acquiring the repair transaction")
+                    if any(item.status == "ineligible" for item in locked):
+                        raise RuntimeError("a duplicate raw identity target became ineligible")
+                    if receipt.terminal and any(item.status != "already_repaired" for item in locked):
+                        raise RuntimeError("terminal operator receipt disagrees with durable index authority")
+                    if receipt.torn_terminals and any(item.status != "already_repaired" for item in locked):
+                        raise RuntimeError("torn terminal receipt has no matching committed index refinement")
+                    for item in locked:
+                        if item.status == "eligible":
+                            _apply_duplicate_raw_identity_repair(conn, item)
+                    after = inspect(conn)
+                    if any(item.status != "already_repaired" for item in after):
+                        raise RuntimeError("duplicate raw identity repair did not reach terminal state")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            items = [
+                dataclasses.replace(after_item, repaired=before.status == "eligible")
+                for before, after_item in zip(locked, after, strict=True)
+            ]
+            if not receipt.terminal:
+                _finish_duplicate_raw_identity_repair_receipt(receipt, items=items)
+        finally:
+            receipt.close()
     return DuplicateRawIdentityRepairReport(
         mode="apply" if apply else "dry-run",
         requested_count=len(items),

@@ -273,6 +273,160 @@ def _seed_equivalent_canonical_head(root: Path, mismatched_raw_id: str) -> str:
     return raw_id
 
 
+def _diverging_browser_payload(native_id: str = "browser-origin-one") -> bytes:
+    """A same-shape browser capture whose *content* genuinely differs from ``_browser_payload``.
+
+    Two messages instead of one, and the first message's text differs from
+    ``_browser_payload``'s -- so a competing byte-proven head seeded from
+    this payload has a real, provably-different message-hash sequence rather
+    than the identical content ``_seed_equivalent_canonical_head`` seeds.
+    """
+    payload = {
+        "capture_id": f"chatgpt:{native_id}",
+        "polylogue_capture_kind": "browser_llm_session",
+        "provenance": {
+            "adapter_name": "chatgpt-native-v1",
+            "capture_mode": "snapshot",
+            "captured_at": "2026-07-13T00:00:00Z",
+            "source_url": f"https://chatgpt.com/c/{native_id}",
+        },
+        "raw_provider_payload": {
+            "id": native_id,
+            "title": "Diverging canonical capture",
+            "create_time": 1_700_000_100,
+            "update_time": 1_700_000_200,
+            "current_node": "node-2",
+            "mapping": {
+                "node-1": {
+                    "id": "node-1",
+                    "parent": None,
+                    "children": ["node-2"],
+                    "message": {
+                        "id": "message-1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["diverging text"]},
+                        "create_time": 1_700_000_100,
+                    },
+                },
+                "node-2": {
+                    "id": "node-2",
+                    "parent": "node-1",
+                    "children": [],
+                    "message": {
+                        "id": "message-2",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["assistant reply"]},
+                        "create_time": 1_700_000_101,
+                    },
+                },
+            },
+            "preserved_padding": "x" * 16_000,
+        },
+        "schema_version": 1,
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": native_id,
+            "title": "DOM fallback",
+            "turns": [{"provider_turn_id": "dom-1", "role": "user", "text": "fallback"}],
+        },
+        "source": "browser-extension",
+    }
+    return json.dumps(payload, sort_keys=True).encode()
+
+
+def _seed_diverging_canonical_byte_head(root: Path, mismatched_raw_id: str) -> str:
+    """Seed a competing byte-proven head with genuinely different content.
+
+    Unlike ``_seed_equivalent_canonical_head`` (identical payload, so the
+    competing content hash MATCHES and the witness takes the
+    "not a hash divergence" branch), this seeds a competing head whose
+    content is provably different -- exercising
+    ``_browser_canonical_authority_conflict_witness``'s byte-frontier
+    message-diff branch (the shape of the real production conflict
+    ``88aefc84...``: incompatible canonical byte head diverging from
+    message 0).
+    """
+    payload = _diverging_browser_payload()
+    session = _parse_one(Provider.CHATGPT, payload, "browser-capture/chatgpt/diverging-canonical.json")[0]
+    accepted_hash = bytes.fromhex(session_content_hash(session))
+    projection = session_revision_projection(session)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="browser-capture/chatgpt/diverging-canonical.json",
+            acquired_at_ms=3,
+        )
+        blob_hash = (
+            archive._ensure_source_conn()
+            .execute("SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()[0]
+            .lower()
+        )
+        _stored_raw, session_id = archive.write_parsed_for_retained_raw(
+            session,
+            raw_id=raw_id,
+            source_path="browser-capture/chatgpt/diverging-canonical.json",
+            acquired_at_ms=3,
+            revision_authoritative=True,
+        )
+        record_revision_application_sync(
+            archive._conn,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id=session_id,
+                logical_source_key="chatgpt:browser-origin-one",
+                source_revision=blob_hash,
+                acquisition_generation=0,
+                decision=ApplicationDecision.SELECTED_BASELINE,
+                accepted_raw_id=raw_id,
+                accepted_source_revision=blob_hash,
+                accepted_content_hash=accepted_hash,
+                accepted_frontier_kind="byte",
+                accepted_frontier=len(payload),
+                baseline_raw_id=raw_id,
+                detail="diverging canonical head",
+            ),
+            decided_at_ms=4,
+        )
+        archive._conn.execute(
+            "UPDATE sessions SET raw_id = ? WHERE session_id = ?",
+            (mismatched_raw_id, session_id),
+        )
+        archive.commit()
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET native_id = 'browser-origin-one', logical_source_key = 'chatgpt:browser-origin-one', revision_kind = 'full',
+                source_revision = lower(hex(blob_hash)), baseline_raw_id = raw_id,
+                acquisition_generation = 0, revision_authority = 'byte_proven'
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) VALUES (?, 'chatgpt:browser-origin-one', 'browser-origin-one', ?, ?, ?, 0,
+                      'byte_proven', 'applied', 4)
+            """,
+            (raw_id, blob_hash, accepted_hash, len(projection.message_hashes)),
+        )
+        source.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'canonical-parser', 'complete', 1, 4, 'diverging canonical evidence')
+            """,
+            (raw_id,),
+        )
+    return raw_id
+
+
 def _seed_semantic_canonical_head(root: Path, mismatched_raw_id: str) -> str:
     raw_id = _seed_equivalent_canonical_head(root, mismatched_raw_id)
     with (
@@ -2134,6 +2288,44 @@ def test_inspect_conflicts_matching_hash_is_membership_shaped_not_a_divergence(t
     assert item.divergence_note is not None and "not a hash divergence" in item.divergence_note
 
 
+def test_inspect_conflicts_byte_frontier_message_divergence_evidence(tmp_path: Path) -> None:
+    """The untested byte-frontier competing-head diff path: real message-level divergence.
+
+    Unlike ``test_inspect_conflicts_matching_hash_is_membership_shaped_not_a_divergence``
+    (identical content, "not a hash divergence" branch) and
+    ``test_inspect_conflicts_semantic_hash_divergence_evidence`` (semantic
+    frontier, no message diff computed), this seeds a competing head that is
+    both byte-frontier AND genuinely content-divergent -- the
+    ``elif competing_frontier_kind == "byte" and competing_raw_id != raw_id``
+    branch in ``_browser_canonical_authority_conflict_witness`` that re-reads
+    the competing raw's own retained blob, reparses it, and computes
+    ``divergent_message_index`` by zipping two message-hash projections. This
+    is the shape of the real production conflict this evidence-builder
+    exists to explain (an incompatible canonical byte head diverging from
+    message 0). Deleting or breaking this branch (e.g. reverting to the
+    semantic-frontier "no diff available" note, or leaving
+    ``divergent_message_index`` unset) makes this test fail.
+    """
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    competing_raw_id = _seed_diverging_canonical_byte_head(tmp_path, raw_id)
+
+    report = inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id])
+
+    assert report.conflict_count == 1
+    item = report.items[0]
+    assert item.competing_raw_id == competing_raw_id
+    assert item.competing_frontier_kind == "byte"
+    assert item.competing_content_hash is not None
+    assert item.competing_content_hash != item.unknown_raw_content_hash
+    # The competing head's own retained bytes were re-parsed (2 messages),
+    # proving this is a real re-derivation, not a stub/None fallback.
+    assert item.competing_message_count == 2
+    assert item.unknown_raw_message_count == 1
+    assert item.divergent_message_index == 0
+    assert item.divergence_note is None
+    assert item.evidence_digest is not None
+
+
 def test_inspect_conflicts_rejects_duplicate_and_malformed_ids(tmp_path: Path) -> None:
     raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
     with pytest.raises(ValueError, match="duplicate"):
@@ -2187,3 +2379,75 @@ def test_record_conflict_blockers_persists_durable_candidate_assertions(tmp_path
             ("session:chatgpt-export:browser-origin-one",),
         ).fetchone()[0]
         assert count == 1
+
+
+def test_record_conflict_blockers_never_clobbers_an_operator_judged_row(tmp_path: Path) -> None:
+    """A judged blocker (accepted/rejected/deferred/superseded) must survive a re-run.
+
+    Mirrors ``upsert_pathology_findings_as_assertions``'s terminal-judgment
+    chokepoint (37t.15): once an operator has judged a candidate this
+    detector produced, a later automated re-run over the SAME evidence must
+    not resurrect or mutate the judged row's status/value -- only
+    ``upsert_assertion``'s own ON CONFLICT DO UPDATE would otherwise
+    overwrite the display fields (value/body_text/evidence_refs) on every
+    call, since only ``status`` itself is protected by that function's
+    chokepoint. Deleting the ``read_assertion_envelope``/``existing.status``
+    guard in ``record_browser_canonical_authority_conflict_blockers`` makes
+    this test fail: the accepted row's value would silently be overwritten
+    back to the detector's regenerated evidence payload.
+    """
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        judge_assertion_candidate,
+        read_assertion_envelope,
+    )
+
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
+            "WHERE accepted_raw_id = ?",
+            (semantic_raw_id,),
+        )
+
+    _report, assertion_ids = record_browser_canonical_authority_conflict_blockers(_config(tmp_path), [raw_id])
+    assert len(assertion_ids) == 1
+    assertion_ref = assertion_ids[0]
+
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
+        judge_assertion_candidate(
+            user_conn,
+            candidate_ref=assertion_ref,
+            decision="accept",
+            reason="operator confirmed this conflict is real",
+        )
+        user_conn.commit()
+        judged = read_assertion_envelope(user_conn, assertion_ref)
+        assert judged is not None
+        assert judged.status.value == "accepted"
+        judged_value = judged.value
+
+    # Re-running the detector over the identical evidence must leave the
+    # judged row's status and value exactly as the operator left it.
+    _report_again, assertion_ids_again = record_browser_canonical_authority_conflict_blockers(
+        _config(tmp_path), [raw_id]
+    )
+    assert assertion_ids_again == assertion_ids
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
+        still_judged = read_assertion_envelope(user_conn, assertion_ref)
+        assert still_judged is not None
+        assert still_judged.status.value == "accepted"
+        assert still_judged.value == judged_value
+        # ``judge_assertion_candidate(decision="accept")`` legitimately leaves
+        # TWO ``blocker`` rows for this target: the original candidate
+        # (mutated in place to ``status=accepted`` by ``mark_assertion_status``,
+        # same assertion id as ``assertion_ref``) plus a separate promoted
+        # "resulting assertion" row that ``_promote_candidate_assertion``
+        # inserts under a distinct id. The guard under test only has to leave
+        # the ORIGINAL judged row alone -- it must not grow a THIRD row (which
+        # would mean the re-run resurrected or duplicated the candidate).
+        count = user_conn.execute(
+            "SELECT COUNT(*) FROM assertions WHERE kind = 'blocker' AND target_ref = ?",
+            ("session:chatgpt-export:browser-origin-one",),
+        ).fetchone()[0]
+        assert count == 2

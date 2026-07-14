@@ -324,6 +324,121 @@ def test_apply_refuses_stale_proof_digest(tmp_path: Path) -> None:
         )
 
 
+def test_apply_serializes_one_receipt_inode_against_a_concurrent_apply(tmp_path: Path) -> None:
+    """A second ``--apply`` against the same receipt path must fail closed.
+
+    Exercises ``_lock_duplicate_raw_identity_repair_receipt`` directly: hold
+    its flock open (as a genuinely concurrent apply would), then prove the
+    real ``repair_duplicate_raw_identity`` entrypoint refuses to proceed and
+    never mutates the durable authority underneath the held lock. Deleting
+    the flock acquisition from the receipt lock (regressing to the old bare
+    ``receipt_path.exists()`` TOCTOU check) makes this test fail: the second
+    call would instead race straight into the transaction.
+    """
+    stale_raw_id, canonical_raw_id, _session_id, key = _seed_duplicate_raw_pair(tmp_path)
+    dry_run = repair_duplicate_raw_identity(_config(tmp_path), [(stale_raw_id, canonical_raw_id)])
+    receipt_path = tmp_path / "locked.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    locked = repair_module._lock_duplicate_raw_identity_repair_receipt(receipt_path, list(dry_run.items))
+    try:
+        with pytest.raises(RuntimeError, match="already locked"):
+            repair_duplicate_raw_identity(
+                _config(tmp_path),
+                [(stale_raw_id, canonical_raw_id)],
+                apply=True,
+                receipt_path=receipt_path,
+                proof_digest=dry_run.proof_digest,
+            )
+        with closing(sqlite3.connect(tmp_path / "index.db")) as index_conn:
+            head = index_conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?", (key,)
+            ).fetchone()
+            assert head[0] == stale_raw_id
+    finally:
+        locked.close()
+
+
+def test_apply_resumes_planned_receipt_after_a_crash_before_the_terminal_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash between commit and the terminal receipt append must be resumable and auditable.
+
+    Injects a failure into ``_finish_duplicate_raw_identity_repair_receipt``
+    (the real production function that appends the fsynced ``applied``
+    record) after the index-tier transaction has already committed. The
+    receipt on disk must show only the ``planned`` record -- proving the
+    planned phase is durably written *before* mutation, unlike the old
+    single unlocked ``write_text`` -- and re-invoking apply against the SAME
+    receipt path must resume to a terminal ``applied`` record without
+    re-mutating anything (idempotent recovery), once the operator re-proves
+    current authority with a fresh dry-run digest (the accepted head's own
+    ``decided_at_ms`` legitimately changed under repair, so reusing the
+    original pre-repair digest is correctly refused by the top-level CAS
+    gate -- this mirrors exactly how an operator would recover in practice).
+    Removing the planned-phase write or the crash-safe resume path makes
+    this test fail.
+    """
+    stale_raw_id, canonical_raw_id, _session_id, _key = _seed_duplicate_raw_pair(tmp_path)
+    dry_run = repair_duplicate_raw_identity(_config(tmp_path), [(stale_raw_id, canonical_raw_id)])
+    receipt = tmp_path / "planned-resume.jsonl"
+    from polylogue.storage import repair as repair_module
+
+    original_finish = repair_module._finish_duplicate_raw_identity_repair_receipt
+    monkeypatch.setattr(
+        repair_module,
+        "_finish_duplicate_raw_identity_repair_receipt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected terminal append crash")),
+    )
+    with pytest.raises(RuntimeError, match="terminal append crash"):
+        repair_duplicate_raw_identity(
+            _config(tmp_path),
+            [(stale_raw_id, canonical_raw_id)],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index_conn:
+        session_raw = index_conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (_session_id,)).fetchone()
+        assert session_raw[0] == canonical_raw_id
+
+    monkeypatch.setattr(repair_module, "_finish_duplicate_raw_identity_repair_receipt", original_finish)
+    post_crash_dry_run = repair_duplicate_raw_identity(_config(tmp_path), [(stale_raw_id, canonical_raw_id)])
+    assert post_crash_dry_run.already_repaired_count == 1
+    resumed = repair_duplicate_raw_identity(
+        _config(tmp_path),
+        [(stale_raw_id, canonical_raw_id)],
+        apply=True,
+        receipt_path=receipt,
+        proof_digest=post_crash_dry_run.proof_digest,
+    )
+    assert resumed.already_repaired_count == 1
+    assert resumed.repaired_count == 0
+    records = [json.loads(line) for line in receipt.read_text().splitlines()]
+    assert [record["state"] for record in records] == ["planned", "applied"]
+    assert records[1]["repaired_stale_raw_ids"] == []
+
+
+def test_receipt_path_must_not_be_a_symlink(tmp_path: Path) -> None:
+    stale_raw_id, canonical_raw_id, _session_id, _key = _seed_duplicate_raw_pair(tmp_path)
+    dry_run = repair_duplicate_raw_identity(_config(tmp_path), [(stale_raw_id, canonical_raw_id)])
+    target = tmp_path / "outside-target.jsonl"
+    receipt = tmp_path / "receipt-symlink.jsonl"
+    receipt.symlink_to(target)
+
+    with pytest.raises(RuntimeError, match="symbolic link"):
+        repair_duplicate_raw_identity(
+            _config(tmp_path),
+            [(stale_raw_id, canonical_raw_id)],
+            apply=True,
+            receipt_path=receipt,
+            proof_digest=dry_run.proof_digest,
+        )
+    assert not target.exists()
+
+
 def test_apply_requires_receipt_path(tmp_path: Path) -> None:
     stale_raw_id, canonical_raw_id, _session_id, _key = _seed_duplicate_raw_pair(tmp_path)
     dry_run = repair_duplicate_raw_identity(_config(tmp_path), [(stale_raw_id, canonical_raw_id)])
