@@ -373,14 +373,19 @@ attachments, exports):
 
 ## Sinex Publication
 
-`polylogue/sinex/` (polylogue-303r.2) owns the durable publication-obligation
-ledger and transport contract for Sinex-backed evidence mode: `mode`
-(`off`/`mirror`/`primary`, `polylogue.toml` `[sinex] mode`, config key
-`sinex_mode`, default `off`) gates whether a normalized-session material
-revision (`polylogue/material_protocol/v1/`) gets a durable `source.db`
-obligation row and an attempted publish through an injected
-`SinexTransport`. Off mode performs zero transport work and writes zero
-obligation rows — standalone SQLite is the permanent default. See
+`polylogue/sinex/` (polylogue-303r.2) implements the durable publication-
+obligation ledger and transport contract for Sinex-backed evidence mode: a
+`PublicationService` constructed with `mode` (`off`/`mirror`/`primary`,
+mirroring `polylogue.toml` `[sinex] mode` / config key `sinex_mode`, default
+`off`) gates whether a normalized-session material revision
+(`polylogue/material_protocol/v1/`) gets a durable `source.db` obligation row
+and an attempted publish through an injected `SinexTransport`; off mode
+performs zero transport work and writes zero obligation rows.
+**`sinex_mode` itself is not yet consumed anywhere**: no ingest, daemon, or
+CLI call site constructs a `PublicationService` from that config value, so
+setting `mode = "mirror"`/`"primary"` in `polylogue.toml` today has no
+observable effect on real archive writes (`polylogue config --format json`
+surfaces this as a `sinex_mode_not_yet_wired` diagnostic). See
 [docs/sinex-interop.md](sinex-interop.md) for the full design, current scope,
 and the cross-repo blocker on live Sinex transport.
 

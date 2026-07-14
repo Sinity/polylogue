@@ -21,12 +21,19 @@ Scope note (binding, see ``docs/sinex-interop.md``): as of this package's
 introduction, Sinex's own consumer primitives for this exact contract
 (sinex-4j2.1.1, layered on sinex-r6d.11 which is itself still open upstream)
 are not yet landed. This package is therefore a real, fully-tested Polylogue-
-side producer against a documented contract, wired to a local reference
-transport by default. Pointing ``polylogue.toml``'s ``[sinex]`` at a live
-Sinex JetStream endpoint is cross-repo follow-up work, not something this
-package can complete unilaterally. Standalone (``mode = "off"``) is and
-remains the default and permanently supported mode (operator directive,
-``docs/sinex-interop.md``).
+side producer against a documented contract, exercised in tests against a
+local reference transport. Neither that reference transport nor a live Sinex
+JetStream endpoint is wired into any production code path yet: no ingest,
+daemon, or CLI call site constructs a
+:class:`~polylogue.sinex.service.PublicationService` from
+``polylogue.toml``'s ``[sinex] mode`` / ``POLYLOGUE_SINEX_MODE`` today, so
+setting ``mode = "mirror"`` or ``"primary"`` has zero effect on real archive
+writes -- ``polylogue config --format json`` surfaces this explicitly via a
+``sinex_mode_not_yet_wired`` diagnostic (``polylogue/config.py``). Wiring a
+real call site, and then pointing it at a live Sinex JetStream endpoint, is
+cross-repo follow-up work, not something this package can complete
+unilaterally. Standalone (``mode = "off"``) is and remains the default and
+permanently supported mode (operator directive, ``docs/sinex-interop.md``).
 """
 
 from __future__ import annotations
