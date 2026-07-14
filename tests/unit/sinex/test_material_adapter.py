@@ -18,9 +18,9 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.material_protocol.v1 import decode_session_revision, encode_session_revision
 from polylogue.sinex.material_adapter import session_material_from_session
-from polylogue.types import SessionId
 
 
 def _real_session() -> Session:

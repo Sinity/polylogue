@@ -14,16 +14,16 @@ from tempfile import TemporaryDirectory
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.errors import DatabaseError
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence_stages import repair_messages_fts_surface
-from polylogue.errors import DatabaseError
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES, message_fts_readiness_sync
-from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 
@@ -238,7 +238,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 drifted_readiness = message_fts_readiness_sync(conn)
                 drifted_triggers = _message_fts_trigger_set(conn)
             try:
-                FTS5Provider(root / "index.db").search("sentinel")
+                search_messages("sentinel", archive_root=root, db_path=root / "index.db")
             except DatabaseError as exc:
                 search_failure = str(exc)
             else:
@@ -248,7 +248,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 after_readiness = message_fts_readiness_sync(conn)
                 after_triggers = _message_fts_trigger_set(conn)
                 after_rows = _row_count(conn, "messages_fts")
-            search_hits = FTS5Provider(root / "index.db").search("sentinel")
+            search_hits = search_messages("sentinel", archive_root=root, db_path=root / "index.db").hits
     expected_triggers = tuple(sorted(_MESSAGE_FTS_TRIGGER_NAMES))
     exact_ready = {
         "exists": True,

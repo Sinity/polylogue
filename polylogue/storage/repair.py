@@ -27,6 +27,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.protocols import ProgressCallback
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
@@ -40,14 +41,16 @@ from polylogue.maintenance.targets import (
 from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.protocols import ProgressCallback
 from polylogue.sources.dispatch import detect_provider, is_stream_record_provider
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
-from polylogue.storage.insights.session.runtime import SESSION_INSIGHT_MATERIALIZATION_TYPES
+from polylogue.storage.insights.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    session_profile_stale_predicate,
+)
 from polylogue.storage.message_type_backfill import (
     BackfillResult,
     count_messages_by_type_sync,
@@ -5094,7 +5097,7 @@ def _resolve_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -5127,7 +5130,7 @@ def _resolve_session_insight_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -5217,6 +5220,8 @@ def _targeted_session_insight_rebuild_ids(
         if _insight_type != "thread"
     )
     materializer_version = _session_insight_materializer_version()
+    profile_stale_predicate = session_profile_stale_predicate("s", "p")
+    latency_stale_predicate = session_profile_stale_predicate("s", "lp")
     rows = conn.execute(
         f"""
         SELECT DISTINCT session_id
@@ -5231,7 +5236,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM sessions AS s
             JOIN session_profiles AS p ON p.session_id = s.session_id
             WHERE p.materializer_version != ?
-               OR ABS(COALESCE(p.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {profile_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5244,7 +5249,7 @@ def _targeted_session_insight_rebuild_ids(
             FROM session_latency_profiles AS lp
             JOIN sessions AS s ON s.session_id = lp.session_id
             WHERE lp.materializer_version != ?
-               OR ABS(COALESCE(lp.source_sort_key, 0.0) - COALESCE(CAST(s.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+               OR {latency_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5281,7 +5286,7 @@ def _archive_index_present(config: Config) -> bool:
     if not index_db.exists():
         return False
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     except sqlite3.Error:
         return False

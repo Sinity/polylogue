@@ -42,8 +42,8 @@ from polylogue.cli.query_output import (
 )
 from polylogue.cli.query_output_contracts import StructuredRowsDocument
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_session
-from polylogue.types import SessionId
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
 

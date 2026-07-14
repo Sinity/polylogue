@@ -44,7 +44,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("raw_validation_state",),
         code_refs=(
             "polylogue.pipeline.services.acquisition_persistence.persist_raw_record",
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWritesMixin.save_artifact_observation",
+            "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.save_artifact_observation",
             "polylogue.storage.artifacts.inspection.inspect_raw_artifact",
         ),
         readiness_surfaces=("run", "sources"),
@@ -436,7 +436,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("archive_session_rows", "message_source_rows"),
         code_refs=(
             "polylogue.insights.transforms.compile_session_digest",
-            "polylogue.api.archive.PolylogueArchive._session_digest",
+            "polylogue.api.archive.PolylogueArchiveMixin._session_digest",
             "polylogue.cli.query_verbs.continue_verb",
         ),
         readiness_surfaces=("report", "cli"),
@@ -459,7 +459,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("session_digest",),
         code_refs=(
             "polylogue.insights.transforms.compile_session_digest",
-            "polylogue.insights.transforms.SessionDigest.resume_bundle",
+            "polylogue.insights.transforms.render_resume_bundle",
         ),
         readiness_surfaces=("report", "cli"),
     ),
@@ -530,7 +530,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         ),
         code_refs=(
             "polylogue.schemas.operator.inference.list_schemas",
-            "polylogue.cli.commands.schema.schema_list",
+            "polylogue.cli.shared.schema_rendering_results.render_schema_list_result",
         ),
         readiness_surfaces=("schema", "cli"),
     ),
@@ -541,7 +541,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         depends_on=("schema_packages",),
         code_refs=(
             "polylogue.schemas.operator.resolution.explain_schema",
-            "polylogue.cli.commands.schema.schema_explain",
+            "polylogue.cli.shared.schema_rendering_explain.render_schema_explain_result",
         ),
         readiness_surfaces=("schema", "cli"),
     ),

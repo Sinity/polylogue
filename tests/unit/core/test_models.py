@@ -24,6 +24,7 @@ from polylogue.core.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
 )
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.schemas.code_detection.detection import LANGUAGE_PATTERNS, detect_language, extract_code_block
 from polylogue.storage.hydrators import (
     attachment_from_record,
@@ -34,7 +35,6 @@ from polylogue.storage.hydrators import (
 from polylogue.storage.runtime import (
     MessageRecord,
 )
-from polylogue.types import ContentHash, MessageId, SessionId
 from tests.infra.builders import make_msg
 from tests.infra.storage_records import make_attachment, make_content_block, make_message, make_session
 

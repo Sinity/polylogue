@@ -497,6 +497,7 @@ Read on demand (paths relative to repo root):
 | System rings, data flow, provider table | `docs/architecture.md` |
 | Invariants, hot files, schema-version history, extension points | `docs/internals.md` |
 | Target shape + architectural decision log | `docs/architecture-spine.md` |
+| Execution control center hotspot map + decomposition sequence | `docs/architecture-hotspots.md` |
 | Contributor workflow (branches, PRs, hooks, releases) | `CONTRIBUTING.md` |
 | Full testing reference | `TESTING.md` |
 | devtools command catalog | `docs/devtools.md` |

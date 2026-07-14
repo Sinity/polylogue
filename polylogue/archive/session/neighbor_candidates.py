@@ -11,8 +11,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.errors import PolylogueError
-from polylogue.protocols import NeighborStore
+from polylogue.core.errors import PolylogueError
+from polylogue.core.protocols import NeighborStore
 from polylogue.storage.query_models import SessionRecordQuery
 
 if TYPE_CHECKING:

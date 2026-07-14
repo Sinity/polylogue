@@ -12,6 +12,7 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import ContentHash, SessionId
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
@@ -28,7 +29,6 @@ from polylogue.storage.search_providers.hybrid_sessions import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
-from polylogue.types import ContentHash, SessionId
 from tests.infra.live_ingest import ingest_session
 
 

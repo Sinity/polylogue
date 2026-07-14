@@ -17,6 +17,7 @@ from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType,
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
+from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -33,7 +34,6 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
-from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session

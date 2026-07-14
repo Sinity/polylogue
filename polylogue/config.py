@@ -16,8 +16,8 @@ from pathlib import Path
 
 import tomllib
 
+from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
-from .errors import PolylogueError
 from .paths import (
     GEMINI_DRIVE_FOLDER,
     archive_root,

@@ -21,6 +21,7 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
@@ -300,7 +301,7 @@ def resolve_failure_subcommand(
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
     try:
-        with sqlite3.connect(embeddings_db, timeout=30.0) as conn:
+        with closing(sqlite3.connect(embeddings_db, timeout=30.0)) as conn:
             failure = resolve_embedding_failure(
                 conn,
                 failure_id=failure_id,
@@ -649,7 +650,7 @@ def _run_archive_backfill(
     min_messages: int | None = None,
     output_format: str = "text",
 ) -> BackfillResultPayload:
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.materialization import (
         embed_archive_session_sync,
         select_pending_archive_session_window,
@@ -824,7 +825,7 @@ def _record_archive_backfill_run(
     ops_db = index_db.with_name("ops.db")
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     terminal_status = "cancelled" if status == "stopped" else "completed"
-    with sqlite3.connect(ops_db, timeout=30.0) as conn:
+    with closing(sqlite3.connect(ops_db, timeout=30.0)) as conn:
         upsert_embedding_catchup_run(
             conn,
             started_at_ms=started_at_ms,

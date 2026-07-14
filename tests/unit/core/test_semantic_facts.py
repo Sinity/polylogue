@@ -29,8 +29,8 @@ from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import SessionEventId, SessionId
 from polylogue.storage.archive_views import SessionRenderProjection
-from polylogue.types import SessionEventId, SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import make_attachment, make_message, make_session
 

@@ -14,6 +14,7 @@ boundary rather than attempting that larger fix here.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -47,7 +48,7 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
     spec = ARCHIVE_TIER_SPECS[archive_tier]
     path = archive_root() / spec.filename
     try:
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
             result = migrate_archive_tier(conn, archive_tier, backup_manifest=backup_manifest)
     except (sqlite3.Error, MigrationError) as exc:
         if output_format == "json":

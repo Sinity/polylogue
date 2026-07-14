@@ -165,7 +165,7 @@ class TestConfigError:
 
     def test_config_error_is_polylogue_error(self) -> None:
         """ConfigError inherits from PolylogueError."""
-        from polylogue.errors import PolylogueError
+        from polylogue.core.errors import PolylogueError
 
         assert issubclass(ConfigError, PolylogueError)
 

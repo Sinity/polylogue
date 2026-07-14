@@ -6,7 +6,7 @@ from polylogue.archive.coverage import analyze_coverage
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _summary(

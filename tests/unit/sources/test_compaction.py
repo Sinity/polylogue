@@ -503,7 +503,7 @@ class TestProfileCompactionCounting:
         from polylogue.archive.session.runtime import build_session_profile
         from polylogue.core.enums import Provider
         from polylogue.core.sources import origin_from_provider
-        from polylogue.types import SessionEventId, SessionId
+        from polylogue.core.types import SessionEventId, SessionId
 
         session = Session(
             id=SessionId("claude-code:session-1"),

@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from polylogue.core.types import SessionId
 from polylogue.insights.topology import (
     SessionTopology,
     TopologyEdge,
@@ -25,7 +26,6 @@ from polylogue.insights.topology import (
 )
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import SessionRecord
-from polylogue.types import SessionId
 
 
 class _SessionQuerySource(Protocol):

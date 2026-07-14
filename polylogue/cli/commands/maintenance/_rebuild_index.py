@@ -21,7 +21,7 @@ def _count_source_raw_sessions(root: Path) -> int:
     source_db = root / "source.db"
     if not source_db.exists():
         return 0
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
     return int(row[0]) if row is not None else 0
 
@@ -31,7 +31,7 @@ def _missing_index_raw_ids(root: Path) -> list[str]:
     index_db = root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return []
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
         rows = conn.execute(
             """
@@ -52,7 +52,7 @@ def _all_index_rebuild_raw_ids(root: Path) -> list[str]:
     source_db = root / "source.db"
     if not source_db.exists():
         return []
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         rows = conn.execute(
             """
             SELECT raw_id
@@ -69,7 +69,7 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     max_bytes = int(max_blob_mb * 1024 * 1024)
     source_db = root / "source.db"
     placeholders = ",".join("?" for _ in raw_ids)
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         rows = conn.execute(
             f"""
             SELECT raw_id
@@ -164,7 +164,7 @@ def _rebuild_index_selection_plan(
         0 AS materialized_session_events
         """
     )
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         if index_db.exists():
             conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
         rows = conn.execute(

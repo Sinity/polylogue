@@ -4,7 +4,7 @@ import click
 import pytest
 
 from polylogue.cli.machine_main import run_machine_entry
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from tests.infra.json_contracts import json_object, parse_json_object
 
 TRACEBACK_SENTINEL = "Traceback (most recent call last)"

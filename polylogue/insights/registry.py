@@ -23,8 +23,8 @@ from typing import Any, TypeAlias, cast
 import click
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import PolylogueError
 from polylogue.core.sources import origin_from_provider
-from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,

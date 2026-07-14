@@ -28,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 
 PlanSource = Literal["user-config", "polylogue-curated-seed", "vendor-published", "inferred"]
 USER_CONFIG_SOURCE: PlanSource = "user-config"

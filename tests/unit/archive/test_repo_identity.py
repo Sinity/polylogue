@@ -22,10 +22,10 @@ from polylogue.archive.session.session_profile import SessionProfile, build_sess
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import DaySessionSummaryPayload
 from polylogue.insights.archive_summaries import aggregate_day_session_summary_insights
 from polylogue.storage.runtime import DaySessionSummaryRecord
-from polylogue.types import SessionId
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 README_PATH = REPO_ROOT / "README.md"

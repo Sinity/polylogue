@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import stat
+from contextlib import closing
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -235,7 +236,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 

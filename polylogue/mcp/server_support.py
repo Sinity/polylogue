@@ -27,7 +27,7 @@ from polylogue.archive.query.spec import (
     clamp_query_limit,
 )
 from polylogue.core.enums import MessageType, Origin, enum_values
-from polylogue.errors import (
+from polylogue.core.errors import (
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
     SchemaVersionMismatchError,

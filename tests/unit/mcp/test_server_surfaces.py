@@ -18,6 +18,7 @@ from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Provider
 from polylogue.core.refs import EvidenceRef
+from polylogue.core.types import SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
@@ -30,7 +31,6 @@ from polylogue.surfaces.payloads import (
     ImportProducedRowsPayload,
     PublicRefResolutionPayload,
 )
-from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,

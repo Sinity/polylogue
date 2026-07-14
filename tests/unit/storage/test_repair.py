@@ -2202,18 +2202,20 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL);
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL, updated_at_ms INTEGER);
         CREATE TABLE session_profiles (
             session_id TEXT PRIMARY KEY,
             materializer_version INTEGER,
             source_sort_key REAL,
+            source_updated_at TEXT,
             work_event_count INTEGER,
             phase_count INTEGER
         );
         CREATE TABLE session_latency_profiles (
             session_id TEXT PRIMARY KEY,
             materializer_version INTEGER,
-            source_sort_key REAL
+            source_sort_key REAL,
+            source_updated_at TEXT
         );
         CREATE TABLE session_work_events (session_id TEXT);
         CREATE TABLE session_phases (session_id TEXT);
@@ -2318,18 +2320,20 @@ def test_repair_session_insights_refreshes_stale_thread_materialization_as_aggre
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL);
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL, updated_at_ms INTEGER);
         CREATE TABLE session_profiles (
             session_id TEXT PRIMARY KEY,
             materializer_version INTEGER,
             source_sort_key REAL,
+            source_updated_at TEXT,
             work_event_count INTEGER,
             phase_count INTEGER
         );
         CREATE TABLE session_latency_profiles (
             session_id TEXT PRIMARY KEY,
             materializer_version INTEGER,
-            source_sort_key REAL
+            source_sort_key REAL,
+            source_updated_at TEXT
         );
         CREATE TABLE session_work_events (session_id TEXT);
         CREATE TABLE session_phases (session_id TEXT);

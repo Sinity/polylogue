@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
         return []
     cutoff_ms = int((time.time() - ACTIVE_REBUILD_STALE_AFTER_S) * 1000)
     try:
-        with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -114,7 +115,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     if not source_db.exists() or not index_db.exists():
         return {"available": False, "error": "source.db or index.db missing"}
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             raw_columns = _table_columns(conn, "source", "raw_sessions")
@@ -311,7 +312,7 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
             "lost_source_evidence_samples": [],
         }
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):

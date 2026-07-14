@@ -10,6 +10,7 @@ import socket
 import sqlite3
 import time
 import uuid
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import TracebackType
@@ -214,7 +215,7 @@ def source_revision_snapshot(archive_root: Path) -> str:
     import hashlib
 
     digest = hashlib.sha256()
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         for raw_id, acquired_at_ms in conn.execute(
             "SELECT raw_id, acquired_at_ms FROM raw_sessions ORDER BY acquired_at_ms, raw_id"
         ):
@@ -226,7 +227,7 @@ def source_revision_snapshot(archive_root: Path) -> str:
 
 
 def _checkpoint_truncate(path: Path, *, label: str) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     if checkpoint is None or int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")

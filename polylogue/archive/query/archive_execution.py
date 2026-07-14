@@ -22,7 +22,7 @@ from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 _AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
 

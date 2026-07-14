@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import SessionQueryRuntimeStore, TagStore
+    from polylogue.core.protocols import SessionQueryRuntimeStore, TagStore
 
 
 async def resolve_stream_target(

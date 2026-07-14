@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
@@ -105,7 +106,7 @@ def _read_assertion_export_rows(
     if not user_db_path.exists():
         return []
     uri = f"file:{user_db_path}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         return list_assertions_for_export(
             conn,

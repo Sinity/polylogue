@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import SessionArchiveStatsStore
+    from polylogue.core.protocols import SessionArchiveStatsStore
 
 
 DATE_GROUP_DIMENSIONS = frozenset({"month", "year", "day"})

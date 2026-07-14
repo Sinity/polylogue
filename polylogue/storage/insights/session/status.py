@@ -9,7 +9,11 @@ from typing import TypeAlias
 import aiosqlite
 
 from polylogue.storage.insights.session.aggregates import _PROFILE_BUCKET_DAY_SQL
-from polylogue.storage.insights.session.runtime import SessionInsightReadyFlag, SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.runtime import (
+    SessionInsightReadyFlag,
+    SessionInsightStatusSnapshot,
+    session_profile_stale_predicate,
+)
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 TablePresence: TypeAlias = dict[str, bool]
@@ -209,7 +213,7 @@ STALE_SESSION_PROFILE_COUNT_SQL = f"""
     WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            sp.materializer_version != ?
-        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+        OR {session_profile_stale_predicate("c", "sp")}
       )
 """
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
@@ -233,7 +237,7 @@ STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
       AND (
            slp.materializer_version != ?
-        OR ABS(COALESCE(slp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+        OR {session_profile_stale_predicate("c", "slp")}
       )
 """
 ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
@@ -369,15 +373,15 @@ STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
        OR e.tag IS NULL
        OR COALESCE(e.max_profile_materialized_at, '') > COALESCE(str.materialized_at, '')
 """
-SESSION_PROFILE_REPAIR_CANDIDATES_SQL = """
+SESSION_PROFILE_REPAIR_CANDIDATES_SQL = f"""
     SELECT c.session_id
     FROM sessions c
     LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {{cutoff}}
       AND (
            sp.session_id IS NULL
         OR sp.materializer_version != ?
-        OR ABS(COALESCE(sp.source_sort_key, 0.0) - COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0)) > 0.000001
+        OR {session_profile_stale_predicate("c", "sp")}
       )
     ORDER BY c.session_id
 """

@@ -13,7 +13,7 @@ from polylogue.archive.query.support import session_to_summary
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.protocols import SessionQueryRuntimeStore
+    from polylogue.core.protocols import SessionQueryRuntimeStore
 
 
 def _reject_session_seed_on_repository_path(plan: SessionQueryPlan) -> None:

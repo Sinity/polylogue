@@ -800,7 +800,7 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
 
 def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
     """Raise DatabaseError unless the FTS index is exactly ready."""
-    from polylogue.errors import DatabaseError
+    from polylogue.core.errors import DatabaseError
 
     if not bool(readiness["exists"]):
         raise DatabaseError(f"Search index not built. {repair_hint}")

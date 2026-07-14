@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import SessionOutputStore
+    from polylogue.core.protocols import SessionOutputStore
     from polylogue.storage.runtime import MessageRecord
 
 SessionStats: TypeAlias = dict[str, int]

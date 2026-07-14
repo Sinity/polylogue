@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from polylogue.core.protocols import RawPersistenceStore
 from polylogue.logging import get_logger
 from polylogue.pipeline.stage_models import AcquireResult
-from polylogue.protocols import RawPersistenceStore
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.runtime import RawSessionRecord
 

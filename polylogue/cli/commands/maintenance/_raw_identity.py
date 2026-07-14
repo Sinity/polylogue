@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from dataclasses import asdict
@@ -154,7 +155,7 @@ def missing_raw_blob_cursors_command(
     deleted = 0
     if apply_changes and candidates:
         ops_db = root / "ops.db"
-        with sqlite3.connect(ops_db) as conn:
+        with contextlib.closing(sqlite3.connect(ops_db)) as conn:
             for candidate in candidates:
                 deleted += conn.execute(
                     "DELETE FROM ingest_cursor WHERE source_path = ?",
