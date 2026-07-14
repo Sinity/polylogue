@@ -1484,6 +1484,7 @@ def build_verify_steps(
                 ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
+                ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify test-clock-hygiene", _devtools_cmd("verify test-clock-hygiene")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
