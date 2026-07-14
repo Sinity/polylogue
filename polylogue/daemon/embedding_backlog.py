@@ -143,16 +143,21 @@ def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileR
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import active_index_db_path, sibling_index_db
 
+    # Build candidates: active_db, then sibling_index_db resolution
     candidates = []
     active_db = active_index_db_path()
-    if active_db.name == "index.db":
+    if active_db.name == "index.db" and active_db.exists():
         candidates.append(active_db)
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+
+    # Use sibling_index_db to get the primary candidate
+    sibling_db = sibling_index_db(db_path, require_exists=True)
+    if sibling_db is not None:
+        candidates.append(sibling_db)
+
+    # Use the first existing candidate and check for sessions table
+    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
     if index_db is None:
         return None
     try:
