@@ -8,10 +8,16 @@ this schema is grounded in), not the pre-fix synthetic
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_spans
+
+REAL_ATIF_FIXTURE = Path(__file__).parents[3] / "fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json"
 
 
 def _steps() -> list[JSONDocument]:
@@ -58,6 +64,33 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
     # Never a duplicated transcript: the only "message" is a bounded summary.
     assert len(session.messages) == 1
     assert len(session.messages[0].text or "") < 500
+
+
+def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
+    """A redacted live export guards the actual wire shape, not a synthetic marker."""
+
+    payload = json.loads(REAL_ATIF_FIXTURE.read_text())
+    assert hermes_spans.looks_like_atif_payload(payload)
+    assert detect_provider(payload) is Provider.HERMES
+
+    session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
+    assert session.provider_session_id == "observer:real-nemo-relay-session-redacted"
+    llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
+    assert len(llm_events) == len(payload["steps"]) == 5
+    assert all(event.payload["message_char_len"] == len("<redacted>") for event in llm_events)
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["llm_request_spans"].status == "exact"
+    assert fidelity.capabilities["tool_execution_spans"].status == "absent"
+
+
+def test_import_explain_uses_atif_fidelity_for_a_real_fixture() -> None:
+    entry = explain_import_path(REAL_ATIF_FIXTURE).entries[0]
+    assert entry.detected_provider == "hermes"
+    assert entry.parser == "hermes"
+    assert entry.produced.sessions == 1
+    assert entry.fidelity is not None
+    assert entry.fidelity.capabilities["llm_request_spans"].status == "exact"
 
 
 def test_atif_parse_is_idempotent_and_deterministic() -> None:
@@ -185,9 +218,8 @@ def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated()
     assert fidelity.capabilities["decision_points"].status == "absent"
     assert fidelity.capabilities["error_taxonomy"].status == "absent"
     assert "raw ATOF event stream" in fidelity.capabilities["decision_points"].detail
-    # Every capability tops out at inferred, never exact (unconfirmed against a
-    # real generated sample -- see polylogue-fs1.2.1).
-    assert all(cap.status != "exact" for cap in fidelity.capabilities.values())
+    assert fidelity.capabilities["llm_request_spans"].status == "exact"
+    assert all(cap.status != "exact" for name, cap in fidelity.capabilities.items() if name != "llm_request_spans")
 
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:
