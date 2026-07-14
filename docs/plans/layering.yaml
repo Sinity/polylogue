@@ -29,15 +29,12 @@ writer_modules:
         - tier: source
           durability: durable
           interruption: atomic
-        - tier: user
-          durability: durable
-          interruption: atomic
       entrypoints:
         [apply_raw_membership_classification, apply_raw_revision_replay, classify_raw_revision_cohort,
         delete_sessions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
-      twin_write_contract: raw-revision-authority
+      twin_write_contract: raw-membership-classification
     - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
       surfaces:
         - tier: index
@@ -57,14 +54,20 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
+      entrypoints:
+        [apply_insight_materialization, rebuild_archive_messages_fts, repair_stale_prefix_branch_points,
+        replace_parser_ingest_flag_tags, upsert_insight_materialization, upsert_parser_ingest_flag_tags,
+        upsert_session_profile_costs, write_parsed_session_to_archive]
+    - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
+      surfaces:
+        - tier: index
+          durability: rebuildable
+          interruption: replayable
         - tier: user
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_insight_materialization, rebuild_archive_messages_fts, repair_stale_prefix_branch_points,
-        replace_parser_ingest_flag_tags, upsert_insight_materialization, upsert_parser_ingest_flag_tags,
-        upsert_session_phase, upsert_session_profile_costs, upsert_session_tag, upsert_session_work_event,
-        write_parsed_session_to_archive]
+        [upsert_session_phase, upsert_session_tag, upsert_session_work_event]
       twin_write_contract: session-tag-assertion-mirror
     - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
       surfaces:
@@ -119,13 +122,13 @@ writer_modules:
           interruption: replayable
       entrypoints: [seed_price_catalog]
   twin_write_contracts:
-    - name: raw-revision-authority
+    - name: raw-membership-classification
       module: polylogue/storage/sqlite/archive_tiers/archive.py
-      surfaces: [index, source, user]
+      surfaces: [index, source]
       entrypoints: [apply_raw_membership_classification]
-      reason: "A replay decision commits the derived session/receipt before advancing durable per-membership authority."
+      reason: "Applying a semantic member-head decision persists the derived session row (index) and the per-raw membership/authority decision (source) together so a partial write can never leave one raw id's authority state inconsistent with the session it was or was not accepted into."
     - name: session-tag-assertion-mirror
-      module: polylogue/storage/sqlite/archive_tiers/write.py
+      module: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces: [index, user]
       entrypoints: [upsert_session_tag]
       reason: "Legacy single-file archives co-locate assertions; a user tag mirrors to its durable assertion only when that table is present."

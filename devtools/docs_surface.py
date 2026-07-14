@@ -146,6 +146,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Target shape, guardrails, and major decisions with rejected alternatives.",
         "internals",
     ),
+    _entry(
+        "Architecture Hotspots",
+        "architecture-hotspots.md",
+        "Execution control center hotspot map and decomposition sequence (polylogue-1r9c).",
+        "internals",
+    ),
     _entry("Data Model", "data-model.md", "Archive entities, storage shape, and metadata rules.", "internals"),
     _entry("Schema", "schema.md", "Index and durable tier schema, FTS, vectors, and versioning.", "internals"),
     _entry("Internals", "internals.md", "Working implementation reference and debugging landmarks.", "internals"),

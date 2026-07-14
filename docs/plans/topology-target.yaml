@@ -678,7 +678,7 @@ files:
     owner: archive-viewport
     reason: archive-domain semantics
   - path: polylogue/archive/write_effects.py
-    loc: 118
+    loc: 249
     target: polylogue/archive/write_effects.py
     owner: stable
   - path: polylogue/archive/write_gateway.py
@@ -3594,6 +3594,10 @@ files:
     loc: 112
     target: polylogue/storage/sqlite/archive_tiers/self_verify.py
     owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
+    loc: 481
+    target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
+    owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
     loc: 262
     target: polylogue/storage/sqlite/archive_tiers/source.py
@@ -3627,7 +3631,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 4595
+    loc: 4213
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py

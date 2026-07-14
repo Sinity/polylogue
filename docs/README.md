@@ -52,6 +52,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 |----------|-------------|
 | [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
 | [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
+| [Architecture Hotspots](architecture-hotspots.md) | Execution control center hotspot map and decomposition sequence (polylogue-1r9c). |
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Schema](schema.md) | Index and durable tier schema, FTS, vectors, and versioning. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
