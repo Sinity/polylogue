@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Mapping
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -160,7 +160,7 @@ def _active_index_raw_authority(
         raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
     try:
         uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
             conn.execute("PRAGMA query_only = ON")
             session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
             head_rows = conn.execute(
@@ -1059,7 +1059,7 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
         raise RawRetentionSafetyError(f"ops tier is unavailable: {ops_db_path}")
     try:
         uri = f"{ops_db_path.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
             conn.execute("PRAGMA query_only = ON")
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'ingest_cursor'"

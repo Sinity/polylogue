@@ -564,7 +564,7 @@ def _read_assertion_export_rows(
     if not user_db_path.exists():
         return []
     uri = f"file:{user_db_path}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         return list_assertions_for_export(
             conn,
@@ -861,7 +861,7 @@ def migrate_tier_command(tier: str, backup_manifest: Path, output_format: str) -
     spec = ARCHIVE_TIER_SPECS[archive_tier]
     path = archive_root() / spec.filename
     try:
-        with sqlite3.connect(path) as conn:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
             result = migrate_archive_tier(conn, archive_tier, backup_manifest=backup_manifest)
     except (sqlite3.Error, MigrationError) as exc:
         if output_format == "json":
@@ -1051,7 +1051,7 @@ def _count_source_raw_sessions(root: Path) -> int:
     source_db = root / "source.db"
     if not source_db.exists():
         return 0
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
     return int(row[0]) if row is not None else 0
 
@@ -1061,7 +1061,7 @@ def _missing_index_raw_ids(root: Path) -> list[str]:
     index_db = root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return []
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
         rows = conn.execute(
             """
@@ -1082,7 +1082,7 @@ def _all_index_rebuild_raw_ids(root: Path) -> list[str]:
     source_db = root / "source.db"
     if not source_db.exists():
         return []
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         rows = conn.execute(
             """
             SELECT raw_id
@@ -1099,7 +1099,7 @@ def _filter_raw_ids_by_max_blob_size(root: Path, raw_ids: list[str], max_blob_mb
     max_bytes = int(max_blob_mb * 1024 * 1024)
     source_db = root / "source.db"
     placeholders = ",".join("?" for _ in raw_ids)
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         rows = conn.execute(
             f"""
             SELECT raw_id
@@ -1194,7 +1194,7 @@ def _rebuild_index_selection_plan(
         0 AS materialized_session_events
         """
     )
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0) as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         if index_db.exists():
             conn.execute("ATTACH DATABASE ? AS idx", (str(index_db),))
         rows = conn.execute(
@@ -1565,7 +1565,7 @@ def missing_raw_blob_cursors_command(
     deleted = 0
     if apply_changes and candidates:
         ops_db = root / "ops.db"
-        with sqlite3.connect(ops_db) as conn:
+        with contextlib.closing(sqlite3.connect(ops_db)) as conn:
             for candidate in candidates:
                 deleted += conn.execute(
                     "DELETE FROM ingest_cursor WHERE source_path = ?",

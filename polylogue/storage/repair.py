@@ -5091,7 +5091,7 @@ def _resolve_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -5124,7 +5124,7 @@ def _resolve_session_insight_convergence_debt(
     if not ops_db.exists():
         return
     try:
-        with sqlite3.connect(ops_db) as conn:
+        with closing(sqlite3.connect(ops_db)) as conn:
             table_exists = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
             ).fetchone()
@@ -5278,7 +5278,7 @@ def _archive_index_present(config: Config) -> bool:
     if not index_db.exists():
         return False
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     except sqlite3.Error:
         return False

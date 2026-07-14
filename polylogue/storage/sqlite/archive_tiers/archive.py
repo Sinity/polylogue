@@ -12,6 +12,7 @@ import math
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1122,7 +1123,7 @@ class ArchiveStore:
         if not self.index_db_path.exists():
             return
         try:
-            with sqlite3.connect(self.index_db_path) as conn:
+            with closing(sqlite3.connect(self.index_db_path)) as conn:
                 current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 if current_version != archive_tier_spec(ArchiveTier.INDEX).version:
                     return

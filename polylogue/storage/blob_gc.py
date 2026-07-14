@@ -32,6 +32,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -374,7 +375,7 @@ def run_blob_gc_report(
     )
     # Filesystem enumeration is deliberately outside the destructive source
     # lock. The lock protects only the bounded final recheck+unlink window.
-    with sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True) as planning_conn:
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as planning_conn:
         prev_completed_at = _previous_generation_completed_at(planning_conn)
     older_than = float(MIN_AGE_S)
     if prev_completed_at is not None:

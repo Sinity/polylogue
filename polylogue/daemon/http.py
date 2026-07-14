@@ -447,7 +447,7 @@ def _web_reader_archive_root() -> Path | None:
         if not path.exists():
             return None
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         except sqlite3.Error as exc:
             logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
@@ -2128,7 +2128,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not dbp.exists():
                 quick_check_ok = False
             else:
-                with sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25) as conn:
+                with contextlib.closing(sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25)) as conn:
                     conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         except (OSError, sqlite3.Error):
             quick_check_ok = False
