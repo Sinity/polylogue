@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5881
+    loc: 6035
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -170,7 +170,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/runtime.py
-    loc: 307
+    loc: 326
     target: polylogue/archive/artifact_taxonomy/runtime.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -839,7 +839,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2788
+    loc: 2954
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/note.py
@@ -1136,6 +1136,14 @@ files:
   - path: polylogue/context/compiler.py
     loc: 532
     target: polylogue/context/compiler.py
+    owner: stable
+  - path: polylogue/context/hermes_delivery_correlation.py
+    loc: 121
+    target: polylogue/context/hermes_delivery_correlation.py
+    owner: stable
+  - path: polylogue/context/hermes_lifecycle_reconciliation.py
+    loc: 108
+    target: polylogue/context/hermes_lifecycle_reconciliation.py
     owner: stable
   - path: polylogue/context/preamble.py
     loc: 168
@@ -2376,6 +2384,10 @@ files:
     loc: 93
     target: polylogue/schemas/generation/workflow.py
     owner: stable
+  - path: polylogue/schemas/hermes_export_contract.py
+    loc: 335
+    target: polylogue/schemas/hermes_export_contract.py
+    owner: stable
   - path: polylogue/schemas/inference/__init__.py
     loc: 1
     target: polylogue/schemas/inference/__init__.py
@@ -2710,7 +2722,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 927
+    loc: 944
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -2758,7 +2770,7 @@ files:
     target: polylogue/sources/emitter.py
     owner: stable
   - path: polylogue/sources/hooks.py
-    loc: 255
+    loc: 310
     target: polylogue/sources/hooks.py
     owner: stable
   - path: polylogue/sources/import_explain.py
@@ -2913,6 +2925,14 @@ files:
   - path: polylogue/sources/parsers/drive_support_text.py
     loc: 57
     target: polylogue/sources/parsers/drive_support_text.py
+    owner: stable
+  - path: polylogue/sources/parsers/hermes_lifecycle.py
+    loc: 228
+    target: polylogue/sources/parsers/hermes_lifecycle.py
+    owner: stable
+  - path: polylogue/sources/parsers/hermes_spans.py
+    loc: 440
+    target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
     loc: 946
@@ -3302,7 +3322,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 5553
+    loc: 6566
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
