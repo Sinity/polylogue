@@ -79,3 +79,46 @@ surfaces:
     p95_ms: 60000
     gate: "informational"
     tier: "lab"
+
+  # --- Interactive tier (polylogue-20d.14) -----------------------------
+  #
+  # Named latency budgets for the CLI-to-daemon hot path (polylogue-20d.1).
+  # These are the epic's own measurement contract: sibling beads (daemon
+  # result cache 20d.12, SSE push 20d.13, ingest-to-searchable lag 20d.6)
+  # cite these budgets rather than inventing their own. Only the surfaces
+  # that are actually implemented and benchmarkable today are "required";
+  # the rest are informational placeholders naming the bead that must land
+  # before the row can gate (mirrors the existing context/cost pattern
+  # above, which defers to #838/#803/#870 the same way).
+
+  daemon_cli_query:
+    description: "CLI-to-daemon UDS round trip for an ordinary find-mode session page (20d.1 fast path)"
+    benchmark_test: "tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_cli_query"
+    p50_ms: 100
+    p95_ms: 400
+    gate: "required"
+    tier: "cheap-local"
+
+  daemon_health_probe:
+    description: "Config-matched UDS health probe every fast-path call pays before the query itself"
+    benchmark_test: "tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_health_probe"
+    p50_ms: 30
+    p95_ms: 100
+    gate: "required"
+    tier: "cheap-local"
+
+  daemon_cached_facets:
+    description: "Cached facets/status read from the daemon result-cache memo layer (deferred until 20d.12 lands)"
+    benchmark_test: "tests/benchmarks/test_reader_api.py::test_bench_reader_facets"
+    p50_ms: 30
+    p95_ms: 100
+    gate: "informational"
+    tier: "cheap-local"
+
+  ingest_to_searchable:
+    description: "JSONL write to find/webui visibility, end to end (deferred until 20d.6/20d.12/20d.13 land)"
+    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
+    p50_ms: 5000
+    p95_ms: 10000
+    gate: "informational"
+    tier: "lab"

@@ -760,6 +760,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench help-latency",
+        "benchmarking",
+        "Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2).",
+        "devtools.help_latency_probe",
+        use_when=(
+            "Catch CLI import-tax regressions continuously. Runs `polylogue <cmd> --help` for a curated "
+            "set of root and nested subcommands as fresh subprocesses and compares the minimum wall time "
+            "against the 700ms cold-CLI budget from the 20d.14 interactive SLO tier. Fails when any "
+            "'required' target exceeds budget; 'informational' targets (currently `ops maintenance`, "
+            "known slow pending a lazy-import refactor) are reported but never block."
+        ),
+        examples=(
+            "devtools bench help-latency",
+            "devtools bench help-latency --json",
+            "devtools bench help-latency --repeats 5 --out .local/help-latency.json",
+        ),
+    ),
+    CommandSpec(
         "verify manifests",
         "verification",
         "Verify internal consistency across all docs/plans/*.yaml manifest files.",

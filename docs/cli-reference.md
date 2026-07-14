@@ -681,7 +681,7 @@ Commands:
   action-affordances  Print shared query-action affordance metadata as JSON.
   completions         Generate shell completion scripts.
   paths               Print canonical archive paths and filesystem topology.
-  query-completions   Print shared query-builder completion metadata as...
+  query-completions   Print shared query-builder completion metadata as JSON.
 ```
 
 ## Completions
