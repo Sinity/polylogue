@@ -3628,9 +3628,17 @@ files:
     loc: 141
     target: polylogue/storage/sqlite/archive_tiers/archive_plan.py
     owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py
+    loc: 129
+    target: polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py
+    owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/bootstrap.py
     loc: 203
     target: polylogue/storage/sqlite/archive_tiers/bootstrap.py
+    owner: stable
+  - path: polylogue/storage/sqlite/archive_tiers/column_spec.py
+    loc: 102
+    target: polylogue/storage/sqlite/archive_tiers/column_spec.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/common.py
     loc: 76
@@ -3709,7 +3717,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 4568
+    loc: 4589
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
