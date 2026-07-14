@@ -64,16 +64,17 @@ DOCUMENTED_DIVERGENCES = {
 class TestStorageTwinsDocumentation:
     """Verify the 10 documented divergences are present and accurate."""
 
-    def test_documented_divergences_exist_in_source(self):
+    def test_documented_divergences_exist_in_source(self) -> None:
         """Verify all 10 documented divergences are still in async_sqlite_archive.py docstring."""
         # Find repo root by looking for pyproject.toml
         current = Path(__file__).parent
+        repo_root: Path | None = None
         while current != current.parent:
             if (current / "pyproject.toml").exists():
                 repo_root = current
                 break
             current = current.parent
-        else:
+        if repo_root is None:
             pytest.skip("Could not find repo root")
         async_archive = repo_root / "polylogue/storage/sqlite/async_sqlite_archive.py"
 
@@ -102,7 +103,7 @@ class TestStorageTwinsDocumentation:
                 f"Divergence {i} not found in divergences section"
             )
 
-    def test_divergence_structure(self):
+    def test_divergence_structure(self) -> None:
         """Verify each documented divergence has name and description."""
         for div_id, div_data in DOCUMENTED_DIVERGENCES.items():
             assert "name" in div_data, f"Divergence {div_id} missing name"
@@ -123,7 +124,7 @@ class TestStorageTwinsArchitecture:
             current = current.parent
         pytest.fail("Could not find repo root")
 
-    def test_async_backend_classes_exist(self):
+    def test_async_backend_classes_exist(self) -> None:
         """Verify key async backend classes are present."""
         repo_root = self._get_repo_root()
 
@@ -143,7 +144,7 @@ class TestStorageTwinsArchitecture:
             classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
             assert "SQLiteArchiveMixin" in classes, "SQLiteArchiveMixin not found in async_sqlite_archive.py"
 
-    def test_sync_backend_classes_exist(self):
+    def test_sync_backend_classes_exist(self) -> None:
         """Verify key sync backend classes are present."""
         repo_root = self._get_repo_root()
 
@@ -155,7 +156,7 @@ class TestStorageTwinsArchitecture:
             classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
             assert "ArchiveStore" in classes, "ArchiveStore not found in archive_tiers/archive.py"
 
-    def test_async_backend_has_write_capability(self):
+    def test_async_backend_has_write_capability(self) -> None:
         """Verify async backend has write methods."""
         repo_root = self._get_repo_root()
         async_archive = repo_root / "polylogue/storage/sqlite/async_sqlite_archive.py"
@@ -170,7 +171,7 @@ class TestStorageTwinsArchitecture:
 class TestStorageTwinsConsistency:
     """Verify consistency in storage operations across lanes."""
 
-    def test_documented_divergences_are_rationale(self):
+    def test_documented_divergences_are_rationale(self) -> None:
         """Each divergence should have a clear rationale."""
         # All divergences in DOCUMENTED_DIVERGENCES should be intentional
         # (not bugs, but architectural differences)
@@ -188,7 +189,7 @@ class TestStorageTwinsConsistency:
             current = current.parent
         pytest.fail("Could not find repo root")
 
-    def test_no_conflicting_sql_semantics_on_same_tables(self):
+    def test_no_conflicting_sql_semantics_on_same_tables(self) -> None:
         """
         Regression test: if the same table is written by both backends,
         their SQL semantics must be compatible.
