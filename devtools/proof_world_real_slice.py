@@ -11,7 +11,18 @@ That extension is deliberately a two-step, human-gated process:
    plus rendered transcripts to an arbitrary output directory. It never
    mutates the source archive (``Polylogue.get_session`` opens the archive
    tiers with ``read_only=True``) and never writes into the product fixture
-   tree (``polylogue/scenarios/``) on its own.
+   tree (``polylogue/scenarios/``) on its own. The per-session transcript
+   files under ``<out>/transcripts/`` are full, unredacted flattened text —
+   they exist for a human to read the real session content. The
+   *report/manifest* (``SCREENING_REPORT.md``, ``manifest.json``) are a
+   different, narrower surface: any matched **secret** value is redacted
+   before it is written there (see ``scan_text``/``_snippet``), so a report
+   that later gets shared or accidentally committed doesn't itself become a
+   secret-leak vector. Matched **PII** text is kept verbatim in the report
+   since a reviewer needs the real value to judge placeholder vs. genuine
+   data. Point ``--out`` at a location outside version control (e.g. a
+   gitignored scratch directory) — this tool applies no guard against
+   writing into a tracked path.
 2. An operator reviews the report and transcripts and decides, session by
    session, whether the slice is safe to fold into the shared proof-world
    corpus. Only after that explicit approval should the slice move into a
@@ -25,6 +36,7 @@ the transcripts before promoting anything to a shared fixture.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -58,15 +70,20 @@ _PII_PATTERNS: dict[str, re.Pattern[str]] = {
     "ipv4": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
 }
 
-# Substrings that are conventionally placeholders/loopback addresses, not
-# real personal data. A hit that is fully covered by an allowlisted
-# substring is downgraded but still reported (never silently dropped).
-_ALLOWLIST_SUBSTRINGS: tuple[str, ...] = (
-    "test@example.com",
-    "user@example.com",
-    "127.0.0.1",
-    "0.0.0.0",
-    "255.255.255.255",
+# Values that are conventionally placeholders/loopback addresses, not real
+# personal data. A hit is downgraded only when the *entire* matched string
+# equals one of these exactly (never a substring check — "notuser@example.com"
+# and "127.0.0.123" must NOT be treated as allowlisted merely because an
+# allowlisted value happens to appear inside them). A downgraded hit is still
+# reported (never silently dropped).
+_ALLOWLIST_VALUES: frozenset[str] = frozenset(
+    (
+        "test@example.com",
+        "user@example.com",
+        "127.0.0.1",
+        "0.0.0.0",
+        "255.255.255.255",
+    )
 )
 
 _SNIPPET_RADIUS = 40
@@ -124,31 +141,49 @@ class SessionScreeningResult:
         }
 
 
-def _snippet(text: str, match: re.Match[str]) -> str:
+def _snippet(text: str, match: re.Match[str], *, redact: bool) -> str:
+    """Render a bounded context window around ``match``.
+
+    When ``redact`` is true (secret-kind hits), the matched substring itself
+    is replaced with a placeholder — the *surrounding* context is still
+    useful for triage (which pattern fired, roughly where), but the actual
+    secret value never reaches the report/manifest on disk. PII hits are not
+    redacted: a human reviewer needs the real matched text (e.g. the actual
+    email/IP) to judge whether it is a placeholder or genuine personal data.
+    """
+
     start = max(0, match.start() - _SNIPPET_RADIUS)
     end = min(len(text), match.end() + _SNIPPET_RADIUS)
     prefix = "…" if start > 0 else ""
     suffix = "…" if end < len(text) else ""
-    return f"{prefix}{text[start:end]!r}{suffix}"
+    window = text[start:end]
+    if redact:
+        rel_start = match.start() - start
+        rel_end = match.end() - start
+        window = f"{window[:rel_start]}<redacted:{match.end() - match.start()}ch>{window[rel_end:]}"
+    return f"{prefix}{window!r}{suffix}"
 
 
 def scan_text(text: str) -> list[PatternHit]:
     """Run every configured secret/PII pattern over ``text``.
 
     Returns one :class:`PatternHit` per pattern that matched at least once,
-    each carrying up to ``_MAX_SAMPLES_PER_PATTERN`` truncated samples for
-    human review — never the full match set, to keep the report itself from
-    becoming a leak surface.
+    each carrying up to ``_MAX_SAMPLES_PER_PATTERN`` samples for human
+    review. Secret-kind samples have the actual matched value redacted (see
+    :func:`_snippet`) — never the raw secret — to keep the report itself
+    from becoming a leak surface. PII-kind samples keep the real matched
+    text, which a reviewer needs to judge placeholder vs. genuine data.
     """
 
     hits: list[PatternHit] = []
     for kind, patterns in (("secret", _SECRET_PATTERNS), ("pii", _PII_PATTERNS)):
+        redact = kind == "secret"
         for name, pattern in patterns.items():
             matches = list(pattern.finditer(text))
             if not matches:
                 continue
-            samples = [_snippet(text, m) for m in matches[:_MAX_SAMPLES_PER_PATTERN]]
-            all_allowlisted = all(any(allowed in m.group(0) for allowed in _ALLOWLIST_SUBSTRINGS) for m in matches)
+            samples = [_snippet(text, m, redact=redact) for m in matches[:_MAX_SAMPLES_PER_PATTERN]]
+            all_allowlisted = all(m.group(0) in _ALLOWLIST_VALUES for m in matches)
             hits.append(
                 PatternHit(
                     pattern=name,
@@ -263,6 +298,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_transcript_filename(session_id: str) -> str:
+    """Filesystem-safe, collision-free filename stem for a session id.
+
+    Path-unsafe characters are replaced for readability, but readability
+    alone is not collision-safe: distinct session ids that differ only in
+    which punctuation character separates otherwise-identical characters
+    (e.g. ``origin:a:b`` vs. ``origin:a_b``) would sanitize to the same
+    stem. A short content hash of the *original, unsanitized* session id is
+    appended so two distinct session ids can never produce the same
+    filename, guaranteeing no transcript is silently overwritten.
+    """
+
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+    return f"{sanitized}__{digest}"
+
+
 def _read_refs_file(path: Path) -> list[str]:
     refs: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -291,8 +343,17 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     transcripts_dir = args.out / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
+    seen_filenames: dict[str, str] = {}
     for result, text in pairs:
-        safe_name = result.session_id.replace("/", "_").replace(":", "_")
+        safe_name = _safe_transcript_filename(result.session_id)
+        prior = seen_filenames.get(safe_name)
+        if prior is not None and prior != result.session_id:
+            # Should be unreachable (sha256 collision on distinct inputs),
+            # but fail loudly rather than silently overwrite a transcript.
+            raise RuntimeError(
+                f"transcript filename collision: {safe_name!r} claimed by both {prior!r} and {result.session_id!r}"
+            )
+        seen_filenames[safe_name] = result.session_id
         (transcripts_dir / f"{safe_name}.txt").write_text(text, encoding="utf-8")
 
     manifest = {

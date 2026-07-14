@@ -58,6 +58,31 @@ def test_scan_text_does_not_allowlist_a_real_looking_email() -> None:
     assert not email_hit.all_allowlisted
 
 
+def test_scan_text_does_not_allowlist_by_substring_containment() -> None:
+    """A match that merely *contains* an allowlisted value must not be
+    downgraded — only an exact full-match equals check counts. Regression
+    for a bug where `notuser@example.com` and `127.0.0.123` were both
+    treated as fully allowlisted (and thus 'clean') purely because
+    `user@example.com`/`127.0.0.1` occur as substrings."""
+
+    hits = m.scan_text("contact notuser@example.com and reach server at 127.0.0.123 for details")
+    email_hit = next(h for h in hits if h.pattern == "email")
+    ipv4_hit = next(h for h in hits if h.pattern == "ipv4")
+    assert not email_hit.all_allowlisted
+    assert not ipv4_hit.all_allowlisted
+
+    result = m.SessionScreeningResult(
+        session_id="x",
+        origin="claude-code-session",
+        title=None,
+        created_at=None,
+        message_count=1,
+        word_count=1,
+        hits=[email_hit, ipv4_hit],
+    )
+    assert result.verdict == "review"
+
+
 # --- verdict computation -----------------------------------------------------
 
 
@@ -114,6 +139,51 @@ def test_verdict_clean_when_pii_hits_are_fully_allowlisted() -> None:
         hits=[m.PatternHit(pattern="email", kind="pii", count=1, samples=["s"], all_allowlisted=True)],
     )
     assert result.verdict == "clean"
+
+
+# --- secret redaction in samples ----------------------------------------------
+
+
+def test_scan_text_redacts_the_actual_secret_value_in_samples() -> None:
+    """The report/manifest must never embed a raw secret value verbatim —
+    only PII context does that. Regression for a bug where the snippet
+    window always fully contained the matched secret text despite the
+    docstring's claim that samples 'never' leak the full match."""
+
+    text = "the real key is AKIAABCDEFGHIJKLMNOP and it must stay secret"
+    hits = m.scan_text(text)
+    secret_hit = next(h for h in hits if h.pattern == "aws_access_key_id")
+    joined = " ".join(secret_hit.samples)
+    assert "AKIAABCDEFGHIJKLMNOP" not in joined
+    assert "redacted" in joined
+    # surrounding context should still be present for triage
+    assert "real key" in joined
+
+
+def test_scan_text_keeps_real_pii_text_in_samples_for_human_judgment() -> None:
+    hits = m.scan_text("contact jane.doe@personalmail.example for details")
+    email_hit = next(h for h in hits if h.pattern == "email")
+    joined = " ".join(email_hit.samples)
+    assert "jane.doe@personalmail.example" in joined
+
+
+# --- transcript filename collision safety --------------------------------------
+
+
+def test_safe_transcript_filename_disambiguates_punctuation_variants() -> None:
+    """Two distinct session ids that differ only in which punctuation
+    character separates otherwise-identical characters must never collide
+    on the sanitized filename stem."""
+
+    a = m._safe_transcript_filename("origin:a:b")
+    b = m._safe_transcript_filename("origin:a_b")
+    assert a != b
+
+
+def test_safe_transcript_filename_is_deterministic() -> None:
+    assert m._safe_transcript_filename("claude-code-session:abc") == m._safe_transcript_filename(
+        "claude-code-session:abc"
+    )
 
 
 # --- flatten helper -----------------------------------------------------------
@@ -186,7 +256,11 @@ async def test_screen_session_reads_real_archive_and_flags_planted_secret(
     secret_result, secret_text = await m.screen_session(archive_root, _SECRET_ID)
     assert secret_result.verdict == "flagged"
     assert any(h.pattern == "aws_access_key_id" for h in secret_result.hits)
+    # the raw transcript text is unredacted (it exists for full human review)...
     assert "AKIAABCDEFGHIJKLMNOP" in secret_text
+    # ...but the report-facing samples must never carry the raw secret value
+    all_samples = [s for h in secret_result.hits for s in h.samples]
+    assert not any("AKIAABCDEFGHIJKLMNOP" in s for s in all_samples)
 
 
 async def test_screen_session_raises_for_unknown_session(workspace_env: dict[str, Path]) -> None:
