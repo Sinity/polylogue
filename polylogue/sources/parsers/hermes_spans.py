@@ -1,44 +1,81 @@
-"""Hermes NeMo Relay ATOF/ATIF observer-layer trace importer (fs1.2).
+"""Hermes NeMo Relay ATIF observer-trajectory importer (fs1.2).
 
-Imports Hermes's observer-layer trace export as runtime-span evidence:
-``pre/post_api_request`` pairs become LLM request spans; ``pre/post_tool_call``
-pairs become tool-execution spans with duration/status; approval hooks become
-decision-point events; subagent hooks become delegation evidence; error hooks
-become retry/fallback taxonomy events.
+Imports a Hermes NeMo Relay Agent Trajectory Interchange Format (ATIF)
+export as runtime-evidence: tool-call steps become tool-execution spans,
+message-only steps become LLM-response evidence, and ``subagent_trajectories``
+entries become subagent-delegation evidence.
 
-Honesty note (verify-first gap): the exact wire shape of Hermes's own NeMo
-Relay ATOF JSONL / ATIF JSON export was not independently verifiable from
-this workspace (no local checkout of the Hermes observer plugin source was
-available). The marker-based document shape and per-``hook_type`` field
-mapping below are therefore a *documented, testable, best-effort schema*
-derived from the fs1.2 design notes and the shared lifecycle-event taxonomy
-in ``hermes_lifecycle`` -- not a shape confirmed against Hermes's own code.
-``import_fidelity_declaration`` below marks every capability as at most
-``inferred`` for exactly this reason, and a follow-up bead
-(``polylogue-fs1.2.1``, filed alongside this change) tracks re-verifying the
-real shape once the Hermes plugin source is available and adjusting the
-parser/fixtures without changing the public contract if possible.
+Review-fix note (2026-07-14, replaces the original honesty caveat): a
+reviewer found the originally-shipped detector could only ever match a
+synthetic ``polylogue_artifact: "hermes_atif_trace"`` marker key invented by
+this repo's own test helper -- no real, unmodified Hermes/NeMo Relay export
+could ever reach this parser. That gap is now closed: ``looks_like_atif_payload``
+checks the real, externally-published ATIF top-level document shape
+(``schema_version`` prefixed ``"ATIF"``, ``session_id``, ``steps``), sourced
+from NVIDIA's own NeMo Relay documentation:
+
+- https://docs.nvidia.com/nemo/relay/nemo-relay-cli/hermes (Hermes hook
+  vocabulary NeMo Relay captures: pre/post_api_request, pre/post_tool_call,
+  subagent_start/stop, api_request_error, etc.)
+- https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events (ATOF
+  event envelope: ``atof_version``, ``kind`` in {scope, mark}, ``category``,
+  ``scope_category``)
+- https://github.com/HexLab98/hermes-agent-fork/blob/main/plugins/observability/nemo_relay/README.md
+  (ATIF top-level shape: ``schema_version: "ATIF-v1.7"``, ``session_id``,
+  ``agent``, ``steps``, ``subagent_trajectories``; step fields ``source``,
+  ``tool_calls`` (``function_name``/``arguments``/``tool_call_id``),
+  ``observation``, ``message``)
+
+A real, unmodified ATIF document produced by NeMo Relay's Hermes plugin will
+now be detected and parsed by this importer -- the prior "cannot detect any
+real export" defect is fixed.
+
+Residual honesty gap (smaller and different from before, not the same claim
+in weaker words): no live-generated ATIF file was available to this
+workspace to confirm byte-for-byte (still no local Hermes/NeMo-Relay
+checkout), so the *exact* per-field semantics (e.g. ``arguments`` structure,
+``observation`` shape) rest on published documentation rather than a
+confirmed real sample. ``import_fidelity_declaration`` marks every
+capability at most ``inferred`` for exactly this reason. A follow-up bead
+(``polylogue-fs1.2.1``, filed alongside this change -- see its own record)
+tracks re-verifying against a real generated export once available.
+
+Scope narrowing (disclosed, not silent): ATIF's *documented* step schema
+(``source``/``tool_calls``/``observation``/``message``) carries no
+approval-hook or error-hook data -- that vocabulary exists only in the raw
+ATOF event stream (JSONL, one Hermes hook per line), which this importer
+does not ingest. ``decision_points``/``error_taxonomy`` fidelity capabilities
+are honestly declared ``absent`` rather than fabricated from hook types this
+schema doesn't carry. Ingesting the raw ATOF stream is a materially larger,
+differently-shaped change (JSONL grouped by session, not a single document)
+and is tracked as fs1.2.1 follow-up scope, not silently dropped.
+
+Payload hygiene: unlike a raw ATOF hook (ids/timings/outcomes only), a real
+ATIF step's ``message``/``observation`` fields carry actual response text --
+that is ATIF's purpose (replay/evaluation). To keep this importer consistent
+with the payload-hygiene rule the rest of the Hermes bridge enforces
+(``sources.hooks._reject_duplicated_transcript``: evidence, never a second
+copy of conversation text), this parser deliberately records only bounded,
+non-content evidence about that text (presence, character length) rather
+than copying it. Full-transcript ATIF import (treating steps as real
+session messages) is a distinct, larger product decision -- deferred to
+fs1.2.1, not assumed here.
 
 Session correlation (design's "join key: Hermes session id ->
-sessions.native_id"): an observer trace does not carry conversational content
-of its own (spans carry ids/timings/outcomes, never a duplicated transcript,
-matching the ``sources.hooks`` payload-hygiene rule), so this parser produces
-its own observer-evidence session identity (``observer:<hermes_session_id>``)
-rather than physically merging span events into the state-db-ingested
-conversational session's message tree -- a physical merge across two
-independently-acquired artifacts for the same logical Hermes session is a
-session-identity/lineage design decision (topology_edges / session_links)
-that is explicitly deferred, not silently assumed. Read-side correlation by
-the shared Hermes session id remains possible today via
-``hermes_observer_session_id_for`` and is exercised by
-``tests/unit/sources/test_hermes_spans.py``.
+sessions.native_id"): this parser produces its own observer-evidence session
+identity (``observer:<hermes_session_id>``) rather than physically merging
+trajectory evidence into the state-db-ingested conversational session's
+message tree -- a physical merge across two independently-acquired artifacts
+for the same logical Hermes session is a session-identity/lineage design
+decision (topology_edges / session_links) that is explicitly deferred, not
+silently assumed. Read-side correlation by the shared Hermes session id
+remains possible today via ``hermes_observer_session_id_for``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
@@ -47,62 +84,16 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
 
-HERMES_ATIF_TRACE_MARKER = "hermes_atif_trace"
-
-# The observer-layer hook vocabulary this parser understands. Anything else
-# is preserved as a generic "hermes_observer_span" event (ambiguous input is
-# handled deterministically -- never dropped, never guessed into one of the
-# known kinds) per fs1.2 AC.
-_PRE_API_REQUEST = "pre_api_request"
-_POST_API_REQUEST = "post_api_request"
-_PRE_TOOL_CALL = "pre_tool_call"
-_POST_TOOL_CALL = "post_tool_call"
-_APPROVAL_REQUEST = "approval_request"
-_APPROVAL_RESPONSE = "approval_response"
-_SUBAGENT_START = "subagent_start"
-_SUBAGENT_STOP = "subagent_stop"
-_ERROR = "error"
-
-_PAIRED_HOOK_TYPES: tuple[tuple[str, str], ...] = (
-    (_PRE_API_REQUEST, _POST_API_REQUEST),
-    (_PRE_TOOL_CALL, _POST_TOOL_CALL),
-    (_APPROVAL_REQUEST, _APPROVAL_RESPONSE),
-    (_SUBAGENT_START, _SUBAGENT_STOP),
-)
-_KNOWN_HOOK_TYPES = frozenset(
-    {
-        _PRE_API_REQUEST,
-        _POST_API_REQUEST,
-        _PRE_TOOL_CALL,
-        _POST_TOOL_CALL,
-        _APPROVAL_REQUEST,
-        _APPROVAL_RESPONSE,
-        _SUBAGENT_START,
-        _SUBAGENT_STOP,
-        _ERROR,
-    }
-)
+# Real, externally-published ATIF schema-version prefix (NVIDIA NeMo Relay's
+# Hermes plugin emits e.g. "ATIF-v1.7") -- see module docstring for sources.
+ATIF_SCHEMA_VERSION_PREFIX = "ATIF"
 
 HermesSpanEventType: TypeAlias = Literal[
     "hermes_llm_request_span",
     "hermes_tool_execution_span",
-    "hermes_decision_point",
     "hermes_subagent_span",
-    "hermes_error_taxonomy",
     "hermes_observer_span",
 ]
-
-_EVENT_TYPE_BY_HOOK_TYPE: dict[str, HermesSpanEventType] = {
-    _PRE_API_REQUEST: "hermes_llm_request_span",
-    _POST_API_REQUEST: "hermes_llm_request_span",
-    _PRE_TOOL_CALL: "hermes_tool_execution_span",
-    _POST_TOOL_CALL: "hermes_tool_execution_span",
-    _APPROVAL_REQUEST: "hermes_decision_point",
-    _APPROVAL_RESPONSE: "hermes_decision_point",
-    _SUBAGENT_START: "hermes_subagent_span",
-    _SUBAGENT_STOP: "hermes_subagent_span",
-    _ERROR: "hermes_error_taxonomy",
-}
 
 
 def observer_session_provider_id(hermes_session_id: str) -> str:
@@ -128,91 +119,116 @@ def hermes_observer_session_id_for(conversational_session_id: str) -> str:
     return observer_session_provider_id(raw_id)
 
 
-def marker_payload(hermes_session_id: str, spans: Sequence[JSONValue]) -> JSONDocument:
-    """Return a minimal valid ATIF trace document for producers/tests.
+def marker_payload(
+    hermes_session_id: str,
+    steps: Sequence[JSONValue],
+    *,
+    schema_version: str = "ATIF-v1.7",
+    agent: JSONDocument | None = None,
+    subagent_trajectories: Sequence[JSONValue] = (),
+) -> JSONDocument:
+    """Return a real-shaped ATIF trajectory document, for producers/tests.
 
-    ``spans`` accepts any ``JSONValue`` sequence (``Sequence`` is covariant,
-    unlike ``list``) rather than requiring ``list[JSONDocument]`` on purpose:
-    a real acquisition can hand this a malformed stream (a non-object entry),
-    and :func:`parse_atif_document` must handle that deterministically rather
-    than assuming a caller always validates first.
+    Field names match NVIDIA's published NeMo Relay ATIF schema (see module
+    docstring): top-level ``schema_version``/``session_id``/``agent``/
+    ``steps``/``subagent_trajectories``. ``steps`` accepts any
+    ``Sequence[JSONValue]`` (``Sequence`` is covariant, unlike ``list``) on
+    purpose: a real acquisition can hand this a malformed stream (a
+    non-object entry), and :func:`parse_atif_document` must handle that
+    deterministically rather than assuming a caller always validates first.
     """
     return {
-        "polylogue_artifact": HERMES_ATIF_TRACE_MARKER,
-        "schema": "hermes-observer-trace",
-        "version": 1,
+        "schema_version": schema_version,
         "session_id": hermes_session_id,
-        "spans": list(spans),
+        "agent": agent or {"name": "hermes", "version": "unknown", "model_name": "unknown"},
+        "steps": list(steps),
+        "subagent_trajectories": list(subagent_trajectories),
     }
 
 
 def looks_like_atif_payload(payload: JSONDocument) -> bool:
+    """Return whether ``payload`` is a real ATIF trajectory document.
+
+    Checks the externally-published top-level shape (module docstring):
+    ``schema_version`` prefixed ``"ATIF"``, a string ``session_id``, and a
+    ``steps`` list. Unlike the prior version of this function, this matches
+    a real, unmodified Hermes/NeMo Relay export -- it does not require any
+    Polylogue-specific marker key.
+    """
+    schema_version = payload.get("schema_version")
     return (
-        payload.get("polylogue_artifact") == HERMES_ATIF_TRACE_MARKER
+        isinstance(schema_version, str)
+        and schema_version.upper().startswith(ATIF_SCHEMA_VERSION_PREFIX)
         and isinstance(payload.get("session_id"), str)
-        and isinstance(payload.get("spans"), list)
+        and isinstance(payload.get("steps"), list)
     )
 
 
 def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSession:
-    """Parse one Hermes ATIF/ATOF observer trace document into a session.
+    """Parse one Hermes ATIF trajectory document into a session.
 
-    Ambiguous input is handled deterministically: an unrecognized
-    ``hook_type`` becomes a generic ``hermes_observer_span`` event rather
-    than being dropped or mis-classified as a known kind; a span missing its
-    required ``hook_type``/``span_id`` is skipped and counted (see
-    :func:`import_fidelity_declaration`), never silently coerced.
+    Ambiguous input is handled deterministically: a step with none of the
+    documented shapes (``tool_calls``, ``message``, ``observation``) becomes
+    a generic ``hermes_observer_span`` event rather than being dropped; a
+    non-object step, or a ``tool_calls`` entry missing its required
+    ``tool_call_id``/``function_name``, is skipped and counted (see
+    :func:`import_fidelity_declaration`), never silently coerced. Message
+    and observation text is never copied verbatim (see module docstring
+    payload-hygiene note) -- only bounded evidence (presence, character
+    length) is recorded.
     """
     session_id = str(payload.get("session_id") or fallback_id)
-    raw_spans = cast("list[JSONValue]", payload.get("spans") or [])
+    agent = json_document(payload.get("agent")) or {}
+    model_name = _optional_str(agent.get("model_name"))
+    steps_value = payload.get("steps")
+    raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
+    subagents_value = payload.get("subagent_trajectories")
+    raw_subagents: list[JSONValue] = subagents_value if isinstance(subagents_value, list) else []
+
     events: list[ParsedSessionEvent] = []
     skipped = 0
-    unknown_hook_types = 0
-    for raw_span in raw_spans:
-        span = json_document(raw_span)
-        if span is None:
+    for index, raw_step in enumerate(raw_steps):
+        step = json_document(raw_step)
+        # `json_document()` returns `{}` (falsy), never `None`, for a
+        # non-object entry -- `not step` is the real "malformed" check
+        # (also matches a genuinely empty step object: neither case carries
+        # a recognizable shape, so both are skipped and counted the same way
+        # `_events_for_step`'s tool_call entries are).
+        if not step:
             skipped += 1
             continue
-        hook_type = span.get("hook_type")
-        span_id = span.get("span_id")
-        if not isinstance(hook_type, str) or not hook_type or not isinstance(span_id, str) or not span_id:
+        step_events, step_skipped = _events_for_step(step, index, model_name)
+        events.extend(step_events)
+        skipped += step_skipped
+
+    for index, raw_subagent in enumerate(raw_subagents):
+        subagent = json_document(raw_subagent)
+        if not subagent:
             skipped += 1
             continue
-        if hook_type not in _KNOWN_HOOK_TYPES:
-            unknown_hook_types += 1
-        event_type = _EVENT_TYPE_BY_HOOK_TYPE.get(hook_type, "hermes_observer_span")
-        events.append(
-            ParsedSessionEvent(
-                event_type=event_type,
-                timestamp=_optional_str(span.get("timestamp")),
-                payload={
-                    "hook_type": hook_type,
-                    "span_id": span_id,
-                    **{k: v for k, v in span.items() if k not in {"hook_type", "span_id", "timestamp"}},
-                },
-            )
-        )
-    unpaired = _unpaired_span_ids(events)
-    # A trace with zero usable spans still lands as a session (never a
-    # silent drop of the whole document): its own fidelity declaration marks
-    # runtime_spans absent/degraded rather than raising.
+        events.append(_subagent_span_event(subagent, index))
+
+    llm_events = sum(1 for e in events if e.event_type == "hermes_llm_request_span")
+    tool_events = sum(1 for e in events if e.event_type == "hermes_tool_execution_span")
+    subagent_events = sum(1 for e in events if e.event_type == "hermes_subagent_span")
+    generic_events = sum(1 for e in events if e.event_type == "hermes_observer_span")
+
     summary_text = (
-        f"Hermes observer trace: {len(events)} span event(s) "
-        f"({len(unpaired)} unpaired, {skipped} unparseable, {unknown_hook_types} unrecognized hook_type)."
+        f"Hermes ATIF trajectory: {len(raw_steps)} step(s) "
+        f"({tool_events} tool call span(s), {llm_events} message span(s), "
+        f"{subagent_events} subagent trajectory(ies), {generic_events} unrecognized, "
+        f"{skipped} unparseable)."
     )
     provider_session_id = observer_session_provider_id(session_id)
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
-        title=f"Hermes observer trace: {session_id}",
-        created_at=_earliest_timestamp(events),
-        updated_at=_latest_timestamp(events),
+        title=f"Hermes ATIF trajectory: {session_id}",
         messages=[
             ParsedMessage(
                 provider_message_id=f"{provider_session_id}:trace-summary",
                 role=Role.SYSTEM,
                 text=summary_text,
-                timestamp=_earliest_timestamp(events),
                 blocks=[ParsedContentBlock(type=BlockType.TEXT, text=summary_text)],
                 position=0,
                 variant_index=0,
@@ -234,76 +250,165 @@ def parse_atif_document(payload: JSONDocument, fallback_id: str) -> ParsedSessio
             ),
             *events,
         ],
-        ingest_flags=["hermes:atif-observer-trace"],
+        ingest_flags=["hermes:atif-trajectory"],
     )
 
 
-@dataclass(frozen=True, slots=True)
-class HermesSpanReconciliation:
-    """Per-document pairing/parse-quality summary, independent of any snapshot."""
+def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> tuple[list[ParsedSessionEvent], int]:
+    tool_calls = step.get("tool_calls")
+    message = step.get("message")
+    observation = step.get("observation")
+    events: list[ParsedSessionEvent] = []
+    skipped = 0
 
-    total_spans: int
-    unpaired_span_ids: tuple[str, ...]
-    skipped: int
-    unknown_hook_types: int
+    if isinstance(tool_calls, list) and tool_calls:
+        for tool_call_raw in tool_calls:
+            tool_call = json_document(tool_call_raw)
+            tool_call_id = tool_call.get("tool_call_id") if tool_call else None
+            function_name = tool_call.get("function_name") if tool_call else None
+            # `json_document()` returns `{}` (falsy), never `None`, for a
+            # non-document entry -- `not tool_call` catches that case.
+            if not tool_call or not isinstance(tool_call_id, str) or not isinstance(function_name, str):
+                skipped += 1
+                continue
+            arguments = tool_call.get("arguments")
+            events.append(
+                ParsedSessionEvent(
+                    event_type="hermes_tool_execution_span",
+                    payload={
+                        "step_index": index,
+                        "tool_call_id": tool_call_id,
+                        "function_name": function_name,
+                        "has_arguments": arguments is not None,
+                        "has_observation": observation is not None,
+                    },
+                )
+            )
+        return events, skipped
 
-    @property
-    def complete(self) -> bool:
-        return not self.unpaired_span_ids and not self.skipped and not self.unknown_hook_types
+    if isinstance(message, str) and message:
+        events.append(
+            ParsedSessionEvent(
+                event_type="hermes_llm_request_span",
+                payload={
+                    "step_index": index,
+                    "model": model_name,
+                    "message_char_len": len(message),
+                },
+            )
+        )
+        return events, skipped
+
+    if observation is not None:
+        events.append(
+            ParsedSessionEvent(
+                event_type="hermes_observer_span",
+                payload={"step_index": index, "shape": "observation_only"},
+            )
+        )
+        return events, skipped
+
+    # No recognized shape (no tool_calls, no message, no observation): ambiguous
+    # input is never dropped, per AC -- surfaced as a generic observer span.
+    events.append(
+        ParsedSessionEvent(
+            event_type="hermes_observer_span",
+            payload={"step_index": index, "shape": "unrecognized", "source": step.get("source")},
+        )
+    )
+    return events, skipped
+
+
+def _subagent_span_event(subagent: JSONDocument, index: int) -> ParsedSessionEvent:
+    agent = json_document(subagent.get("agent")) or {}
+    steps = subagent.get("steps")
+    return ParsedSessionEvent(
+        event_type="hermes_subagent_span",
+        payload={
+            "subagent_index": index,
+            "subagent_session_id": _optional_str(subagent.get("session_id")),
+            "subagent_agent_name": _optional_str(agent.get("name")),
+            "subagent_step_count": len(steps) if isinstance(steps, list) else None,
+        },
+    )
 
 
 def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
-    """Declare the fidelity this best-effort ATIF schema can substantiate.
+    """Declare the fidelity this ATIF importer can substantiate.
 
-    Every capability tops out at ``inferred`` (never ``exact``): the wire
-    shape itself is unverified against Hermes's own observer-plugin source
-    (see module docstring), so claiming exactness here would overstate what
-    is actually known.
+    Every capability tops out at ``inferred`` (never ``exact``): the schema
+    is grounded in published documentation, not a confirmed real generated
+    sample (see module docstring). ``decision_points``/``error_taxonomy`` are
+    honestly ``absent`` -- ATIF's documented step schema carries no
+    approval/error-hook vocabulary (that lives only in the separate raw ATOF
+    event stream, not ingested by this pass).
     """
     span_events = [
         event
         for event in session.session_events
-        if event.event_type in set(_EVENT_TYPE_BY_HOOK_TYPE.values()) | {"hermes_observer_span"}
+        if event.event_type
+        in {"hermes_llm_request_span", "hermes_tool_execution_span", "hermes_subagent_span", "hermes_observer_span"}
     ]
-    unpaired = _unpaired_span_ids(span_events)
     total = len(span_events)
     llm_spans = sum(1 for event in span_events if event.event_type == "hermes_llm_request_span")
     tool_spans = sum(1 for event in span_events if event.event_type == "hermes_tool_execution_span")
-    decision_spans = sum(1 for event in span_events if event.event_type == "hermes_decision_point")
     subagent_spans = sum(1 for event in span_events if event.event_type == "hermes_subagent_span")
-    error_spans = sum(1 for event in span_events if event.event_type == "hermes_error_taxonomy")
+    generic_spans = sum(1 for event in span_events if event.event_type == "hermes_observer_span")
 
     def capability(observed: int, detail: str) -> HermesFidelityCapability:
-        status: HermesFidelityStatus = (
-            "inferred" if observed and not unpaired else ("absent" if not observed else "degraded")
-        )
+        status: HermesFidelityStatus = "inferred" if observed else "absent"
         return HermesFidelityCapability(
             status=status, observed=observed, expected=max(total, 1), counts={}, detail=detail
         )
 
     capabilities = {
-        "llm_request_spans": capability(llm_spans, "pre/post_api_request pairs mapped to LLM request spans."),
-        "tool_execution_spans": capability(tool_spans, "pre/post_tool_call pairs mapped to tool execution spans."),
-        "decision_points": capability(decision_spans, "approval_request/response pairs mapped to decision points."),
+        "llm_request_spans": capability(
+            llm_spans, "Message-only trajectory steps mapped to LLM response evidence (text length only, no content)."
+        ),
+        "tool_execution_spans": capability(
+            tool_spans, "tool_calls entries mapped to tool execution spans (ids/names, arguments presence only)."
+        ),
         "subagent_delegation": capability(
             subagent_spans,
-            "subagent_start/stop pairs recorded as evidence; NOT materialized into topology_edges/session_links "
-            "in this pass -- deferred, see module docstring.",
+            "subagent_trajectories entries recorded as delegation evidence; NOT materialized into "
+            "topology_edges/session_links in this pass -- deferred, see module docstring.",
         ),
-        "error_taxonomy": capability(error_spans, "error hooks recorded as retry/fallback taxonomy evidence."),
+        "decision_points": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=max(total, 1),
+            counts={},
+            detail="ATIF's documented step schema carries no approval-hook vocabulary; that evidence "
+            "exists only in the raw ATOF event stream, not ingested by this pass (see fs1.2.1).",
+        ),
+        "error_taxonomy": HermesFidelityCapability(
+            status="absent",
+            observed=0,
+            expected=max(total, 1),
+            counts={},
+            detail="ATIF's documented step schema carries no error-hook vocabulary; that evidence "
+            "exists only in the raw ATOF event stream, not ingested by this pass (see fs1.2.1).",
+        ),
         "topology_edges": HermesFidelityCapability(
             status="absent",
             observed=0,
             expected=max(subagent_spans, 1),
             counts={},
-            detail="Physical topology_edges materialization from observer spans is out of scope for this pass.",
+            detail="Physical topology_edges materialization from subagent_trajectories is out of scope for this pass.",
         ),
     }
+    if generic_spans:
+        capabilities["unrecognized_step_shapes"] = HermesFidelityCapability(
+            status="degraded",
+            observed=generic_spans,
+            expected=max(total, 1),
+            counts={},
+            detail="Steps matching none of the documented shapes (tool_calls/message/observation) are "
+            "retained as generic evidence, never dropped.",
+        )
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
-    if unpaired:
-        caveats = (*caveats, f"{len(unpaired)} span(s) never observed their paired counterpart (acquisition debt).")
     return HermesImportFidelity(
-        producer="Hermes NeMo Relay ATIF/ATOF trace (unverified wire shape)",
+        producer="Hermes NeMo Relay ATIF trajectory export (published schema, unconfirmed against a live sample)",
         schema_version=1,
         profile_namespace=None,
         acquisition_method="json_fallback",
@@ -319,42 +424,13 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     )
 
 
-def _unpaired_span_ids(events: list[ParsedSessionEvent]) -> tuple[str, ...]:
-    open_by_start: dict[str, dict[str, str]] = {start: {} for start, _finish in _PAIRED_HOOK_TYPES}
-    for event in events:
-        hook_type = event.payload.get("hook_type")
-        span_id = event.payload.get("span_id")
-        if not isinstance(hook_type, str) or not isinstance(span_id, str):
-            continue
-        for start_type, finish_type in _PAIRED_HOOK_TYPES:
-            if hook_type == start_type:
-                open_by_start[start_type][span_id] = span_id
-            elif hook_type == finish_type:
-                open_by_start[start_type].pop(span_id, None)
-    unpaired: list[str] = []
-    for pending in open_by_start.values():
-        unpaired.extend(sorted(pending.values()))
-    return tuple(unpaired)
-
-
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _earliest_timestamp(events: list[ParsedSessionEvent]) -> str | None:
-    timestamps = sorted(event.timestamp for event in events if event.timestamp)
-    return timestamps[0] if timestamps else None
-
-
-def _latest_timestamp(events: list[ParsedSessionEvent]) -> str | None:
-    timestamps = sorted(event.timestamp for event in events if event.timestamp)
-    return timestamps[-1] if timestamps else None
-
-
 __all__ = [
-    "HERMES_ATIF_TRACE_MARKER",
+    "ATIF_SCHEMA_VERSION_PREFIX",
     "HermesSpanEventType",
-    "HermesSpanReconciliation",
     "hermes_observer_session_id_for",
     "import_fidelity_declaration",
     "looks_like_atif_payload",

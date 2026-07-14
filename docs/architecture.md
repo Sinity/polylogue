@@ -149,8 +149,21 @@ convergence stages.
 | Drive | Google Takeout format with OAuth | `sources/parsers/drive.py` |
 | Gemini CLI | `local_agent.looks_like_gemini_cli()` document shape | `sources/parsers/local_agent.py` |
 | Hermes | state-db payload or hermes agent document | `sources/parsers/hermes_state.py`, `sources/parsers/local_agent.py` |
+| Hermes ATIF trajectory ⚠️ | NeMo Relay Agent Trajectory Interchange Format export (`schema_version`/`session_id`/`steps`) | `sources/parsers/hermes_spans.py` |
 | Antigravity | Brain artifact metadata (`*.metadata.json`) or language-server Markdown export envelope | `sources/parsers/antigravity.py` |
 | Browser capture | capture envelope wrapping a native provider payload | `sources/parsers/browser_capture.py` |
+
+⚠️ **Hermes ATIF importer fidelity caveat**: the detector and parser match the
+*published* NVIDIA NeMo Relay ATIF-v1.7 schema (field names/shapes confirmed
+against `docs.nvidia.com/nemo/relay` and the upstream
+`hermes-agent-fork/plugins/observability/nemo_relay` plugin README), not a
+real Hermes-generated export byte-checked from this workspace (no local
+Hermes/NeMo-Relay checkout was available). Every fidelity capability this
+importer reports tops out at `inferred`, never `exact` — see
+`import_fidelity_declaration()` in `sources/parsers/hermes_spans.py` and
+follow-up bead `polylogue-fs1.2.1` (re-verify against a real generated
+export once available). Do not read `inferred` as "verified against a real
+Hermes wire sample" anywhere this importer's output is surfaced.
 
 `detect_provider()` (in `sources/dispatch.py`) runs `looks_like()` checks in a
 tightness order, not filename order: structural/document detectors first

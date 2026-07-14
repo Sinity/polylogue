@@ -1,4 +1,10 @@
-"""Hermes NeMo Relay ATOF/ATIF observer-trace importer (fs1.2)."""
+"""Hermes NeMo Relay ATIF trajectory importer (fs1.2).
+
+Fixtures below build real-shaped ATIF-v1.7 documents (see the module
+docstring of ``hermes_spans.py`` for the external NVIDIA/Hermes-fork sources
+this schema is grounded in), not the pre-fix synthetic
+``polylogue_artifact: "hermes_atif_trace"`` marker shape.
+"""
 
 from __future__ import annotations
 
@@ -8,64 +14,40 @@ from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import hermes_spans
 
 
-def _spans() -> list[JSONDocument]:
+def _steps() -> list[JSONDocument]:
     return [
         {
-            "hook_type": "pre_api_request",
-            "span_id": "req-1",
-            "timestamp": "2026-07-10T09:00:00Z",
-            "model": "claude-example",
+            "source": "agent",
+            "tool_calls": [
+                {"function_name": "read_file", "tool_call_id": "call-1", "arguments": {"path": "README.md"}}
+            ],
+            "observation": {"results": [{"content": "file contents..."}]},
         },
-        {
-            "hook_type": "post_api_request",
-            "span_id": "req-1",
-            "timestamp": "2026-07-10T09:00:01Z",
-            "duration_ms": 900,
-            "input_tokens": 120,
-            "output_tokens": 30,
-        },
-        {
-            "hook_type": "pre_tool_call",
-            "span_id": "tool-1",
-            "tool_call_id": "call-1",
-            "tool_name": "read_file",
-            "timestamp": "2026-07-10T09:00:02Z",
-        },
-        {
-            "hook_type": "post_tool_call",
-            "span_id": "tool-1",
-            "tool_call_id": "call-1",
-            "timestamp": "2026-07-10T09:00:03Z",
-            "duration_ms": 40,
-            "status": "ok",
-        },
-        {
-            "hook_type": "approval_request",
-            "span_id": "appr-1",
-            "timestamp": "2026-07-10T09:00:04Z",
-        },
-        # No matching approval_response: deliberately unpaired.
-        {
-            "hook_type": "error",
-            "span_id": "err-1",
-            "timestamp": "2026-07-10T09:00:05Z",
-            "error_type": "timeout",
-            "retryable": True,
-        },
+        {"source": "agent", "message": "I read the file and it looks fine."},
     ]
 
 
-def test_looks_like_atif_payload_requires_marker_and_session_and_spans() -> None:
-    payload = hermes_spans.marker_payload("hermes-session-1", _spans())
+def test_looks_like_atif_payload_requires_real_atif_schema_version_and_session_and_steps() -> None:
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
     assert hermes_spans.looks_like_atif_payload(payload)
-    assert not hermes_spans.looks_like_atif_payload({"session_id": "x", "spans": []})
-    assert not hermes_spans.looks_like_atif_payload({"polylogue_artifact": "hermes_atif_trace", "session_id": "x"})
+    # No schema_version at all.
+    assert not hermes_spans.looks_like_atif_payload({"session_id": "x", "steps": []})
+    # schema_version present but not the ATIF family.
+    assert not hermes_spans.looks_like_atif_payload({"schema_version": "OTEL-v1", "session_id": "x", "steps": []})
+    # The old, pre-fix synthetic marker shape must NOT match anymore -- that
+    # was exactly the review finding (a self-referential detector that could
+    # only ever recognize this repo's own test fixture).
+    assert not hermes_spans.looks_like_atif_payload(
+        {"polylogue_artifact": "hermes_atif_trace", "session_id": "x", "spans": []}
+    )
+    # Missing steps.
+    assert not hermes_spans.looks_like_atif_payload({"schema_version": "ATIF-v1.7", "session_id": "x"})
 
 
 def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> None:
     """Production route: the shared detector/parser dispatch, not a bespoke test-only call."""
 
-    payload = hermes_spans.marker_payload("hermes-session-1", _spans())
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
     assert detect_provider(payload) is Provider.HERMES
 
     sessions = parse_payload(Provider.HERMES, payload, "fallback-id")
@@ -81,50 +63,131 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
 def test_atif_parse_is_idempotent_and_deterministic() -> None:
     """Same document parsed twice yields byte-identical structural output."""
 
-    payload = hermes_spans.marker_payload("hermes-session-1", _spans())
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
     first = hermes_spans.parse_atif_document(payload, "fallback-id")
     second = hermes_spans.parse_atif_document(payload, "fallback-id")
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
 
 
-def test_unpaired_spans_are_reported_not_silently_dropped() -> None:
-    payload = hermes_spans.marker_payload("hermes-session-1", _spans())
+def test_tool_call_steps_become_tool_execution_spans_without_copying_arguments() -> None:
+    """Payload hygiene: a tool_calls entry's actual ``arguments``/``observation``
+    content is never copied into the span event -- only bounded presence
+    evidence (see module docstring)."""
+
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
     session = hermes_spans.parse_atif_document(payload, "fallback-id")
 
-    correlation_events = [
-        event for event in session.session_events if event.event_type != "hermes_observer_trace_correlation"
+    tool_events = [event for event in session.session_events if event.event_type == "hermes_tool_execution_span"]
+    assert len(tool_events) == 1
+    event = tool_events[0]
+    assert event.payload["function_name"] == "read_file"
+    assert event.payload["tool_call_id"] == "call-1"
+    assert event.payload["has_arguments"] is True
+    assert event.payload["has_observation"] is True
+    # The real argument/observation content must not appear anywhere in the payload.
+    assert "README.md" not in repr(event.payload)
+    assert "file contents" not in repr(event.payload)
+
+
+def test_message_only_steps_become_llm_response_evidence_without_copying_text() -> None:
+    payload = hermes_spans.marker_payload(
+        "hermes-session-1", _steps(), agent={"name": "hermes", "version": "1", "model_name": "claude-example"}
+    )
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+
+    llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
+    assert len(llm_events) == 1
+    event = llm_events[0]
+    assert event.payload["model"] == "claude-example"
+    assert event.payload["message_char_len"] == len("I read the file and it looks fine.")
+    assert "I read the file and it looks fine." not in repr(event.payload)
+
+
+def test_subagent_trajectories_become_subagent_span_events() -> None:
+    subagents: list[JSONValue] = [
+        {
+            "session_id": "docs-child-session",
+            "agent": {"name": "Hermes Agent E2E"},
+            "steps": [{"source": "agent", "tool_calls": [{"function_name": "terminal", "tool_call_id": "call-2"}]}],
+        }
     ]
-    assert len(correlation_events) == len(_spans())  # nothing dropped
+    payload = hermes_spans.marker_payload("hermes-session-1", [], subagent_trajectories=subagents)
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+
+    subagent_events = [event for event in session.session_events if event.event_type == "hermes_subagent_span"]
+    assert len(subagent_events) == 1
+    event = subagent_events[0]
+    assert event.payload["subagent_session_id"] == "docs-child-session"
+    assert event.payload["subagent_agent_name"] == "Hermes Agent E2E"
+    assert event.payload["subagent_step_count"] == 1
 
     fidelity = hermes_spans.import_fidelity_declaration(session)
-    assert any("never observed their paired counterpart" in caveat for caveat in fidelity.caveats)
-    assert fidelity.capabilities["decision_points"].status == "degraded"
-    # error hooks are unpaired-exempt (no counterpart expected) and still counted.
-    assert fidelity.capabilities["error_taxonomy"].observed == 1
+    assert fidelity.capabilities["subagent_delegation"].status == "inferred"
+    # Physical topology_edges materialization remains explicitly out of scope.
+    assert fidelity.capabilities["topology_edges"].status == "absent"
 
 
-def test_unrecognized_hook_type_becomes_generic_observer_span_not_dropped() -> None:
-    """Ambiguous input is handled deterministically (AC): unknown kinds are visible, not lost."""
+def test_unrecognized_step_shape_becomes_generic_observer_span_not_dropped() -> None:
+    """Ambiguous input is handled deterministically (AC): a step with none of the
+    documented shapes (tool_calls/message/observation) is visible, not lost."""
 
-    spans: list[JSONValue] = [{"hook_type": "future_hook_kind", "span_id": "s-1", "timestamp": "2026-07-10T09:00:00Z"}]
-    payload = hermes_spans.marker_payload("hermes-session-1", spans)
+    steps: list[JSONValue] = [{"source": "agent", "unexpected_field": "future-shape"}]
+    payload = hermes_spans.marker_payload("hermes-session-1", steps)
     session = hermes_spans.parse_atif_document(payload, "fallback-id")
 
     generic_events = [event for event in session.session_events if event.event_type == "hermes_observer_span"]
     assert len(generic_events) == 1
-    assert generic_events[0].payload["hook_type"] == "future_hook_kind"
+    assert generic_events[0].payload["shape"] == "unrecognized"
+
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+    assert fidelity.capabilities["unrecognized_step_shapes"].status == "degraded"
+    assert fidelity.capabilities["unrecognized_step_shapes"].observed == 1
 
 
-def test_malformed_spans_are_skipped_and_counted_not_crashing() -> None:
-    spans: list[JSONValue] = [
-        {"hook_type": "pre_tool_call"},  # missing span_id
-        {"span_id": "s-2"},  # missing hook_type
+def test_malformed_steps_and_tool_calls_are_skipped_and_counted_not_crashing() -> None:
+    steps: list[JSONValue] = [
         "not-a-dict",  # not even a document
+        {"source": "agent", "tool_calls": [{"function_name": "x"}]},  # tool_call missing tool_call_id
+        {"source": "agent", "tool_calls": ["not-a-dict"]},  # tool_calls entry not even a document
     ]
-    payload = hermes_spans.marker_payload("hermes-session-1", spans)
+    payload = hermes_spans.marker_payload("hermes-session-1", steps)
     session = hermes_spans.parse_atif_document(payload, "fallback-id")
-    real_events = [event for event in session.session_events if event.event_type != "hermes_observer_trace_correlation"]
+    real_events = [
+        event
+        for event in session.session_events
+        if event.event_type not in {"hermes_observer_span", "hermes_observer_trace_correlation"}
+    ]
     assert real_events == []
+
+    # A non-object step is genuinely skipped-and-counted, not silently
+    # coerced into a generic ``hermes_observer_span`` event (review-adjacent
+    # fix: ``json_document()`` returns ``{}``, never ``None``, on coercion
+    # failure, so the prior ``step is None`` check was dead code that let a
+    # non-object step slip through as a fabricated "unrecognized shape"
+    # event instead of being counted as unparseable).
+    generic_events = [event for event in session.session_events if event.event_type == "hermes_observer_span"]
+    assert generic_events == []
+    summary_message = session.messages[0]
+    assert summary_message.text is not None
+    assert "3 unparseable" in summary_message.text
+
+
+def test_decision_points_and_error_taxonomy_are_honestly_absent_not_fabricated() -> None:
+    """ATIF's documented step schema carries no approval/error-hook vocabulary
+    (that lives only in the separate raw ATOF event stream, not ingested by
+    this pass) -- these capabilities must be declared 'absent', never guessed
+    from a schema that doesn't carry them."""
+
+    payload = hermes_spans.marker_payload("hermes-session-1", _steps())
+    session = hermes_spans.parse_atif_document(payload, "fallback-id")
+    fidelity = hermes_spans.import_fidelity_declaration(session)
+
+    assert fidelity.capabilities["decision_points"].status == "absent"
+    assert fidelity.capabilities["error_taxonomy"].status == "absent"
+    assert "raw ATOF event stream" in fidelity.capabilities["decision_points"].detail
+    # Every capability tops out at inferred, never exact (unconfirmed against a
+    # real generated sample -- see polylogue-fs1.2.1).
+    assert all(cap.status != "exact" for cap in fidelity.capabilities.values())
 
 
 def test_observer_session_id_correlates_with_qualified_state_db_session_id() -> None:
