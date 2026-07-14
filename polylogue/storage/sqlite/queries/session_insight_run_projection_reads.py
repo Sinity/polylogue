@@ -41,14 +41,6 @@ def _apply_limit(sql: str, params: list[object], query: RunProjectionListQuery) 
     return sql
 
 
-async def _table_exists(conn: aiosqlite.Connection, table_name: str) -> bool:
-    cursor = await conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    return await cursor.fetchone() is not None
-
-
 async def list_runs(
     conn: aiosqlite.Connection,
     query: RunProjectionListQuery,
@@ -73,7 +65,7 @@ async def list_runs(
     if query.query:
         where.append("r.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    relation_sql = run_relation_sql(include_materialized=await _table_exists(conn, "session_runs"))
+    relation_sql = run_relation_sql()
     sql = f"{relation_sql} SELECT r.* FROM runs r"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -106,10 +98,7 @@ async def list_observed_events(
         where.append("e.search_text LIKE ?")
         params.append(f"%{query.query}%")
     source_where = "1=1"
-    relation_sql = observed_event_relation_sql(
-        source_where=source_where,
-        include_materialized=await _table_exists(conn, "session_observed_events"),
-    )
+    relation_sql = observed_event_relation_sql(source_where=source_where)
     sql = f"{relation_sql} SELECT e.* FROM observed_events e"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -141,9 +130,7 @@ async def list_context_snapshots(
     if query.query:
         where.append("c.search_text LIKE ?")
         params.append(f"%{query.query}%")
-    relation_sql = context_snapshot_relation_sql(
-        include_materialized=await _table_exists(conn, "session_context_snapshots")
-    )
+    relation_sql = context_snapshot_relation_sql()
     sql = f"{relation_sql} SELECT c.* FROM context_snapshots c"
     if where:
         sql += " WHERE " + " AND ".join(where)

@@ -248,9 +248,6 @@ from polylogue.storage.sqlite.run_projection_relations import (
     projected_run_from_row,
     run_relation_sql,
 )
-from polylogue.storage.sqlite.run_projection_relations import (
-    table_exists_sync as _run_projection_table_exists,
-)
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 
@@ -7198,10 +7195,7 @@ class ArchiveStore:
         if unit == "observed-event":
             source_where, source_params = observed_event_source_pushdown(predicate)
         if unit == "observed-event":
-            prefix_sql = observed_event_relation_sql(
-                source_where=source_where,
-                include_materialized=_run_projection_table_exists(self._conn, "session_observed_events"),
-            )
+            prefix_sql = observed_event_relation_sql(source_where=source_where)
         elif action_needs_followup:
             prefix_sql = _ACTION_FOLLOWUP_RELATION_SQL
         else:
@@ -7480,39 +7474,31 @@ class ArchiveStore:
 
         run_ref: str | None = None
         run_title: str | None = None
-        if _run_projection_table_exists(self._conn, "session_runs"):
-            run_evidence_refs = tuple(
-                f"block:{value}"
-                for value in (attempt.instruction_tool_use_block_id, attempt.artifact_block_id)
-                if value is not None
-            )
-            evidence_clause = ""
-            evidence_params: list[object] = []
-            if run_evidence_refs:
-                placeholders = ", ".join("?" for _ in run_evidence_refs)
-                evidence_clause = (
-                    " OR EXISTS (SELECT 1 FROM json_each(session_runs.evidence_refs_json) "
-                    f"AS evidence WHERE evidence.value IN ({placeholders}))"
-                )
-                evidence_params.extend(run_evidence_refs)
+        if attempt.child_session_id is not None:
+            # source-derived run_relation_sql() (polylogue-dab) keys a
+            # subagent run's own `session_id`/`native_session_id` to the
+            # subagent's own session, not the parent -- unlike the old
+            # materialized writer, which grouped subagent run rows under
+            # the parent's session_id. Matching directly on
+            # native_session_id = child_session_id is therefore both
+            # sufficient and simpler than the old parent+native_session_id
+            # pairing. The old evidence_refs_json block-id fallback (for
+            # when only tool-use/artifact block ids are known, no resolved
+            # child_session_id) has no equivalent here: the source-derived
+            # CTE's evidence_refs_json carries only the owning session id,
+            # not per-block references, so that fallback path is not
+            # reconstructed -- native_session_id matching covers the
+            # common case where child_session_id is already resolved.
             run_row = self._conn.execute(
                 f"""
+                {run_relation_sql()}
                 SELECT run_ref, title
-                FROM session_runs
-                WHERE session_id = ? AND role = 'subagent'
-                  AND (
-                    (? IS NOT NULL AND native_session_id = ?)
-                    {evidence_clause}
-                  )
+                FROM runs
+                WHERE native_session_id = ? AND role = 'subagent'
                 ORDER BY position, run_ref
                 LIMIT 1
                 """,
-                (
-                    attempt.parent_session_id,
-                    attempt.child_session_id,
-                    attempt.child_session_id,
-                    *evidence_params,
-                ),
+                (attempt.child_session_id,),
             ).fetchone()
             if run_row is not None:
                 run_ref = str(run_row["run_ref"])
@@ -8070,7 +8056,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {run_relation_sql(include_materialized=_run_projection_table_exists(self._conn, "session_runs"))}
+            {run_relation_sql()}
             SELECT r.*, s.origin, s.title AS session_title
             FROM runs r
             JOIN sessions s ON r.session_id = s.session_id
@@ -8121,12 +8107,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {
-                observed_event_relation_sql(
-                    source_where=source_where,
-                    include_materialized=_run_projection_table_exists(self._conn, "session_observed_events"),
-                )
-            }
+            {observed_event_relation_sql(source_where=source_where)}
             SELECT e.*, s.origin, s.title
             FROM observed_events e
             JOIN sessions s ON e.session_id = s.session_id
@@ -8176,11 +8157,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {
-                context_snapshot_relation_sql(
-                    include_materialized=_run_projection_table_exists(self._conn, "session_context_snapshots")
-                )
-            }
+            {context_snapshot_relation_sql()}
             SELECT c.*, s.origin, s.title AS session_title
             FROM context_snapshots c
             JOIN sessions s ON c.session_id = s.session_id
