@@ -22,6 +22,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
+_HERMES_ATIF_TRACE_MARKER = "hermes_atif_trace"
 
 
 def classify_artifact_path(
@@ -227,6 +228,16 @@ def _classify_dict(
             schema_eligible=True,
             default_priority=120,
             reason="Hermes state.db SQLite archive marker",
+        )
+
+    if provider is Provider.HERMES and payload.get("polylogue_artifact") == _HERMES_ATIF_TRACE_MARKER:
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=110,
+            reason="Hermes NeMo Relay ATIF observer-trace marker",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):
