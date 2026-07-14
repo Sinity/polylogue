@@ -5,8 +5,10 @@ from __future__ import annotations
 import pytest
 
 from polylogue.insights.judgment.elicitation import ElicitationSession, ExplorationQuota
+from polylogue.insights.judgment.types import JudgeIdentity
 
 _ITEMS = ("maj1", "maj2", "maj3", "maj4", "min1", "min2")
+_JUDGE = JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a")
 
 
 def _seed_session(*, quota_fraction: float, rng_seed: int = 7) -> ElicitationSession:
@@ -16,6 +18,9 @@ def _seed_session(*, quota_fraction: float, rng_seed: int = 7) -> ElicitationSes
         dimension="quality",
         budget_total=0,
         quota=ExplorationQuota(fraction=quota_fraction, min_coverage_threshold=1),
+        judge=_JUDGE,
+        rubric_id="rubric-1",
+        rubric_version=1,
         rng_seed=rng_seed,
     )
     # Majority region: well covered, close-together estimates (the "closest
@@ -71,6 +76,9 @@ def test_select_next_returns_none_once_all_pairs_are_exhausted() -> None:
         dimension="quality",
         budget_total=0,
         quota=ExplorationQuota(fraction=0.0),
+        judge=_JUDGE,
+        rubric_id="rubric-1",
+        rubric_version=1,
     )
     pick = session.select_next()
     assert pick is not None
@@ -85,6 +93,9 @@ def test_budget_caps_selection_even_with_pairs_remaining() -> None:
         dimension="quality",
         budget_total=1,
         quota=ExplorationQuota(fraction=0.0),
+        judge=_JUDGE,
+        rubric_id="rubric-1",
+        rubric_version=1,
     )
     pick = session.select_next()
     assert pick is not None
@@ -103,6 +114,62 @@ def test_selection_receipt_is_reconstructible_without_hidden_labels() -> None:
     assert pick.right_ref in _ITEMS
 
 
+def test_selection_receipt_binds_blinding_rubric_and_judge_identity() -> None:
+    """Corrective AC (rxdo.9.14, 2026-07-13): selection receipts bind candidate
+    pool, quota/policy, item order/blinding, rubric, and judge ActorRef/
+    ExecutionContextRef -- not just candidate pool + quota + mode."""
+
+    session = _seed_session(quota_fraction=0.0)
+    pick = session.select_next()
+    assert pick is not None
+    assert pick.item_order_hash
+    assert pick.rubric_id == "rubric-1"
+    assert pick.rubric_version == 1
+    assert pick.actor_ref == "agent:sonnet"
+    assert pick.execution_context_id == "ctx-a"
+
+
+def test_selection_receipt_item_order_hash_differs_by_display_order() -> None:
+    """The item-order hash is a real blind_items() receipt over the
+    randomized left/right placement, not a static/ignored field: two
+    sessions with different RNG seeds over the same items produce
+    different display orders and therefore different item_order_hash."""
+
+    session = ElicitationSession(
+        session_id="order-a",
+        item_refs=("a", "b"),
+        dimension="quality",
+        budget_total=0,
+        quota=ExplorationQuota(fraction=0.0),
+        judge=_JUDGE,
+        rubric_id="rubric-1",
+        rubric_version=1,
+        rng_seed=1,
+    )
+    other = ElicitationSession(
+        session_id="order-b",
+        item_refs=("a", "b"),
+        dimension="quality",
+        budget_total=0,
+        quota=ExplorationQuota(fraction=0.0),
+        judge=_JUDGE,
+        rubric_id="rubric-1",
+        rubric_version=1,
+        rng_seed=2,
+    )
+    pick = session.select_next()
+    other_pick = other.select_next()
+    assert pick is not None
+    assert other_pick is not None
+    # Same unordered pair either way (only two items exist)...
+    assert {pick.left_ref, pick.right_ref} == {other_pick.left_ref, other_pick.right_ref} == {"a", "b"}
+    # ...but different seeds are free to draw different display orders, and
+    # when they do the receipted item_order_hash must reflect that -- so the
+    # hash is a real function of display order, not a constant.
+    if (pick.left_ref, pick.right_ref) != (other_pick.left_ref, other_pick.right_ref):
+        assert pick.item_order_hash != other_pick.item_order_hash
+
+
 def test_session_rejects_duplicate_item_refs() -> None:
     with pytest.raises(ValueError, match="distinct"):
         ElicitationSession(
@@ -111,6 +178,23 @@ def test_session_rejects_duplicate_item_refs() -> None:
             dimension="quality",
             budget_total=0,
             quota=ExplorationQuota(fraction=0.0),
+            judge=_JUDGE,
+            rubric_id="rubric-1",
+            rubric_version=1,
+        )
+
+
+def test_session_rejects_empty_rubric_id() -> None:
+    with pytest.raises(ValueError, match="rubric_id"):
+        ElicitationSession(
+            session_id="s5",
+            item_refs=("a", "b"),
+            dimension="quality",
+            budget_total=0,
+            quota=ExplorationQuota(fraction=0.0),
+            judge=_JUDGE,
+            rubric_id="   ",
+            rubric_version=1,
         )
 
 

@@ -9,10 +9,14 @@ comparisons, not 1225 (all pairs).
 Exploration quotas guarantee uncertain, minority, disconnected, or
 low-coverage regions cannot starve behind a larger high-score region:
 disabling the quota (``fraction=0.0``) measurably changes selection.
-Every pick is receipted (candidate pool, quota state, mode) so a batch is
-reconstructible without exposing hidden labels -- this module only ever
-handles item refs, never provenance (mechanism F applies at the surface that
-renders the picked pair, not here).
+Every pick is receipted (candidate pool, quota/policy, item order/blinding,
+rubric, judge ``ActorRef``/``ExecutionContextRef``) so a batch is
+reconstructible without exposing hidden labels. This module applies
+:mod:`polylogue.insights.judgment.blinding` (mechanism F) at selection time
+to randomize and receipt left/right display order -- it still only ever
+handles item refs, never the candidates' own authorship/model provenance
+(masking *that* metadata is the surface's job once it renders the picked
+pair with the full candidate record).
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ import random
 from dataclasses import dataclass, field
 
 from polylogue.core.hashing import hash_payload
+from polylogue.insights.judgment.blinding import blind_items
+from polylogue.insights.judgment.types import JudgeIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +54,12 @@ class SelectionReceipt:
     quota_fraction: float
     picks_so_far: int
     exploration_picks_so_far: int
+    item_order_hash: str
+    """Hash of the randomized left/right placement, via :func:`~polylogue.insights.judgment.blinding.blind_items`."""
+    rubric_id: str
+    rubric_version: int
+    actor_ref: str
+    execution_context_id: str
     receipt_hash: str
 
 
@@ -66,6 +78,9 @@ class ElicitationSession:
     dimension: str
     budget_total: int
     quota: ExplorationQuota
+    judge: JudgeIdentity
+    rubric_id: str
+    rubric_version: int
     rng_seed: int = 0
     observations: dict[str, int] = field(default_factory=dict)
     estimates: dict[str, float] = field(default_factory=dict)
@@ -80,6 +95,8 @@ class ElicitationSession:
             raise ValueError("elicitation session needs at least 2 items")
         if len(set(self.item_refs)) != len(self.item_refs):
             raise ValueError("elicitation session item refs must be distinct")
+        if not self.rubric_id.strip():
+            raise ValueError("elicitation session rubric_id cannot be empty")
         for ref in self.item_refs:
             self.observations.setdefault(ref, 0)
             self.estimates.setdefault(ref, 0.0)
@@ -120,7 +137,7 @@ class ElicitationSession:
         use_exploration = bool(exploration_pairs) and self.quota.fraction > 0.0 and current_rate < self.quota.fraction
 
         if use_exploration:
-            left_ref, right_ref = self._rng.choice(exploration_pairs)
+            pair = self._rng.choice(exploration_pairs)
             mode = "exploration"
         else:
             # Maximize information: prefer the pair whose current latent
@@ -133,11 +150,26 @@ class ElicitationSession:
                     self._rng.random(),
                 ),
             )
-            left_ref, right_ref = ranked[0]
+            pair = ranked[0]
             mode = "exploitation"
 
         if mode == "exploration":
             self.exploration_picks_so_far += 1
+
+        # Mechanism F applies here: randomize which item of the pair displays
+        # left vs right and receipt that order via blind_items, so the pick
+        # is reconstructible without exposing which side an item landed on
+        # by construction order alone (`_compared_pairs`/`remaining_pairs`
+        # are otherwise deterministic in `self.item_refs` order).
+        display_order = [0, 1]
+        self._rng.shuffle(display_order)
+        _blinded_items, blinding_receipt = blind_items(
+            [{"ref": pair[0]}, {"ref": pair[1]}],
+            order=display_order,
+            rubric_ref=self.rubric_id,
+            sealed_at_ms=0,  # session doesn't own wall-clock timing; surface owns real timestamps
+        )
+        left_ref, right_ref = pair[display_order[0]], pair[display_order[1]]
 
         receipt_hash = hash_payload(
             {
@@ -146,6 +178,11 @@ class ElicitationSession:
                 "right_ref": right_ref,
                 "mode": mode,
                 "picks_so_far": self.picks_so_far,
+                "item_order_hash": blinding_receipt.item_order_hash,
+                "rubric_id": self.rubric_id,
+                "rubric_version": self.rubric_version,
+                "actor_ref": self.judge.actor_ref,
+                "execution_context_id": self.judge.execution_context_id,
             }
         )
         return SelectionReceipt(
@@ -153,6 +190,11 @@ class ElicitationSession:
             right_ref=right_ref,
             mode=mode,
             candidate_pool_size=len(remaining_pairs),
+            item_order_hash=blinding_receipt.item_order_hash,
+            rubric_id=self.rubric_id,
+            rubric_version=self.rubric_version,
+            actor_ref=self.judge.actor_ref,
+            execution_context_id=self.judge.execution_context_id,
             quota_fraction=self.quota.fraction,
             picks_so_far=self.picks_so_far,
             exploration_picks_so_far=self.exploration_picks_so_far,
