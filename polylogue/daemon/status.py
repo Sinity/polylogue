@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_float as _row_float
+from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
 )
@@ -927,40 +931,6 @@ def _safe_int(value: object) -> int:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
     return 0
-
-
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _row_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
 
 
 def _safe_float(value: object, *, default: float = 0.0) -> float:
