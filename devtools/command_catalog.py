@@ -456,6 +456,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "demo real-slice-screen",
+        "workspace",
+        "Read-only extraction + privacy screening of a candidate real-archive session slice.",
+        "devtools.proof_world_real_slice",
+        use_when=(
+            "Assembling a candidate real-archive slice for the shared demo proof world "
+            "(polylogue-212.11): pulls sessions read-only via the Polylogue API, flattens them "
+            "to text, and screens for secret/credential and PII-adjacent patterns before any "
+            "operator decides to fold the slice into a shared fixture. Never mutates the source "
+            "archive and never writes into polylogue/scenarios/ on its own."
+        ),
+        examples=(
+            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
+            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "--refs-file refs.txt --out .agent/scratch/real-slice",
+        ),
+    ),
+    CommandSpec(
         "workspace dev-loop",
         "workspace",
         "Preflight branch-local daemon, web-shell, and browser-capture development loops.",
