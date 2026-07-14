@@ -221,6 +221,45 @@ class _SemanticCanonicalWitness:
     digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class BrowserCanonicalAuthorityConflictWitness:
+    """Read-only evidence packet for one unresolved browser-capture authority conflict.
+
+    Built for polylogue-lkrc.3: unlike :class:`BrowserCaptureOriginRepairItem`,
+    which collapses every rejection into a terse ``reason`` string, this packet
+    keeps the competing-head evidence that ``_inspect_browser_capture_origin_mismatch``
+    computes but discards on the ineligible path, so an operator can adjudicate
+    without re-deriving it by hand. Building this packet never mutates state and
+    never chooses an authority -- see ``record_browser_canonical_authority_conflict_blockers``
+    for the separate, explicit step that persists it as a durable candidate blocker.
+    """
+
+    raw_id: str
+    status: str
+    reason: str
+    session_id: str | None = None
+    old_logical_source_key: str | None = None
+    canonical_logical_source_key: str | None = None
+    unknown_raw_content_hash: str | None = None
+    unknown_raw_message_count: int | None = None
+    competing_raw_id: str | None = None
+    competing_content_hash: str | None = None
+    competing_frontier_kind: str | None = None
+    competing_decision: str | None = None
+    competing_message_count: int | None = None
+    divergent_message_index: int | None = None
+    divergence_note: str | None = None
+    evidence_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserCanonicalAuthorityConflictReport:
+    requested_count: int
+    conflict_count: int
+    resolved_count: int
+    items: tuple[BrowserCanonicalAuthorityConflictWitness, ...]
+
+
 def _quarantined_raw_item(raw_id: str, reason: str) -> QuarantinedAcceptedRawRepairItem:
     return QuarantinedAcceptedRawRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
 
@@ -3520,6 +3559,324 @@ def repair_byte_proven_browser_capture_null_native_ids(
         allow_byte_proven_null_native_id_rekey=True,
         receipt_schema=_BYTE_PROVEN_BROWSER_CAPTURE_REKEY_RECEIPT_SCHEMA,
     )
+
+
+def _browser_canonical_authority_conflict_witness(
+    archive_root: Path, conn: sqlite3.Connection, raw_id: str, base_reason: str
+) -> BrowserCanonicalAuthorityConflictWitness:
+    """Re-derive competing-authority evidence for one ineligible byte-proven-rekey raw.
+
+    Kept independent of ``_inspect_browser_capture_origin_mismatch`` (rather than
+    threading extra return fields through it): that function's job is to prove
+    or refuse a repair, and its many early-return branches deliberately discard
+    partial state once refused. This function's only job is to look, so it
+    re-derives the handful of facts a human adjudicator needs and fails soft
+    (``divergence_note`` explains any gap) instead of failing closed.
+    """
+
+    def ineligible(reason: str) -> BrowserCanonicalAuthorityConflictWitness:
+        return BrowserCanonicalAuthorityConflictWitness(
+            raw_id=raw_id, status="ineligible", reason=base_reason, divergence_note=reason
+        )
+
+    raw = conn.execute(
+        """
+        SELECT origin, source_path, blob_hash, blob_size
+        FROM source.raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if raw is None or str(raw["origin"]) != Origin.UNKNOWN_EXPORT.value:
+        return ineligible("raw is missing or not typed unknown-export; cannot re-derive evidence")
+    source_path = str(raw["source_path"])
+    blob_hash = _bytes_value(raw["blob_hash"])
+    blob_size = int(raw["blob_size"])
+    try:
+        store = BlobStore(archive_root / "blob")
+        payload = store.read_all(blob_hash.hex())
+        if len(payload) != blob_size or hashlib.sha256(payload).digest() != blob_hash:
+            return ineligible("retained blob no longer matches the declared source envelope")
+        decoded = json.loads(payload)
+        provider = detect_provider(decoded)
+        if provider is None or provider is Provider.UNKNOWN:
+            return ineligible("retained envelope has no canonical provider identity")
+        from polylogue.sources.revision_backfill import _parse_one
+
+        sessions = _parse_one(provider, payload, source_path)
+        if len(sessions) != 1:
+            return ineligible(f"retained envelope normalized to {len(sessions)} sessions, expected 1")
+        session = sessions[0]
+        canonical_key = f"{provider.value}:{session.provider_session_id}"
+        session_id = str(make_session_id(provider, session.provider_session_id))
+        accepted_hash = bytes.fromhex(session_content_hash(session))
+        projection = session_revision_projection(session)
+    except Exception as exc:
+        logger.warning(
+            "browser canonical authority conflict evidence build failed",
+            raw_id=raw_id,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return ineligible(f"could not re-parse the retained envelope: {type(exc).__name__}")
+
+    head = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind
+        FROM raw_revision_heads WHERE logical_source_key = ?
+        """,
+        (canonical_key,),
+    ).fetchone()
+    # Deliberately not scoped to ``canonical_key``: the byte-proven-rekey
+    # actuator's precondition rejects on *any* retained membership row for
+    # this raw id (``COUNT(*) ... WHERE raw_id = ?`` with no key filter,
+    # ``_inspect_browser_capture_origin_mismatch``), including a stale row
+    # still keyed under the historical unknown-origin key. Matching that
+    # broader predicate here is what lets this function explain a
+    # ``superseded_equivalent``-shaped conflict instead of reporting a false
+    # "no competing evidence found".
+    membership = conn.execute(
+        """
+        SELECT decision, normalized_content_hash, message_count, logical_source_key
+        FROM source.raw_session_memberships
+        WHERE raw_id = ?
+        ORDER BY logical_source_key
+        LIMIT 1
+        """,
+        (raw_id,),
+    ).fetchone()
+
+    competing_raw_id: str | None = None
+    competing_content_hash: str | None = None
+    competing_frontier_kind: str | None = None
+    competing_decision: str | None = None
+    competing_message_count: int | None = None
+    divergent_message_index: int | None = None
+    divergence_note: str | None = None
+
+    if head is not None:
+        competing_raw_id = str(head["accepted_raw_id"])
+        competing_content_hash = _bytes_value(head["accepted_content_hash"]).hex()
+        competing_frontier_kind = str(head["accepted_frontier_kind"])
+        application = conn.execute(
+            """
+            SELECT decision FROM raw_revision_applications
+            WHERE logical_source_key = ? AND accepted_raw_id = ?
+            ORDER BY decision_id DESC LIMIT 1
+            """,
+            (canonical_key, competing_raw_id),
+        ).fetchone()
+        if application is not None:
+            competing_decision = str(application["decision"])
+        if competing_content_hash == accepted_hash.hex():
+            divergence_note = (
+                "competing head content hash matches; conflict is membership/precondition-shaped, not a hash divergence"
+            )
+        elif competing_frontier_kind == "byte" and competing_raw_id != raw_id:
+            try:
+                competing_source = conn.execute(
+                    "SELECT source_path FROM source.raw_sessions WHERE raw_id = ?", (competing_raw_id,)
+                ).fetchone()
+                competing_source_revision = str(head["accepted_source_revision"])
+                competing_payload = store.read_all(competing_source_revision)
+                competing_provider = detect_provider(json.loads(competing_payload))
+                if competing_provider is not None and competing_source is not None:
+                    competing_sessions = _parse_one(
+                        competing_provider, competing_payload, str(competing_source["source_path"])
+                    )
+                    if len(competing_sessions) == 1:
+                        competing_projection = session_revision_projection(competing_sessions[0])
+                        competing_message_count = len(competing_projection.message_hashes)
+                        divergent_message_index = next(
+                            (
+                                index
+                                for index, (left, right) in enumerate(
+                                    zip(projection.message_hashes, competing_projection.message_hashes, strict=False)
+                                )
+                                if left != right
+                            ),
+                            min(len(projection.message_hashes), len(competing_projection.message_hashes)),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "browser canonical authority conflict competing-head diff unavailable",
+                    raw_id=raw_id,
+                    competing_raw_id=competing_raw_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                divergence_note = (
+                    f"competing head content hash differs; message-level diff unavailable: {type(exc).__name__}"
+                )
+        else:
+            divergence_note = (
+                "competing head content hash differs (semantic frontier; no single-raw message diff available)"
+            )
+    elif membership is not None:
+        divergence_note = (
+            f"no competing byte/semantic head at {canonical_key}; a retained membership row "
+            f"(decision={membership['decision']!r}) blocks the null-membership precondition instead"
+        )
+    else:
+        divergence_note = "no competing head or membership row found; re-run the ordinary rekey actuator"
+
+    packet = {
+        "raw_id": raw_id,
+        "session_id": session_id,
+        "canonical_logical_source_key": canonical_key,
+        "unknown_raw_content_hash": accepted_hash.hex(),
+        "competing_raw_id": competing_raw_id,
+        "competing_content_hash": competing_content_hash,
+        "competing_decision": competing_decision,
+        "divergent_message_index": divergent_message_index,
+    }
+    evidence_digest = hashlib.sha256(json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return BrowserCanonicalAuthorityConflictWitness(
+        raw_id=raw_id,
+        status="ineligible",
+        reason=base_reason,
+        session_id=session_id,
+        old_logical_source_key=f"{Provider.UNKNOWN.value}:{session.provider_session_id}",
+        canonical_logical_source_key=canonical_key,
+        unknown_raw_content_hash=accepted_hash.hex(),
+        unknown_raw_message_count=len(projection.message_hashes),
+        competing_raw_id=competing_raw_id,
+        competing_content_hash=competing_content_hash,
+        competing_frontier_kind=competing_frontier_kind,
+        competing_decision=competing_decision,
+        competing_message_count=competing_message_count,
+        divergent_message_index=divergent_message_index,
+        divergence_note=divergence_note,
+        evidence_digest=evidence_digest,
+    )
+
+
+def inspect_browser_canonical_authority_conflicts(
+    config: Config, raw_ids: list[str]
+) -> BrowserCanonicalAuthorityConflictReport:
+    """Build read-only evidence packets for browser-capture raws a safe rekey refuses.
+
+    Companion to :func:`repair_byte_proven_browser_capture_null_native_ids`
+    (polylogue-lkrc.3): re-runs that actuator's exact eligibility proof for each
+    raw id. A raw that comes back ``eligible``/``already_repaired`` is not a
+    conflict -- the ordinary actuator already owns it -- and is only counted in
+    ``resolved_count``. A raw that stays ``ineligible`` gets an enriched
+    :class:`BrowserCanonicalAuthorityConflictWitness`: the competing canonical
+    head's content hash/frontier kind/decision, any blocking membership row, and
+    -- when both sides are single-session byte-frontier raws -- the first
+    diverging message index.
+
+    Never mutates state and never selects an authority between the two
+    histories; see :func:`record_browser_canonical_authority_conflict_blockers`
+    for the separate, explicit step that persists this as a durable,
+    operator-reviewable candidate blocker in ``user.db``.
+    """
+    if len(set(raw_ids)) != len(raw_ids):
+        raise ValueError("duplicate raw ids are not allowed")
+    if not raw_ids or len(raw_ids) > _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT:
+        raise ValueError("raw-id list must contain 1..100 entries")
+    if any(re.fullmatch(r"[0-9a-f]{64}", raw_id) is None for raw_id in raw_ids):
+        raise ValueError("raw ids must be lowercase SHA-256 identifiers")
+    archive_root = _raw_materialization_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        raise RuntimeError("source or index tier is missing")
+
+    items: list[BrowserCanonicalAuthorityConflictWitness] = []
+    resolved_count = 0
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        for raw_id in raw_ids:
+            base = _inspect_browser_capture_origin_mismatch(
+                archive_root, raw_id, conn=conn, allow_byte_proven_null_native_id_rekey=True
+            )
+            if base.status != "ineligible":
+                resolved_count += 1
+                continue
+            items.append(_browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason))
+    return BrowserCanonicalAuthorityConflictReport(
+        requested_count=len(raw_ids),
+        conflict_count=len(items),
+        resolved_count=resolved_count,
+        items=tuple(items),
+    )
+
+
+def record_browser_canonical_authority_conflict_blockers(
+    config: Config, raw_ids: list[str], *, now_ms: int | None = None
+) -> tuple[BrowserCanonicalAuthorityConflictReport, tuple[str, ...]]:
+    """Persist each unresolved conflict as a durable, non-injected ``BLOCKER`` candidate.
+
+    This is the explicit, separate step the lkrc.3 design requires: it never
+    picks an authority itself.  Each conflict becomes one
+    ``AssertionKind.BLOCKER`` candidate assertion in ``user.db``, keyed by a
+    deterministic id over the raw id and its evidence digest so re-running the
+    census after new evidence appears creates a new row instead of silently
+    overwriting the old one, while re-running it unchanged is idempotent. Like
+    every other automated writer through ``upsert_assertion``, the row is
+    written ``author_kind="detector"`` and is therefore always forced to
+    ``status=candidate`` with ``inject: false`` -- it can never self-promote to
+    an authoritative, context-injectable claim; an operator must explicitly
+    judge it (mirrors ``upsert_pathology_findings_as_assertions``, #2383).
+    """
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        AssertionKind,
+        AssertionStatus,
+        AssertionVisibility,
+        upsert_assertion,
+    )
+
+    report = inspect_browser_canonical_authority_conflicts(config, raw_ids)
+    archive_root = _raw_materialization_archive_root(config)
+    user_db = archive_root / "user.db"
+    if not user_db.exists():
+        raise RuntimeError("user tier is not initialized")
+    timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
+    scope_ref = "insight:browser-canonical-authority-conflict@v1"
+    assertion_ids: list[str] = []
+    conn = sqlite3.connect(user_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        for item in report.items:
+            if item.session_id is None or item.evidence_digest is None:
+                continue
+            assertion_id = hashlib.sha256(
+                f"assertion-blocker-browser-canonical-authority-conflict\0{item.raw_id}\0{item.evidence_digest}".encode()
+            ).hexdigest()
+            envelope = upsert_assertion(
+                conn,
+                assertion_id=f"blocker:{assertion_id}",
+                scope_ref=scope_ref,
+                target_ref=f"session:{item.session_id}",
+                key=f"raw/{item.raw_id}",
+                kind=AssertionKind.BLOCKER,
+                value={
+                    "raw_id": item.raw_id,
+                    "canonical_logical_source_key": item.canonical_logical_source_key,
+                    "unknown_raw_content_hash": item.unknown_raw_content_hash,
+                    "unknown_raw_message_count": item.unknown_raw_message_count,
+                    "competing_raw_id": item.competing_raw_id,
+                    "competing_content_hash": item.competing_content_hash,
+                    "competing_frontier_kind": item.competing_frontier_kind,
+                    "competing_decision": item.competing_decision,
+                    "competing_message_count": item.competing_message_count,
+                    "divergent_message_index": item.divergent_message_index,
+                    "reason": item.reason,
+                },
+                body_text=item.divergence_note or item.reason,
+                author_ref=scope_ref,
+                author_kind="detector",
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=timestamp,
+            )
+            assertion_ids.append(envelope.assertion_id)
+        conn.commit()
+    finally:
+        conn.close()
+    return report, tuple(assertion_ids)
 
 
 def _format_bytes(value: int) -> str:

@@ -22,6 +22,8 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repair import (
+    inspect_browser_canonical_authority_conflicts,
+    record_browser_canonical_authority_conflict_blockers,
     repair_browser_capture_origin_mismatches,
     repair_byte_proven_browser_capture_null_native_ids,
     repair_legacy_browser_capture_missing_native_ids,
@@ -2043,3 +2045,145 @@ def test_byte_proven_browser_rekey_refuses_stale_proof_and_rolls_back(
     assert [json.loads(line)["state"] for line in receipt.read_text().splitlines()] == ["planned"]
     for (tier, table), rows in before.items():
         assert _rows(tmp_path / "rollback", tier, table, "1 = 1", ()) == rows
+
+
+# --- polylogue-lkrc.3: evidence packets + durable blockers for unresolved conflicts ---
+
+
+def test_inspect_conflicts_reports_resolved_when_actuator_would_succeed(tmp_path: Path) -> None:
+    """A raw the ordinary rekey actuator can already repair is not a conflict."""
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+
+    report = inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id])
+
+    assert report.requested_count == 1
+    assert report.resolved_count == 1
+    assert report.conflict_count == 0
+    assert report.items == ()
+
+
+def test_inspect_conflicts_semantic_hash_divergence_evidence(tmp_path: Path) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
+            "WHERE accepted_raw_id = ?",
+            (semantic_raw_id,),
+        )
+
+    report = inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id])
+
+    assert report.conflict_count == 1
+    assert report.resolved_count == 0
+    item = report.items[0]
+    assert item.raw_id == raw_id
+    assert item.session_id == "chatgpt-export:browser-origin-one"
+    assert item.canonical_logical_source_key == "chatgpt:browser-origin-one"
+    assert item.competing_raw_id == semantic_raw_id
+    assert item.competing_content_hash == "ff" * 32
+    assert item.competing_frontier_kind == "semantic"
+    assert item.unknown_raw_content_hash is not None
+    assert item.unknown_raw_content_hash != item.competing_content_hash
+    # Semantic frontiers are not a single retained raw's bytes, so a
+    # message-level diff is deliberately not fabricated for them.
+    assert item.divergent_message_index is None
+    assert item.divergence_note is not None and "semantic frontier" in item.divergence_note
+    assert item.evidence_digest is not None
+
+
+def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) SELECT raw_id, logical_source_key, 'browser-origin-one', source_revision,
+                     x'0000000000000000000000000000000000000000000000000000000000000000', 1, 1,
+                     'quarantined', 'superseded_equivalent', 3
+              FROM raw_sessions WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+
+    report = inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id])
+
+    assert report.conflict_count == 1
+    item = report.items[0]
+    assert item.competing_raw_id is None
+    assert item.divergence_note is not None
+    assert "membership row" in item.divergence_note
+    assert "superseded_equivalent" in item.divergence_note
+
+
+def test_inspect_conflicts_matching_hash_is_membership_shaped_not_a_divergence(tmp_path: Path) -> None:
+    """Equal content hashes mean the actuator's block is precondition-shaped, not authority conflict."""
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, raw_id)
+
+    report = inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id])
+
+    assert report.conflict_count == 1
+    item = report.items[0]
+    assert item.competing_raw_id == canonical_raw_id
+    assert item.competing_content_hash == item.unknown_raw_content_hash
+    assert item.divergent_message_index is None
+    assert item.divergence_note is not None and "not a hash divergence" in item.divergence_note
+
+
+def test_inspect_conflicts_rejects_duplicate_and_malformed_ids(tmp_path: Path) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    with pytest.raises(ValueError, match="duplicate"):
+        inspect_browser_canonical_authority_conflicts(_config(tmp_path), [raw_id, raw_id])
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        inspect_browser_canonical_authority_conflicts(_config(tmp_path), ["not-a-raw-id"])
+    with pytest.raises(ValueError, match="1..100 entries"):
+        inspect_browser_canonical_authority_conflicts(_config(tmp_path), [])
+
+
+def test_record_conflict_blockers_persists_durable_candidate_assertions(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
+
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
+            "WHERE accepted_raw_id = ?",
+            (semantic_raw_id,),
+        )
+
+    report, assertion_ids = record_browser_canonical_authority_conflict_blockers(_config(tmp_path), [raw_id])
+
+    assert report.conflict_count == 1
+    assert len(assertion_ids) == 1
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
+        user_conn.row_factory = sqlite3.Row
+        envelope = read_assertion_envelope(user_conn, assertion_ids[0])
+        assert envelope is not None
+        assert envelope.kind.value == "blocker"
+        # Automated writers can never self-promote (upsert_assertion's chokepoint,
+        # 37t.15): the row is a candidate awaiting explicit operator judgment even
+        # though this function requested status=candidate/visibility=private itself.
+        assert envelope.status.value == "candidate"
+        assert envelope.context_policy["inject"] is False
+        assert envelope.target_ref == "session:chatgpt-export:browser-origin-one"
+        assert isinstance(envelope.value, dict)
+        assert envelope.value["raw_id"] == raw_id
+        assert envelope.value["competing_raw_id"] == semantic_raw_id
+
+    # Re-running over identical evidence is idempotent: same assertion id, not a
+    # duplicate row.
+    _report_again, assertion_ids_again = record_browser_canonical_authority_conflict_blockers(
+        _config(tmp_path), [raw_id]
+    )
+    assert assertion_ids_again == assertion_ids
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
+        count = user_conn.execute(
+            "SELECT COUNT(*) FROM assertions WHERE kind = 'blocker' AND target_ref = ?",
+            ("session:chatgpt-export:browser-origin-one",),
+        ).fetchone()[0]
+        assert count == 1
