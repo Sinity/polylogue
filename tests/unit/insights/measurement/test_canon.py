@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
 from polylogue.insights.measurement.canon import canonicalize, content_ref
@@ -44,3 +46,41 @@ def test_content_ref_changes_with_content() -> None:
     second = content_ref("metric", {"construct": "latency"})
 
     assert first != second
+
+
+def test_canonicalize_nfc_normalizes_string_scalars() -> None:
+    # A base letter + combining acute accent (NFD) vs the precomposed
+    # single-codepoint form (NFC) are visually identical but byte-distinct
+    # until normalized. Construct both explicitly via unicodedata rather
+    # than relying on literal source text, which a tool/editor may silently
+    # normalize to a single form before it ever reaches this file.
+    precomposed = unicodedata.normalize("NFC", "café")
+    decomposed = unicodedata.normalize("NFD", "café")
+
+    assert decomposed != precomposed  # sanity: genuinely different bytes
+    assert canonicalize(decomposed) == canonicalize(precomposed) == precomposed
+
+
+def test_canonicalize_nfc_normalizes_mapping_keys() -> None:
+    precomposed_key = unicodedata.normalize("NFC", "café")
+    decomposed_key = unicodedata.normalize("NFD", "café")
+
+    assert decomposed_key != precomposed_key  # sanity: genuinely different bytes
+    assert canonicalize({decomposed_key: 1}) == canonicalize({precomposed_key: 1})
+
+
+def test_content_ref_is_stable_across_unicode_normalization_form() -> None:
+    """Two definitions differing only in NFD vs NFC spelling of the same
+    construct name must resolve to the same content-address ref -- this is
+    the same identity-law violation class as order-dependence, and
+    hash_payload deliberately does not normalize on callers' behalf
+    (see its docstring), so canon.py must own this step."""
+
+    precomposed = unicodedata.normalize("NFC", "café")
+    decomposed = unicodedata.normalize("NFD", "café")
+    assert decomposed != precomposed  # sanity: genuinely different bytes
+
+    nfd_ref = content_ref("metric", {"construct": decomposed})
+    nfc_ref = content_ref("metric", {"construct": precomposed})
+
+    assert nfd_ref == nfc_ref

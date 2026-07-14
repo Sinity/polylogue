@@ -68,6 +68,38 @@ def test_this_is_the_mechanism_that_would_have_caught_the_cost_inflation_bug() -
     assert cost_including_cached.ref != cost_excluding_cached.ref
 
 
+def test_ref_is_stable_across_measurement_authority_construction_order() -> None:
+    """is_compatible_with() treats measurement_authority as an unordered set
+    (see the ``set(...)`` intersection there); canonical_payload() must
+    therefore hash it order-independently too, or two definitions describing
+    the identical measurement envelope in a different tuple order mint two
+    distinct metric:<hash> refs -- silently defeating the rxdo.9.1 AC that a
+    second identity for an equivalent definition is impossible."""
+
+    first = _definition(measurement_authority=("provider-reported", "heuristic"))
+    second = _definition(measurement_authority=("heuristic", "provider-reported"))
+
+    assert first.is_compatible_with(second)
+    assert first.ref == second.ref
+
+
+def test_registry_register_rejects_reordered_measurement_authority_as_duplicate() -> None:
+    """A differently-ordered but semantically identical definition registered
+    under the same friendly name must resolve to the same ref, not silently
+    mint a second identity (the corrective AC this bead exists to satisfy)."""
+
+    registry = MetricRegistry()
+    first_ref = registry.register(
+        _definition(measurement_authority=("provider-reported", "heuristic")), name="cost_per_session"
+    )
+    second_ref = registry.register(
+        _definition(measurement_authority=("heuristic", "provider-reported")), name="cost_per_session"
+    )
+
+    assert first_ref == second_ref
+    assert len(registry) == 1
+
+
 def test_is_compatible_with_rejects_grain_mismatch() -> None:
     logical = _definition(grain="logical")
     physical = _definition(grain="physical")

@@ -81,7 +81,11 @@ class MetricDefinition:
             "null_policy": self.null_policy,
             "required_enumeration": self.required_enumeration,
             "required_frame": self.required_frame,
-            "measurement_authority": list(self.measurement_authority),
+            # measurement_authority is an order-independent envelope (see
+            # is_compatible_with, which compares it as a set) -- sort before
+            # hashing so two definitions built with the same authorities in
+            # a different construction order resolve to the same ref.
+            "measurement_authority": sorted(self.measurement_authority),
             "confounds": self.confounds,
             "provenance_mixing": self.provenance_mixing,
             "formula_version": self.formula_version,
@@ -138,9 +142,15 @@ class MetricRegistry:
     def register(self, definition: MetricDefinition, *, name: str | None = None) -> str:
         ref = definition.ref
         existing = self._by_ref.get(ref)
-        if existing is not None and existing != definition:
-            # SHA-256 collision on differing payloads should not happen in
-            # practice; guard the invariant explicitly rather than assume it.
+        if existing is not None and existing.canonical_payload() != definition.canonical_payload():
+            # SHA-256 collision on differing canonical payloads should not
+            # happen in practice; guard the invariant explicitly rather than
+            # assume it. Compare canonical_payload(), not dataclass field
+            # equality: two definitions can share a ref (identical canonical
+            # payload) while differing in field *construction* order --
+            # e.g. measurement_authority=("a", "b") vs ("b", "a") -- which
+            # dataclass `!=` would flag as distinct even though they are the
+            # same identity by definition.
             raise DuplicateMetricIdentityError(f"metric ref {ref!r} already bound to a different definition")
         self._by_ref[ref] = definition
         if name is not None:
