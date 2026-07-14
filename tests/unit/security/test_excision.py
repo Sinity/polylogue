@@ -6,10 +6,21 @@ the real acquire-time write chokepoint
 ``polylogue.pipeline.services.archive_ingest.parse_sources_archive`` relies
 on for every ordinary re-ingest; removing the gate in
 ``write_source_raw_session`` (or reverting the ``write_pair`` skip-not-abort
-handling) makes it fail. ``test_apply_removes_rows_from_every_tier``
+handling) makes it fail.
+``test_blob_ref_reingest_does_not_resurrect_excised_content`` is the sibling
+reproduction against ``write_source_raw_session_blob_ref`` -- the daemon's
+memory-bounded streaming write route (used when a payload was replayed from
+a blob file rather than held in memory); removing the gate added there in
+the polylogue-27m fix round makes it fail while the payload-in-memory
+sibling above keeps passing, which is exactly the bypass an earlier revision
+of this PR shipped. ``test_apply_removes_rows_from_every_tier``
 exercises the real cross-tier DELETE statements against real archive-tier
 schemas (not a toy replica); commenting out any one tier's delete makes the
-corresponding assertion fail.
+corresponding assertion fail. ``TestLineageSafety`` exercises the real
+``session_links`` schema/FK and ``apply_session_excision``'s refuse-by-default
+guard; removing the ``find_lineage_dependents`` call (or the check that uses
+it) makes ``test_apply_without_cascade_refuses_and_does_not_mutate`` fail
+because the parent session would be silently deleted instead of raising.
 """
 
 from __future__ import annotations
@@ -21,7 +32,9 @@ import pytest
 
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
+    LineageDependentsError,
     apply_session_excision,
+    find_lineage_dependents,
     plan_session_excision,
     resolve_session_excision_target,
 )
@@ -31,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_blob_hash,
     is_blob_hash_excised,
     write_source_raw_session,
+    write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -344,3 +358,210 @@ class TestApplySessionExcision:
         finally:
             index_conn.close()
         assert remaining == 0
+
+    def test_blob_ref_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:
+        """Reproduces the reviewer's finding directly: write_source_raw_session_blob_ref
+        is the daemon's streaming/blob-ref write route (used when a payload was
+        replayed from a blob file rather than held in memory) and must gate on
+        excised blob hashes exactly like write_source_raw_session does above.
+        """
+        payload = b'{"native_id": "resurrect-blobref", "secret": "sk-ant-abc123"}'
+        session_id = _seed_session(tmp_path, native_id="resurrect-blobref", payload=payload)
+
+        apply_session_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
+
+        blob_hash = deterministic_blob_hash(payload)
+        source_conn = sqlite3.connect(tmp_path / "source.db")
+        source_conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            assert is_blob_hash_excised(source_conn, blob_hash) is True
+            with pytest.raises(ContentExcisedError):
+                write_source_raw_session_blob_ref(
+                    source_conn,
+                    origin="codex-session",
+                    source_path="/fake/resurrect-blobref.jsonl",
+                    source_index=0,
+                    blob_hash=blob_hash,
+                    blob_size=len(payload),
+                    acquired_at_ms=9_999,
+                    native_id="resurrect-blobref",
+                )
+            # No row was resurrected by the refused write.
+            assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        finally:
+            source_conn.close()
+
+
+class TestLineageSafety:
+    """Coverage for the polylogue-27m fix-round lineage-collateral guard."""
+
+    def _seed_lineage(self, tmp_path: Path) -> tuple[str, str]:
+        """Seed a parent session and a prefix-sharing child session_links row.
+
+        Returns ``(parent_session_id, child_session_id)``.
+        """
+        parent_id = _seed_session(tmp_path, native_id="lineage-parent")
+        child_id = _seed_session(tmp_path, native_id="lineage-child")
+
+        index_conn = sqlite3.connect(tmp_path / "index.db")
+        index_conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            branch_point = index_conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ?", (parent_id,)
+            ).fetchone()[0]
+            index_conn.execute(
+                """
+                INSERT INTO session_links (
+                    src_session_id, dst_origin, dst_native_id, link_type,
+                    resolved_dst_session_id, branch_point_message_id, inheritance,
+                    status, method, confidence, evidence_json, observed_at_ms, resolved_at_ms
+                ) VALUES (?, 'codex-session', 'lineage-parent', 'branch', ?, ?, 'prefix-sharing',
+                          NULL, NULL, 1.0, '[]', 1000, NULL)
+                """,
+                (child_id, parent_id, branch_point),
+            )
+            index_conn.commit()
+        finally:
+            index_conn.close()
+        return parent_id, child_id
+
+    def test_find_lineage_dependents_returns_prefix_sharing_child(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        assert find_lineage_dependents(tmp_path, parent_id) == (child_id,)
+        # The child is not itself a lineage parent of anything.
+        assert find_lineage_dependents(tmp_path, child_id) == ()
+
+    def test_find_lineage_dependents_ignores_spawned_fresh(self, tmp_path: Path) -> None:
+        parent_id = _seed_session(tmp_path, native_id="fresh-parent")
+        child_id = _seed_session(tmp_path, native_id="fresh-child")
+        index_conn = sqlite3.connect(tmp_path / "index.db")
+        try:
+            index_conn.execute(
+                """
+                INSERT INTO session_links (
+                    src_session_id, dst_origin, dst_native_id, link_type,
+                    resolved_dst_session_id, branch_point_message_id, inheritance,
+                    status, method, confidence, evidence_json, observed_at_ms, resolved_at_ms
+                ) VALUES (?, 'codex-session', 'fresh-parent', 'subagent', ?, NULL, 'spawned-fresh',
+                          NULL, NULL, 1.0, '[]', 1000, NULL)
+                """,
+                (child_id, parent_id),
+            )
+            index_conn.commit()
+        finally:
+            index_conn.close()
+        # spawned-fresh children don't share bytes with the parent.
+        assert find_lineage_dependents(tmp_path, parent_id) == ()
+
+    def test_plan_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        plan = plan_session_excision(tmp_path, parent_id)
+        assert plan.lineage_dependent_session_ids == (child_id,)
+
+    def test_apply_without_cascade_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        with pytest.raises(LineageDependentsError) as excinfo:
+            apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local")
+        assert excinfo.value.dependent_session_ids == (child_id,)
+
+        index_conn = sqlite3.connect(tmp_path / "index.db")
+        try:
+            count = index_conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE session_id IN (?, ?)", (parent_id, child_id)
+            ).fetchone()[0]
+        finally:
+            index_conn.close()
+        assert count == 2  # neither session touched by the refused apply
+
+    def test_apply_with_cascade_removes_parent_and_dependents(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        receipt = apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
+        assert receipt.found is True
+        assert receipt.cascaded_session_ids == (child_id,)
+        # Counts are summed across the whole cascade (parent + child).
+        assert receipt.counts["index_sessions"] == 2
+        assert receipt.counts["index_messages"] == 2
+
+        index_conn = sqlite3.connect(tmp_path / "index.db")
+        try:
+            remaining = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        finally:
+            index_conn.close()
+        assert remaining == 0
+
+        user_conn = sqlite3.connect(tmp_path / "user.db")
+        try:
+            receipt_count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.EXCISION_RECORD.value,)
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert receipt_count == 2  # one durable audit receipt per removed session
+
+    def test_apply_with_no_dependents_behaves_as_before(self, tmp_path: Path) -> None:
+        session_id = _seed_session(tmp_path, native_id="no-lineage")
+        receipt = apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+        assert receipt.found is True
+        assert receipt.cascaded_session_ids == ()
+
+
+class TestAttachmentBlobHashesAreExcisedToo:
+    """Coverage for the polylogue-27m fix-round sibling-blob-hash marker fix.
+
+    ``blob_refs`` groups every blob published under one raw ingestion by a
+    shared ``ref_id`` (``ref_type IN ('raw_payload', 'attachment',
+    'sidecar')``). Before this fix, ``_apply_single_session_excision`` only
+    recorded an ``excised_content`` marker for the raw payload's own blob
+    hash -- an attachment's distinct content hash was un-referenced (its
+    ``blob_refs`` row deleted) but never durably marked excised, so an
+    identical attachment blob re-acquired under the same raw ingestion could
+    silently resurrect. Reverting the sibling-hash lookup in
+    ``_apply_single_session_excision`` (collapsing back to recording only
+    ``raw_target.blob_hash``) makes ``test_attachment_blob_hash_recorded_in_excised_content``
+    fail.
+    """
+
+    def test_attachment_blob_hash_recorded_in_excised_content(self, tmp_path: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.source_write import (
+            ArchiveSourceBlobRef,
+            write_source_blob_refs,
+        )
+
+        session_id = _seed_session(tmp_path, native_id="attach-1")
+        target = resolve_session_excision_target(tmp_path, session_id)
+        raw_id = target.raw_targets[0].raw_id
+        raw_blob_hash = target.raw_targets[0].blob_hash
+        attachment_blob_hash = deterministic_blob_hash(b"attachment bytes with a secret sk-ant-xyz")
+        assert attachment_blob_hash != raw_blob_hash
+
+        source_conn = sqlite3.connect(tmp_path / "source.db")
+        try:
+            write_source_blob_refs(
+                source_conn,
+                raw_id,
+                (
+                    ArchiveSourceBlobRef(
+                        blob_hash=attachment_blob_hash,
+                        ref_type="attachment",
+                        source_path="attachment.png",
+                        size_bytes=42,
+                        acquired_at_ms=1_000,
+                    ),
+                ),
+            )
+        finally:
+            source_conn.close()
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="secret in attachment", actor="user:local")
+        assert receipt.found is True
+        assert raw_blob_hash.hex() in receipt.removed_blob_hashes
+        assert attachment_blob_hash.hex() in receipt.removed_blob_hashes
+
+        source_conn = sqlite3.connect(tmp_path / "source.db")
+        try:
+            assert is_blob_hash_excised(source_conn, raw_blob_hash) is True
+            assert is_blob_hash_excised(source_conn, attachment_blob_hash) is True
+            # The attachment's own blob_refs row is gone, same as the raw payload's.
+            assert source_conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?", (raw_id,)).fetchone()[0] == 0
+        finally:
+            source_conn.close()

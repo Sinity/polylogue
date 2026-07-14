@@ -13,6 +13,13 @@ not change: it surfaces candidates, it does not gate reads.
 ``devtools test -k secret_candidate`` is the coverage anchor cited by
 ``docs/plans/security-privacy-coverage.yaml``'s
 ``security.captured-content-secret-detection`` gap.
+
+The production caller is ``scan_session_for_secret_candidates`` below, wired
+to the CLI as ``polylogue ops scan-secrets --session <id>``
+(``polylogue/cli/commands/scan_secrets.py``). Without a caller reading real
+captured content and writing through ``record_secret_candidates``, the
+regex/entropy rules and the non-injectable write path exist but never run
+against an operator's actual archive (polylogue-27m fix round).
 """
 
 from __future__ import annotations
@@ -23,9 +30,18 @@ import re
 import sqlite3
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, READ_DB_TIMEOUT
+
+# One-shot tier connections here mirror the pattern in security/excision.py:
+# a direct connect (not open_connection/open_readonly_connection, so no
+# sibling-tier attach) with the shared busy_timeout applied explicitly.
+_READ_BUSY_TIMEOUT_MS = READ_DB_TIMEOUT * 1000
+_WRITE_BUSY_TIMEOUT_MS = DB_TIMEOUT * 1000
 
 # ---------------------------------------------------------------------------
 # Pattern rules
@@ -194,9 +210,115 @@ def record_secret_candidates(
     return written
 
 
+@dataclass(frozen=True, slots=True)
+class SecretScanResult:
+    """Outcome of scanning one session's captured content for secret candidates.
+
+    Never carries any matched literal -- only counts and the written
+    assertion ids (which themselves are derived, one-way identifiers; see
+    :func:`secret_candidate_assertion_id`).
+    """
+
+    session_id: str
+    found: bool
+    blocks_scanned: int = 0
+    candidates_found: int = 0
+    written_assertion_ids: tuple[str, ...] = field(default_factory=tuple)
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "found": self.found,
+            "blocks_scanned": self.blocks_scanned,
+            "candidates_found": self.candidates_found,
+            "written_assertion_ids": list(self.written_assertion_ids),
+        }
+
+
+def scan_session_for_secret_candidates(
+    archive_root: Path,
+    session_id: str,
+    *,
+    now_ms: int | None = None,
+) -> SecretScanResult:
+    """Scan every block of ``session_id`` for credential-shaped spans.
+
+    Reads each block's ``text`` and ``tool_input`` (tool-call arguments,
+    where secrets often show up as ``key=value`` pairs or env assignments)
+    from ``index.db``, runs them through
+    :func:`scan_text_for_secret_candidates`, and persists any hits as
+    non-injectable ``SECRET_CANDIDATE`` assertions in ``user.db`` via
+    :func:`record_secret_candidates` -- keyed ``block:<block_id>`` so a
+    later ``polylogue ops excise`` on that session/message/block clears the
+    corresponding candidate (see ``ExcisionTarget``/``_target_refs``).
+
+    This is the production entrypoint for the module-level scanner: it is
+    what turns "the regex rules and write path exist" into "an operator
+    running this against their archive actually gets a finding". Returns
+    ``found=False`` (no mutation) when the session does not exist.
+    """
+    timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+
+    index_db = archive_root / "index.db"
+    if not index_db.exists():
+        return SecretScanResult(session_id=session_id, found=False)
+
+    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    try:
+        session_row = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        if session_row is None:
+            return SecretScanResult(session_id=session_id, found=False)
+        rows = conn.execute(
+            "SELECT block_id, COALESCE(text, ''), COALESCE(tool_input, '') FROM blocks "
+            "WHERE session_id = ? ORDER BY message_id, position",
+            (session_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    user_db = archive_root / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    user_conn = sqlite3.connect(user_db)
+    user_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    written: list[str] = []
+    try:
+        with user_conn:
+            for block_id, text, tool_input in rows:
+                combined = f"{text} {tool_input}".strip()
+                if not combined:
+                    continue
+                spans = scan_text_for_secret_candidates(combined)
+                if not spans:
+                    continue
+                written.extend(
+                    record_secret_candidates(
+                        user_conn,
+                        target_ref=f"block:{block_id}",
+                        spans=spans,
+                        now_ms=timestamp,
+                    )
+                )
+    finally:
+        user_conn.close()
+
+    return SecretScanResult(
+        session_id=session_id,
+        found=True,
+        blocks_scanned=len(rows),
+        candidates_found=len(written),
+        written_assertion_ids=tuple(written),
+    )
+
+
 __all__ = [
     "SecretCandidateSpan",
+    "SecretScanResult",
     "record_secret_candidates",
+    "scan_session_for_secret_candidates",
     "scan_text_for_secret_candidates",
     "secret_candidate_assertion_id",
 ]

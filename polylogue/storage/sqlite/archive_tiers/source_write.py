@@ -23,14 +23,20 @@ class ContentExcisedError(RuntimeError):
 
     The archive can forget on purpose (polylogue-27m): once a blob hash is
     recorded in ``excised_content``, ordinary re-ingest of unmodified source
-    bytes must not resurrect it, even across an ``index.db`` rebuild.
-    ``write_source_raw_session`` is the single acquire-time choke point used
-    by both the CLI import path and the daemon watch path (via
-    ``ArchiveStore.write_raw_and_parsed_result`` /
-    ``pipeline.services.archive_ingest.parse_sources_archive``), so a gate
-    here covers every ordinary re-ingest route. Callers at the batch
-    orchestration layer catch this and skip the one file (count it, continue
-    the batch) rather than aborting the whole run.
+    bytes must not resurrect it, even across an ``index.db`` rebuild. There
+    are two acquire-time raw-session write functions that gate on this --
+    ``write_source_raw_session`` (payload held in memory; used by the CLI
+    import path via ``ArchiveStore.write_raw_and_parsed_result`` /
+    ``pipeline.services.archive_ingest.parse_sources_archive``) and
+    ``write_source_raw_session_blob_ref`` (payload already published as a
+    blob, not held in memory; used by the daemon's memory-bounded streaming
+    path for multi-GiB files -- ``ArchiveStore.write_raw_blob_ref`` /
+    ``sources.live.batch.LiveBatchProcessor._ingest_full_records_archive``).
+    Both must gate identically or the blob-ref route silently resurrects
+    excised content that arrives via the streaming path (polylogue-27m fix
+    round). Callers at the batch orchestration layer catch this and skip the
+    one file (count it, continue the batch) rather than aborting the whole
+    run.
     """
 
     def __init__(self, *, blob_hash: bytes, source_path: str) -> None:
@@ -563,6 +569,8 @@ def write_source_raw_session_blob_ref(
     origin_value = _enum_value(origin)
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
         source_path,

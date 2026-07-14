@@ -152,6 +152,13 @@ records them as `AssertionKind.SECRET_CANDIDATE` assertions. This is a
 redact reads, it surfaces candidates for an operator to review and, if
 warranted, excise.
 
+`polylogue ops scan-secrets --session <id>` is the production entrypoint
+(`scan_session_for_secret_candidates`, `polylogue/cli/commands/
+scan_secrets.py`): it reads the session's block text/tool-input from
+`index.db`, scans it, and writes candidates into `user.db`. Without this
+caller the regex/entropy rules and the write path exist but nothing in the
+running archive ever invokes them (fix-round note, 2026-07-14).
+
 - The scanner **never returns, stores, or logs the matched literal**. Callers
   only ever see a SHA-256 fingerprint (one-way, for idempotent re-detection),
   a byte length, a pattern id, and span offsets into the source text.
@@ -160,7 +167,8 @@ warranted, excise.
   `status=CANDIDATE` with `{"inject": false, "promotion_required": true}` —
   a detector can never self-promote a finding to authoritative/injectable
   context (the same invariant `PATHOLOGY`/`TRANSFORM_CANDIDATE` findings use).
-- Coverage: `tests/unit/security/test_secret_scan.py` (also the
+- Coverage: `tests/unit/security/test_secret_scan.py`,
+  `tests/unit/cli/test_scan_secrets.py` (also the
   `devtools test -k secret_candidate` anchor cited by
   `docs/plans/security-privacy-coverage.yaml`).
 
@@ -176,21 +184,57 @@ preview, `--yes` to apply) removes a session across every local tier:
 3. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
    `raw_session_memberships`/`raw_membership_census`), then a durable
    removed-hash marker is recorded in the new `excised_content` table
-   (migration `010_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 10).
+   (migration `010_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 10) for
+   *every distinct blob hash* grouped under that raw ingestion's `ref_id` —
+   not just the raw payload's own hash. `blob_refs` shares one `ref_id`
+   across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a
+   session's inline attachments (whose content hash can differ from the raw
+   payload's) each get their own non-resurrection marker too.
 4. `user.db` — content-bearing assertions targeting the excised
    session/messages/blocks are removed, and one durable
    `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,
    removed hashes, per-tier counts).
 
 **Ordinary re-ingest cannot resurrect excised content.** The removed-hash
-marker is consulted at the single acquire-time write choke point,
-`write_source_raw_session` (`polylogue/storage/sqlite/archive_tiers/
-source_write.py`) — shared by the CLI import path and the daemon watch path
-via `parse_sources_archive`. A re-acquire attempt whose payload hashes to a
-recorded `removed_hash` raises `ContentExcisedError`; the batch orchestration
-layer (`pipeline/services/archive_ingest.py:write_pair`) catches this
-specifically and skips just that one file (counted in
-`ParseResult.excised_skips`) rather than aborting the whole ingest run.
+marker is consulted at *both* acquire-time raw-session write functions in
+`polylogue/storage/sqlite/archive_tiers/source_write.py` — they must gate
+identically, or one route silently resurrects excised content:
+
+- `write_source_raw_session` (payload held in memory) — used by the CLI
+  import path via `parse_sources_archive`.
+- `write_source_raw_session_blob_ref` (payload already published as a blob,
+  not held in memory) — used by the daemon's memory-bounded streaming path
+  for multi-GiB files, via `sources.live.batch.LiveBatchProcessor.
+  _ingest_full_records_archive`.
+
+A re-acquire attempt whose payload hashes to a recorded `removed_hash` raises
+`ContentExcisedError` from either function; the batch orchestration layer
+(`pipeline/services/archive_ingest.py:write_pair` for the CLI path,
+`sources/live/batch.py:_ingest_full_records_archive` for the daemon path)
+catches this specifically and skips just that one file (counted in
+`ParseResult.excised_skips` / `_ArchiveFullWriteResult.excised_skips`
+respectively) rather than aborting the whole ingest run.
+
+**Lineage safety.** Excising a session that is a prefix-sharing lineage
+*parent* (see `session_links`/`branch_point_message_id` in the top-level
+architecture notes) would otherwise delete the bytes a child session's
+composed transcript depends on. `apply_session_excision` detects the full
+transitive set of prefix-sharing dependents and refuses
+(`LineageDependentsError`) unless the caller passes `cascade_lineage=True`
+(CLI: `--cascade-lineage`), in which case the whole lineage — the session and
+every dependent — is excised together so no composed read is left broken.
+`plan_session_excision`/`--dry-run` surfaces the dependent session ids up
+front so this is never a surprise at apply time.
+
+**Attachments referenced from elsewhere.** `attachment_refs.session_id`/
+`message_id` carry `ON DELETE CASCADE` to `sessions`/`messages`, so deleting
+the excised session's row already removes only its own attachment
+references — a content-hash-deduplicated `attachments` row still referenced
+by a different, non-excised session's `attachment_refs` is untouched.
+Excision never deletes shared attachment metadata still in legitimate use
+elsewhere; it only unlinks the excised session's own reference to it (and
+marks that raw ingestion's attachment blob hash durably excised, per the
+`source.db` step above).
 
 Blob *bytes* are never force-unlinked out from under a lease by excision
 itself: removing the `blob_refs`/`raw_sessions` rows un-references the blob,

@@ -109,6 +109,7 @@ _SHORT_HELP: dict[str, str] = {
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
+    "scan_secrets": "Scan a session for credential-shaped content (polylogue-27m).",
     "status": "Show daemon and archive status.",
     "tutorial": "Inspect first-run setup state.",
 }
@@ -181,6 +182,7 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("insights"),
     _L("maintenance"),
     _L("reset"),
+    _L("scan_secrets"),
     _L("status"),
 )
 

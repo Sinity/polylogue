@@ -58,6 +58,42 @@ def _seed_session(archive_root: Path, *, native_id: str) -> str:
     return str(session_id)
 
 
+def _seed_lineage_pair(archive_root: Path) -> tuple[str, str]:
+    """Seed a parent session and a prefix-sharing child `session_links` row.
+
+    Returns ``(parent_session_id, child_session_id)``.
+    """
+    parent_id = _seed_session(archive_root, native_id="lineage-parent")
+    child_id = _seed_session(archive_root, native_id="lineage-child")
+
+    index_conn = sqlite3.connect(archive_root / "index.db")
+    index_conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        index_conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
+            "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
+            (parent_id,),
+        )
+        branch_point = index_conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ?", (parent_id,)
+        ).fetchone()[0]
+        index_conn.execute(
+            """
+            INSERT INTO session_links (
+                src_session_id, dst_origin, dst_native_id, link_type,
+                resolved_dst_session_id, branch_point_message_id, inheritance,
+                status, method, confidence, evidence_json, observed_at_ms, resolved_at_ms
+            ) VALUES (?, 'codex-session', 'lineage-parent', 'branch', ?, ?, 'prefix-sharing',
+                      NULL, NULL, 1.0, '[]', 1000, NULL)
+            """,
+            (child_id, parent_id, branch_point),
+        )
+        index_conn.commit()
+    finally:
+        index_conn.close()
+    return parent_id, child_id
+
+
 class TestExciseStandalone:
     def test_missing_session_reports_not_found(self, tmp_path: Path) -> None:
         with patch("polylogue.cli.commands.excise.archive_root", return_value=tmp_path / "archive"):
@@ -220,3 +256,81 @@ class TestExciseMirrorPrimary:
         finally:
             index_conn.close()
         assert count == 1
+
+
+class TestExciseLineageSafety:
+    """CLI coverage for the polylogue-27m fix-round lineage-safety guard."""
+
+    def test_dry_run_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        parent_id, child_id = _seed_lineage_pair(archive_root)
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["ops", "excise", "--session", parent_id, "--reason", "r", "--dry-run", "--json"],
+            )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["plan"]["lineage_dependent_session_ids"] == [child_id]
+
+    def test_without_cascade_flag_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        parent_id, child_id = _seed_lineage_pair(archive_root)
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["ops", "excise", "--session", parent_id, "--reason", "r", "--yes", "--json"],
+            )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "aborted"
+
+        index_conn = sqlite3.connect(archive_root / "index.db")
+        try:
+            remaining = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        finally:
+            index_conn.close()
+        assert remaining == 2  # neither parent nor child touched
+
+    def test_with_cascade_flag_removes_parent_and_dependents(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        parent_id, child_id = _seed_lineage_pair(archive_root)
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "ops",
+                    "excise",
+                    "--session",
+                    parent_id,
+                    "--reason",
+                    "r",
+                    "--yes",
+                    "--cascade-lineage",
+                    "--json",
+                ],
+            )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "ok"
+        # affected_count is index_sessions summed across the whole cascade.
+        assert payload["affected_count"] == 2
+
+        index_conn = sqlite3.connect(archive_root / "index.db")
+        try:
+            remaining = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        finally:
+            index_conn.close()
+        assert remaining == 0
+
+        user_conn = sqlite3.connect(archive_root / "user.db")
+        try:
+            receipt_count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = 'excision_record'"
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert receipt_count == 2  # one durable audit receipt per removed session

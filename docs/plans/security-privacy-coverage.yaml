@@ -161,6 +161,17 @@ areas:
           AssertionKind.SECRET_CANDIDATE assertions. The matched literal is
           never returned, stored, or logged -- only a SHA-256 fingerprint,
           byte length, pattern id, and span offsets survive.
+      - production_caller: >
+          scan_session_for_secret_candidates (same module) is the real
+          entrypoint: it reads a session's block text/tool-input from
+          index.db, scans it, and records candidates in user.db. Wired to
+          `polylogue ops scan-secrets --session <id>`
+          (polylogue/cli/commands/scan_secrets.py). Fix-round note
+          (2026-07-14): an earlier revision of this PR marked this area
+          implemented with the scanner functions defined but zero
+          production callers -- an operator running the archive got no
+          candidates ever, only a test calling the functions directly did.
+          This caller closes that gap.
       - detector_candidate_gate: >
           author_kind="detector" is unconditionally coerced to
           status=CANDIDATE with {"inject": false, "promotion_required": true}
@@ -190,7 +201,8 @@ areas:
         tests/unit/security/test_secret_scan.py and
         tests/unit/security/test_excision.py and
         tests/unit/security/test_excision_lifecycle.py and
-        tests/unit/cli/test_excise.py
+        tests/unit/cli/test_excise.py and
+        tests/unit/cli/test_scan_secrets.py
       hypothesis: false
     notes: >
       Standalone/off-mode excision is locally authoritative and proven
@@ -203,6 +215,18 @@ areas:
       mechanics proven here to a real Sinex confirmation, and a
       contract-fake-only test run must never be read as satisfying that
       separate scope.
+
+      Explicit scope note on `implemented: true` (fix-round verification,
+      2026-07-14, polylogue-layg): the claim covers the *mechanism* --
+      credential-shaped spans are actually detected, recorded as
+      non-injectable candidates, and reachable by an operator through a real
+      production entrypoint (`polylogue ops scan-secrets --session <id>`).
+      It does NOT mean archive-wide or automatic coverage: there is no
+      bulk/all-sessions scan command and no daemon convergence stage wires
+      this in automatically, so an operator must invoke it per session id.
+      That gap is real but is a coverage-breadth follow-up, not evidence
+      that the mechanism itself is unimplemented or fake -- tracked
+      separately as polylogue-layg.1.
 
   dependency_audit:
     description: Dependency vulnerability auditing

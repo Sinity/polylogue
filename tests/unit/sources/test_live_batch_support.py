@@ -3000,6 +3000,90 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
 
 
+def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon's full/streaming write orchestration (polylogue-27m fix round).
+
+    Reproduces the reviewer's finding at the orchestration layer, not just the
+    low-level write gate: a durably excised blob hash must be skipped (counted
+    in ``_ArchiveFullWriteResult.excised_skips``) without aborting the rest of
+    the batch. Reverting the ``except ContentExcisedError`` handling in
+    ``LiveBatchProcessor._ingest_full_records_archive`` back to letting it fall
+    through to the generic ``except Exception`` branch (or removing the
+    pre-write ``is_blob_hash_excised`` gate entirely) makes this fail: either
+    the whole batch call raises, or the excised content gets a fresh raw_id.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        deterministic_blob_hash,
+        record_excised_blob_hash,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    excised_payload = b'{"secret": "sk-ant-should-not-resurrect-via-streaming-batch"}\n'
+    excised_source = root / "excised.jsonl"
+    excised_source.write_bytes(excised_payload)
+    normal_source = root / "normal.jsonl"
+    normal_source.write_bytes(b"{}\n")
+
+    # Pre-mark the excised file's exact content hash as durably excised,
+    # mirroring a prior real `polylogue ops excise` apply.
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        record_excised_blob_hash(
+            source_conn,
+            blob_hash=deterministic_blob_hash(excised_payload),
+            reason="test: reproduces reviewer finding",
+            actor="user:local",
+            excised_at_ms=1_000,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    sessions = [ParsedSession(source_name=Provider.CODEX, provider_session_id="normal-1", messages=[])]
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+
+    archive_results: list[_ArchiveFullWriteResult] = []
+    original_full_write = processor._ingest_full_records_archive
+
+    def capture_full_write(*args: Any, **kwargs: Any) -> _ArchiveFullWriteResult:
+        outcome = original_full_write(*args, **kwargs)
+        archive_results.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(processor, "_ingest_full_records_archive", capture_full_write)
+
+    result = processor._ingest_full_paths_sync([excised_source, normal_source], source_name="codex")
+
+    assert archive_results[0].excised_skips == 1
+    # The non-excised file in the same batch still succeeds -- one excised
+    # record must not abort the rest of the batch.
+    assert normal_source in result.succeeded
+    assert excised_source not in result.succeeded
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # No raw_sessions row was resurrected for the excised payload.
+        rows = conn.execute("SELECT source_path FROM raw_sessions").fetchall()
+        assert all("excised.jsonl" not in str(row[0]) for row in rows)
+
+
 def test_live_multi_session_divergence_reopens_raw_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

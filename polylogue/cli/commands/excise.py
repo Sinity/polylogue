@@ -72,6 +72,17 @@ def _emit(
 @click.option("--dry-run", is_flag=True, help="Preview affected rows per tier without mutating anything.")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.option(
+    "--cascade-lineage",
+    is_flag=True,
+    help=(
+        "Required when --session is a prefix-sharing lineage parent (see "
+        "docs/security.md): excises the session AND every dependent that "
+        "shares its prefix, together, so no dependent's composed transcript "
+        "is left with a dangling branch point. Without this flag, excising "
+        "a lineage parent is refused."
+    ),
+)
+@click.option(
     "--json",
     "output_format",
     flag_value="json",
@@ -94,6 +105,7 @@ def excise_command(
     actor: str,
     dry_run: bool,
     yes: bool,
+    cascade_lineage: bool,
     output_format: str | None,
 ) -> None:
     """Excise a session: durable, cross-tier removal that ordinary re-ingest cannot resurrect.
@@ -103,7 +115,9 @@ def excise_command(
       messages/blocks/FTS/session_links), embeddings.db, and source.db
       (blob_refs + raw_sessions), records a durable removed-hash marker so
       re-ingest of unmodified source files cannot resurrect it, and writes
-      one durable audit receipt to user.db.
+      one durable audit receipt to user.db. If the session is a
+      prefix-sharing lineage parent, this is refused unless
+      --cascade-lineage is also passed (see docs/security.md).
     mirror/primary: creates a durable lifecycle-request outbox row in
       user.db (survives an ops.db reset) and stops there. Local content is
       NOT touched by this command in mirror/primary mode.
@@ -181,7 +195,7 @@ def excise_command(
         )
         return
 
-    from polylogue.security.excision import apply_session_excision, plan_session_excision
+    from polylogue.security.excision import LineageDependentsError, apply_session_excision, plan_session_excision
 
     if dry_run:
         plan = plan_session_excision(root, session_id)
@@ -213,6 +227,15 @@ def excise_command(
                     if plan.already_excised_blob_hashes
                     else []
                 ),
+                *(
+                    [
+                        f"  WARNING lineage-dependent sessions ({len(plan.lineage_dependent_session_ids)}) would "
+                        "lose composed content unless --cascade-lineage is also passed: "
+                        + ", ".join(plan.lineage_dependent_session_ids)
+                    ]
+                    if plan.lineage_dependent_session_ids
+                    else []
+                ),
             ],
         )
         return
@@ -229,6 +252,23 @@ def excise_command(
         )
         return
 
+    if plan.lineage_dependent_session_ids and not cascade_lineage:
+        dependents = ", ".join(plan.lineage_dependent_session_ids)
+        _emit(
+            env,
+            status="aborted",
+            session_id=session_id,
+            affected_count=0,
+            output_format=output_format,
+            plain_message=(
+                f"Refusing to excise {session_id!r}: it is a lineage parent for "
+                f"{len(plan.lineage_dependent_session_ids)} prefix-sharing session(s) ({dependents}) "
+                "that would lose composed content. Pass --cascade-lineage to excise the entire "
+                "lineage together, or exclude this session."
+            ),
+        )
+        return
+
     if not yes:
         if output_format == "json" or env.ui.plain:
             _emit(
@@ -240,25 +280,44 @@ def excise_command(
                 plain_message="Use --yes to confirm excision.",
             )
             return
-        if not env.ui.confirm(
+        confirm_message = (
             f"Permanently excise session {session_id!r} ({plan.index_messages} message(s), "
-            f"{plan.source_raw_rows} raw row(s))? This cannot be undone by re-ingest.",
-            default=False,
-        ):
+            f"{plan.source_raw_rows} raw row(s))? This cannot be undone by re-ingest."
+        )
+        if plan.lineage_dependent_session_ids:
+            confirm_message += (
+                f" This will ALSO permanently excise {len(plan.lineage_dependent_session_ids)} "
+                "lineage-dependent session(s) (--cascade-lineage)."
+            )
+        if not env.ui.confirm(confirm_message, default=False):
             env.ui.console.print("Aborted.")
             return
 
-    receipt = apply_session_excision(root, session_id, reason=reason, actor=actor)
+    try:
+        receipt = apply_session_excision(root, session_id, reason=reason, actor=actor, cascade_lineage=cascade_lineage)
+    except LineageDependentsError as exc:
+        _emit(
+            env,
+            status="aborted",
+            session_id=session_id,
+            affected_count=0,
+            output_format=output_format,
+            plain_message=str(exc),
+        )
+        return
     if not receipt.found:
         fail("excise", f"Session {session_id!r} disappeared between plan and apply.")
         return
+    detail_message = f"Excised session {session_id}: {receipt.counts} (receipt: {receipt.receipt_assertion_id})"
+    if receipt.cascaded_session_ids:
+        detail_message += f"; also excised lineage-dependent session(s): {', '.join(receipt.cascaded_session_ids)}"
     _emit(
         env,
         status="ok",
         session_id=session_id,
         affected_count=receipt.counts.get("index_sessions", 0),
         output_format=output_format,
-        plain_message=(f"Excised session {session_id}: {receipt.counts} (receipt: {receipt.receipt_assertion_id})"),
+        plain_message=detail_message,
         detail=receipt.receipt_assertion_id,
     )
 

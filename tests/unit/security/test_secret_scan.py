@@ -6,6 +6,14 @@ Anti-vacuity: these tests exercise the real production
 Mutating any pattern (e.g. shortening the AWS key length, dropping the
 entropy filter) or removing the ``author_kind="detector"`` argument makes
 the corresponding assertion below fail.
+
+``TestScanSessionForSecretCandidates`` covers the polylogue-27m fix-round
+production entrypoint (``scan_session_for_secret_candidates``): a real
+``index.db`` block read, feeding the real scan rules above, through the
+real write chokepoint into ``user.db``. An earlier revision of this module
+had no such caller -- these tests fail if that wiring regresses (e.g. the
+function stops reading real block text, or stops calling
+``record_secret_candidates``).
 """
 
 from __future__ import annotations
@@ -18,6 +26,7 @@ import pytest
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.security.secret_scan import (
     record_secret_candidates,
+    scan_session_for_secret_candidates,
     scan_text_for_secret_candidates,
     secret_candidate_assertion_id,
 )
@@ -177,3 +186,106 @@ class TestRecordSecretCandidates:
             assert count == len(spans)
         finally:
             conn.close()
+
+
+class TestScanSessionForSecretCandidates:
+    """Production-wiring coverage (polylogue-27m fix round).
+
+    ``scan_session_for_secret_candidates`` is the real caller that turns
+    the scanner above from "functions that exist" into "an operator running
+    `polylogue ops scan-secrets` against their archive gets a finding" --
+    real index.db block read -> real regex/entropy rules -> real
+    ``record_secret_candidates`` write chokepoint into user.db.
+    """
+
+    def _seed_session_with_block_text(self, tmp_path: Path, *, native_id: str, text: str) -> str:
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        conn = sqlite3.connect(index_db)
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms) "
+                "VALUES (?, 'codex-session', ?, zeroblob(32), 1000, 2000)",
+                (native_id, f"Session {native_id}"),
+            )
+            session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", (native_id,)).fetchone()[0]
+            conn.execute(
+                "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
+                "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
+                (session_id,),
+            )
+            message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            conn.execute(
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
+                (message_id, session_id, text),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return str(session_id)
+
+    def test_not_found_for_unknown_session(self, tmp_path: Path) -> None:
+        result = scan_session_for_secret_candidates(tmp_path, "codex-session:does-not-exist")
+        assert result.found is False
+
+    def test_finds_and_records_a_real_credential_shaped_span(self, tmp_path: Path) -> None:
+        session_id = self._seed_session_with_block_text(
+            tmp_path, native_id="scan-1", text="ANTHROPIC_API_KEY=sk-ant-api03-" + "a" * 60
+        )
+        result = scan_session_for_secret_candidates(tmp_path, session_id)
+        assert result.found is True
+        assert result.blocks_scanned == 1
+        assert result.candidates_found >= 1
+        assert len(result.written_assertion_ids) == result.candidates_found
+
+        user_conn = sqlite3.connect(tmp_path / "user.db")
+        try:
+            row = user_conn.execute(
+                "SELECT kind, target_ref FROM assertions WHERE assertion_id = ?",
+                (result.written_assertion_ids[0],),
+            ).fetchone()
+        finally:
+            user_conn.close()
+        assert row is not None
+        assert row[0] == AssertionKind.SECRET_CANDIDATE.value
+        assert row[1].startswith("block:")
+
+    def test_never_persists_the_matched_literal(self, tmp_path: Path) -> None:
+        secret_value = "sk-ant-api03-" + "b" * 60
+        session_id = self._seed_session_with_block_text(
+            tmp_path, native_id="scan-2", text=f"ANTHROPIC_API_KEY={secret_value}"
+        )
+        result = scan_session_for_secret_candidates(tmp_path, session_id)
+        assert result.candidates_found >= 1
+
+        raw_bytes = (tmp_path / "user.db").read_bytes()
+        assert secret_value.encode() not in raw_bytes
+
+    def test_no_candidates_for_ordinary_text(self, tmp_path: Path) -> None:
+        session_id = self._seed_session_with_block_text(
+            tmp_path, native_id="scan-3", text="just an ordinary chat message"
+        )
+        result = scan_session_for_secret_candidates(tmp_path, session_id)
+        assert result.found is True
+        assert result.candidates_found == 0
+        assert result.written_assertion_ids == ()
+
+    def test_rescanning_is_idempotent(self, tmp_path: Path) -> None:
+        session_id = self._seed_session_with_block_text(
+            tmp_path, native_id="scan-4", text="AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
+        )
+        first = scan_session_for_secret_candidates(tmp_path, session_id, now_ms=1_000)
+        second = scan_session_for_secret_candidates(tmp_path, session_id, now_ms=2_000)
+        assert first.written_assertion_ids == second.written_assertion_ids
+
+        user_conn = sqlite3.connect(tmp_path / "user.db")
+        try:
+            count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.SECRET_CANDIDATE.value,)
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert count == len(first.written_assertion_ids)

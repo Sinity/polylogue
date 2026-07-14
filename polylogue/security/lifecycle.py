@@ -366,10 +366,18 @@ def apply_primary_invalidation_if_confirmed(
     if row.state != "confirmed":
         return LifecycleInvalidationOutcome(success=False, reason="pending_confirmation")
 
-    from polylogue.security.excision import apply_session_excision
+    from polylogue.security.excision import LineageDependentsError, apply_session_excision
 
     session_id = row.target_ref.removeprefix("session:")
-    receipt = apply_session_excision(archive_root, session_id, reason=row.reason, actor=row.actor)
+    try:
+        receipt = apply_session_excision(archive_root, session_id, reason=row.reason, actor=row.actor)
+    except LineageDependentsError:
+        # The confirmed target is a prefix-sharing lineage parent: invalidate
+        # only via an explicit, out-of-band `--cascade-lineage` decision, not
+        # silently as a side effect of a Sinex confirmation landing. Surface
+        # this as a clean failure outcome rather than letting the exception
+        # propagate out of a lifecycle-drive call site.
+        return LifecycleInvalidationOutcome(success=False, reason="lineage_dependents_unresolved")
     if not receipt.found:
         return LifecycleInvalidationOutcome(success=False, reason="target_not_found", receipt=receipt)
     return LifecycleInvalidationOutcome(success=True, receipt=receipt)
