@@ -54,7 +54,7 @@ def percentile(
         raise ValueError(f"Unknown method: {method}")
 
 
-def _percentile_linear(sorted_values: Sequence, q: float) -> float:
+def _percentile_linear(sorted_values: Sequence[float], q: float) -> float:
     """Linear-interpolation percentile (numpy.percentile equivalent)."""
     if q <= 0:
         return float(sorted_values[0])
@@ -68,7 +68,7 @@ def _percentile_linear(sorted_values: Sequence, q: float) -> float:
     return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
-def _percentile_nearest(sorted_values: Sequence, q: float) -> float:
+def _percentile_nearest(sorted_values: Sequence[float], q: float) -> float:
     """Nearest-rank percentile (deterministic, no interpolation)."""
     # Nearest-rank formula: rank = ceil(q * n), 1-indexed
     rank = max(1, math.ceil(q * len(sorted_values)))

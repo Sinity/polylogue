@@ -143,7 +143,7 @@ class TestPercentileConsistency:
     def test_percentile_invalid_method_raises(self) -> None:
         """Invalid method parameter raises ValueError."""
         with pytest.raises(ValueError, match="Unknown method"):
-            percentile([1.0, 2.0, 3.0], 0.5, method="invalid")  # type: ignore
+            percentile([1.0, 2.0, 3.0], 0.5, method="invalid")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
