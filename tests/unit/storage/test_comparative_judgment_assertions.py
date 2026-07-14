@@ -11,6 +11,7 @@ from polylogue.insights.judgment.types import JudgeIdentity
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    judge_assertion_candidate,
     list_assertion_claims,
     list_comparative_judgments,
     upsert_comparative_judgment_assertion,
@@ -108,6 +109,88 @@ def test_round_trips_through_list_comparative_judgments(tmp_path: Path) -> None:
         assert got.judge == judgment.judge
         assert got.rationale == "c wins because it fixed the root cause"
         assert got.evidence_refs == ("session:s1",)
+    finally:
+        conn.close()
+
+
+def test_rejected_agent_judgment_is_excluded_from_list_comparative_judgments(tmp_path: Path) -> None:
+    """Blocker fix: a REJECTED candidate row must not resurrect as a live judgment.
+
+    ``judge_assertion_candidate`` never deletes a rejected candidate -- it
+    leaves the original row at ``status=REJECTED``. Before the fix,
+    ``list_comparative_judgments`` filtered only on ``!= DELETED`` and would
+    read this terminal row back as if it were a live verdict.
+    """
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        judgment = build_comparative_judgment(
+            items=["finding:a", "finding:b"],
+            dimension="correctness",
+            verdict=ComparativeVerdict.PREFER_RIGHT,
+            judge=JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a"),
+            blinded=True,
+            rubric_id="rubric-1",
+            rubric_version=1,
+            decided_at_ms=2000,
+        )
+        envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind="agent")
+        conn.commit()
+        assert envelope.status == AssertionStatus.CANDIDATE
+
+        judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{envelope.assertion_id}",
+            decision="reject",
+            reason="verdict looked mis-blinded",
+        )
+        conn.commit()
+
+        assert list_comparative_judgments(conn) == []
+    finally:
+        conn.close()
+
+
+def test_accepted_agent_judgment_appears_exactly_once_via_promoted_row(tmp_path: Path) -> None:
+    """Blocker fix: an ACCEPTED candidate must not double-count original + promoted rows.
+
+    ``judge_assertion_candidate`` leaves the original candidate at
+    ``status=ACCEPTED`` (non-live) and writes a *separate*, differently-id'd
+    promoted row at ``status=ACTIVE``. Before the fix, both rows passed the
+    ``!= DELETED`` filter and were parsed into two distinct
+    ``ComparativeJudgment`` objects for the same verdict.
+    """
+
+    conn = _connect(tmp_path / "user.db")
+    try:
+        judgment = build_comparative_judgment(
+            items=["finding:a", "finding:b"],
+            dimension="correctness",
+            verdict=ComparativeVerdict.PREFER_LEFT,
+            judge=JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a"),
+            blinded=True,
+            rubric_id="rubric-1",
+            rubric_version=1,
+            decided_at_ms=2000,
+        )
+        envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind="agent")
+        conn.commit()
+        assert envelope.status == AssertionStatus.CANDIDATE
+
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{envelope.assertion_id}",
+            decision="accept",
+            reason="blinding checked out",
+        )
+        conn.commit()
+        assert result.resulting_assertion is not None
+        assert result.resulting_assertion.assertion_id != envelope.assertion_id
+
+        restored = list_comparative_judgments(conn)
+        assert len(restored) == 1
+        assert restored[0].items == judgment.items
+        assert restored[0].verdict == judgment.verdict
     finally:
         conn.close()
 

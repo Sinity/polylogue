@@ -1326,12 +1326,30 @@ def upsert_comparative_judgment_assertion(
 
 
 def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudgment]:
-    """Read back every active comparative-judgment assertion row."""
+    """Read back every live comparative-judgment assertion row.
+
+    ``list_assertions_by_kind`` only excludes ``DELETED`` rows, but the
+    candidate-judgment lifecycle this kind reuses as-is
+    (:func:`judge_assertion_candidate`) never deletes: a rejected verdict is
+    left at ``status=REJECTED`` (a terminal, non-live row) and an accepted
+    verdict leaves the original candidate at ``status=ACCEPTED`` while
+    writing a *separate*, differently-id'd promoted row at
+    ``status=ACTIVE`` (:func:`_promote_candidate_assertion`). Filtering only
+    on non-``DELETED`` would therefore resurrect rejected verdicts as live
+    judgments and double-count accepted ones (original ``ACCEPTED`` row plus
+    the promoted ``ACTIVE`` row, parsed into two distinct
+    :class:`ComparativeJudgment` objects). ``ACTIVE`` is the sole live
+    status here: user-authored judgments are written directly as ``ACTIVE``
+    (see :func:`upsert_comparative_judgment_assertion`), and agent-authored
+    candidates only reach ``ACTIVE`` via the promoted row once accepted.
+    """
 
     from polylogue.insights.judgment.comparative import comparative_judgment_from_value
 
     judgments: list[ComparativeJudgment] = []
     for envelope in list_assertions_by_kind(conn, AssertionKind.COMPARATIVE_JUDGMENT):
+        if envelope.status != AssertionStatus.ACTIVE:
+            continue
         if not isinstance(envelope.value, dict):
             continue
         raw_items = envelope.value.get("items", ())
