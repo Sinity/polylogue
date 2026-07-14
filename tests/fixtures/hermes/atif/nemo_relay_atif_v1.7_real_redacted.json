@@ -1,0 +1,341 @@
+{
+  "agent": {
+    "extra": {
+      "plugin": "<redacted>",
+      "source": "<redacted>"
+    },
+    "model_name": "<redacted>",
+    "name": "<redacted>",
+    "version": "<redacted>"
+  },
+  "final_metrics": {
+    "total_completion_tokens": 7,
+    "total_prompt_tokens": 8983,
+    "total_steps": 5
+  },
+  "schema_version": "ATIF-v1.7",
+  "session_id": "real-nemo-relay-session-redacted",
+  "steps": [
+    {
+      "extra": {
+        "ancestry": {
+          "function_id": "<redacted>",
+          "function_name": "<redacted>",
+          "parent_id": "<redacted>",
+          "parent_name": "<redacted>"
+        },
+        "event_payload": {
+          "conversation_history": [
+            {
+              "_db_persisted": true,
+              "content": "<redacted>",
+              "role": "<redacted>"
+            }
+          ],
+          "is_first_turn": true,
+          "model": "<redacted>",
+          "platform": "<redacted>",
+          "sender_id": "<redacted>",
+          "session_id": "<redacted>",
+          "task_id": "<redacted>",
+          "telemetry_schema_version": "<redacted>",
+          "turn_id": "<redacted>",
+          "user_message": "<redacted>"
+        },
+        "invocation": {
+          "framework": "<redacted>",
+          "invocation_id": "<redacted>",
+          "status": "<redacted>"
+        }
+      },
+      "message": "<redacted>",
+      "source": "<redacted>",
+      "step_id": 1,
+      "timestamp": "<redacted>"
+    },
+    {
+      "extra": {
+        "ancestry": {
+          "function_id": "<redacted>",
+          "function_name": "<redacted>",
+          "parent_id": "<redacted>",
+          "parent_name": "<redacted>"
+        },
+        "llm_request": {
+          "extra_headers": {
+            "session_id": "<redacted>",
+            "x-client-request-id": "<redacted>"
+          },
+          "include": [
+            "<redacted>"
+          ],
+          "input": [
+            {
+              "content": "<redacted>",
+              "role": "<redacted>"
+            }
+          ],
+          "instructions": "<redacted>",
+          "model": "<redacted>",
+          "parallel_tool_calls": true,
+          "prompt_cache_key": "<redacted>",
+          "reasoning": {
+            "effort": "<redacted>",
+            "summary": "<redacted>"
+          },
+          "store": false,
+          "tool_choice": "<redacted>",
+          "tools": [
+            {
+              "description": "<redacted>",
+              "name": "<redacted>",
+              "parameters": {
+                "properties": {
+                  "absorbed_into": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "action": {
+                    "description": "<redacted>",
+                    "enum": [
+                      "<redacted>",
+                      "<redacted>",
+                      "<redacted>",
+                      "<redacted>",
+                      "<redacted>",
+                      "<redacted>"
+                    ],
+                    "type": "<redacted>"
+                  },
+                  "category": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "content": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "file_content": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "file_path": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "name": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "new_string": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "old_string": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "replace_all": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  }
+                },
+                "required": [
+                  "<redacted>",
+                  "<redacted>"
+                ],
+                "type": "<redacted>"
+              },
+              "strict": false,
+              "type": "<redacted>"
+            },
+            {
+              "description": "<redacted>",
+              "name": "<redacted>",
+              "parameters": {
+                "properties": {
+                  "file_path": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  },
+                  "name": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  }
+                },
+                "required": [
+                  "<redacted>"
+                ],
+                "type": "<redacted>"
+              },
+              "strict": false,
+              "type": "<redacted>"
+            },
+            {
+              "description": "<redacted>",
+              "name": "<redacted>",
+              "parameters": {
+                "properties": {
+                  "category": {
+                    "description": "<redacted>",
+                    "type": "<redacted>"
+                  }
+                },
+                "type": "<redacted>"
+              },
+              "strict": false,
+              "type": "<redacted>"
+            }
+          ]
+        }
+      },
+      "message": "<redacted>",
+      "source": "<redacted>",
+      "step_id": 2,
+      "timestamp": "<redacted>"
+    },
+    {
+      "extra": {
+        "ancestry": {
+          "function_id": "<redacted>",
+          "function_name": "<redacted>",
+          "parent_id": "<redacted>",
+          "parent_name": "<redacted>"
+        },
+        "invocation": {
+          "end_timestamp": 1784049157.558,
+          "framework": "<redacted>",
+          "invocation_id": "<redacted>",
+          "start_timestamp": 1784049155.53,
+          "status": "<redacted>"
+        },
+        "llm_response": {
+          "assistant_message": {
+            "content": "<redacted>",
+            "role": "<redacted>",
+            "tool_calls": []
+          },
+          "finish_reason": "<redacted>",
+          "model": "<redacted>",
+          "usage": {
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "input_tokens": 8983,
+            "output_tokens": 7,
+            "prompt_tokens": 8983,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "total_tokens": 8990
+          }
+        }
+      },
+      "llm_call_count": 1,
+      "message": "<redacted>",
+      "metrics": {
+        "completion_tokens": 7,
+        "extra": {
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "input_tokens": 8983,
+          "output_tokens": 7,
+          "reasoning_tokens": 0,
+          "request_count": 1,
+          "total_tokens": 8990
+        },
+        "prompt_tokens": 8983
+      },
+      "model_name": "<redacted>",
+      "source": "<redacted>",
+      "step_id": 3,
+      "timestamp": "<redacted>"
+    },
+    {
+      "extra": {
+        "ancestry": {
+          "function_id": "<redacted>",
+          "function_name": "<redacted>",
+          "parent_id": "<redacted>",
+          "parent_name": "<redacted>"
+        },
+        "event_payload": {
+          "assistant_response": "<redacted>",
+          "conversation_history": [
+            {
+              "_db_persisted": true,
+              "content": "<redacted>",
+              "role": "<redacted>"
+            },
+            {
+              "_db_persisted": true,
+              "codex_message_items": [
+                {
+                  "content": [
+                    {
+                      "text": "<redacted>",
+                      "type": "<redacted>"
+                    }
+                  ],
+                  "id": "<redacted>",
+                  "phase": "<redacted>",
+                  "role": "<redacted>",
+                  "status": "<redacted>",
+                  "type": "<redacted>"
+                }
+              ],
+              "content": "<redacted>",
+              "finish_reason": "<redacted>",
+              "reasoning": null,
+              "role": "<redacted>"
+            }
+          ],
+          "model": "<redacted>",
+          "platform": "<redacted>",
+          "session_id": "<redacted>",
+          "task_id": "<redacted>",
+          "telemetry_schema_version": "<redacted>",
+          "turn_id": "<redacted>",
+          "user_message": "<redacted>"
+        },
+        "invocation": {
+          "framework": "<redacted>",
+          "invocation_id": "<redacted>",
+          "status": "<redacted>"
+        }
+      },
+      "message": "<redacted>",
+      "source": "<redacted>",
+      "step_id": 4,
+      "timestamp": "<redacted>"
+    },
+    {
+      "extra": {
+        "ancestry": {
+          "function_id": "<redacted>",
+          "function_name": "<redacted>",
+          "parent_id": "<redacted>",
+          "parent_name": "<redacted>"
+        },
+        "event_payload": {
+          "completed": true,
+          "interrupted": false,
+          "model": "<redacted>",
+          "platform": "<redacted>",
+          "session_id": "<redacted>",
+          "task_id": "<redacted>",
+          "telemetry_schema_version": "<redacted>",
+          "turn_id": "<redacted>"
+        },
+        "invocation": {
+          "framework": "<redacted>",
+          "invocation_id": "<redacted>",
+          "status": "<redacted>"
+        }
+      },
+      "message": "<redacted>",
+      "source": "<redacted>",
+      "step_id": 5,
+      "timestamp": "<redacted>"
+    }
+  ],
+  "trajectory_id": "real-nemo-relay-trajectory-redacted"
+}
