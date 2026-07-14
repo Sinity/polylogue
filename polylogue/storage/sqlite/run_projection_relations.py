@@ -171,7 +171,7 @@ WITH source_runs AS (
                 WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
                 WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
                 ELSE 'unknown'
-            END || '/main' AS agent_ref,
+            END || CASE WHEN s0.branch_type = 'subagent' THEN '/subagent' ELSE '/main' END AS agent_ref,
         json_array('run:' || s0.session_id) AS lineage_refs_json,
         s0.origin AS provider_origin,
         CASE
@@ -181,7 +181,13 @@ WITH source_runs AS (
             WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
             ELSE 'unknown'
         END AS harness,
-        'main' AS role,
+        -- branch_type='subagent' (BranchType.SUBAGENT, core/enums.py) is the
+        -- session-level flag a parsed subagent session already carries; no
+        -- Task-tool-report parsing needed here (unlike the pre-polylogue-dab
+        -- Python writer in insights/run_projection.py, which additionally
+        -- derived agent_ref's subagent_type segment from the parent's Task
+        -- tool_input -- that finer distinction is not reconstructed here).
+        CASE WHEN s0.branch_type = 'subagent' THEN 'subagent' ELSE 'main' END AS role,
         COALESCE(NULLIF(s0.title, ''), s0.session_id) AS title,
         NULL AS cwd,
         s0.git_branch AS git_branch,
@@ -190,7 +196,11 @@ WITH source_runs AS (
         s0.session_id AS transcript_ref,
         json_array(s0.session_id) AS evidence_refs_json,
         'context-snapshot:' || s0.session_id || ':' ||
-            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS context_snapshot_ref,
+            CASE
+                WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+                WHEN s0.branch_type = 'continuation' THEN 'resume'
+                ELSE 'session_start'
+            END AS context_snapshot_ref,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text,
         NULL AS payload_json,
         1 AS materializer_version,
@@ -344,12 +354,20 @@ WITH source_context_snapshots AS (
     SELECT
         'source' AS row_source,
         'context-snapshot:' || s0.session_id || ':' ||
-            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS snapshot_ref,
+            CASE
+                WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+                WHEN s0.branch_type = 'continuation' THEN 'resume'
+                ELSE 'session_start'
+            END AS snapshot_ref,
         s0.session_id AS session_id,
         'run:' || s0.session_id AS run_ref,
         0 AS position,
         printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
-        CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS boundary,
+        CASE
+            WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+            WHEN s0.branch_type = 'continuation' THEN 'resume'
+            ELSE 'session_start'
+        END AS boundary,
         'unknown' AS inheritance_mode,
         json_array('session:' || s0.session_id) AS segment_refs_json,
         json_array(s0.session_id) AS evidence_refs_json,

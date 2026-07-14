@@ -20,9 +20,9 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Blocks | 106 |
 | Session profiles | 15 |
 | Origins | aistudio-drive, chatgpt-export, claude-ai-export, claude-code-session, codex-session |
-| Run rows | 16 |
-| Observed-event rows | 49 |
-| Context-snapshot rows | 16 |
+| Run rows | 15 |
+| Observed-event rows | 37 |
+| Context-snapshot rows | 15 |
 
 ## Declared Source Families
 
@@ -66,9 +66,9 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Subagent links (`subagent_links`) | 1 | 1 | `ok` |
 | Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
-| Run projection rows (`run_projection_rows`) | 16 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 49 | 1 | `ok` |
-| Context snapshot rows (`context_snapshot_rows`) | 16 | 1 | `ok` |
+| Run projection rows (`run_projection_rows`) | 15 | 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | 37 | 1 | `ok` |
+| Context snapshot rows (`context_snapshot_rows`) | 15 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
 | Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
