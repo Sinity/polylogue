@@ -170,6 +170,65 @@ def _backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
     return rows
 
 
+@dataclass(frozen=True, slots=True)
+class _BackupInventoryCacheEntry:
+    stat_signature: tuple[tuple[str, int, int], ...]
+    artifact_inventory: tuple[dict[str, object], ...]
+
+
+# Process-lifetime cache: a durable migration runs as a short-lived actuator
+# invocation (devtools schema fast-forward, `polylogue ops` maintenance, or
+# one daemon-startup migration), so this never needs cross-process
+# persistence or eviction -- it exists to collapse the four SHA-256 scans of
+# one immutable backup tree that `migrate_archive_tier` otherwise performs
+# per activation (pre-BEGIN + in-transaction, times two durable tiers) into
+# one.
+_backup_artifact_inventory_cache: dict[Path, _BackupInventoryCacheEntry] = {}
+
+
+def _backup_root_stat_signature(backup_root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Cheap, content-free fingerprint used only to decide whether the
+    expensive SHA-256 scan below can be skipped.
+
+    This is deliberately not evidence by itself: every entry the cache
+    returns still carries the SHA-256 computed the last time the signature
+    changed.  A stat-identical-but-content-tampered backup (same size and
+    mtime, different bytes) is outside this actuator's threat model already
+    -- ``backup_attestation.py`` documents it is "not a privilege boundary
+    against arbitrary code running as the same Unix user" -- and any
+    genuine artifact/manifest/receipt mutation changes size or mtime and is
+    still caught below.
+    """
+    entries: list[tuple[str, int, int]] = []
+    for candidate in sorted(backup_root.rglob("*")):
+        relative = candidate.relative_to(backup_root)
+        if relative == Path(_VERIFICATION_RECEIPT_FILE):
+            continue
+        metadata = candidate.lstat()
+        entries.append((str(relative), metadata.st_size, metadata.st_mtime_ns))
+    return tuple(entries)
+
+
+def _cached_backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
+    """Reuse a SHA-256'd backup artifact inventory while its bytes are unchanged."""
+    resolved = backup_root.resolve(strict=True)
+    signature = _backup_root_stat_signature(resolved)
+    cached = _backup_artifact_inventory_cache.get(resolved)
+    if cached is not None and cached.stat_signature == signature:
+        return [dict(item) for item in cached.artifact_inventory]
+    inventory = _backup_artifact_inventory(resolved)
+    # Guard a scan-time mutation race: only cache a result whose signature is
+    # still what it was before the (potentially slow) hashing pass began.
+    if _backup_root_stat_signature(resolved) == signature:
+        _backup_artifact_inventory_cache[resolved] = _BackupInventoryCacheEntry(
+            stat_signature=signature,
+            artifact_inventory=tuple(dict(item) for item in inventory),
+        )
+    else:
+        _backup_artifact_inventory_cache.pop(resolved, None)
+    return inventory
+
+
 def _canonical_json_sha256(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -455,7 +514,7 @@ def validate_migration_backup_manifest(
         raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
     if receipt.get("verdict") != "success":
         raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    artifact_inventory = _backup_artifact_inventory(backup_root)
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
     file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
     manifest_evidence = file_evidence.get("manifest.json", {})
     if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
