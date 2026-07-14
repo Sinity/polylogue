@@ -105,6 +105,16 @@ def _iter_comparable_relpaths(root: Path) -> list[str]:
     return relpaths
 
 
+def _iter_comparable_relpaths_union(committed_root: Path, fresh_root: Path) -> list[str]:
+    """Union of comparable relpaths from both sides, so a file the fresh tour
+    emits that the committed fixture never had (or vice versa) is reported as
+    a mismatch instead of silently skipped."""
+    seen: dict[str, None] = {}
+    for relpath in _iter_comparable_relpaths(committed_root) + _iter_comparable_relpaths(fresh_root):
+        seen.setdefault(relpath, None)
+    return list(seen)
+
+
 def tour_freshness_diff(*, out_dir: Path) -> dict[str, tuple[str, str]]:
     """Run the demo tour into ``out_dir`` and return mismatches.
 
@@ -124,16 +134,15 @@ def tour_freshness_diff(*, out_dir: Path) -> dict[str, tuple[str, str]]:
         return mask_volatile_json(text) if relpath == "report.json" else mask_volatile(text)
 
     mismatches: dict[str, tuple[str, str]] = {}
-    for relpath in _iter_comparable_relpaths(COMMITTED_DIR):
+    for relpath in _iter_comparable_relpaths_union(COMMITTED_DIR, out_dir):
         committed_path = COMMITTED_DIR / relpath
-        if not committed_path.exists():
-            continue
-        committed_masked = _mask_for(relpath, committed_path.read_text(encoding="utf-8"))
         fresh_path = out_dir / relpath
-        if not fresh_path.exists():
-            mismatches[relpath] = (committed_masked, "<MISSING>")
-            continue
-        fresh_masked = _mask_for(relpath, fresh_path.read_text(encoding="utf-8"))
+        committed_masked = (
+            _mask_for(relpath, committed_path.read_text(encoding="utf-8")) if committed_path.exists() else "<MISSING>"
+        )
+        fresh_masked = (
+            _mask_for(relpath, fresh_path.read_text(encoding="utf-8")) if fresh_path.exists() else "<MISSING>"
+        )
         if committed_masked != fresh_masked:
             mismatches[relpath] = (committed_masked, fresh_masked)
     return mismatches
@@ -157,12 +166,14 @@ def main(argv: list[str] | None = None) -> int:
     for relpath, (committed_masked, fresh_masked) in sorted(mismatches.items()):
         print(f"  {relpath}", file=sys.stderr)
         diff = difflib.unified_diff(
-            committed_masked.splitlines(keepends=True),
-            fresh_masked.splitlines(keepends=True),
+            committed_masked.splitlines(),
+            fresh_masked.splitlines(),
             fromfile=f"committed/{relpath}",
             tofile=f"fresh/{relpath}",
+            lineterm="",
         )
-        sys.stderr.writelines(diff)
+        for line in diff:
+            print(line, file=sys.stderr)
     print(
         "demo-tour-freshness: run 'polylogue demo tour --out-dir "
         f"{_COMMITTED_OUT_DIR_BASENAME} --force' and copy the regenerated files into "

@@ -51,8 +51,8 @@ def replace_marked_section(text: str, *, replacement: str) -> str:
     if start == -1:
         # No existing block: append at end of file (after a trailing blank line).
         return text.rstrip("\n") + "\n\n" + replacement + "\n"
-    finish = text.find(end)
-    if finish == -1 or finish < start:
+    finish = text.find(end, start)
+    if finish == -1:
         raise ValueError(f"marker block malformed: {MARKER}")
     return text[:start] + replacement + text[finish + len(end) :]
 

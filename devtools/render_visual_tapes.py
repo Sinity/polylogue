@@ -21,6 +21,7 @@ committed.
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
 from pathlib import Path
 
@@ -55,17 +56,15 @@ def committed_tape_drift(
     return drift
 
 
-def _print_drift(drift: dict[str, tuple[str | None, str]]) -> None:
+def _print_drift(drift: dict[str, tuple[str | None, str]], *, committed_dir: Path = COMMITTED_TAPES_DIR) -> None:
     for name, (committed_text, generated) in sorted(drift.items()):
         if committed_text is None:
-            print(f"visual-tapes: {name}: no committed tape at {COMMITTED_TAPES_DIR / f'{name}.tape'}", file=sys.stderr)
+            print(f"visual-tapes: {name}: no committed tape at {committed_dir / f'{name}.tape'}", file=sys.stderr)
             continue
         print(
-            f"visual-tapes: {name}: generated content differs from {COMMITTED_TAPES_DIR / f'{name}.tape'}",
+            f"visual-tapes: {name}: generated content differs from {committed_dir / f'{name}.tape'}",
             file=sys.stderr,
         )
-        import difflib
-
         diff = difflib.unified_diff(
             committed_text.splitlines(keepends=True),
             generated.splitlines(keepends=True),
@@ -108,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         drift = committed_tape_drift(tapes)
         if drift:
             print(f"visual-tapes: {len(drift)} committed tape(s) out of sync with their spec:", file=sys.stderr)
-            _print_drift(drift)
+            _print_drift(drift, committed_dir=COMMITTED_TAPES_DIR)
             print(
                 "visual-tapes: run 'devtools render visual-tapes --output-dir "
                 f"{COMMITTED_TAPES_DIR}' and commit the result to fix",

@@ -151,13 +151,19 @@ let arms = [
 const $ = id => document.getElementById(id);
 let selected = null, startAt = null, timerId = null, order = 0;
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 function renderArmEditor() {
   $('armEditor').innerHTML = arms.map((a, i) => `
     <label>Arm ${i + 1} name
-      <input data-arm-name="${i}" value="${a[0]}">
+      <input data-arm-name="${i}" value="${escapeHtml(a[0])}">
     </label>
     <label>Arm ${i + 1} screenshot path
-      <input data-arm-path="${i}" value="${a[1]}" placeholder="../visual-tapes/some-candidate.png">
+      <input data-arm-path="${i}" value="${escapeHtml(a[1])}" placeholder="../visual-tapes/some-candidate.png">
     </label>`).join('');
   document.querySelectorAll('[data-arm-name]').forEach(el => el.onchange = e => {
     arms[+e.target.dataset.armName][0] = e.target.value; fillFixedSelect();
@@ -169,7 +175,7 @@ function renderArmEditor() {
 
 function fillFixedSelect() {
   $('fixed').innerHTML = '<option value="">Random</option>' +
-    arms.map(a => `<option value="${a[0]}">${a[0]}</option>`).join('');
+    arms.map(a => `<option value="${escapeHtml(a[0])}">${escapeHtml(a[0])}</option>`).join('');
 }
 
 $('addArm').onclick = () => { arms.push([`arm-${arms.length + 1}`, '']); renderArmEditor(); fillFixedSelect(); };
@@ -198,10 +204,11 @@ function choose() {
 }
 
 function show() { if (!selected) choose(); $('previewWrap').classList.remove('hidden'); }
-function hide() { $('previewWrap').classList.add('hidden'); if (timerId) clearInterval(timerId); }
+function hide() { $('previewWrap').classList.add('hidden'); if (timerId) { clearInterval(timerId); timerId = null; } }
 $('show').onclick = show;
 $('hide').onclick = hide;
 $('start').onclick = () => {
+  if (timerId) { clearInterval(timerId); timerId = null; }
   choose(); show(); startAt = performance.now(); order++;
   const dur = Number($('duration').value) || 45;
   timerId = setInterval(() => {
