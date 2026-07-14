@@ -220,7 +220,18 @@ def _persist_record(archive_root: Path, path: Path, record: dict[str, object]) -
     initialize_active_archive_root(archive_root)
     provider_token = str(record["provider"])
     provider = Provider.from_string(provider_token)
-    origin = Origin.from_string(_ORIGIN_TOKEN_BY_PROVIDER.get(provider_token, "codex-session"))
+    try:
+        origin_token = _ORIGIN_TOKEN_BY_PROVIDER[provider_token]
+    except KeyError as exc:
+        # ``_validated_record`` already rejects any provider outside
+        # ``_SUPPORTED_PROVIDERS`` before a record reaches this point, so this
+        # should be unreachable in the current call path -- but silently
+        # defaulting an unrecognized provider to "codex-session" would
+        # misclassify genuinely-unknown providers as Codex if that upstream
+        # invariant ever drifts (e.g. a provider added to one set but not the
+        # other). Raise instead of guessing.
+        raise HookSpoolRecordError(f"no origin mapping for hook provider: {provider_token!r}") from exc
+    origin = Origin.from_string(origin_token)
     payload = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     observed_at_ms_value = record["observed_at_ms"]
     if not isinstance(observed_at_ms_value, int):

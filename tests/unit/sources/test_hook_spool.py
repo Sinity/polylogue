@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -326,6 +327,48 @@ def test_published_hook_adapters_refuse_duplicated_transcript_payloads(
     assert list(pending_hook_spool_dir(spool_root).glob("*.json")) == []
 
 
+def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> None:
+    """The no-duplicated-transcript field list/threshold is copied, not shared, across three
+    independent runtime boundaries (main package, standalone pip package, dependency-free bash
+    script) -- deliberately, since ``packaging/polylogue-hooks`` documents itself as having *no
+    dependency on the main polylogue distribution* and ``contrib/polylogue-hook`` is not Python at
+    all, so a single importable helper cannot span all three. This test is the drift guard that
+    duplication-without-sharing still needs: if ``polylogue.sources.hooks._TRANSCRIPT_LIKE_KEYS``
+    (or its threshold) ever changes without updating the two mirrored copies, this fails loudly
+    instead of the gap only surfacing if someone happens to craft a payload using exactly the
+    added/removed field name.
+    """
+
+    from polylogue.sources.hooks import _MAX_TRANSCRIPT_LIKE_FIELD_CHARS, _TRANSCRIPT_LIKE_KEYS
+
+    packaging_src = Path("packaging/polylogue-hooks/src").resolve()
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, polylogue_hooks.cli as m; "
+            "print(json.dumps({'keys': list(m._TRANSCRIPT_LIKE_KEYS), "
+            "'threshold': m._MAX_TRANSCRIPT_LIKE_FIELD_CHARS}))",
+        ],
+        env=os.environ | {"PYTHONPATH": str(packaging_src)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    packaging_policy = json.loads(probe.stdout)
+    assert packaging_policy["keys"] == list(_TRANSCRIPT_LIKE_KEYS)
+    assert packaging_policy["threshold"] == _MAX_TRANSCRIPT_LIKE_FIELD_CHARS
+
+    contrib_source = Path("contrib/polylogue-hook").resolve().read_text(encoding="utf-8")
+    keys_match = re.search(r"for _key in \(([^)]*)\):", contrib_source)
+    threshold_match = re.search(r"len\(_value\) > (\d+)", contrib_source)
+    assert keys_match is not None, "contrib/polylogue-hook: transcript-key loop not found"
+    assert threshold_match is not None, "contrib/polylogue-hook: transcript threshold not found"
+    contrib_keys = [item.strip().strip('"') for item in keys_match.group(1).split(",") if item.strip()]
+    assert contrib_keys == list(_TRANSCRIPT_LIKE_KEYS)
+    assert int(threshold_match.group(1)) == _MAX_TRANSCRIPT_LIKE_FIELD_CHARS
+
+
 # ── Hermes lifecycle-event spool (fs1.7) ──────────────────────────────────
 
 
@@ -353,6 +396,63 @@ def test_hermes_hook_spool_replay_is_idempotent_after_interrupted_acknowledgemen
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events WHERE origin = 'hermes-session'").fetchone() == (1,)
+
+
+def test_hermes_hook_spool_survives_a_truncated_envelope_alongside_a_valid_one(tmp_path: Path) -> None:
+    """A crash mid-write (or a producer bug) can leave a truncated/malformed
+    JSON envelope in the pending spool. ``drain_hook_event_spool`` must leave
+    it inspectable rather than crashing the whole drain pass, and must still
+    materialize every other valid pending event in the same batch (fs1.7's
+    own AC: a malformed producer record remains pending, not silently
+    discarded, and a transient failure never blocks unrelated events)."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    enqueue_hook_event(
+        event_id="valid-alongside-truncated",
+        provider="hermes",
+        event_type="tool_start",
+        session_id="hermes-session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1"},
+        root=spool_root,
+    )
+    pending_dir = pending_hook_spool_dir(spool_root)
+    truncated_path = pending_dir / "truncated-envelope.json"
+    truncated_path.write_text('{"event_id": "truncated", "event_type": "tool_start", "sessi', encoding="utf-8")
+
+    result = drain_hook_event_spool(archive_root, root=spool_root)
+
+    assert result.acknowledged == 1
+    assert result.failed == 1
+    # The malformed file is neither silently deleted nor moved to acknowledged.
+    assert truncated_path.exists()
+    assert not (acknowledged_hook_spool_dir(spool_root) / truncated_path.name).exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
+
+
+def test_persist_record_raises_rather_than_defaulting_an_unmapped_provider_to_codex(tmp_path: Path) -> None:
+    """``_validated_record`` already rejects any provider outside
+    ``_SUPPORTED_PROVIDERS`` before a record reaches ``_persist_record``, so
+    this exercises the defense-in-depth path directly (bypassing that
+    upstream gate the way a future drift between ``_SUPPORTED_PROVIDERS`` and
+    ``_ORIGIN_TOKEN_BY_PROVIDER`` would). It must raise, not silently
+    misclassify a genuinely-unknown provider as Codex."""
+
+    from polylogue.sources.hooks import _persist_record
+
+    archive_root = tmp_path / "archive"
+    record: dict[str, object] = {
+        "event_id": "unmapped-provider-event",
+        "event_type": "tool_start",
+        "session_id": "some-session",
+        "provider": "gemini-cli",  # a real Provider token, but absent from _ORIGIN_TOKEN_BY_PROVIDER
+        "payload": {},
+        "observed_at_ms": 0,
+    }
+    with pytest.raises(HookSpoolRecordError, match="no origin mapping"):
+        _persist_record(archive_root, tmp_path / "unused.json", record)
 
 
 def test_hermes_per_turn_end_and_durable_finalize_remain_distinct_event_types(tmp_path: Path) -> None:
