@@ -53,6 +53,17 @@ def _migration_package(tier: ArchiveTier) -> str:
     return f"polylogue.storage.sqlite.migrations.{tier.value}"
 
 
+def _requires_migration_backup(sql: str) -> bool:
+    """A migration opts out of the backup requirement only via a header directive.
+
+    Substring matching would waive the backup requirement if the marker text
+    ever appeared in a comment, SQL string literal, or later in the file --
+    require it to be the file's first non-blank line instead.
+    """
+    first_nonblank = next((line.strip() for line in sql.splitlines() if line.strip()), "")
+    return first_nonblank != _ADDITIVE_NO_BACKUP_MARKER
+
+
 def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
     if tier not in DURABLE_MIGRATION_TIERS:
         return ()
@@ -72,7 +83,7 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
                 version=int(match.group("version")),
                 name=item.name,
                 sql=sql,
-                requires_backup=_ADDITIVE_NO_BACKUP_MARKER not in sql,
+                requires_backup=_requires_migration_backup(sql),
             )
         )
     versions = [step.version for step in steps]
@@ -556,6 +567,23 @@ def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
         raise MigrationError("migration SQL ended with an incomplete statement")
 
 
+def _pending_migration_steps(
+    conn: sqlite3.Connection,
+    tier: ArchiveTier,
+    *,
+    current_version: int,
+    target_version: int,
+) -> tuple[MigrationStep, ...]:
+    steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
+    expected_versions = tuple(range(current_version + 1, target_version + 1))
+    actual_versions = tuple(step.version for step in steps)
+    if actual_versions != expected_versions:
+        raise MigrationError(
+            f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
+        )
+    return steps
+
+
 def migrate_archive_tier(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
@@ -566,38 +594,67 @@ def migrate_archive_tier(
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier does not support in-place migrations")
     _checkpoint_live_tier(conn)
-    current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     target_version = ARCHIVE_VERSION_BY_TIER[tier]
-    if current_version == target_version:
+
+    # Lock-free precheck: fail fast (no wasted write-lock acquisition) when a
+    # backup manifest is required but missing. This read is intentionally not
+    # authoritative -- a concurrent migrate_archive_tier call could change the
+    # version before this one acquires BEGIN IMMEDIATE below, so every value
+    # computed here is re-derived from a fresh read once the lock is held.
+    precheck_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    if precheck_version == target_version:
         return MigrationResult(
             tier=tier,
-            from_version=current_version,
+            from_version=precheck_version,
             to_version=target_version,
             applied_versions=(),
         )
-    if current_version == 0:
+    if precheck_version == 0:
         raise MigrationError(f"{tier.value} tier is empty; initialize it fresh instead of migrating")
-    if current_version > target_version:
+    if precheck_version > target_version:
         raise MigrationError(
-            f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
+            f"{tier.value} tier version {precheck_version} is newer than this runtime expects ({target_version})"
         )
-
-    steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
-    expected_versions = tuple(range(current_version + 1, target_version + 1))
-    actual_versions = tuple(step.version for step in steps)
-    if actual_versions != expected_versions:
-        raise MigrationError(
-            f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
-        )
-    requires_backup = any(step.requires_backup for step in steps)
-    if requires_backup and backup_manifest is None:
+    precheck_steps = _pending_migration_steps(
+        conn, tier, current_version=precheck_version, target_version=target_version
+    )
+    precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
+    if precheck_requires_backup and backup_manifest is None:
         raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
-    if requires_backup:
+    if precheck_requires_backup:
+        # Baseline validation before acquiring the write lock. The paired
+        # post-lock call below re-validates with the same connection;
+        # _validate_live_source_fingerprint rejects a nonempty WAL, so a
+        # write that lands on the live tier between this call and BEGIN
+        # IMMEDIATE is caught as "changed before the migration lock" instead
+        # of migrating over data the verified backup never covered.
         assert backup_manifest is not None
         validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
 
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Authoritative re-read: a concurrent migration may have advanced (or
+        # completed) the tier between the precheck above and this lock
+        # acquisition. Recomputing here instead of trusting the precheck
+        # avoids failing the per-step version check below with a confusing
+        # "expected version N, found M" instead of the correct no-op result.
+        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        if current_version == target_version:
+            conn.rollback()
+            return MigrationResult(
+                tier=tier,
+                from_version=current_version,
+                to_version=target_version,
+                applied_versions=(),
+            )
+        if current_version > target_version:
+            raise MigrationError(
+                f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
+            )
+        steps = _pending_migration_steps(conn, tier, current_version=current_version, target_version=target_version)
+        requires_backup = any(step.requires_backup for step in steps)
+        if requires_backup and backup_manifest is None:
+            raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
         backup_receipt = (
             validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
             if requires_backup and backup_manifest is not None
