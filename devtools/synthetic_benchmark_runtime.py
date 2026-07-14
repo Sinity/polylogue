@@ -129,16 +129,18 @@ def run_fts_rebuild_campaign(db_path: Path) -> CampaignResult:
 
 async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -> CampaignResult:
     """Benchmark incremental FTS index updates."""
+    from polylogue.storage.fts.fts_lifecycle import replace_fts_rows_for_messages_sync
+    from polylogue.storage.index import ensure_index
     from polylogue.storage.query_models import SessionRecordQuery
-    from polylogue.storage.search_providers.fts5 import FTS5Provider
+    from polylogue.storage.search.cache import invalidate_search_cache
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.connection import connection_context
 
     backend = SQLiteBackend(db_path=db_path)
     try:
         total_convs = await backend.queries.count_sessions(SessionRecordQuery())
         batch_times: list[float] = []
         indexed_total = 0
-        fts = FTS5Provider(db_path=db_path)
 
         offset = 0
         while offset < total_convs:
@@ -149,9 +151,15 @@ async def run_incremental_index_campaign(db_path: Path, batch_size: int = 100) -
             conv_ids = [str(c.session_id) for c in convs]
             messages_by_conv = await backend.get_messages_batch(conv_ids)
             all_messages = [msg for msgs in messages_by_conv.values() for msg in msgs]
+            indexed_rows = [(m.message_id, m.session_id, m.text) for m in all_messages]
 
             t0 = time.monotonic()
-            fts.index(all_messages)
+            with connection_context(db_path) as conn:
+                ensure_index(conn)
+                replace_fts_rows_for_messages_sync(conn, indexed_rows)
+                conn.commit()
+            if all_messages:
+                invalidate_search_cache()
             batch_elapsed = time.monotonic() - t0
             batch_times.append(batch_elapsed)
             indexed_total += len(all_messages)

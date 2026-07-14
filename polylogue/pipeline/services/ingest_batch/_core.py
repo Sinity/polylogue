@@ -1201,7 +1201,7 @@ def _process_ingest_batch_sync(
                 repair_message_fts=repair_message_fts,
             )
             if pending_attachment_receipts:
-                with closing(sqlite3.connect(archive_root / "source.db")) as source_conn:
+                with closing(sqlite3.connect(archive_root / "source.db")) as source_conn, source_conn:
                     source_conn.execute("BEGIN IMMEDIATE")
                     for publication_id, blob_hash in pending_attachment_receipts:
                         consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
