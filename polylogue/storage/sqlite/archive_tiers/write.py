@@ -48,6 +48,7 @@ from polylogue.storage.runtime import (
     LineageTruncationReason,
 )
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 
 logger = get_logger(__name__)
 
@@ -1485,13 +1486,28 @@ def _write_messages(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write message rows using table-driven column specification.
+
+    The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (29 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the three hand-aligned duplicates (column list in INSERT,
+    placeholder string, tuple order) into a single source of truth.
+    """
+    spec = archive_tiers_specs.MESSAGES_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             position = position_offset + (message.position if message.position is not None else fallback_position)
             variant_index = message.variant_index if message.variant_index is not None else 0
+            # Build tuple in the order defined by spec.writable_columns, skipping
+            # columns with non-standard placeholders (like parent_message_id=NULL)
             yield (
                 session_id,
                 _sqlite_text(_effective_message_native_id(message, duplicate_native_ids)) or None,
+                # parent_message_id: skipped (always NULL in VALUES)
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
@@ -1520,19 +1536,14 @@ def _write_messages(
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
             )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders come from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO messages (
-            session_id, native_id, parent_message_id, position, role, message_type, material_origin,
-            model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text,
-            has_tool_use, has_thinking, has_paste, paste_boundary,
-            variant_index, is_active_path, is_active_leaf, word_count,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            duration_ms, content_hash, occurred_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _message_content_hash(
@@ -1625,6 +1636,17 @@ def _write_blocks(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write block rows using table-driven column specification.
+
+    The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (14 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the hand-aligned duplicates into a single source of truth.
+    """
+    spec = archive_tiers_specs.BLOCKS_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             message_id = _message_id(
@@ -1642,6 +1664,7 @@ def _write_blocks(
                 language = _block_language(block)
                 is_error = getattr(block, "is_error", None)
                 exit_code = getattr(block, "exit_code", None)
+                # Tuple built in order defined by spec.writable_columns
                 yield (
                     message_id,
                     session_id,
@@ -1669,16 +1692,14 @@ def _write_blocks(
                     ),
                 )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO blocks (
-            message_id, session_id, position, block_type, text, tool_name,
-            tool_id, tool_input, semantic_type, media_type, language,
-            tool_result_is_error, tool_result_exit_code, content_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _write_web_constructs(
