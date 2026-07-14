@@ -263,6 +263,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Reader-Comprehension Test Harness",
+        "examples/reader-comprehension-test/README.md",
+        "Single-blind N-arm cold-reader test harness for README/positioning candidates.",
+        "evidence",
+    ),
+    _entry(
         "Example and Proof Index",
         "examples/README.md",
         "Index of recorded proof artifacts and worked examples.",
@@ -283,6 +289,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Hermes Archival Export Contract",
+        "design/hermes-archival-export-contract.md",
+        "Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation.",
+        "design",
+    ),
+    _entry(
         "Browser Capture Redesign",
         "design/browser-capture-redesign/README.md",
         "Browser-capture redesign rationale and verification artifacts.",
@@ -295,6 +307,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
+    _entry(
+        "Storage Twins Divergences",
+        "plans/STORAGE_TWINS_DIVERGENCES.md",
+        "Documented sync/async storage backend divergences, tracked for the twins regression test.",
+        "design",
+    ),
     _entry(
         "Query-Action Workflows Design",
         "design/query-action-workflows.md",
@@ -382,6 +400,12 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
         "Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints.", "operations"
     ),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules.", "operations"),
+    DocsEntry(
+        "Security Policy",
+        "SECURITY.md",
+        "Trust-boundary summary, supported versions, and vulnerability reporting contact.",
+        "operations",
+    ),
 )
 
 README_DOC_TITLES: tuple[str, ...] = (

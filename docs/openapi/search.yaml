@@ -1562,6 +1562,9 @@ components:
       - transform_candidate
       - pathology
       - finding
+      - secret_candidate
+      - excision_record
+      - excision_request
       title: AssertionKind
       type: string
     AssertionQueryRowPayload:

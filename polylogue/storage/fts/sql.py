@@ -39,6 +39,67 @@ FTS_REBUILD_SQL = """
     DELETE FROM messages_fts
 """
 
+# FTS trigger DDL for message/block FTS maintenance.
+BLOCKS_FTS_TRIGGER_DDL = [
+    f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
+       AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
+           INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+           VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS messages_fts_ad
+       AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
+           DELETE FROM messages_fts WHERE rowid = old.rowid;
+       END""",
+    f"""CREATE TRIGGER IF NOT EXISTS messages_fts_au
+       AFTER UPDATE ON blocks BEGIN
+           DELETE FROM messages_fts WHERE rowid = old.rowid;
+           INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
+           SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
+           WHERE new.search_text != '';
+       END""",
+]
+
+# FTS trigger DDL for session_work_events FTS maintenance.
+SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
+    f"""CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
+       AFTER INSERT ON session_work_events BEGIN
+           INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
+           VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
+       AFTER DELETE ON session_work_events BEGIN
+           DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
+       END""",
+    f"""CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
+       AFTER UPDATE ON session_work_events BEGIN
+           DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
+           INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
+           VALUES (new.event_id, new.session_id, new.work_event_type, {pl_fold_sql_expr("new.search_text")});
+       END""",
+]
+
+# FTS trigger DDL for threads FTS maintenance.
+THREAD_FTS_TRIGGER_DDL = [
+    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_ai
+       AFTER INSERT ON threads BEGIN
+           INSERT INTO threads_fts (thread_id, root_id, text)
+           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
+       END""",
+    """CREATE TRIGGER IF NOT EXISTS threads_fts_ad
+       AFTER DELETE ON threads BEGIN
+           DELETE FROM threads_fts WHERE thread_id = old.thread_id;
+       END""",
+    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_au
+       AFTER UPDATE ON threads BEGIN
+           DELETE FROM threads_fts WHERE thread_id = old.thread_id;
+           INSERT INTO threads_fts (thread_id, root_id, text)
+           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
+       END""",
+]
+
+# Combined trigger DDL for all FTS surfaces.
+FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL + SESSION_WORK_EVENT_FTS_TRIGGER_DDL + THREAD_FTS_TRIGGER_DDL
+
 
 class IndexedMessage(Protocol):
     message_id: str
@@ -134,17 +195,21 @@ def excess_message_rows_sql(limit: int) -> str:
 
 
 __all__ = [
+    "BLOCKS_FTS_TRIGGER_DDL",
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
     "FTS_INDEX_EXISTS_SQL",
     "FTS_MESSAGES_TABLE_SQL",
     "FTS_REBUILD_SQL",
+    "FTS_TRIGGER_DDL",
     "IndexedMessage",
+    "SESSION_WORK_EVENT_FTS_TRIGGER_DDL",
+    "THREAD_FTS_TRIGGER_DDL",
     "chunked",
     "delete_session_rows_sql",
-    "insert_all_message_rows_sql",
-    "insert_session_rows_sql",
-    "insert_missing_message_rows_sql",
-    "insert_missing_message_rows_range_sql",
     "excess_message_rows_sql",
+    "insert_all_message_rows_sql",
+    "insert_missing_message_rows_range_sql",
+    "insert_missing_message_rows_sql",
+    "insert_session_rows_sql",
 ]

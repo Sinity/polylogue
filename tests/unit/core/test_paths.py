@@ -158,6 +158,7 @@ class TestPathsPublicBoundary:
             "index_db_path",
             "render_root",
             "resolve_active_index_db_path",
+            "sibling_index_db",
             "archive_file_set_root_for_paths",
             "archive_file_set_index_available_for_paths",
             "source_db_path",

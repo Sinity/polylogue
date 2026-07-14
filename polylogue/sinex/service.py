@@ -140,6 +140,17 @@ class PublicationService:
         on_confirmed: Callable[[PublicationObligation], None] | None,
     ) -> PublicationObligation:
         assert self.transport is not None  # off mode never reaches here
+        publishing_conn = sqlite3.connect(self.source_db_path, timeout=30.0)
+        publishing_conn.execute("PRAGMA busy_timeout = 30000")
+        try:
+            publishing_conn.execute("BEGIN IMMEDIATE")
+            obligations_store.mark_publishing(publishing_conn, obligation, now_ms=self.clock())
+            publishing_conn.commit()
+        except Exception:
+            publishing_conn.rollback()
+            raise
+        finally:
+            publishing_conn.close()
         receipt = await self.transport.publish_revision(
             request_id=obligation.request_id,
             manifest_bytes=manifest_bytes,

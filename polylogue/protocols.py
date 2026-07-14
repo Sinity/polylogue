@@ -224,6 +224,31 @@ class SearchStore(Protocol):
 
 
 @runtime_checkable
+class NeighborStore(Protocol):
+    """Minimal session access protocol for neighboring-session discovery.
+
+    Consumed by: polylogue.archive.session.neighbor_candidates.discover_neighbor_candidates
+    """
+
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
+
+    async def get(self, session_id: str) -> Session | None: ...
+
+    async def list_summaries_by_query(
+        self,
+        query: SessionRecordQuery,
+    ) -> list[SessionSummary]: ...
+
+    async def search_summary_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        origins: builtins.list[str] | None = None,
+        since: str | None = None,
+    ) -> list[SessionSearchHit]: ...
+
+
+@runtime_checkable
 class SessionQueryRuntimeStore(
     SessionReader,
     SearchStore,

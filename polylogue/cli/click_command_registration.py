@@ -97,6 +97,7 @@ _SHORT_HELP: dict[str, str] = {
     "debt": "List archive work that needs operator attention.",
     "diagnostics": "Run archive and session diagnostics.",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
+    "excise": "Excise a session: durable cross-tier removal (polylogue-27m).",
     "facets": "Show global or scoped archive facet families.",
     "import_command": "Import sessions from configured sources.",
     "hooks": "Install and monitor harness capture hooks.",
@@ -108,6 +109,7 @@ _SHORT_HELP: dict[str, str] = {
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
+    "scan_secrets": "Scan a session for credential-shaped content (polylogue-27m).",
     "status": "Show daemon and archive status.",
     "tutorial": "Inspect first-run setup state.",
 }
@@ -176,9 +178,11 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("debt"),
     _L("diagnostics"),
     _L("embed"),
+    _L("excise"),
     _L("insights"),
     _L("maintenance"),
     _L("reset"),
+    _L("scan_secrets"),
     _L("status"),
 )
 

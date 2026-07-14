@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_float as _row_float
+from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -572,15 +576,21 @@ def _fts_readiness_info() -> dict[str, object]:
 
 def _insight_freshness_info() -> dict[str, object]:
     """Check insight materialization status through bounded SQL counts."""
+    from polylogue.paths import sibling_index_db
+
     dbf = _active_status_db_path()
     if not dbf.exists():
-        archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
+        index_db = sibling_index_db(dbf, require_exists=False)
+        if index_db is not None:
+            archive_info = _archive_insight_freshness_info(index_db)
+            if archive_info is not None:
+                return archive_info
+        return {"sessions_with_profiles": 0, "total_sessions": 0}
+    index_db = sibling_index_db(dbf, require_exists=False)
+    if index_db is not None:
+        archive_info = _archive_insight_freshness_info(index_db)
         if archive_info is not None:
             return archive_info
-        return {"sessions_with_profiles": 0, "total_sessions": 0}
-    archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
-    if archive_info is not None:
-        return archive_info
     try:
         conn = open_readonly_connection(dbf)
         try:
@@ -930,40 +940,6 @@ def _safe_int(value: object) -> int:
     return 0
 
 
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _row_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
 def _safe_float(value: object, *, default: float = 0.0) -> float:
     """Coerce value to float, returning default on failure."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1146,9 +1122,12 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
 
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     """Return recent durable live-ingest attempt snapshots."""
+    from polylogue.paths import sibling_index_db
+
     dbf = _active_status_db_path()
     ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
-    if (dbf.with_name("index.db").exists() or not dbf.exists()) and ops_summary is not None:
+    index_db = sibling_index_db(dbf, require_exists=False)
+    if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
     if not dbf.exists():
         return ops_summary if ops_summary is not None else LiveIngestAttemptSummary()

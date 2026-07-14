@@ -23,7 +23,7 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
@@ -209,6 +209,16 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
                     )
                     if shared_key is not None:
                         shared_raw_ids[shared_key] = write_result.raw_id
+            except ContentExcisedError as exc:
+                # The archive can forget on purpose (polylogue-27m): this raw
+                # payload's content hash is durably excised, so acquire
+                # refuses to re-store it. This is deliberate, not a failure --
+                # skip only this one file and continue the batch (unlike the
+                # broad except below, do NOT roll back prior sessions already
+                # staged in this batch).
+                result.excised_skips += 1
+                logger.info("Skipping durably excised content: %s", exc)
+                return
             except Exception:
                 # Discard the in-flight uncommitted batch so a failed write
                 # never leaves prior sessions in this batch half-applied.
@@ -325,6 +335,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             "sessions": result.counts["sessions"],
             "messages": result.counts["messages"],
             "changed_sessions": result.changed_counts["sessions"],
+            "excised_skips": result.excised_skips,
         }
     )
     return result
