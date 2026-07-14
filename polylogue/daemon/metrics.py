@@ -222,14 +222,6 @@ def _emit_metric(
 # ---------------------------------------------------------------------------
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: str) -> bool:
     if not schema_name.replace("_", "").isalnum() or not table.replace("_", "").isalnum():
         return False
@@ -1847,6 +1839,9 @@ def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection, *, db_p
         if source_db.exists():
             try:
                 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
                 source_conn = open_readonly_connection(source_db)
                 try:

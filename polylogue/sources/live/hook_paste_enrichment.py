@@ -76,6 +76,9 @@ def _hook_epoch_ms(event: dict[str, object]) -> float:
         return 0.0
     try:
         from datetime import datetime
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
         hook_ts = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
         return hook_ts.timestamp() * 1000
@@ -88,14 +91,6 @@ def _archive_index_path(db_path: Path) -> Path | None:
         return db_path if db_path.exists() else None
     index_db = db_path.with_name("index.db")
     return index_db if index_db.exists() else None
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:

@@ -19,14 +19,6 @@ class BlobRepairOutcome:
     detail: str
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _blob_hash_text(value: object) -> str | None:
     if value is None:
         return None
@@ -113,6 +105,9 @@ def repair_orphaned_blobs_data(config: Config, dry_run: bool = False) -> BlobRep
     model".)
     """
     from polylogue.storage.blob_gc import run_blob_gc_report
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     report = run_blob_gc_report(
         config.db_path,

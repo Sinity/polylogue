@@ -10657,14 +10657,6 @@ def _count_scalar(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     """Raise ``DatabaseError`` unless message FTS is built and complete.
 
@@ -10677,6 +10669,9 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     empty-result 200.
     """
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
 

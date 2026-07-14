@@ -452,14 +452,6 @@ class BlobReferenceSourceReplaceReport:
         }
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _blob_hash_text(value: object) -> str | None:
     if value is None:
         return None
@@ -469,12 +461,6 @@ def _blob_hash_text(value: object) -> str | None:
         return None
     text = str(value)
     return text if text else None
-
-
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    if not _table_exists(conn, table):
-        return False
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
 def _archive_source_blob_hashes(conn: sqlite3.Connection) -> list[str]:
@@ -1585,6 +1571,10 @@ def replace_raw_backed_blob_reference_debt_from_source(
             ArchiveBlobPublisher,
             consume_blob_publication_receipt,
         )
+from polylogue.storage.sqlite.introspection import (
+    column_exists,
+    table_exists,
+)
 
         apply_source_bytes_cache: dict[str, bytes] = {}
         apply_decoded_payload_cache: dict[str, object] = {}

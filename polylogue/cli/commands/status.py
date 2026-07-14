@@ -187,19 +187,6 @@ def _valid_port(value: str) -> int | None:
     return port if 0 < port < 65536 else None
 
 
-def _schema_object_exists(conn: Any, name: str, *, types: Sequence[str]) -> bool:
-    placeholders = ", ".join("?" for _ in types)
-    row = conn.execute(
-        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
-        (*types, name),
-    ).fetchone()
-    return row is not None
-
-
-def _table_exists(conn: Any, table_name: str) -> bool:
-    return _schema_object_exists(conn, table_name, types=("table",))
-
-
 def _view_exists(conn: Any, view_name: str) -> bool:
     return _schema_object_exists(conn, view_name, types=("view",))
 
@@ -1077,10 +1064,6 @@ def _archive_source_raw_count(conn: Any) -> int:
             source_conn.close()
     except sqlite3.Error:
         return 0
-
-
-def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
-    return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
 
 # Live ingest workload is read directly from ops.db so it is visible even when
@@ -2281,6 +2264,11 @@ def _show_direct_status(
         # do next — typically `no_sources` or `no_daemon` (#1263).
         if msgs == 0 and convs == 0:
             from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+from polylogue.storage.sqlite.introspection import (
+    column_exists,
+    schema_object_exists,
+    table_exists,
+)
 
             diag = diagnose_first_run(daemon_alive=False)
             if diag.kind in {"no_sources", "no_daemon", "missing_optional_dep"}:

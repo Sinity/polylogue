@@ -28,6 +28,9 @@ from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]
@@ -39,14 +42,6 @@ _MESSAGE_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", 
 # ---------------------------------------------------------------------------
 # Native table probes
 # ---------------------------------------------------------------------------
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
 
 
 def _count(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:

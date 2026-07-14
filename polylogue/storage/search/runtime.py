@@ -14,18 +14,11 @@ from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_session_search_query, session_web_url
 from polylogue.storage.search.query_support import normalize_fts5_query, sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 _MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
 
 
 @lru_cache(maxsize=128)

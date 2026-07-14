@@ -102,14 +102,6 @@ def _active_archive_db(_db_anchor: Path, root: Path) -> Path | None:
     return None
 
 
-def _table_exists(conn: Any, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _count_searchable_sessions(conn: Any) -> int:
     if _table_exists(conn, "sessions"):
         count_row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
@@ -149,6 +141,9 @@ def _daemon_http_alive() -> bool:
     """Best-effort daemon liveness probe with a short timeout."""
     import os
     from urllib.request import Request, urlopen
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     url = os.environ.get("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:8766")
     try:

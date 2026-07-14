@@ -37,6 +37,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +134,6 @@ def _previous_generation_completed_at(conn: sqlite3.Connection) -> int | None:
         return None
     completed_at_ms = row[0]
     return int(completed_at_ms) // 1000 if completed_at_ms is not None else None
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _database_has_table(path: Path, table: str) -> bool:

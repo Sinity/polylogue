@@ -348,6 +348,9 @@ def _upsert_archive_embedding_catchup_run(
 
     ops_db.parent.mkdir(parents=True, exist_ok=True)
     from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     with open_daemon_connection(ops_db, timeout=30.0) as conn:
         initialize_archive_tier(conn, ArchiveTier.OPS)
@@ -378,14 +381,6 @@ def embedding_catchup_estimated_cost_this_month(conn: sqlite3.Connection) -> flo
         """
     ).fetchone()
     return float(row[0] or 0.0) if row is not None else 0.0
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 __all__ = [

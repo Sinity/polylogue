@@ -715,19 +715,19 @@ files:
     target: polylogue/browser_capture/identity.py
     owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 411
+    loc: 491
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 895
+    loc: 978
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 141
+    loc: 165
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 446
+    loc: 510
     target: polylogue/browser_capture/server.py
     owner: stable
   - path: polylogue/cli/__init__.py
@@ -739,7 +739,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2443
+    loc: 2488
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -779,7 +779,7 @@ files:
     target: polylogue/cli/commands/backup.py
     owner: stable
   - path: polylogue/cli/commands/check.py
-    loc: 118
+    loc: 116
     target: polylogue/cli/commands/check.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
@@ -787,7 +787,7 @@ files:
     target: polylogue/cli/commands/completions.py
     owner: stable
   - path: polylogue/cli/commands/config.py
-    loc: 97
+    loc: 126
     target: polylogue/cli/commands/config.py
     owner: stable
   - path: polylogue/cli/commands/dashboard.py
@@ -835,7 +835,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance.py
-    loc: 2789
+    loc: 2788
     target: polylogue/cli/commands/maintenance.py
     owner: stable
   - path: polylogue/cli/commands/note.py
@@ -855,7 +855,7 @@ files:
     target: polylogue/cli/commands/reset.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2435
+    loc: 2423
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -863,7 +863,7 @@ files:
     target: polylogue/cli/commands/status_diagnostics.py
     owner: stable
   - path: polylogue/cli/commands/tutorial.py
-    loc: 218
+    loc: 213
     target: polylogue/cli/commands/tutorial.py
     owner: stable
   - path: polylogue/cli/convergence_feedback.py
@@ -983,7 +983,7 @@ files:
     target: polylogue/cli/read_views/standard.py
     owner: stable
   - path: polylogue/cli/read_views/streaming_markdown.py
-    loc: 246
+    loc: 236
     target: polylogue/cli/read_views/streaming_markdown.py
     owner: stable
   - path: polylogue/cli/root_request.py
@@ -1004,7 +1004,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/cli/shared/check_options.py
-    loc: 149
+    loc: 127
     target: polylogue/cli/shared/check_options.py
     owner: stable
   - path: polylogue/cli/shared/check_rendering_json.py
@@ -1073,7 +1073,7 @@ files:
     target: polylogue/cli/shared/latest_resolver.py
     owner: stable
   - path: polylogue/cli/shared/machine_errors.py
-    loc: 367
+    loc: 365
     target: polylogue/cli/shared/machine_errors.py
     owner: stable
   - path: polylogue/cli/shared/resume_rendering.py
@@ -1117,7 +1117,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 1766
+    loc: 1825
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1320,7 +1320,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1677
+    loc: 1672
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
@@ -1344,7 +1344,7 @@ files:
     target: polylogue/daemon/cursor_lag_status.py
     owner: stable
   - path: polylogue/daemon/embedding_backlog.py
-    loc: 401
+    loc: 396
     target: polylogue/daemon/embedding_backlog.py
     owner: stable
   - path: polylogue/daemon/embedding_readiness.py
@@ -1360,7 +1360,7 @@ files:
     target: polylogue/daemon/events_http.py
     owner: stable
   - path: polylogue/daemon/fts_automerge.py
-    loc: 115
+    loc: 110
     target: polylogue/daemon/fts_automerge.py
     owner: stable
   - path: polylogue/daemon/fts_startup.py
@@ -1368,7 +1368,7 @@ files:
     target: polylogue/daemon/fts_startup.py
     owner: stable
   - path: polylogue/daemon/fts_status.py
-    loc: 509
+    loc: 504
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
@@ -1409,7 +1409,7 @@ files:
     target: polylogue/daemon/maintenance_registry_http.py
     owner: stable
   - path: polylogue/daemon/metrics.py
-    loc: 1935
+    loc: 1930
     target: polylogue/daemon/metrics.py
     owner: stable
   - path: polylogue/daemon/notification_backends/__init__.py
@@ -1582,7 +1582,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/hooks/__init__.py
-    loc: 889
+    loc: 882
     target: polylogue/hooks/__init__.py
     owner: stable
   - path: polylogue/insights/__init__.py
@@ -1671,7 +1671,7 @@ files:
     target: polylogue/insights/provenance.py
     owner: stable
   - path: polylogue/insights/readiness.py
-    loc: 613
+    loc: 609
     target: polylogue/insights/readiness.py
     owner: stable
   - path: polylogue/insights/registry.py
@@ -1876,7 +1876,7 @@ files:
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 305
+    loc: 304
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
@@ -1916,7 +1916,7 @@ files:
     target: polylogue/operations/archive.py
     owner: stable
   - path: polylogue/operations/archive_debt.py
-    loc: 1155
+    loc: 1147
     target: polylogue/operations/archive_debt.py
     owner: stable
   - path: polylogue/operations/completion_aggregates.py
@@ -2626,7 +2626,7 @@ files:
     owner: kernel
     reason: kernel root rule
   - path: polylogue/sinex/__init__.py
-    loc: 59
+    loc: 66
     target: polylogue/sinex/__init__.py
     owner: stable
   - path: polylogue/sinex/material_adapter.py
@@ -2774,7 +2774,7 @@ files:
     target: polylogue/sources/live/convergence_debt.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt_retry.py
-    loc: 182
+    loc: 177
     target: polylogue/sources/live/convergence_debt_retry.py
     owner: stable
   - path: polylogue/sources/live/convergence_outcome.py
@@ -2794,7 +2794,7 @@ files:
     target: polylogue/sources/live/deferred_cursor.py
     owner: stable
   - path: polylogue/sources/live/hook_paste_enrichment.py
-    loc: 189
+    loc: 184
     target: polylogue/sources/live/hook_paste_enrichment.py
     owner: stable
   - path: polylogue/sources/live/metrics.py
@@ -3026,21 +3026,21 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_gc.py
-    loc: 572
+    loc: 567
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_integrity.py
-    loc: 2095
+    loc: 2085
     target: polylogue/storage/blob_integrity.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_publication.py
-    loc: 444
+    loc: 437
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/blob_repair.py
-    loc: 146
+    loc: 141
     target: polylogue/storage/blob_repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3063,7 +3063,7 @@ files:
     target: polylogue/storage/derived/__init__.py
     owner: stable
   - path: polylogue/storage/derived/derived_status.py
-    loc: 314
+    loc: 309
     target: polylogue/storage/derived/derived_status.py
     owner: stable
   - path: polylogue/storage/derived/insights.py
@@ -3079,7 +3079,7 @@ files:
     target: polylogue/storage/embeddings/embedding_stats.py
     owner: stable
   - path: polylogue/storage/embeddings/materialization.py
-    loc: 1286
+    loc: 1274
     target: polylogue/storage/embeddings/materialization.py
     owner: stable
   - path: polylogue/storage/embeddings/models.py
@@ -3087,7 +3087,7 @@ files:
     target: polylogue/storage/embeddings/models.py
     owner: stable
   - path: polylogue/storage/embeddings/preflight.py
-    loc: 327
+    loc: 322
     target: polylogue/storage/embeddings/preflight.py
     owner: stable
   - path: polylogue/storage/embeddings/progress.py
@@ -3103,7 +3103,7 @@ files:
     target: polylogue/storage/embeddings/sql.py
     owner: stable
   - path: polylogue/storage/embeddings/status_payload.py
-    loc: 1159
+    loc: 1152
     target: polylogue/storage/embeddings/status_payload.py
     owner: stable
   - path: polylogue/storage/embeddings/support.py
@@ -3115,15 +3115,15 @@ files:
     target: polylogue/storage/fts/__init__.py
     owner: stable
   - path: polylogue/storage/fts/dangling_repair.py
-    loc: 338
+    loc: 335
     target: polylogue/storage/fts/dangling_repair.py
     owner: stable
   - path: polylogue/storage/fts/freshness.py
-    loc: 499
+    loc: 484
     target: polylogue/storage/fts/freshness.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 1077
+    loc: 1061
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/pl_fold.py
@@ -3131,7 +3131,7 @@ files:
     target: polylogue/storage/fts/pl_fold.py
     owner: stable
   - path: polylogue/storage/fts/session_repair.py
-    loc: 57
+    loc: 54
     target: polylogue/storage/fts/session_repair.py
     owner: stable
   - path: polylogue/storage/fts/sql.py
@@ -3165,7 +3165,7 @@ files:
     target: polylogue/storage/insights/aggregate/records.py
     owner: stable
   - path: polylogue/storage/insights/feedback/__init__.py
-    loc: 429
+    loc: 424
     target: polylogue/storage/insights/feedback/__init__.py
     owner: stable
   - path: polylogue/storage/insights/insight_read_support.py
@@ -3273,7 +3273,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_retention.py
-    loc: 1324
+    loc: 1314
     target: polylogue/storage/raw_retention.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3431,7 +3431,7 @@ files:
     target: polylogue/storage/search/query_support.py
     owner: stable
   - path: polylogue/storage/search/runtime.py
-    loc: 227
+    loc: 220
     target: polylogue/storage/search/runtime.py
     owner: stable
   - path: polylogue/storage/search_providers/__init__.py
@@ -3476,12 +3476,12 @@ files:
     target: polylogue/storage/search_providers/sqlite_vec_support.py
     owner: stable
   - path: polylogue/storage/session_replacement.py
-    loc: 202
+    loc: 170
     target: polylogue/storage/session_replacement.py
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/source_sessions.py
-    loc: 94
+    loc: 90
     target: polylogue/storage/source_sessions.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3494,7 +3494,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 11381
+    loc: 11376
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -3574,19 +3574,19 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_annotations.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_audit.py
-    loc: 137
+    loc: 132
     target: polylogue/storage/sqlite/archive_tiers/user_audit.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_overlay.py
-    loc: 97
+    loc: 90
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2229
+    loc: 2222
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 4595
+    loc: 4588
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -3609,6 +3609,10 @@ files:
     loc: 289
     target: polylogue/storage/sqlite/connection_profile.py
     owner: stable
+  - path: polylogue/storage/sqlite/introspection.py
+    loc: 283
+    target: polylogue/storage/sqlite/introspection.py
+    owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
     loc: 250
     target: polylogue/storage/sqlite/lifecycle.py
@@ -3618,7 +3622,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 577
+    loc: 636
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py
@@ -3747,7 +3751,7 @@ files:
     owner: stable
     cross_cut: { layer: write }
   - path: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
-    loc: 154
+    loc: 149
     target: polylogue/storage/sqlite/queries/session_insight_run_projection_reads.py
     owner: stable
     cross_cut: { layer: read }
@@ -3870,7 +3874,7 @@ files:
     target: polylogue/storage/sqlite/wal_checkpoint.py
     owner: stable
   - path: polylogue/storage/usage.py
-    loc: 1770
+    loc: 1757
     target: polylogue/storage/usage.py
     owner: storage-root
     reason: storage-root cross-cutting helper

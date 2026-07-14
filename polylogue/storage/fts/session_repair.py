@@ -6,12 +6,6 @@ import sqlite3
 from typing import Any, cast
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return bool(
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table_name,)).fetchone()
-    )
-
-
 def _row_int(row: sqlite3.Row | tuple[object, ...] | None, key: int | str) -> int:
     if row is None:
         return 0
@@ -49,6 +43,9 @@ def repair_session_fts_if_needed_sync(conn: sqlite3.Connection, session_id: str)
     if not session_fts_needs_repair_sync(conn, session_id):
         return False
     from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     repair_message_fts_index_sync(conn, [session_id], record_exact_snapshot=False)
     return True

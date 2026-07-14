@@ -28,6 +28,9 @@ def _origin_value(origin: str | None) -> str | None:
 
 def _provider_for_origin_value(origin: str) -> str:
     from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     return _provider_for_origin(origin).value
 
@@ -331,13 +334,6 @@ def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightRea
         if verdict in verdicts:
             return verdict
     return "ready"
-
-
-async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
-    row = await (
-        await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table,))
-    ).fetchone()
-    return bool(row)
 
 
 async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:

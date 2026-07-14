@@ -119,20 +119,6 @@ class _EligibleRawReceipt:
     predecessor_raw_id: str | None
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    if not _table_exists(conn, table):
-        return False
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
-
-
 def _blob_hash_text(value: object) -> str | None:
     if value is None:
         return None
@@ -671,6 +657,10 @@ def raw_frontier_integrity_projection(
     if source_db_path.is_file():
         try:
             from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.introspection import (
+    column_exists,
+    table_exists,
+)
 
             conn = open_readonly_connection(source_db_path)
         except (OSError, sqlite3.Error) as exc:

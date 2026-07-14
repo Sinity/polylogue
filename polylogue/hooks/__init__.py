@@ -506,16 +506,6 @@ def plan_hook_change(
     )
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _recent_session_opportunities(
     index_db: Path,
     *,
@@ -849,6 +839,9 @@ def hook_main(argv: list[str] | None = None) -> int:
         "payload": payload,
     }
     from polylogue.sources.hooks import enqueue_hook_event
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     sidecar_dir = _default_sidecar_dir()
     sidecar_dir.mkdir(parents=True, exist_ok=True)

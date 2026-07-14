@@ -337,15 +337,6 @@ def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tup
     return tuple(ddl)
 
 
-async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
-    cursor = await conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    row = await cursor.fetchone()
-    return row is not None
-
-
 async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
     ddl: list[str] = []
     if await _table_exists_async(conn, "blocks") and await _table_exists_async(conn, "messages_fts"):
@@ -847,22 +838,15 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
 def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
     """Raise DatabaseError unless the FTS index is exactly ready."""
     from polylogue.errors import DatabaseError
+from polylogue.storage.sqlite.introspection import (
+    table_exists_async,
+)
 
     if not bool(readiness["exists"]):
         raise DatabaseError(f"Search index not built. {repair_hint}")
     if bool(readiness["ready"]):
         return
     raise DatabaseError(f"Search index is incomplete. {repair_hint}")
-
-
-def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
 
 
 def _trigger_invariant_sync(

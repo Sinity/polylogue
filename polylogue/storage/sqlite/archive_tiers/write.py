@@ -926,16 +926,6 @@ def _mirror_session_tag_assertion_if_available(
     )
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def read_session_tags(
     conn: sqlite3.Connection,
     *,
@@ -3384,6 +3374,9 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     # Seed or reuse the revision matching the current content hash before
     # pricing, so an existing archive receives catalog corrections too.
     from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     active_catalog_id = seed_price_catalog(conn)
     priced_at_ms = int(time.time() * 1000)

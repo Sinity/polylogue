@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "marks": AssertionKind.MARK,
@@ -120,14 +123,6 @@ def _assertion_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, i
         status = str(row[1])
         counts.setdefault(kind, {})[status] = int(row[2] or 0)
     return counts
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 __all__ = [

@@ -1120,6 +1120,10 @@ def _record_archive_embedding_success(
     # Every terminal success outcome — including "nothing to embed" — resolves
     # the session's open failures, or they linger as phantom debt.
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_open_embedding_failures_for_session
+from polylogue.storage.sqlite.introspection import (
+    index_exists,
+    table_exists,
+)
 
     resolve_open_embedding_failures_for_session(conn, session_id=session_id)
 
@@ -1139,22 +1143,6 @@ def _should_embed_archive_message(material_origin: object, message_type: object,
     if str(role) not in _PROSE_ROLES:
         return False
     return str(material_origin) in _PROSE_MATERIAL_ORIGINS
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1",
-        (index,),
-    ).fetchone()
-    return row is not None
 
 
 def _usable_db_path(db_path: object) -> Path | None:

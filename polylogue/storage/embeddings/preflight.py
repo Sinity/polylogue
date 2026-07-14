@@ -226,14 +226,6 @@ def _select_archive_pending_window(
     return [(item.session_id, item.message_count) for item in pending]
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def build_preflight_report(
     db_path: Path,
     *,
@@ -300,6 +292,9 @@ def preflight_payload(report: PreflightReport) -> dict[str, object]:
         ESTIMATED_TOKENS_PER_MESSAGE,
         VOYAGE_4_COST_PER_1M_TOKENS,
     )
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     backfill_args = preflight_backfill_args(report)
     return {

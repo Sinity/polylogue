@@ -43,14 +43,9 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 
 if TYPE_CHECKING:
     import aiosqlite
-
-
-async def _table_exists(conn: aiosqlite.Connection, table_name: str) -> bool:
-    cursor = await conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    return await cursor.fetchone() is not None
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 
 async def _attached_table_exists(conn: aiosqlite.Connection, schema_name: str, table_name: str) -> bool:

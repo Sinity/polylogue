@@ -11,6 +11,9 @@ from polylogue.logging import get_logger
 from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 logger = get_logger(__name__)
 
@@ -50,14 +53,6 @@ class FTSReadiness(BaseModel):
     coverage_pct: float | None = 0.0
     coverage_exact: bool = True
     surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) -> bool:

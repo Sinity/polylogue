@@ -37,14 +37,6 @@ _FTS_SURFACES = ("messages_fts", "session_work_events_fts", "threads_fts")
 _PERIODIC_MERGE_WORK_UNITS = 500
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'shadow') AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def configure_fts_automerge_sync(conn: sqlite3.Connection) -> list[str]:
     """Persist ``automerge=0`` for each present FTS surface.
 
@@ -87,6 +79,9 @@ def run_periodic_fts_merge_sync(db: Path) -> None:
     conn: sqlite3.Connection | None = None
     try:
         from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
         conn = open_connection(db, timeout=5.0)
         merged: list[str] = []

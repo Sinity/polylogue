@@ -847,6 +847,9 @@ def _convergence_actions(stage: str) -> tuple[ArchiveDebtActionPayload, ...]:
 
 def _source_family(subject_type: str, subject_id: str) -> str:
     from polylogue.daemon.convergence_debt_alert import source_family_for_subject
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     return source_family_for_subject(subject_type, subject_id)
 
@@ -921,17 +924,6 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
             )
         )
     return debt_rows
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table,),
-        ).fetchone()
-    except sqlite3.Error:
-        return False
-    return row is not None
 
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:

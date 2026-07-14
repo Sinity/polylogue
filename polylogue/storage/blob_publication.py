@@ -13,6 +13,9 @@ from typing import IO, BinaryIO
 from uuid import uuid4
 
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,16 +243,6 @@ def consume_blob_publication_receipt(
     conn.execute(
         "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ?",
         (publication_id, blob_hash),
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
     )
 
 

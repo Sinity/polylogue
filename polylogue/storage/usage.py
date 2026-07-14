@@ -873,6 +873,9 @@ def _stale_provider_rollup_stats(
     """
 
     from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     latest_rows = conn.execute(
         """
@@ -1060,17 +1063,6 @@ def _quote_identifier(name: str) -> str:
     if not name.replace("_", "").isalnum():
         raise ValueError(f"unsafe SQLite identifier: {name!r}")
     return f'"{name}"'
-
-
-def _table_exists_in_schema(conn: sqlite3.Connection, schema: str, name: str) -> bool:
-    try:
-        row = conn.execute(
-            f"SELECT 1 FROM {_quote_identifier(schema)}.sqlite_master WHERE type = 'table' AND name = ?",
-            (name,),
-        ).fetchone()
-    except sqlite3.Error:
-        return False
-    return row is not None
 
 
 def _base_session_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, int]]:
@@ -1733,11 +1725,6 @@ def _event_origin_args(origin: str | None) -> tuple[str, ...]:
         return ()
     prefix = f"{origin}:"
     return (origin, prefix, f"{origin};")
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
-    return row is not None
 
 
 def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:

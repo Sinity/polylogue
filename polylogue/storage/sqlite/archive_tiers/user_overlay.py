@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,16 +82,6 @@ def _target_exists(conn: sqlite3.Connection, target_type: str, target_id: str) -
         conn.execute(
             f"SELECT 1 FROM {target_table} WHERE {target_column} = ? LIMIT 1",
             (target_id,),
-        ).fetchone()
-        is not None
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
         ).fetchone()
         is not None
     )

@@ -9,42 +9,6 @@ import aiosqlite
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 
 
-def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
-            (table_name,),
-        )
-    ).fetchone()
-    return row is not None
-
-
-def _trigger_exists_sync(conn: sqlite3.Connection, trigger_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
-        (trigger_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _trigger_exists_async(conn: aiosqlite.Connection, trigger_name: str) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
-            (trigger_name,),
-        )
-    ).fetchone()
-    return row is not None
-
-
 async def _ensure_sqlite_vec_async(conn: aiosqlite.Connection) -> bool:
     loaded, _error = await try_load_sqlite_vec_async(conn)
     return loaded
@@ -68,6 +32,10 @@ async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) 
     ):
         return
     from polylogue.storage.fts.sql import delete_session_rows_sql
+from polylogue.storage.sqlite.introspection import (
+    table_exists_async,
+    trigger_exists_async,
+)
 
     await conn.execute(delete_session_rows_sql(1), (session_id,))
 

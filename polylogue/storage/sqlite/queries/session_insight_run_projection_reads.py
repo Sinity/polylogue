@@ -18,6 +18,9 @@ from polylogue.storage.sqlite.run_projection_relations import (
     row_to_session_run_record,
     run_relation_sql,
 )
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 __all__ = [
     "list_context_snapshots",
@@ -39,14 +42,6 @@ def _apply_limit(sql: str, params: list[object], query: RunProjectionListQuery) 
         params.extend([query.limit, query.offset])
         return sql + " LIMIT ? OFFSET ?"
     return sql
-
-
-async def _table_exists(conn: aiosqlite.Connection, table_name: str) -> bool:
-    cursor = await conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    return await cursor.fetchone() is not None
 
 
 async def list_runs(

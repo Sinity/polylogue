@@ -567,14 +567,6 @@ def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ..
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _fts_doc_count(conn: sqlite3.Connection, table: str) -> int:
     if not _table_exists(conn, table):
         return 0
@@ -1627,6 +1619,9 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
 
 def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> StageExecuteReturn:
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not session_ids:

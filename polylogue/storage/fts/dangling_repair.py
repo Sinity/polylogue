@@ -17,6 +17,9 @@ from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
 )
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 BOUNDED_REPAIR_PRAGMAS = (
     "PRAGMA temp_store = FILE",
@@ -36,12 +39,6 @@ def configure_bounded_repair_connection(conn: sqlite3.Connection) -> None:
     """Keep large maintenance SQL from using the interactive write profile's RAM budget."""
     for pragma in BOUNDED_REPAIR_PRAGMAS:
         conn.execute(pragma)
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return bool(
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table_name,)).fetchone()
-    )
 
 
 def _message_trigger_names() -> tuple[str, ...]:

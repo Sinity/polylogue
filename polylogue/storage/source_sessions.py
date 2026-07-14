@@ -7,6 +7,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
 logger = get_logger(__name__)
 
@@ -84,11 +87,3 @@ def _sibling_source_db(conn: sqlite3.Connection) -> Path | None:
             return None
         return Path(path_text).with_name("source.db")
     return None
-
-
-def _table_exists(conn: sqlite3.Connection, table: str, *, schema: str = "main") -> bool:
-    row = conn.execute(
-        f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None

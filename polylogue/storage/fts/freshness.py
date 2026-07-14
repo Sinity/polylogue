@@ -9,6 +9,9 @@ from typing import Any
 import aiosqlite
 
 from polylogue.storage.sqlite.archive_tiers.index import FTS_FRESHNESS_STATE_DDL
+from polylogue.storage.sqlite.introspection import (
+    table_exists_async,
+)
 
 FRESHNESS_TABLE = "fts_freshness_state"
 READY = "ready"
@@ -78,28 +81,10 @@ def freshness_ready_record_trusted(
     return not (source_rows == 0 and indexed_rows == 0 and source_has_rows is not False)
 
 
-def _table_exists_sync(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (FRESHNESS_TABLE,),
-    ).fetchone()
-    return row is not None
-
-
 def _named_table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _table_exists_async(conn: aiosqlite.Connection) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (FRESHNESS_TABLE,),
-        )
     ).fetchone()
     return row is not None
 

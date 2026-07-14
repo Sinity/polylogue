@@ -174,16 +174,6 @@ def _total_sessions(conn: sqlite3.Connection) -> int:
     return optional_count_sync(conn, "SELECT COUNT(*) FROM sessions")
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
     quoted_schema = '"' + schema_name.replace('"', '""') + '"'
     return (
@@ -1111,6 +1101,9 @@ def embedding_status_payload(
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
     from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
     from polylogue.storage.embeddings.support import table_exists_sync
+from polylogue.storage.sqlite.introspection import (
+    table_exists,
+)
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
