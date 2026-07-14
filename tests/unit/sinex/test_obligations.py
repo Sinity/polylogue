@@ -13,7 +13,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.sinex.models import ObligationStatus, PublicationMode, ReceiptState
-from polylogue.sinex.obligations import get_obligation, list_obligations, mark_attempt, record_obligation
+from polylogue.sinex.obligations import (
+    get_obligation,
+    list_obligations,
+    mark_attempt,
+    mark_publishing,
+    record_obligation,
+)
 
 
 def _conn(source_db_path: Path) -> sqlite3.Connection:
@@ -132,6 +138,53 @@ def test_mark_attempt_increments_count_and_sets_retired_only_on_terminal_status(
         assert after_confirmed.retired_at_ms == 3000
         assert after_confirmed.status is ObligationStatus.CONFIRMED
         assert after_confirmed.last_receipt_state is ReceiptState.PERSISTED_CONFIRMED
+    finally:
+        conn.close()
+
+
+def test_mark_publishing_transitions_status_without_incrementing_attempt_count(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The pre-attempt marker (polylogue-ihwv) is distinct from mark_attempt.
+
+    It durably records "a transport call is in flight" so a crash between
+    this write and the attempt's resolution leaves the row at ``publishing``
+    -- observably different from a still-untried ``pending`` row -- but it
+    must not touch attempt_count/receipt/error, which describe an outcome
+    this call precedes and does not yet know.
+    """
+    source_db = workspace_env["archive_root"] / "source.db"
+    conn = _conn(source_db)
+    try:
+        obligation = record_obligation(
+            conn,
+            object_id="claude-code-session:s1",
+            protocol_version="polylogue.material-protocol/v1",
+            revision_id="rev-1",
+            manifest_digest="digest-1",
+            mode=PublicationMode.PRIMARY,
+            now_ms=1000,
+        )
+        conn.commit()
+
+        publishing = mark_publishing(conn, obligation, now_ms=1500)
+        conn.commit()
+        assert publishing.status is ObligationStatus.PUBLISHING
+        assert publishing.attempt_count == 0
+        assert publishing.retired_at_ms is None
+        assert publishing.updated_at_ms == 1500
+
+        after_confirmed = mark_attempt(
+            conn,
+            publishing,
+            status=ObligationStatus.CONFIRMED,
+            receipt_state=ReceiptState.PERSISTED_CONFIRMED,
+            error=None,
+            now_ms=2000,
+        )
+        conn.commit()
+        assert after_confirmed.attempt_count == 1
+        assert after_confirmed.status is ObligationStatus.CONFIRMED
     finally:
         conn.close()
 
