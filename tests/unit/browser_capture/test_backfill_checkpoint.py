@@ -21,8 +21,9 @@ from threading import Thread
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
-from polylogue.browser_capture.models import BrowserBackfillCheckpointRequest
+from polylogue.browser_capture.models import BrowserBackfillCheckpointRecord, BrowserBackfillCheckpointRequest
 from polylogue.browser_capture.receiver import (
     backfill_checkpoint_root,
     read_backfill_checkpoint,
@@ -66,6 +67,61 @@ def test_write_then_read_round_trips_opaque_checkpoint(tmp_path: Path) -> None:
 
 def test_read_missing_checkpoint_returns_none(tmp_path: Path) -> None:
     assert read_backfill_checkpoint("never-written", spool_path=tmp_path) is None
+
+
+@pytest.mark.parametrize("bad_checkpoint", ["garbage-not-a-dict", None, 42, ["a", "list"]])
+def test_request_rejects_non_dict_checkpoint_instead_of_coercing_to_empty(bad_checkpoint: object) -> None:
+    # Regression for the silent-data-loss hole: a non-dict checkpoint value
+    # must fail validation, not be coerced to {} and accepted.
+    with pytest.raises(ValidationError):
+        BrowserBackfillCheckpointRequest(extension_instance_id="instance-a", checkpoint=bad_checkpoint)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad_checkpoint", ["garbage-not-a-dict", None, 42, ["a", "list"]])
+def test_record_rejects_non_dict_checkpoint_instead_of_coercing_to_empty(bad_checkpoint: object) -> None:
+    with pytest.raises(ValidationError):
+        BrowserBackfillCheckpointRecord(
+            extension_instance_id="instance-a",
+            checkpoint=bad_checkpoint,  # type: ignore[arg-type]
+            stored_at="2026-01-01T00:00:00+00:00",
+        )
+
+
+def test_malformed_stored_checkpoint_file_reads_back_as_none_not_fabricated_empty(tmp_path: Path) -> None:
+    # A good checkpoint is written, then the on-disk file is corrupted (as a
+    # bug or disk fault might do). Reading it back must surface "no
+    # checkpoint" rather than a fabricated empty one that looks legitimate.
+    write_backfill_checkpoint(
+        BrowserBackfillCheckpointRequest(extension_instance_id="instance-a", checkpoint=_checkpoint_payload()),
+        spool_path=tmp_path,
+    )
+    target = backfill_checkpoint_root(tmp_path) / "instance-a.json"
+    target.write_text(
+        json.dumps(
+            {
+                "extension_instance_id": "instance-a",
+                "checkpoint": "not-a-dict",
+                "stored_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert read_backfill_checkpoint("instance-a", spool_path=tmp_path) is None
+
+
+def test_write_does_not_overwrite_prior_good_checkpoint_when_new_checkpoint_is_malformed(tmp_path: Path) -> None:
+    write_backfill_checkpoint(
+        BrowserBackfillCheckpointRequest(extension_instance_id="instance-a", checkpoint=_checkpoint_payload(1)),
+        spool_path=tmp_path,
+    )
+
+    with pytest.raises(ValidationError):
+        BrowserBackfillCheckpointRequest(extension_instance_id="instance-a", checkpoint="garbage-not-a-dict")  # type: ignore[arg-type]
+
+    still_good = read_backfill_checkpoint("instance-a", spool_path=tmp_path)
+    assert still_good is not None
+    assert still_good.checkpoint == _checkpoint_payload(1)
 
 
 def test_write_overwrites_prior_checkpoint_for_same_instance_last_write_wins(tmp_path: Path) -> None:
@@ -209,6 +265,37 @@ def test_http_store_rejects_invalid_payload(tmp_path: Path) -> None:
         )  # missing extension_instance_id
     assert status == HTTPStatus.BAD_REQUEST
     assert body["error"] == "invalid_backfill_checkpoint"
+
+
+def test_http_store_rejects_non_dict_checkpoint_and_preserves_prior_good_checkpoint(tmp_path: Path) -> None:
+    # Reviewer-reproduced regression: POSTing
+    # {"extension_instance_id": "instance-a", "checkpoint": "garbage-not-a-dict"}
+    # previously returned HTTP 202 and silently overwrote a good stored
+    # checkpoint with {}. It must now be rejected (400) and leave the prior
+    # good checkpoint untouched.
+    with _running_receiver(tmp_path) as (host, port):
+        status, stored = _request(
+            host,
+            port,
+            "POST",
+            "/v1/backfill-checkpoint",
+            body={"extension_instance_id": "instance-a", "checkpoint": _checkpoint_payload(1)},
+        )
+        assert status == HTTPStatus.ACCEPTED
+
+        status, body = _request(
+            host,
+            port,
+            "POST",
+            "/v1/backfill-checkpoint",
+            body={"extension_instance_id": "instance-a", "checkpoint": "garbage-not-a-dict"},
+        )
+        assert status == HTTPStatus.BAD_REQUEST
+        assert body["error"] == "invalid_backfill_checkpoint"
+
+    preserved = read_backfill_checkpoint("instance-a", spool_path=tmp_path)
+    assert preserved is not None
+    assert preserved.checkpoint == _checkpoint_payload(1)
 
 
 def test_http_store_second_write_overwrites_first_over_the_wire(tmp_path: Path) -> None:

@@ -277,8 +277,15 @@ class BrowserBackfillCheckpointRequest(BaseModel):
 
     @field_validator("checkpoint", mode="before")
     @classmethod
-    def coerce_checkpoint(cls, value: object) -> dict[str, object]:
-        return dict(json_document(value))
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # This field is the disaster-recovery mirror of the extension's
+        # backfill ledger (polylogue-06zm): a malformed request must be
+        # REJECTED, never silently coerced to {} and persisted as if it were
+        # a legitimate checkpoint -- that would report HTTP 202 success while
+        # overwriting a previously-good stored checkpoint with an empty one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
 
 
 class BrowserBackfillCheckpointRecord(BaseModel):
@@ -290,8 +297,16 @@ class BrowserBackfillCheckpointRecord(BaseModel):
 
     @field_validator("checkpoint", mode="before")
     @classmethod
-    def coerce_checkpoint(cls, value: object) -> dict[str, object]:
-        return dict(json_document(value))
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # Same durability rationale as BrowserBackfillCheckpointRequest above:
+        # a checkpoint file on disk that fails to parse as a JSON object is
+        # corrupt, not an empty-but-valid checkpoint. Raising here makes
+        # read_backfill_checkpoint's `except Exception: return None` treat a
+        # corrupt stored file as "no checkpoint found" rather than silently
+        # presenting fabricated empty data as a real one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
 
 
 class BrowserBackfillCheckpointAcceptedPayload(BaseModel):
