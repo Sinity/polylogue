@@ -49,12 +49,9 @@ from polylogue.storage.insights.session.run_projection_rows import (
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
     _epoch_ms_or_none,
-    replace_session_context_snapshots_bulk_sync,
     replace_session_latency_profiles_bulk_sync,
-    replace_session_observed_events_bulk_sync,
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
-    replace_session_runs_bulk_sync,
     replace_session_work_events_bulk_sync,
     replace_threads_bulk_sync,
 )
@@ -1516,20 +1513,8 @@ def rebuild_session_insights_sync(
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
         add_timing("write_phases", t0)
-        t0 = time.perf_counter()
-        replace_session_runs_bulk_sync(
-            conn,
-            {bundle.session_id: bundle.run_records for bundle in record_bundles},
-        )
-        replace_session_observed_events_bulk_sync(
-            conn,
-            {bundle.session_id: bundle.observed_event_records for bundle in record_bundles},
-        )
-        replace_session_context_snapshots_bulk_sync(
-            conn,
-            {bundle.session_id: bundle.context_snapshot_records for bundle in record_bundles},
-        )
-        add_timing("write_run_projection", t0)
+        # Run-projection cache tables are no longer materialized (polylogue-dab).
+        # Reads fall back to source-derived CTEs when the tables are absent.
         t0 = time.perf_counter()
         for bundle in record_bundles:
             _stamp_bundle_materialization(conn, bundle)
@@ -1629,11 +1614,6 @@ async def rebuild_session_insights_async(
         replace_session_latency_profile,
         replace_session_profile,
     )
-    from polylogue.storage.sqlite.queries.session_insight_run_projection_writes import (
-        replace_session_context_snapshots,
-        replace_session_observed_events,
-        replace_session_runs,
-    )
     from polylogue.storage.sqlite.queries.session_insight_thread_queries import replace_thread
     from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
         replace_session_phases,
@@ -1676,24 +1656,8 @@ async def rebuild_session_insights_async(
                 bundle.phase_records,
                 transaction_depth,
             )
-            await replace_session_runs(
-                conn,
-                bundle.session_id,
-                bundle.run_records,
-                transaction_depth,
-            )
-            await replace_session_observed_events(
-                conn,
-                bundle.session_id,
-                bundle.observed_event_records,
-                transaction_depth,
-            )
-            await replace_session_context_snapshots(
-                conn,
-                bundle.session_id,
-                bundle.context_snapshot_records,
-                transaction_depth,
-            )
+            # Run-projection cache tables are no longer materialized (polylogue-dab).
+            # Reads fall back to source-derived CTEs when the tables are absent.
 
     if session_ids is None:
         all_session_ids = [
