@@ -1,12 +1,14 @@
-"""Unit tests for the generic Operation contract and the import instance.
+"""Unit tests for the Operation scheduling primitives and the import instance.
 
 Covers serialization, validation, and the immutability/extra-forbid
-guarantees of the new typed scheduling contract introduced in #1247.
+guarantees of the typed scheduling contract. Collapsed (polylogue-a7xr.14)
+from a generic ``OperationRequest``/``OperationAck`` subclassing framework to
+concrete ``ImportRequest``/``ImportAck`` models — ``ImportAck``'s golden JSON
+shape (formerly exercised via the generic ``OperationAck`` base) is pinned
+directly on ``ImportAck`` here since that model now owns the wire contract.
 """
 
 from __future__ import annotations
-
-from typing import ClassVar
 
 import pytest
 from pydantic import ValidationError
@@ -14,13 +16,10 @@ from pydantic import ValidationError
 from polylogue.operations import (
     ImportAck,
     ImportRequest,
-    OperationAck,
     OperationFollowUp,
     OperationKind,
-    OperationRequest,
     OperationStatus,
 )
-from polylogue.operations.operation_contract import _require_operation_kind
 
 
 class TestOperationFollowUp:
@@ -115,6 +114,9 @@ class TestImportRequestValidation:
             idempotency_key="k1",
         )
         payload = req.to_dict()
+        # operation_kind is a ClassVar (not a pydantic field), so it is
+        # deliberately absent from the wire payload — matching the shape
+        # from before the polylogue-a7xr.14 generic-base collapse.
         assert payload == {
             "idempotency_key": "k1",
             "source_path": "/inbox/a.json",
@@ -161,18 +163,39 @@ class TestImportAckFactories:
         assert ack.status is OperationStatus.PENDING
         assert ack.is_accepted() is True
 
+    def test_extra_fields_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            ImportAck(
+                operation_id="op",
+                status=OperationStatus.ACCEPTED,
+                extra="forbidden",  # type: ignore[call-arg]
+            )
 
-class TestOperationAckSerialization:
-    """OperationAck reduces to byte-stable JSON for surface parity."""
+    def test_is_frozen(self) -> None:
+        ack = ImportAck.accept_import(
+            operation_id="op-6",
+            follow_up=OperationFollowUp(status_endpoint="x"),
+        )
+        with pytest.raises(ValidationError):
+            ack.status = OperationStatus.FAILED
+
+
+class TestImportAckSerialization:
+    """ImportAck reduces to byte-stable JSON — this is the daemon HTTP wire shape.
+
+    ``POST /api/ingest`` embeds ``ImportAck.to_dict()`` verbatim in its
+    response body (``polylogue/daemon/http.py``); this golden payload is the
+    production wire contract, unchanged by the polylogue-a7xr.14 collapse of
+    the generic ``OperationAck`` base this model used to extend.
+    """
 
     def test_to_dict_accepted(self) -> None:
         follow_up = OperationFollowUp(
             status_endpoint="daemon.import_status",
             poll_after_ms=100,
         )
-        ack = OperationAck.accepted(
+        ack = ImportAck.accept_import(
             operation_id="op-1",
-            kind=OperationKind.IMPORT,
             follow_up=follow_up,
             message="ok",
         )
@@ -191,9 +214,8 @@ class TestOperationAckSerialization:
         }
 
     def test_to_dict_rejected_omits_follow_up_payload(self) -> None:
-        ack = OperationAck.rejected(
+        ack = ImportAck.reject_import(
             operation_id="op-2",
-            kind=OperationKind.IMPORT,
             error="invalid path",
         )
         payload = ack.to_dict()
@@ -203,73 +225,20 @@ class TestOperationAckSerialization:
 
     def test_model_validate_roundtrip(self) -> None:
         follow_up = OperationFollowUp(status_endpoint="x")
-        ack = OperationAck.accepted(
-            operation_id="op-3",
-            kind=OperationKind.MAINTENANCE,
-            follow_up=follow_up,
-        )
-        restored = OperationAck.model_validate(ack.to_dict())
+        ack = ImportAck.accept_import(operation_id="op-3", follow_up=follow_up)
+        restored = ImportAck.model_validate(ack.to_dict())
         assert restored == ack
 
     def test_kind_serialized_as_string(self) -> None:
-        ack = OperationAck.accepted(
+        ack = ImportAck.accept_import(
             operation_id="op-4",
-            kind=OperationKind.MAINTENANCE,
             follow_up=OperationFollowUp(status_endpoint="x"),
         )
-        assert ack.to_dict()["kind"] == "maintenance"
+        assert ack.to_dict()["kind"] == "import"
 
     def test_status_serialized_as_string(self) -> None:
-        ack = OperationAck.rejected(
-            operation_id="op-5",
-            kind=OperationKind.IMPORT,
-            error="nope",
-        )
+        ack = ImportAck.reject_import(operation_id="op-5", error="nope")
         assert ack.to_dict()["status"] == "rejected"
-
-    def test_extra_fields_forbidden(self) -> None:
-        with pytest.raises(ValidationError):
-            OperationAck(
-                operation_id="op",
-                kind=OperationKind.IMPORT,
-                status=OperationStatus.ACCEPTED,
-                extra="forbidden",  # type: ignore[call-arg]
-            )
-
-    def test_is_frozen(self) -> None:
-        ack = OperationAck.accepted(
-            operation_id="op-6",
-            kind=OperationKind.IMPORT,
-            follow_up=OperationFollowUp(status_endpoint="x"),
-        )
-        with pytest.raises(ValidationError):
-            ack.status = OperationStatus.FAILED
-
-
-class TestRequireOperationKind:
-    """Subclasses must declare their operation_kind class variable."""
-
-    def test_import_request_declares_kind(self) -> None:
-        assert _require_operation_kind(ImportRequest) is OperationKind.IMPORT
-
-    def test_missing_kind_raises(self) -> None:
-        class BadRequest(OperationRequest):
-            # Intentionally omits operation_kind.
-            value: str = ""
-
-        with pytest.raises(TypeError):
-            _require_operation_kind(BadRequest)
-
-    def test_custom_subclass_with_kind(self) -> None:
-        class CustomRequest(OperationRequest):
-            operation_kind: ClassVar[OperationKind] = OperationKind.MAINTENANCE
-
-            scope: str
-
-        assert _require_operation_kind(CustomRequest) is OperationKind.MAINTENANCE
-        req = CustomRequest(scope="all")
-        assert req.scope == "all"
-        assert req.operation_kind is OperationKind.MAINTENANCE
 
 
 class TestOperationStatusEnum:

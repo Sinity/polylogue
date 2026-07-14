@@ -19,7 +19,7 @@ import sqlite3
 import stat
 import tempfile
 import time
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, closing, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -168,7 +168,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -345,7 +345,7 @@ def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
 
 def _source_blob_inventory(source_db: Path) -> dict[str, set[str]]:
     inventory = {blob_hash: {"referenced"} for blob_hash in referenced_blob_hashes(source_db, immutable=True)}
-    with sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
         has_reservations = conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
         ).fetchone()
@@ -362,7 +362,7 @@ def _source_blob_hashes(source_db: Path) -> set[str]:
 def _index_attachment_blob_hashes(index_db: Path) -> set[str]:
     if not index_db.exists():
         return set()
-    with sqlite3.connect(f"file:{index_db}?mode=ro&immutable=1", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro&immutable=1", uri=True)) as conn:
         has_attachments = conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'attachments'"
         ).fetchone()

@@ -15,9 +15,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.config import Source
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import IngestResult
     from polylogue.pipeline.stage_models import AcquireResult
-    from polylogue.protocols import ProgressCallback
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend

@@ -10,6 +10,7 @@ import aiosqlite
 from polylogue.archive.session.documents import ThreadDocument
 from polylogue.archive.session.threads import Thread, ThreadPayload, build_session_threads
 from polylogue.core.sources import source_name_to_origin
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import ThreadPayload as ArchivedThreadPayload
 from polylogue.insights.temporal_source import classify_thread_hwm_source
 from polylogue.storage.insights.session.profiles import hydrate_session_profile, now_iso
@@ -19,7 +20,6 @@ from polylogue.storage.runtime import (
     ThreadRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
-from polylogue.types import SessionId
 
 _ROOT_THREAD_IDS_SQL = """
     SELECT c.session_id

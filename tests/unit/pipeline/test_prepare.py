@@ -6,10 +6,10 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.core.errors import PolylogueError
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import dumps
 from polylogue.core.sources import origin_from_provider
-from polylogue.errors import PolylogueError
 from polylogue.paths.sanitize import is_within_root, session_render_root
 from polylogue.rendering.formatting import format_session
 from polylogue.rendering.renderers.html import render_session_html

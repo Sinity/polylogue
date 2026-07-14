@@ -146,6 +146,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Target shape, guardrails, and major decisions with rejected alternatives.",
         "internals",
     ),
+    _entry(
+        "Architecture Hotspots",
+        "architecture-hotspots.md",
+        "Execution control center hotspot map and decomposition sequence (polylogue-1r9c).",
+        "internals",
+    ),
     _entry("Data Model", "data-model.md", "Archive entities, storage shape, and metadata rules.", "internals"),
     _entry("Schema", "schema.md", "Index and durable tier schema, FTS, vectors, and versioning.", "internals"),
     _entry("Internals", "internals.md", "Working implementation reference and debugging landmarks.", "internals"),
@@ -263,6 +269,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Reader-Comprehension Test Harness",
+        "examples/reader-comprehension-test/README.md",
+        "Single-blind N-arm cold-reader test harness for README/positioning candidates.",
+        "evidence",
+    ),
+    _entry(
         "Example and Proof Index",
         "examples/README.md",
         "Index of recorded proof artifacts and worked examples.",
@@ -301,6 +313,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
+    _entry(
+        "Storage Twins Divergences",
+        "plans/STORAGE_TWINS_DIVERGENCES.md",
+        "Documented sync/async storage backend divergences, tracked for the twins regression test.",
+        "design",
+    ),
     _entry(
         "Query-Action Workflows Design",
         "design/query-action-workflows.md",
@@ -388,6 +406,12 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
         "Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints.", "operations"
     ),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules.", "operations"),
+    DocsEntry(
+        "Security Policy",
+        "SECURITY.md",
+        "Trust-boundary summary, supported versions, and vulnerability reporting contact.",
+        "operations",
+    ),
 )
 
 README_DOC_TITLES: tuple[str, ...] = (

@@ -1,8 +1,12 @@
 """Protocol definitions for pluggable backends in Polylogue.
 
 Only protocols with 2+ implementations earn their existence here:
-- SearchProvider: FTS5, Hybrid
 - VectorProvider: sqlite-vec (optional, requires `VOYAGE_API_KEY`)
+
+``SearchProvider`` (FTS5, Hybrid) was removed (polylogue-a7xr.10): both
+implementations had zero production consumers — production full-text and
+hybrid retrieval has always queried FTS5/vector tables and fused results
+inline rather than through a swappable provider abstraction.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
     from polylogue.core.enums import MaterialOrigin
+    from polylogue.core.types import SessionId
     from polylogue.storage.archive_views import SessionRenderProjection
     from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
@@ -36,23 +41,6 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
-    from polylogue.types import SessionId
-
-
-@runtime_checkable
-class SearchProvider(Protocol):
-    """Full-text search provider for message content.
-
-    Implementations: FTS5 (polylogue.storage.index), Hybrid (polylogue.storage.search_providers.hybrid)
-    """
-
-    def index(self, messages: list[MessageRecord]) -> None:
-        """Add messages to the search index."""
-        ...
-
-    def search(self, query: str) -> list[str]:
-        """Search indexed messages, returning matching message IDs ranked by relevance."""
-        ...
 
 
 @runtime_checkable
@@ -221,6 +209,31 @@ class SearchStore(Protocol):
         limit: int = 10,
         vector_provider: VectorProvider | None = None,
     ) -> list[Session]: ...
+
+
+@runtime_checkable
+class NeighborStore(Protocol):
+    """Minimal session access protocol for neighboring-session discovery.
+
+    Consumed by: polylogue.archive.session.neighbor_candidates.discover_neighbor_candidates
+    """
+
+    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
+
+    async def get(self, session_id: str) -> Session | None: ...
+
+    async def list_summaries_by_query(
+        self,
+        query: SessionRecordQuery,
+    ) -> list[SessionSummary]: ...
+
+    async def search_summary_hits(
+        self,
+        query: str,
+        limit: int = 20,
+        origins: builtins.list[str] | None = None,
+        since: str | None = None,
+    ) -> list[SessionSearchHit]: ...
 
 
 @runtime_checkable
@@ -449,7 +462,6 @@ class RawValidationStore(Protocol):
 
 
 __all__ = [
-    "SearchProvider",
     "VectorProvider",
     "ProgressCallback",
     "SessionReader",

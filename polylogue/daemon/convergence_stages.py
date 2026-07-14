@@ -24,6 +24,7 @@ from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
+from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
@@ -556,11 +557,13 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+
     return (
         make_fts_stage(db_path),
         make_embed_stage(db_path),
         make_insights_stage(db_path),
-        make_standing_query_stage(db_path),
+        make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
     )
 
 
@@ -818,6 +821,7 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
+    stale_predicate = session_profile_stale_predicate("c", "sp")
     rows = conn.execute(
         f"""
         SELECT c.session_id
@@ -827,15 +831,7 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
-              OR (
-                  c.sort_key_ms IS NOT NULL
-                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(c.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-              )
-              OR (
-                  c.sort_key_ms IS NULL
-                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                      COALESCE(CAST(c.updated_at_ms / 1000 AS TEXT), '')
-              )
+              OR {stale_predicate}
           )
         ORDER BY c.session_id
         """,
@@ -866,11 +862,9 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    candidates: list[Path] = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+    from polylogue.paths import sibling_index_db
+
+    index_db = sibling_index_db(db_path, require_exists=True)
     if index_db is None:
         return None
     try:
@@ -1429,6 +1423,7 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
+    stale_predicate = session_profile_stale_predicate("s", "sp")
     rows = conn.execute(
         f"""
         SELECT s.session_id
@@ -1445,15 +1440,7 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
               OR im.materializer_version != ?
               OR pu.session_id IS NULL
               OR pu.materializer_version != ?
-              OR (
-                  s.sort_key_ms IS NOT NULL
-                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-              )
-              OR (
-                  s.sort_key_ms IS NULL
-                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                      COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
-              )
+              OR {stale_predicate}
           )
         ORDER BY s.session_id
         """,
@@ -1475,7 +1462,8 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
     # rollup predates a materializer-version bump (or was never stamped) still
     # needs a rebuild pass so it self-heals like every other session insight
     # instead of requiring a manual `ops reset --index`.
-    sql = """
+    stale_predicate = session_profile_stale_predicate("s", "sp")
+    sql = f"""
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
@@ -1489,15 +1477,7 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
           OR im.materializer_version != ?
           OR pu.session_id IS NULL
           OR pu.materializer_version != ?
-          OR (
-              s.sort_key_ms IS NOT NULL
-              AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-          )
-          OR (
-              s.sort_key_ms IS NULL
-              AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                  COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
-          )
+          OR {stale_predicate}
         ORDER BY s.session_id
     """
     params: tuple[object, ...] = (

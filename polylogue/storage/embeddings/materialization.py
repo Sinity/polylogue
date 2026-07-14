@@ -24,7 +24,7 @@ from polylogue.config import load_polylogue_config
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
 
@@ -97,6 +97,51 @@ AND {alias}.role IN ('user', 'assistant')
 AND {alias}.material_origin IN ('human_authored', 'assistant_authored')
 AND {alias}.word_count > 0
 """
+
+
+def message_prose_sql(
+    alias: str = "m",
+    *,
+    separator: str = "'\n'",
+    block_types: tuple[str, ...] = ("text",),
+) -> str:
+    """Reconstruct message prose as ordered GROUP_CONCAT with block-type filtering.
+
+    Messages have no ``text`` column; text lives in the ``blocks`` table
+    (one row per content block). This builder concatenates block text in
+    position order, filtering by block_type to exclude tool responses,
+    thinking, protocol noise, etc.
+
+    Args:
+        alias: Table alias for the messages table (e.g., "m" for "messages AS m").
+        separator: SQL string literal for joining blocks (default "'\n'" for backfill,
+                   "char(10)||char(10)" for embeddings).
+        block_types: Tuple of block_type values to include (default ("text",)
+                     to exclude thinking, tool_result, etc.).
+
+    Returns:
+        A GROUP_CONCAT SQL expression (without "AS text" clause) that when selected
+        with an alias produces ordered, filtered block prose.
+        The expression uses a correlated subquery for proper ordering.
+
+    Example:
+        >>> prose_expr = message_prose_sql("m", separator="'\\n'", block_types=("text",))
+        >>> query = f"SELECT m.message_id, {prose_expr} AS text FROM messages AS m ..."
+    """
+    # Format block_types as SQL list for IN clause
+    block_types_sql = ", ".join(f"'{bt}'" for bt in block_types)
+
+    return f"""GROUP_CONCAT(
+        (
+            SELECT b.text
+            FROM blocks b
+            WHERE b.message_id = {alias}.message_id
+              AND b.block_type IN ({block_types_sql})
+              AND b.text IS NOT NULL
+            ORDER BY b.position
+        ),
+        {separator}
+    )"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,11 +588,12 @@ def count_archive_session_embeddable_messages(conn: sqlite3.Connection, session_
             if _index_exists(conn, "idx_blocks_session_position")
             else "blocks AS b"
         )
+        prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
         row = conn.execute(
             f"""
             SELECT COUNT(*)
             FROM (
-                SELECT m.message_id, GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                SELECT m.message_id, {prose_expr} AS text
                 FROM {messages_ref}
                 LEFT JOIN {blocks_ref}
                   ON b.session_id = m.session_id
@@ -755,6 +801,7 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
             if _index_exists(conn, "idx_blocks_session_position")
             else "blocks AS b"
         )
+        prose_expr = message_prose_sql(base_alias, separator="char(10)||char(10)", block_types=("text",))
         return f"""
         (
             SELECT {selected_columns}
@@ -766,7 +813,7 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
              AND b.text IS NOT NULL
             WHERE {base_where}
             GROUP BY {base_alias}.message_id, {base_alias}.session_id, {content_hash_expr}
-            HAVING LENGTH(TRIM(COALESCE(GROUP_CONCAT(b.text, char(10) || char(10)), ''))) >= 20
+            HAVING LENGTH(TRIM(COALESCE({prose_expr}, ''))) >= 20
         ) AS {alias}
         """
     if "text" in message_columns:
@@ -937,10 +984,11 @@ def embed_archive_session_sync(
         if session is None:
             return EmbedSessionOutcome(status="not_found", session_id=session_id)
         messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
+        prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
         rows = index_conn.execute(
             f"""
             SELECT m.message_id, m.role, m.content_hash, m.material_origin, m.message_type,
-                   GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                   {prose_expr} AS text
             FROM {messages_ref}
             LEFT JOIN blocks AS b INDEXED BY idx_blocks_session_position
               ON b.session_id = m.session_id

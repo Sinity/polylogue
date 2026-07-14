@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from polylogue.core.json import dumps as json_dumps
+from polylogue.core.types import AttachmentId, MessageId, SessionId
 from polylogue.storage.insights.aggregate.records import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,
@@ -47,7 +48,6 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import AttachmentId, MessageId, SessionId
 
 
 def _json_or_none(value: BaseModel | Mapping[str, object] | None) -> str | None:

@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
 from polylogue.core.metrics import read_peak_rss_self_mb
+from polylogue.core.protocols import ProgressCallback
 from polylogue.logging import get_logger
 from polylogue.pipeline.payload_types import AcquireSplitPayloadSummary
 from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
-from polylogue.protocols import ProgressCallback
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.sources.source_walk import _resolve_source_paths

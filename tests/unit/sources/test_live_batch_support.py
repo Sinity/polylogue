@@ -3014,6 +3014,14 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     through to the generic ``except Exception`` branch (or removing the
     pre-write ``is_blob_hash_excised`` gate entirely) makes this fail: either
     the whole batch call raises, or the excised content gets a fresh raw_id.
+
+    The streaming threshold is patched down (matching the pattern used
+    elsewhere in this file, e.g. ``test_full_ingest_reports_heartbeat_stage_events``)
+    so both fixture files route through ``blob_store.write_from_path`` /
+    ``archive.write_raw_blob_ref`` -> ``write_source_raw_session_blob_ref``,
+    the same code path a real >8MB capture takes -- not the small-payload
+    ``write_raw_payload`` -> ``write_source_raw_session`` gate, which is a
+    different call site (polylogue-re4a).
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -3059,6 +3067,13 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         lambda _path, fallback_provider: (fallback_provider, True),
     )
     monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+
+    # Force both fixture files through the streaming blob-ref write path
+    # (>= this threshold uses blob_store.write_from_path + write_raw_blob_ref,
+    # never populating raw_payloads) rather than the small-payload
+    # write_raw_payload path -- see polylogue-re4a.
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
 
     archive_results: list[_ArchiveFullWriteResult] = []
     original_full_write = processor._ingest_full_records_archive

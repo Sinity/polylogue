@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.errors import DatabaseError
 from polylogue.demo import (
     inspect_completion_claims,
     inspect_demo_receipts,
@@ -21,7 +22,6 @@ from polylogue.demo import (
     seed_demo_archive,
     verify_demo_archive,
 )
-from polylogue.errors import DatabaseError
 from polylogue.paths import archive_root
 
 

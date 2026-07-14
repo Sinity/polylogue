@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.config import Config
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 
 def handle_query_mode(

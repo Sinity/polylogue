@@ -12,7 +12,7 @@ from polylogue.archive.message.models import DialoguePair, Message
 from polylogue.archive.message.roles import Role, normalize_message_roles
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import MaterialOrigin
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.archive.projection.projections import SessionProjection

@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.protocols import SessionQueryRuntimeStore
+    from polylogue.core.protocols import SessionQueryRuntimeStore
 
 
 def search_query_text(plan: SessionQueryPlan) -> str:
@@ -117,7 +117,7 @@ async def search_action_results(
     limit: int,
 ) -> list[Session]:
     from polylogue.archive.query.retrieval_candidates import action_search_ready
-    from polylogue.errors import DatabaseError
+    from polylogue.core.errors import DatabaseError
 
     query = search_query_text(plan)
     origins = _canonical_origins(plan.origins)

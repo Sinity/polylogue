@@ -9,9 +9,9 @@ from polylogue.archive.models import Session
 from polylogue.archive.semantic.timing import SessionLatencyProfileFacts, compute_session_latency_profile
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.types import SessionId
 
 from .profiles import now_iso
 

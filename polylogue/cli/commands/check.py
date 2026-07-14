@@ -21,7 +21,7 @@ from polylogue.cli.shared.check_support import run_vacuum as _run_vacuum_impl
 from polylogue.cli.shared.check_support import vacuum_database as _vacuum_database_impl
 from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
 from polylogue.cli.shared.types import AppEnv
-from polylogue.protocols import ProgressCallback
+from polylogue.core.protocols import ProgressCallback
 
 
 def _format_count_mapping(counts: dict[str, int]) -> str:

@@ -37,6 +37,19 @@ from tests.infra.storage_records import SessionBuilder, db_setup
 # ---------------------------------------------------------------------------
 
 
+def test_preview_scopes_match_preview_module() -> None:
+    """The CLI's hardcoded --help choices (polylogue-sod7) must not drift.
+
+    _preview.py hardcodes _ALL_SCOPES instead of importing ALL_SCOPES from
+    polylogue.maintenance.preview, so that module's heavier
+    storage.derived/storage.repair import chain isn't paid on the `--help`
+    path. This test is the drift guard for that duplication.
+    """
+    from polylogue.cli.commands.maintenance._preview import _ALL_SCOPES
+
+    assert _ALL_SCOPES == ALL_SCOPES
+
+
 def test_staleness_item_fraction_clamps_and_handles_zero_source() -> None:
     zero = StalenessItem(
         model="x",

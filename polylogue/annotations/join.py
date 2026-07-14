@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -232,7 +233,7 @@ async def join_typed_annotations(
     user_db = Path(poly.archive_root) / "user.db"
     if not user_db.exists():
         raise AnnotationStructuralJoinError("annotation user tier is not initialized")
-    with sqlite3.connect(f"file:{user_db}?mode=ro", uri=True) as user_conn:
+    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as user_conn:
         user_conn.row_factory = sqlite3.Row
         durable = read_durable_annotation_schema(user_conn, request.schema_id, request.schema_version)
         if durable is None:

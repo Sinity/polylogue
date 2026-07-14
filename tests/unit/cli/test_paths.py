@@ -11,7 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.commands import maintenance
+from polylogue.cli.commands.maintenance import _backup_plan as maintenance_backup_plan
 from polylogue.cli.commands.paths import paths_command
 from polylogue.daemon.provenance import _build_raw_preview
 from polylogue.paths import blob_store_root
@@ -101,7 +101,7 @@ def test_archive_override_unifies_blob_write_read_maintenance_report_and_reset(
     assert (expected_blob_root / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
     assert _build_raw_preview(blob_hash, len(payload), requested_bytes=None)["text"] == payload.decode()
 
-    maintenance_plan = maintenance._backup_plan_payload(archive)
+    maintenance_plan = maintenance_backup_plan._backup_plan_payload(archive)
     assert maintenance_plan["blob_store"]["path"] == str(expected_blob_root)
     paths_result = cli_runner.invoke(paths_command, ["--format", "json"], catch_exceptions=False)
     assert json.loads(paths_result.output)["blob_store_root"] == str(expected_blob_root)

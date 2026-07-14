@@ -14,8 +14,8 @@ from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
 from polylogue.core.enums import Origin, Provider, SessionKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import SessionId
 from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
-from polylogue.types import SessionId
 
 
 def _coerce_origin(v: object) -> Origin:

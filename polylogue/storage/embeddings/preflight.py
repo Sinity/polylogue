@@ -138,13 +138,11 @@ def read_pending_message_count(
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    if db_path.name == "index.db":
-        return db_path if db_path.exists() else None
-    index_db = db_path.with_name("index.db")
-    if index_db.exists():
-        return index_db
-    from polylogue.paths import archive_root
+    from polylogue.paths import archive_root, sibling_index_db
 
+    index_db = sibling_index_db(db_path, require_exists=True)
+    if index_db is not None:
+        return index_db
     configured_index_db = archive_root() / "index.db"
     return configured_index_db if configured_index_db.exists() else None
 

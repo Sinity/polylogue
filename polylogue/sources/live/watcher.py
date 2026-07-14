@@ -18,6 +18,7 @@ import sqlite3
 import stat as stat_module
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -784,7 +785,7 @@ class LiveWatcher:
         if not source_db.exists() or not index_db.exists():
             return _ArchivedCursorReconciliation.UNAVAILABLE
         try:
-            with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
+            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as conn:
                 rows = conn.execute(
                     """
                     SELECT raw_id, origin, blob_hash, blob_size
@@ -797,7 +798,7 @@ class LiveWatcher:
                     """,
                     (str(path),),
                 ).fetchall()
-            with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0) as conn:
+            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as conn:
                 row = next(
                     (
                         candidate

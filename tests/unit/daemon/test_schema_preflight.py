@@ -15,12 +15,12 @@ from polylogue.core.degraded import (
     is_degraded,
     set_degraded,
 )
+from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
     _check_schema_version_fast,
 )
-from polylogue.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.sources.live.dedup import (
     SCHEMA_MISMATCH_DEDUP_WINDOW_S,
     RateLimiter,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.archive.query.evaluator import CanonicalPlanEvaluator, QueryEvaluation, QueryEvaluationRequest
@@ -65,7 +66,7 @@ def make_standing_query_stage(
         if not user_db.exists():
             return set()
         try:
-            with sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0) as conn:
+            with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
                 if list_watched_queries(conn) or _has_promoted_expected_findings(conn):
                     return set(session_ids)
                 return set()
