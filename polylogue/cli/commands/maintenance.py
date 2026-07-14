@@ -1811,6 +1811,172 @@ def legacy_browser_capture_missing_native_id_command(
         click.echo(f"Receipt: {report.receipt_path}")
 
 
+@maintenance_group.command("browser-canonical-authority-conflicts")
+@click.option(
+    "--raw-id",
+    "raw_ids",
+    multiple=True,
+    required=True,
+    help="Exact unknown-export raw id a safe rekey refuses (repeatable).",
+)
+@click.option(
+    "--record",
+    "record_blockers",
+    is_flag=True,
+    help="Persist each conflict as a durable, non-injected user.db blocker candidate.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def browser_canonical_authority_conflicts_command(
+    env: AppEnv,
+    raw_ids: tuple[str, ...],
+    record_blockers: bool,
+    output_format: str,
+) -> None:
+    """Show why a byte-proven-rekey actuator refuses these browser-capture raws.
+
+    Read-only by default: re-runs the ordinary rekey actuator's exact
+    eligibility proof and, for every raw that stays ineligible, re-derives the
+    competing-authority evidence it discards on its own reject path (competing
+    head content hash/frontier kind/decision, any blocking membership row, and
+    -- when both sides are single-session byte-frontier raws -- the first
+    diverging message index). Never selects an authority between the two
+    histories. Pass ``--record`` to additionally persist each conflict as one
+    ``AssertionKind.BLOCKER`` candidate assertion in ``user.db`` (always
+    ``status=candidate``/``inject:false``; an operator must judge it
+    explicitly -- see ``polylogue mark`` / assertion judgment tooling).
+    """
+    del env
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+    from polylogue.storage.repair import (
+        inspect_browser_canonical_authority_conflicts,
+        record_browser_canonical_authority_conflict_blockers,
+    )
+
+    assertion_ids: tuple[str, ...] = ()
+    try:
+        if record_blockers:
+            report, assertion_ids = record_browser_canonical_authority_conflict_blockers(config, list(raw_ids))
+        else:
+            report = inspect_browser_canonical_authority_conflicts(config, list(raw_ids))
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload: dict[str, Any] = asdict(report)
+    if record_blockers:
+        payload["assertion_ids"] = list(assertion_ids)
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(f"requested={report.requested_count} conflicts={report.conflict_count} resolved={report.resolved_count}")
+    for item in report.items:
+        click.echo(
+            f"  {item.raw_id} competing={item.competing_raw_id or 'none'} "
+            f"frontier={item.competing_frontier_kind or 'unavailable'} "
+            f"divergent_message_index={item.divergent_message_index if item.divergent_message_index is not None else 'unavailable'}: "
+            f"{item.divergence_note or item.reason}"
+        )
+    if record_blockers:
+        for assertion_id in assertion_ids:
+            click.echo(f"Blocker: {assertion_id}")
+
+
+@maintenance_group.command("duplicate-raw-identity")
+@click.option(
+    "--pair",
+    "pairs",
+    multiple=True,
+    required=True,
+    metavar="STALE_RAW_ID:CANONICAL_RAW_ID",
+    help="Stale (currently accepted) and canonical (post-fix, dangling) raw id pair (repeatable).",
+)
+@click.option("--apply", "apply_changes", is_flag=True, help="Apply only after every pair passes exact proof.")
+@click.option("--proof-digest", help="Exact aggregate digest emitted by the matching dry-run.")
+@click.option(
+    "--receipt",
+    "receipt_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Required append-only operator recovery receipt path for --apply.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def duplicate_raw_identity_command(
+    env: AppEnv,
+    pairs: tuple[str, ...],
+    apply_changes: bool,
+    proof_digest: str | None,
+    receipt_path: Path | None,
+    output_format: str,
+) -> None:
+    """Reconcile a pre-#2729 duplicate raw pair onto its post-fix accepted head.
+
+    PR #2729 aligned new ingests on one deterministic raw-id scheme, but did
+    not retroactively repair raw pairs that already duplicated under the OLD
+    scheme: the accepted head stays bound to the stale raw while its
+    post-fix twin sits orphaned. This actuator proves both raws are
+    byte-identical retained duplicates of one logical session, then
+    repoints the accepted head and session pointer to the canonical raw via
+    the existing revision-application machinery. The stale raw's own row is
+    never mutated or deleted. Apply additionally writes an exclusive,
+    fsynced planned-then-applied operator receipt so the repair is
+    crash-resumable and auditable.
+    """
+    del env
+    if apply_changes and receipt_path is None:
+        raise click.UsageError("--apply requires --receipt PATH")
+    if apply_changes and proof_digest is None:
+        raise click.UsageError("--apply requires --proof-digest from the exact dry-run")
+    parsed_pairs: list[tuple[str, str]] = []
+    for pair in pairs:
+        stale_raw_id, sep, canonical_raw_id = pair.partition(":")
+        if not sep:
+            raise click.UsageError(f"--pair must be STALE_RAW_ID:CANONICAL_RAW_ID, got {pair!r}")
+        parsed_pairs.append((stale_raw_id, canonical_raw_id))
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+    from polylogue.storage.repair import repair_duplicate_raw_identity
+
+    try:
+        report = repair_duplicate_raw_identity(
+            config,
+            parsed_pairs,
+            apply=apply_changes,
+            receipt_path=receipt_path,
+            proof_digest=proof_digest,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = asdict(report)
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(
+        f"{report.mode}: requested={report.requested_count} eligible={report.eligible_count} "
+        f"already_repaired={report.already_repaired_count} repaired={report.repaired_count} "
+        f"ineligible={report.ineligible_count}"
+    )
+    click.echo(f"Proof digest: {report.proof_digest}")
+    for item in report.items:
+        click.echo(
+            f"  {item.stale_raw_id}->{item.canonical_raw_id} {item.status} "
+            f"proof={item.proof_digest or 'unavailable'}: {item.reason}"
+        )
+    if report.receipt_path is not None:
+        click.echo(f"Receipt: {report.receipt_path}")
+
+
 @maintenance_group.command("preview")
 @click.option(
     "--scope",

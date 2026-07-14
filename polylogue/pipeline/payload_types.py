@@ -80,6 +80,7 @@ class ParseBatchObservation(TypedDict, total=False):
     max_result_raw_id: str
     batch: int
     processed_raw: int
+    excised_skips: int
 
 
 class ParseBatchObservationSummary(TypedDict, total=False):

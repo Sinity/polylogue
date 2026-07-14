@@ -429,6 +429,21 @@ class AssertionKind(PolylogueStrEnum):
     TRANSFORM_CANDIDATE = "transform_candidate"
     PATHOLOGY = "pathology"
     FINDING = "finding"
+    SECRET_CANDIDATE = "secret_candidate"
+    """Candidate-only secret-detector finding (polylogue-27m). Never carries the
+    matched literal -- ``value_json`` holds only a fingerprint hash, matched
+    length, pattern id, and span coordinates. Always written with
+    ``author_kind="detector"``, which the ``upsert_assertion`` chokepoint
+    coerces to a non-injectable ``CANDIDATE`` status."""
+    EXCISION_RECORD = "excision_record"
+    """Durable, operator-authored receipt of a completed local excision: the
+    removed content-hash markers, reason, actor, prior revision, and per-tier
+    row counts. Written only after a standalone/off-mode apply commits."""
+    EXCISION_REQUEST = "excision_request"
+    """Durable mirror/primary-mode lifecycle-request/outbox row (polylogue-27m).
+    ``value_json`` carries the request state machine (pending/acknowledged/
+    confirmed/rejected), retry count, and target. Lives in ``user.db`` so the
+    request survives an ``ops.db`` reset -- see ``polylogue/security/lifecycle.py``."""
 
     @classmethod
     def from_string(cls, value: str | AssertionKind) -> AssertionKind:
