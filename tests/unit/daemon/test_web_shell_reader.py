@@ -317,13 +317,13 @@ class TestKeyboardNavigation:
 
 def _make_topology() -> SessionTopology:
     """Build a small SessionTopology covering parent+target+sibling+child+unresolved."""
+    from polylogue.core.types import SessionId
     from polylogue.insights.topology import (
         SessionTopology,
         TopologyEdge,
         TopologyEdgeKind,
         TopologyNode,
     )
-    from polylogue.types import SessionId
 
     cid = SessionId
 

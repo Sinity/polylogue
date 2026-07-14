@@ -24,6 +24,7 @@ from polylogue.core.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
@@ -40,7 +41,6 @@ from polylogue.storage.runtime import (
     SESSION_INSIGHT_MATERIALIZER_VERSION,
     SessionProfileRecord,
 )
-from polylogue.types import SessionId
 
 
 def _serialize_percentiles(percentiles: dict[str, int]) -> str:

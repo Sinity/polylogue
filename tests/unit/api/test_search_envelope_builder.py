@@ -9,8 +9,8 @@ from polylogue.archive.query.search_hits import session_search_hit_from_summary
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.surfaces.payloads import SessionSearchHitPayload, build_search_cursor
-from polylogue.types import SessionId
 
 
 def _dialogue_cursor() -> str:

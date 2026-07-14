@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
 
 QueryBoolOp: TypeAlias = Literal["and", "or"]
 QueryCompareOp: TypeAlias = Literal["=", ">", ">=", "<", "<="]
@@ -21,6 +22,13 @@ QueryExistsUnit: TypeAlias = Literal[
     "delegation",
 ]
 QuerySequenceConstraintKind: TypeAlias = Literal["ordered", "next", "within"]
+
+_EXISTS_UNITS: frozenset[str] = frozenset(
+    {"message", "action", "block", "assertion", "file", "run", "observed-event", "context-snapshot", "delegation"}
+)
+_COMPARE_OPS: frozenset[str] = frozenset({"=", ">", ">=", "<", "<="})
+_FIELD_SCOPES: frozenset[str] = frozenset({"session", "unit"})
+_SEQUENCE_CONSTRAINT_KINDS: frozenset[str] = frozenset({"ordered", "next", "within"})
 
 
 @dataclass(frozen=True)
@@ -225,6 +233,141 @@ QueryPredicate: TypeAlias = (
 )
 
 
+def _field_ref_from_payload(payload: object) -> QueryFieldRef:
+    if not isinstance(payload, Mapping):
+        raise ValueError("field_ref payload must be an object")
+    scope = payload.get("scope")
+    name = payload.get("name")
+    source_name = payload.get("source_name")
+    unit = payload.get("unit")
+    if scope not in _FIELD_SCOPES:
+        raise ValueError(f"unsupported field_ref scope: {scope!r}")
+    if not isinstance(name, str) or not name:
+        raise ValueError("field_ref requires a non-empty 'name'")
+    if not isinstance(source_name, str) or not source_name:
+        raise ValueError("field_ref requires a non-empty 'source_name'")
+    if unit is not None and not isinstance(unit, str):
+        raise ValueError("field_ref 'unit' must be a string when present")
+    return QueryFieldRef(
+        scope=cast(QueryFieldScope, scope),
+        name=name,
+        source_name=source_name,
+        unit=unit,
+    )
+
+
+def _sequence_constraint_from_payload(payload: object) -> QuerySequenceConstraint:
+    if not isinstance(payload, Mapping):
+        raise ValueError("sequence constraint payload must be an object")
+    kind = payload.get("kind", "ordered")
+    within_ms = payload.get("within_ms")
+    if kind not in _SEQUENCE_CONSTRAINT_KINDS:
+        raise ValueError(f"unsupported sequence constraint kind: {kind!r}")
+    if within_ms is not None and (isinstance(within_ms, bool) or not isinstance(within_ms, int)):
+        raise ValueError("sequence constraint 'within_ms' must be an integer")
+    return QuerySequenceConstraint(kind=cast(QuerySequenceConstraintKind, kind), within_ms=within_ms)
+
+
+def _payload_list(payload: object, *, field: str) -> Sequence[object]:
+    if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes)):
+        raise ValueError(f"{field!r} must be a list")
+    return payload
+
+
+def predicate_from_payload(payload: Mapping[str, object]) -> QueryPredicate:
+    """Reconstruct a typed predicate from its own ``to_payload()`` projection.
+
+    Every branch below inverts one dataclass's own lossless ``to_payload()``
+    mapping (see the corresponding ``to_payload`` above each predicate class
+    in this module), so round-tripping a value through ``to_payload`` then
+    ``predicate_from_payload`` always reproduces an equal predicate. This is
+    deliberately *not* a reverse-compiler over free-form or legacy text: it
+    only understands the closed, versioned shape this module itself emits
+    (``polylogue.query-definition.v1``). Callers that hold a legacy protocol
+    v0 canonical plan (an opaque saved-view JSON request, not this predicate
+    grammar) must not route it through this function -- see
+    ``polylogue.core.query_identity.require_supported_definition_protocol_version``
+    and ``polylogue.archive.query.production_evaluator``, which fails closed
+    on v0 identities before reaching here.
+    """
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("predicate payload must be an object")
+    kind = payload.get("kind")
+    if kind == "field":
+        field = payload.get("field")
+        op = payload.get("op", "=")
+        values = payload.get("values", ())
+        if not isinstance(field, str) or not field:
+            raise ValueError("field predicate requires a non-empty 'field'")
+        if op not in _COMPARE_OPS:
+            raise ValueError(f"unsupported field predicate op: {op!r}")
+        raw_values = _payload_list(values, field="values")
+        if not all(isinstance(value, str) for value in raw_values):
+            raise ValueError("field predicate 'values' must be a list of strings")
+        predicate: QueryFieldPredicate = QueryFieldPredicate(
+            field=field,
+            values=tuple(cast(str, value) for value in raw_values),
+            op=cast(QueryCompareOp, op),
+        )
+        field_ref_payload = payload.get("field_ref")
+        if field_ref_payload is not None:
+            predicate = predicate.with_field_ref(_field_ref_from_payload(field_ref_payload))
+        return predicate
+    if kind == "not":
+        child = payload.get("child")
+        if not isinstance(child, Mapping):
+            raise ValueError("not predicate requires a 'child' object")
+        return QueryNotPredicate(predicate_from_payload(child))
+    if kind in ("and", "or"):
+        children = _payload_list(payload.get("children"), field="children")
+        parsed_children: list[QueryPredicate] = []
+        for child in children:
+            if not isinstance(child, Mapping):
+                raise ValueError("boolean predicate children must be objects")
+            parsed_children.append(predicate_from_payload(child))
+        return QueryBoolPredicate(kind, tuple(parsed_children))
+    if kind == "exists":
+        unit = payload.get("unit")
+        child = payload.get("child")
+        if unit not in _EXISTS_UNITS:
+            raise ValueError(f"unsupported exists unit: {unit!r}")
+        if not isinstance(child, Mapping):
+            raise ValueError("exists predicate requires a 'child' object")
+        return QueryExistsPredicate(unit=cast(QueryExistsUnit, unit), child=predicate_from_payload(child))
+    if kind == "sequence":
+        steps_payload = _payload_list(payload.get("steps", ()), field="steps")
+        parsed_steps: list[QueryPredicate] = []
+        for step in steps_payload:
+            if not isinstance(step, Mapping):
+                raise ValueError("sequence predicate steps must be objects")
+            parsed_steps.append(predicate_from_payload(step))
+        constraints_payload = payload.get("constraints")
+        constraints: tuple[QuerySequenceConstraint, ...] = ()
+        if constraints_payload is not None:
+            constraints = tuple(
+                _sequence_constraint_from_payload(item)
+                for item in _payload_list(constraints_payload, field="constraints")
+            )
+        return QuerySequencePredicate(steps=tuple(parsed_steps), constraints=constraints)
+    if kind == "fts":
+        text = payload.get("text")
+        if not isinstance(text, str) or not text:
+            raise ValueError("fts predicate requires non-empty 'text'")
+        return QueryTextPredicate(text=text)
+    if kind == "semantic":
+        text = payload.get("text")
+        if not isinstance(text, str) or not text:
+            raise ValueError("semantic predicate requires non-empty 'text'")
+        return QuerySemanticPredicate(text=text)
+    if kind == "lineage":
+        seed = payload.get("seed_session_id")
+        if not isinstance(seed, str) or not seed:
+            raise ValueError("lineage predicate requires non-empty 'seed_session_id'")
+        return QueryLineagePredicate(seed_session_id=seed)
+    raise ValueError(f"unsupported predicate payload kind: {kind!r}")
+
+
 __all__ = [
     "QueryBoolOp",
     "QueryBoolPredicate",
@@ -242,4 +385,5 @@ __all__ = [
     "QuerySequenceConstraint",
     "QuerySequenceConstraintKind",
     "QueryTextPredicate",
+    "predicate_from_payload",
 ]

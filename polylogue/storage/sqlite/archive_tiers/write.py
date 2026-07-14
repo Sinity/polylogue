@@ -1,7 +1,10 @@
 """Minimal archive index parsed-session writer/read helpers.
 
-Writer module: index, user.
-Twin-write contract: session-tag-assertion-mirror.
+Writer module: index.
+
+Session tag/work-event/phase CRUD (the former ``user``-tier twin-write
+contract here) moved to ``session_annotations_write.py`` — see that
+module's docstring for the current writer-module declaration.
 """
 
 from __future__ import annotations
@@ -48,6 +51,18 @@ from polylogue.storage.runtime import (
     LineageTruncationReason,
 )
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
+from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
+    ArchiveSessionPhase,
+    ArchiveSessionTag,
+    ArchiveSessionWorkEvent,
+    read_session_phases,
+    read_session_tags,
+    read_session_work_events,
+    upsert_session_phase,
+    upsert_session_tag,
+    upsert_session_work_event,
+)
 
 logger = get_logger(__name__)
 
@@ -69,33 +84,6 @@ class ArchiveBlockRow:
     # Keystone structured tool-result outcome (schema v16). NULL = unknown.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveWebConstructRow:
-    construct_id: str
-    session_id: str
-    message_id: str
-    block_id: str
-    position: int
-    provider: str
-    construct_type: str
-    provider_key: str | None = None
-    title: str | None = None
-    url: str | None = None
-    text: str | None = None
-    source_id: str | None = None
-    group_id: str | None = None
-    group_title: str | None = None
-    query: str | None = None
-    asset_pointer: str | None = None
-    mime_type: str | None = None
-    status: str | None = None
-    task_id: str | None = None
-    task_type: str | None = None
-    rank: int | None = None
-    start_index: int | None = None
-    end_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,57 +172,6 @@ class ArchiveInsightMaterialization:
     source_sort_key_ms: int | None
     input_high_water_mark_ms: int | None
     input_row_count: int
-    input_high_water_mark_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionTag:
-    session_id: str
-    tag: str
-    tag_source: str
-    method: str | None
-    confidence: float | None
-    evidence: dict[str, object] | None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionWorkEvent:
-    event_id: str
-    session_id: str
-    position: int
-    work_event_type: str
-    summary: str
-    confidence: float
-    start_index: int
-    end_index: int
-    started_at_ms: int | None
-    ended_at_ms: int | None
-    duration_ms: int
-    file_paths: tuple[str, ...]
-    tools_used: tuple[str, ...]
-    evidence: dict[str, object]
-    inference: dict[str, object]
-    search_text: str
-    input_high_water_mark: str | None = None
-    input_high_water_mark_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionPhase:
-    phase_id: str
-    session_id: str
-    position: int
-    start_index: int
-    end_index: int
-    started_at_ms: int | None
-    ended_at_ms: int | None
-    duration_ms: int
-    tool_counts: dict[str, int]
-    word_count: int
-    evidence: dict[str, object]
-    inference: dict[str, object]
-    search_text: str
-    input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
 
 
@@ -851,351 +788,6 @@ def read_insight_materialization(
     )
 
 
-def upsert_session_tag(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag: str,
-    tag_source: str,
-    method: str | None = None,
-    confidence: float | None = None,
-    evidence: dict[str, object] | None = None,
-) -> ArchiveSessionTag:
-    """Upsert one unified user/auto tag row for an archive session."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    normalized_tag = tag.strip().lower()
-    if not normalized_tag:
-        raise ValueError("tag cannot be empty")
-    if len(normalized_tag) > 200:
-        raise ValueError("tag exceeds maximum length of 200 characters")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_tags (
-                session_id, tag, tag_source, method, confidence, evidence_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, tag, tag_source) DO UPDATE SET
-                method = excluded.method,
-                confidence = excluded.confidence,
-                evidence_json = excluded.evidence_json
-            """,
-            (
-                session_id,
-                normalized_tag,
-                tag_source,
-                method,
-                confidence,
-                _json_dumps(evidence) if evidence is not None else None,
-            ),
-        )
-        _mirror_session_tag_assertion_if_available(
-            conn,
-            session_id=session_id,
-            tag=normalized_tag,
-            tag_source=tag_source,
-            method=method,
-            confidence=confidence,
-            evidence=evidence,
-        )
-    return read_session_tags(conn, session_id=session_id, tag_source=tag_source)[normalized_tag]
-
-
-def _mirror_session_tag_assertion_if_available(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag: str,
-    tag_source: str,
-    method: str | None,
-    confidence: float | None,
-    evidence: dict[str, object] | None,
-) -> None:
-    """Mirror user tag writes when the active tier owns assertions."""
-    if tag_source != "user" or not _table_exists(conn, "assertions"):
-        return
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_session_tag_assertion
-
-    upsert_session_tag_assertion(
-        conn,
-        session_id=session_id,
-        tag=tag,
-        tag_source=tag_source,
-        method=method,
-        confidence=confidence,
-        evidence=evidence,
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
-def read_session_tags(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag_source: str | None = None,
-) -> dict[str, ArchiveSessionTag]:
-    """Read archive session tags keyed by normalized tag."""
-    conn.row_factory = sqlite3.Row
-    params: list[object] = [session_id]
-    source_filter = ""
-    if tag_source is not None:
-        source_filter = "AND tag_source = ?"
-        params.append(tag_source)
-    rows = conn.execute(
-        f"""
-        SELECT session_id, tag, tag_source, method, confidence, evidence_json
-        FROM session_tags
-        WHERE session_id = ?
-          {source_filter}
-        ORDER BY tag_source, tag
-        """,
-        tuple(params),
-    ).fetchall()
-    return {
-        row["tag"]: ArchiveSessionTag(
-            session_id=row["session_id"],
-            tag=row["tag"],
-            tag_source=row["tag_source"],
-            method=row["method"],
-            confidence=row["confidence"],
-            evidence=_json_loads(row["evidence_json"]) if row["evidence_json"] is not None else None,
-        )
-        for row in rows
-    }
-
-
-def upsert_session_work_event(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    position: int,
-    work_event_type: str,
-    summary: str,
-    confidence: float = 0.0,
-    start_index: int = 0,
-    end_index: int = 0,
-    started_at_ms: int | None = None,
-    ended_at_ms: int | None = None,
-    duration_ms: int = 0,
-    file_paths: tuple[str, ...] = (),
-    tools_used: tuple[str, ...] = (),
-    evidence: dict[str, object] | None = None,
-    inference: dict[str, object] | None = None,
-    search_text: str = "",
-    input_high_water_mark: str | None = None,
-    input_high_water_mark_source: str | None = None,
-) -> ArchiveSessionWorkEvent:
-    """Upsert one deterministic session work-event row."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_work_events (
-                session_id, position, work_event_type, summary, confidence,
-                start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-                file_paths_json, tools_used_json,
-                input_high_water_mark, input_high_water_mark_source,
-                evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, position) DO UPDATE SET
-                work_event_type = excluded.work_event_type,
-                summary = excluded.summary,
-                confidence = excluded.confidence,
-                start_index = excluded.start_index,
-                end_index = excluded.end_index,
-                started_at_ms = excluded.started_at_ms,
-                ended_at_ms = excluded.ended_at_ms,
-                duration_ms = excluded.duration_ms,
-                file_paths_json = excluded.file_paths_json,
-                tools_used_json = excluded.tools_used_json,
-                input_high_water_mark = excluded.input_high_water_mark,
-                input_high_water_mark_source = excluded.input_high_water_mark_source,
-                evidence_json = excluded.evidence_json,
-                inference_json = excluded.inference_json,
-                search_text = excluded.search_text
-            """,
-            (
-                session_id,
-                position,
-                work_event_type,
-                summary,
-                confidence,
-                start_index,
-                end_index,
-                started_at_ms,
-                ended_at_ms,
-                duration_ms,
-                _json_dumps(list(file_paths)),
-                _json_dumps(list(tools_used)),
-                input_high_water_mark,
-                input_high_water_mark_source,
-                _json_dumps(evidence or {}),
-                _json_dumps(inference or {}),
-                search_text,
-            ),
-        )
-        _refresh_session_profile_count(conn, session_id, table="session_work_events", column="work_event_count")
-    return read_session_work_events(conn, session_id=session_id)[position]
-
-
-def read_session_work_events(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-) -> dict[int, ArchiveSessionWorkEvent]:
-    """Read deterministic session work events keyed by position."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT event_id, session_id, position, work_event_type, summary, confidence,
-            start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-            file_paths_json, tools_used_json,
-            input_high_water_mark, input_high_water_mark_source,
-            evidence_json, inference_json, search_text
-        FROM session_work_events
-        WHERE session_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return {
-        row["position"]: ArchiveSessionWorkEvent(
-            event_id=row["event_id"],
-            session_id=row["session_id"],
-            position=row["position"],
-            work_event_type=row["work_event_type"],
-            summary=row["summary"],
-            confidence=row["confidence"],
-            start_index=row["start_index"],
-            end_index=row["end_index"],
-            started_at_ms=row["started_at_ms"],
-            ended_at_ms=row["ended_at_ms"],
-            duration_ms=row["duration_ms"],
-            file_paths=_json_tuple(row["file_paths_json"]),
-            tools_used=_json_tuple(row["tools_used_json"]),
-            evidence=_json_loads(row["evidence_json"]),
-            inference=_json_loads(row["inference_json"]),
-            search_text=row["search_text"],
-            input_high_water_mark=row["input_high_water_mark"],
-            input_high_water_mark_source=row["input_high_water_mark_source"],
-        )
-        for row in rows
-    }
-
-
-def upsert_session_phase(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    position: int,
-    start_index: int = 0,
-    end_index: int = 0,
-    started_at_ms: int | None = None,
-    ended_at_ms: int | None = None,
-    duration_ms: int = 0,
-    tool_counts: dict[str, int] | None = None,
-    word_count: int = 0,
-    evidence: dict[str, object] | None = None,
-    inference: dict[str, object] | None = None,
-    search_text: str = "",
-    input_high_water_mark: str | None = None,
-    input_high_water_mark_source: str | None = None,
-) -> ArchiveSessionPhase:
-    """Upsert one deterministic session phase row."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_phases (
-                session_id, position, start_index, end_index,
-                started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
-                input_high_water_mark, input_high_water_mark_source,
-                evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, position) DO UPDATE SET
-                start_index = excluded.start_index,
-                end_index = excluded.end_index,
-                started_at_ms = excluded.started_at_ms,
-                ended_at_ms = excluded.ended_at_ms,
-                duration_ms = excluded.duration_ms,
-                tool_counts_json = excluded.tool_counts_json,
-                word_count = excluded.word_count,
-                input_high_water_mark = excluded.input_high_water_mark,
-                input_high_water_mark_source = excluded.input_high_water_mark_source,
-                evidence_json = excluded.evidence_json,
-                inference_json = excluded.inference_json,
-                search_text = excluded.search_text
-            """,
-            (
-                session_id,
-                position,
-                start_index,
-                end_index,
-                started_at_ms,
-                ended_at_ms,
-                duration_ms,
-                _json_dumps(tool_counts or {}),
-                word_count,
-                input_high_water_mark,
-                input_high_water_mark_source,
-                _json_dumps(evidence or {}),
-                _json_dumps(inference or {}),
-                search_text,
-            ),
-        )
-        _refresh_session_profile_count(conn, session_id, table="session_phases", column="phase_count")
-    return read_session_phases(conn, session_id=session_id)[position]
-
-
-def read_session_phases(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-) -> dict[int, ArchiveSessionPhase]:
-    """Read deterministic session phases keyed by position."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT phase_id, session_id, position, start_index, end_index,
-            started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
-            input_high_water_mark, input_high_water_mark_source,
-            evidence_json, inference_json, search_text
-        FROM session_phases
-        WHERE session_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return {
-        row["position"]: ArchiveSessionPhase(
-            phase_id=row["phase_id"],
-            session_id=row["session_id"],
-            position=row["position"],
-            start_index=row["start_index"],
-            end_index=row["end_index"],
-            started_at_ms=row["started_at_ms"],
-            ended_at_ms=row["ended_at_ms"],
-            duration_ms=row["duration_ms"],
-            tool_counts={str(key): _json_int(value) for key, value in _json_loads(row["tool_counts_json"]).items()},
-            word_count=row["word_count"],
-            evidence=_json_loads(row["evidence_json"]),
-            inference=_json_loads(row["inference_json"]),
-            search_text=row["search_text"],
-            input_high_water_mark=row["input_high_water_mark"],
-            input_high_water_mark_source=row["input_high_water_mark_source"],
-        )
-        for row in rows
-    }
-
-
 def read_archive_session_envelope(
     conn: sqlite3.Connection, session_id: str, *, _depth: int = 0
 ) -> ArchiveSessionEnvelope:
@@ -1485,13 +1077,28 @@ def _write_messages(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write message rows using table-driven column specification.
+
+    The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (29 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the three hand-aligned duplicates (column list in INSERT,
+    placeholder string, tuple order) into a single source of truth.
+    """
+    spec = archive_tiers_specs.MESSAGES_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             position = position_offset + (message.position if message.position is not None else fallback_position)
             variant_index = message.variant_index if message.variant_index is not None else 0
+            # Build tuple in the order defined by spec.writable_columns, skipping
+            # columns with non-standard placeholders (like parent_message_id=NULL)
             yield (
                 session_id,
                 _sqlite_text(_effective_message_native_id(message, duplicate_native_ids)) or None,
+                # parent_message_id: skipped (always NULL in VALUES)
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
@@ -1520,19 +1127,14 @@ def _write_messages(
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
             )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders come from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO messages (
-            session_id, native_id, parent_message_id, position, role, message_type, material_origin,
-            model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text,
-            has_tool_use, has_thinking, has_paste, paste_boundary,
-            variant_index, is_active_path, is_active_leaf, word_count,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            duration_ms, content_hash, occurred_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _message_content_hash(
@@ -1625,6 +1227,17 @@ def _write_blocks(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write block rows using table-driven column specification.
+
+    The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (14 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the hand-aligned duplicates into a single source of truth.
+    """
+    spec = archive_tiers_specs.BLOCKS_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             message_id = _message_id(
@@ -1642,6 +1255,7 @@ def _write_blocks(
                 language = _block_language(block)
                 is_error = getattr(block, "is_error", None)
                 exit_code = getattr(block, "exit_code", None)
+                # Tuple built in order defined by spec.writable_columns
                 yield (
                     message_id,
                     session_id,
@@ -1669,16 +1283,14 @@ def _write_blocks(
                     ),
                 )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO blocks (
-            message_id, session_id, position, block_type, text, tool_name,
-            tool_id, tool_input, semantic_type, media_type, language,
-            tool_result_is_error, tool_result_exit_code, content_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _write_web_constructs(

@@ -1,10 +1,10 @@
-"""Typed import operation request/result models — first instance of #1247.
+"""Typed import operation request/result models.
 
-This module is the **first concrete instance** of the generic Operation
-pattern defined in :mod:`polylogue.operations.operation_contract`. It
-specifies what an import operation looks like on the wire: which fields
-the request carries, what the ack returns, and how clients look up the
-operation after scheduling.
+These are the **only** concrete instance of what used to be a generic
+Operation subclassing pattern (see the collapse note in
+:mod:`polylogue.operations.operation_contract`, polylogue-a7xr.14): ``kind``
+is a fixed literal rather than a subclass-declared class variable, since
+there is exactly one operation to pin it to.
 
 Why this lives next to ``import_contracts.py``
 -----------------------------------------------
@@ -14,7 +14,7 @@ Why this lives next to ``import_contracts.py``
 returned by daemon ingest, CLI ingest, and the live watcher. That
 envelope is widely consumed across surfaces (``polylogue/api/contracts/*``,
 ``polylogue/cli/commands/ingest.py``, ``polylogue/daemon/http.py``) and
-is not being replaced in this slice.
+is not affected by this module.
 
 The models defined here are the **typed scheduling contract** — the
 request that surfaces accept, and the ack they return at admission time
@@ -29,16 +29,8 @@ two layers compose:
   result envelope re-emitted by the status surface once the work has
   completed or failed.
 
-Future slices (#1248, #1249, #1250) wire surfaces to accept
-:class:`ImportRequest` and emit :class:`ImportAck` so the existing
-adapters can drop their per-adapter input/output shapes.
-
-Fields aligned with the #1247 acceptance criteria
--------------------------------------------------
-
-The issue calls out four scheduling fields explicitly. They land here as
-explicit Pydantic attributes so type-checkers and surface tests both see
-them:
+Fields
+------
 
 * ``source_path`` — the originating filesystem path or URI the caller
   asked to ingest.
@@ -50,31 +42,37 @@ them:
   ``source_path`` so the same source can be re-uploaded under a stable
   name.
 * ``operation_id`` — assigned by the surface and echoed in the ack.
+* Follow-up status lookup hints live on
+  :class:`polylogue.operations.operation_contract.OperationFollowUp`.
 
-The fifth scheduling concern — *follow-up status lookup hints* — lives
-on :class:`OperationFollowUp` and is shared across every Operation, not
-just import.
+Wire stability: the daemon HTTP ``POST /api/ingest`` response consumes
+``ImportAck.to_dict()`` directly — its JSON field names/shape are the
+production wire contract and are unchanged by the polylogue-a7xr.14 collapse
+(only the abstract ``OperationRequest``/``OperationAck`` base classes above
+this module were removed).
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-from polylogue.operations.operation_contract import (
-    OperationAck,
-    OperationFollowUp,
-    OperationRequest,
-    OperationStatus,
-)
+from pydantic import ConfigDict
+
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.operations.operation_contract import OperationFollowUp, OperationStatus
 from polylogue.operations.specs import OperationKind
+from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
-class ImportRequest(OperationRequest):
+class ImportRequest(SurfacePayloadModel):
     """Typed input for one import operation.
 
-    Carries the four scheduling fields called out in #1247 (source_path,
-    staged_path, source_name, idempotency_key) plus the explicit operation
-    ``kind`` pinned to :attr:`OperationKind.IMPORT`.
+    Carries the four scheduling fields (source_path, staged_path,
+    source_name, idempotency_key). ``operation_kind`` is a fixed
+    ``ClassVar`` (not a pydantic field — it does not appear in
+    :meth:`to_dict`'s wire payload, matching the shape from before the
+    polylogue-a7xr.14 collapse) since this model only ever carries
+    :attr:`OperationKind.IMPORT`.
 
     Surfaces validate the request with Pydantic at the boundary — invalid
     types or unknown extra keys raise :class:`pydantic.ValidationError`
@@ -95,27 +93,58 @@ class ImportRequest(OperationRequest):
         Surfaces that copy/upload before processing (daemon HTTP ingest,
         ``polylogue ingest --copy``) populate this; in-place surfaces
         leave it ``None``.
+    idempotency_key:
+        Optional caller-supplied key so retries do not schedule duplicate
+        work.
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     operation_kind: ClassVar[OperationKind] = OperationKind.IMPORT
 
     source_path: str
     source_name: str
     staged_path: str | None = None
+    idempotency_key: str | None = None
+
+    def to_dict(self) -> JSONDocument:
+        return json_document(self.model_dump(mode="json"))
 
 
-class ImportAck(OperationAck):
-    """Scheduling acknowledgement specific to import operations.
+class ImportAck(SurfacePayloadModel):
+    """Scheduling acknowledgement for an import operation.
 
-    Inherits every field from :class:`OperationAck`. The subclass exists
-    so per-operation factories can pin :attr:`kind` to
-    :attr:`OperationKind.IMPORT` without callers having to pass it on
-    every call site, and so future import-specific ack fields (for
-    example a per-source retry policy hint) land here instead of on the
-    shared base.
+    The single shape every import client parses — operation id,
+    accepted/rejected/pending ``status``, and (for accepted/pending) a
+    :class:`OperationFollowUp` telling the client where and how often to
+    poll. ``kind`` is fixed to :attr:`OperationKind.IMPORT`.
 
-    The factory helpers below ensure the kind is set correctly.
+    Fields
+    ------
+    operation_id:
+        Stable identifier the surface assigned. Required even for rejected
+        operations so clients can correlate logs.
+    status:
+        :class:`OperationStatus` — accepted, rejected, or pending. Other
+        values are reserved for status-surface re-emissions.
+    message:
+        Human-readable summary. Always safe to log.
+    error:
+        Populated when ``status == REJECTED``. ``None`` when the
+        operation was admitted.
+    follow_up:
+        Populated for accepted/pending operations. Tells the client which
+        status surface to poll and how often.
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: str
+    kind: Literal[OperationKind.IMPORT] = OperationKind.IMPORT
+    status: OperationStatus
+    message: str = ""
+    error: str | None = None
+    follow_up: OperationFollowUp | None = None
 
     @classmethod
     def accept_import(
@@ -127,7 +156,6 @@ class ImportAck(OperationAck):
     ) -> ImportAck:
         return cls(
             operation_id=operation_id,
-            kind=OperationKind.IMPORT,
             status=OperationStatus.ACCEPTED,
             message=message,
             follow_up=follow_up,
@@ -143,7 +171,6 @@ class ImportAck(OperationAck):
     ) -> ImportAck:
         return cls(
             operation_id=operation_id,
-            kind=OperationKind.IMPORT,
             status=OperationStatus.REJECTED,
             error=error,
             message=message,
@@ -159,11 +186,16 @@ class ImportAck(OperationAck):
     ) -> ImportAck:
         return cls(
             operation_id=operation_id,
-            kind=OperationKind.IMPORT,
             status=OperationStatus.PENDING,
             message=message,
             follow_up=follow_up,
         )
+
+    def is_accepted(self) -> bool:
+        return self.status in (OperationStatus.ACCEPTED, OperationStatus.PENDING)
+
+    def to_dict(self) -> JSONDocument:
+        return json_document(self.model_dump(mode="json", exclude_none=False))
 
 
 __all__ = [

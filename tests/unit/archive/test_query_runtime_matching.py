@@ -24,7 +24,7 @@ from polylogue.archive.query.runtime_matching import (
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.core.enums import Origin, Provider
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def _session() -> Session:

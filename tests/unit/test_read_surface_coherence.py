@@ -396,7 +396,7 @@ class TestDaemonVectorOnlyTypedError:
         """EmbeddingRetrievalNotReadyError.http_status_code is 409 (CONFLICT)."""
         from http import HTTPStatus
 
-        from polylogue.errors import EmbeddingRetrievalNotReadyError
+        from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 
         exc = EmbeddingRetrievalNotReadyError("embeddings not ready", readiness_status="disabled")
         assert exc.http_status_code == HTTPStatus.CONFLICT
@@ -412,8 +412,8 @@ class TestDaemonVectorOnlyTypedError:
         from typing import cast
         from unittest.mock import MagicMock
 
+        from polylogue.core.errors import EmbeddingRetrievalNotReadyError
         from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer, daemon_safe_handler
-        from polylogue.errors import EmbeddingRetrievalNotReadyError
 
         class _MockServer:
             auth_token = ""

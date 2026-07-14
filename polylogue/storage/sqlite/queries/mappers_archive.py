@@ -21,6 +21,7 @@ from polylogue.core.enums import (
     ValidationStatus,
 )
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.types import MessageId, SessionId
 from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     BlockRecord,
@@ -36,7 +37,6 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_int,
     _row_text,
 )
-from polylogue.types import MessageId, SessionId
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:

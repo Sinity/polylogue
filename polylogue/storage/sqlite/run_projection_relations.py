@@ -14,13 +14,13 @@ from typing import Protocol
 
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.types import SessionId
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.runtime import (
     SessionContextSnapshotRecord,
     SessionObservedEventRecord,
     SessionRunRecord,
 )
-from polylogue.types import SessionId
 
 
 class RowLike(Protocol):

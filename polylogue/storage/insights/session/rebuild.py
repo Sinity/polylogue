@@ -16,14 +16,15 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
 from polylogue.core.enums import SessionKind
 from polylogue.core.memory import release_process_memory
+from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
 )
 from polylogue.insights.fallback import FallbackReason
-from polylogue.protocols import ProgressCallback
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.insights.session.aggregates import (
     list_async_provider_day_groups,
@@ -102,7 +103,6 @@ from polylogue.storage.sqlite.queries.session_events import (
     sync_session_event_compaction_counts,
     sync_session_events_batch,
 )
-from polylogue.types import SessionId
 
 _ALL_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key_ms, 0) DESC, session_id"
 _ALL_SESSION_PROFILE_ROWS_SQL = """

@@ -24,6 +24,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
 from polylogue.surfaces.payloads import (
@@ -31,7 +32,6 @@ from polylogue.surfaces.payloads import (
     SessionMessagePayload,
     TargetRefPayload,
 )
-from polylogue.types import ContentHash, MessageId, SessionId
 
 # The canonical envelope field set. Adding a new field to
 # ``SessionMessagePayload`` requires extending this list — that's

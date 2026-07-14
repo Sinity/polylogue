@@ -21,9 +21,9 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
 
 if TYPE_CHECKING:
+    from polylogue.core.types import SessionId
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
-    from polylogue.types import SessionId
 
 
 class RepositoryArchiveSessionMixin:
@@ -65,7 +65,7 @@ class RepositoryArchiveSessionMixin:
 
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None:
         resolved = await self.queries.resolve_id(id_prefix, strict=strict)
-        from polylogue.types import SessionId
+        from polylogue.core.types import SessionId
 
         return SessionId(resolved) if resolved else None
 

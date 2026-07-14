@@ -7,12 +7,12 @@ import os
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.protocols import ProgressCallback, RawValidationStore
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
 from polylogue.pipeline.services.process_pool import process_pool_executor
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
-from polylogue.protocols import ProgressCallback, RawValidationStore
 from polylogue.storage.runtime import RawSessionRecord
 
 logger = get_logger(__name__)

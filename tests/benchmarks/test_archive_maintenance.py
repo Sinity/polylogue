@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from devtools.archive_space_report import build_space_report
-from polylogue.cli.commands.maintenance import _backup_plan_payload
+from polylogue.cli.commands.maintenance._backup_plan import _backup_plan_payload
 from polylogue.storage.blob_gc import run_blob_gc
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from tests.benchmarks.helpers import BenchmarkFixture

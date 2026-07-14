@@ -10,7 +10,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import json_document
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import MessageId, SessionEventId, SessionId
+from polylogue.core.types import MessageId, SessionEventId, SessionId
 
 
 class SessionEvent(BaseModel):

@@ -22,6 +22,7 @@ from polylogue.archive.query.unit_results import query_unit_envelope, query_unit
 from polylogue.archive.topology.edge import TopologyEdgeRecord, TopologyEdgeStatus
 from polylogue.core.enums import LinkType as TopologyEdgeType
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -30,7 +31,6 @@ from polylogue.storage.sqlite.queries.session_links import (
     upsert_session_links,
 )
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
-from polylogue.types import SessionId
 
 _HASH = b"x" * 32
 

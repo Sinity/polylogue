@@ -44,6 +44,7 @@ from typing import Final
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
+from polylogue.core.protocols import ProgressCallback as StageProgressCallback
 from polylogue.logging import get_logger
 from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
@@ -61,7 +62,6 @@ from polylogue.maintenance.targets import (
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
-from polylogue.protocols import ProgressCallback as StageProgressCallback
 from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,

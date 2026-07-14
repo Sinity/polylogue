@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import LinkType as TopologyEdgeType
 from polylogue.core.enums import Origin, TopologyEdgeStatus
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 def branch_type_to_edge_type(

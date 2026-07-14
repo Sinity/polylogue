@@ -16,9 +16,9 @@ from typing import TypeAlias
 from polylogue.api import Polylogue
 from polylogue.core.enums import BlockType, Origin, Role
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
+from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import AttachmentRecord, BlockRecord, MessageRecord, SessionRecord
-from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
 from tests.infra.semantic_facts import SessionFacts
 from tests.infra.storage_records import JSONRecord, SessionBuilder, db_setup
 

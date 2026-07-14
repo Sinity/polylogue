@@ -231,7 +231,7 @@ def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, obj
 
 def _read_user_version(path: Path) -> int | None:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error:
         return None

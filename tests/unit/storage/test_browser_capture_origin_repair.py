@@ -2426,11 +2426,25 @@ def test_record_conflict_blockers_never_clobbers_an_operator_judged_row(tmp_path
         assert judged is not None
         assert judged.status.value == "accepted"
         judged_value = judged.value
+        judged_updated_at_ms = judged.updated_at_ms
 
     # Re-running the detector over the identical evidence must leave the
-    # judged row's status and value exactly as the operator left it.
+    # judged row's status and value exactly as the operator left it. Passing
+    # a distinct now_ms is the genuine negative control: value/status are
+    # deterministically identical across both runs regardless of whether the
+    # guard fires (same evidence -> same computed value, and
+    # upsert_assertion's own terminal-judgment chokepoint separately protects
+    # status), so those two fields alone cannot distinguish "guard
+    # short-circuited before writing" from "guard removed, wrote anyway".
+    # updated_at_ms can: upsert_assertion's ON CONFLICT always sets
+    # updated_at_ms = excluded.updated_at_ms unconditionally, so if the guard
+    # in record_browser_canonical_authority_conflict_blockers were removed
+    # (or its read_assertion_envelope check bypassed), this second call would
+    # still invoke upsert_assertion for the judged row and updated_at_ms
+    # would move to the new now_ms -- an observable difference the guard
+    # must prevent entirely by never calling upsert_assertion at all.
     _report_again, assertion_ids_again = record_browser_canonical_authority_conflict_blockers(
-        _config(tmp_path), [raw_id]
+        _config(tmp_path), [raw_id], now_ms=judged_updated_at_ms + 999_000
     )
     assert assertion_ids_again == assertion_ids
     with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
@@ -2438,6 +2452,7 @@ def test_record_conflict_blockers_never_clobbers_an_operator_judged_row(tmp_path
         assert still_judged is not None
         assert still_judged.status.value == "accepted"
         assert still_judged.value == judged_value
+        assert still_judged.updated_at_ms == judged_updated_at_ms
         # ``judge_assertion_candidate(decision="accept")`` legitimately leaves
         # TWO ``blocker`` rows for this target: the original candidate
         # (mutated in place to ``status=accepted`` by ``mark_assertion_status``,

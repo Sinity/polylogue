@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 
 import aiosqlite
 
+from polylogue.core.types import MessageId, SessionEventId, SessionId
 from polylogue.storage.runtime import SessionEventRecord
-from polylogue.types import MessageId, SessionEventId, SessionId
 
 
 def _payload(value: object) -> dict[str, object]:

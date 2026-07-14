@@ -24,13 +24,13 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import loads
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.types import MessageId
 from polylogue.storage.runtime import (
     AttachmentRecord,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
 )
-from polylogue.types import MessageId
 
 
 def _parse_json_blob(raw: object) -> object | None:

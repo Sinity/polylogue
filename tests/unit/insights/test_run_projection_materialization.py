@@ -19,6 +19,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.insights.session.run_projection_rows import (
     build_session_context_snapshot_records,
@@ -37,7 +38,6 @@ from polylogue.storage.sqlite.queries.session_insight_run_projection_writes impo
     replace_session_observed_events,
     replace_session_runs,
 )
-from polylogue.types import SessionId
 
 _MATERIALIZED_AT = "2026-06-27T00:00:00+00:00"
 

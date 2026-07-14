@@ -19,12 +19,12 @@ already-fetched profiles and session digests and performs no I/O.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.core.refs import EvidenceRef
+from polylogue.core.stats import percentile
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.pathology import PathologyFinding, compile_pathology_report
 from polylogue.insights.postmortem import (
@@ -104,14 +104,6 @@ class PortfolioBundle(ArchiveInsightModel):
     top_pathologies: tuple[PathologyFinding, ...] = ()
 
 
-def _percentile(sorted_values: Sequence[float], q: float) -> float:
-    """Nearest-rank percentile over already-sorted values (deterministic)."""
-    if not sorted_values:
-        return 0.0
-    rank = max(1, math.ceil(q * len(sorted_values)))
-    return float(sorted_values[min(rank, len(sorted_values)) - 1])
-
-
 def _distribution(values: Sequence[float]) -> DistributionStat:
     if not values:
         return DistributionStat()
@@ -121,8 +113,8 @@ def _distribution(values: Sequence[float]) -> DistributionStat:
         count=len(ordered),
         total=round(total, 6),
         minimum=round(float(ordered[0]), 6),
-        p50=round(_percentile(ordered, 0.5), 6),
-        p90=round(_percentile(ordered, 0.9), 6),
+        p50=round(percentile(ordered, 0.5, method="nearest"), 6),
+        p90=round(percentile(ordered, 0.9, method="nearest"), 6),
         maximum=round(float(ordered[-1]), 6),
         mean=round(total / len(ordered), 6),
     )

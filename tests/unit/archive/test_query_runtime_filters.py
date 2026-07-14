@@ -12,7 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 
 

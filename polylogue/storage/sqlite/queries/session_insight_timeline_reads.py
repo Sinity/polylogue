@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 from polylogue.storage.search.query_support import escape_fts5_query

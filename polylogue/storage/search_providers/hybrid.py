@@ -1,47 +1,24 @@
-"""Hybrid search provider combining FTS5 and vector search with RRF fusion.
+"""Reciprocal Rank Fusion — the shared ranking primitive for hybrid retrieval.
 
-This module provides a SearchProvider implementation that combines full-text
-search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fusion.
+polylogue-a7xr.10 (kill-or-adopt the search-provider lane): ``HybridSearchProvider``
+and ``FTS5Provider`` had zero production call sites — production hybrid
+retrieval (``cli/archive_query.py``, ``archive/query/archive_execution.py``,
+``archive/query/retrieval_search.py``) has always fused FTS and vector
+results inline against live query-plan state rather than through those
+classes, which existed only in their own tests. Killed the unproven classes
+(this module used to also define ``HybridSearchProvider``); kept
+:func:`reciprocal_rank_fusion` — the one piece of this module production code
+actually imports (directly from here, and via
+``polylogue.storage.search_providers.reciprocal_rank_fusion``).
+
+See ``polylogue.storage.search_providers.hybrid_sessions`` for the companion
+session-resolution SQL helpers, which are also kept — not because anything
+calls them today, but because they are the target for the still-open dedup
+fix (session resolution is currently reimplemented inline in
+``archive_execution.py`` rather than reusing this module's helper).
 """
 
 from __future__ import annotations
-
-import sqlite3
-from contextlib import AbstractContextManager
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-from polylogue.storage.search.models import SessionSearchResult
-from polylogue.storage.search_providers.hybrid_factory import create_hybrid_provider
-from polylogue.storage.search_providers.hybrid_sessions import (
-    _resolve_ranked_session_hits,
-    _resolve_ranked_session_ids,
-)
-from polylogue.storage.sqlite.connection import (
-    open_connection as _open_connection,
-)
-from polylogue.storage.sqlite.connection import (
-    open_read_connection,
-)
-
-if TYPE_CHECKING:
-    from polylogue.protocols import VectorProvider
-    from polylogue.storage.runtime import MessageRecord
-    from polylogue.storage.search_providers.fts5 import FTS5Provider
-
-
-# ---------------------------------------------------------------------------
-# Reciprocal Rank Fusion (formerly hybrid_rrf.py)
-# ---------------------------------------------------------------------------
-
-
-def open_connection(
-    db_path: Path | str | sqlite3.Connection | None,
-) -> AbstractContextManager[sqlite3.Connection]:
-    """Return a readable connection for either DB paths or injected sqlite handles."""
-    if isinstance(db_path, sqlite3.Connection):
-        return _open_connection(db_path)
-    return open_read_connection(db_path)
 
 
 def reciprocal_rank_fusion(
@@ -74,143 +51,4 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda x: (-x[1], x[0]))
 
 
-class HybridSearchProvider:
-    """SearchProvider combining FTS5 and vector search with RRF fusion.
-
-    This provider executes both full-text search (FTS5) and semantic vector
-    search (sqlite-vec) in parallel, then combines results using Reciprocal Rank
-    Fusion to produce a unified ranking.
-
-    Hybrid search leverages the complementary strengths of both approaches:
-    - FTS5: Exact keyword matching, phrase search, boolean operators
-    - Vector: Semantic similarity, synonym handling, concept matching
-
-    Conforms to the ``SearchProvider`` protocol (``search()`` returns ``list[str]``).
-    Use ``search_scored()`` when RRF scores are needed.
-
-    Attributes:
-        fts_provider: FTS5 provider for full-text search
-        vector_provider: Vector provider for semantic search (SqliteVecProvider)
-        rrf_k: RRF constant (default: 60)
-    """
-
-    def __init__(
-        self,
-        fts_provider: FTS5Provider,
-        vector_provider: VectorProvider,
-        *,
-        rrf_k: int = 60,
-    ) -> None:
-        """Initialize hybrid search provider.
-
-        Args:
-            fts_provider: FTS5 provider for full-text search
-            vector_provider: Vector provider for semantic search
-            rrf_k: RRF fusion constant (default: 60)
-        """
-        self.fts_provider = fts_provider
-        self.vector_provider = vector_provider
-        self.rrf_k = rrf_k
-
-    def index(self, messages: list[MessageRecord]) -> None:
-        """Index messages via the underlying FTS5 provider.
-
-        Delegates to the FTS5 provider's index method, conforming to
-        the SearchProvider protocol.
-        """
-        self.fts_provider.index(messages)
-
-    def search(self, query: str) -> list[str]:
-        """Execute hybrid search conforming to SearchProvider protocol.
-
-        Returns message IDs without scores. For scored results, use
-        ``search_scored()``.
-
-        Args:
-            query: Search query string
-
-        Returns:
-            List of message IDs, ordered by descending RRF score.
-        """
-        return [msg_id for msg_id, _score in self.search_scored(query)]
-
-    def search_scored(self, query: str, limit: int = 20) -> list[tuple[str, float]]:
-        """Execute hybrid search combining FTS5 and vector search.
-
-        Runs both search methods and combines results using RRF fusion.
-        Returns message IDs with their fused scores.
-
-        Args:
-            query: Search query string
-            limit: Maximum number of results to return
-
-        Returns:
-            List of (message_id, rrf_score) tuples, sorted by descending score.
-        """
-        # Get FTS5 results (returns message IDs)
-        # Fetch more than limit to ensure good fusion
-        fts_limit = limit * 3
-        fts_message_ids = self.fts_provider.search(query, limit=fts_limit)
-
-        # Convert to (id, rank_score) format - higher rank = higher score
-        fts_results = [(msg_id, 1.0 / (i + 1)) for i, msg_id in enumerate(fts_message_ids)]
-
-        # Get vector search results
-        vec_results = self.vector_provider.query(query, limit=fts_limit)
-
-        # Combine using RRF
-        fused = reciprocal_rank_fusion(
-            fts_results,
-            vec_results,
-            k=self.rrf_k,
-        )
-
-        return fused[:limit]
-
-    def search_sessions(self, query: str, limit: int = 20, providers: list[str] | None = None) -> list[str]:
-        """Search and return unique session IDs.
-
-        Executes hybrid search, then deduplicates by session.
-        Returns session IDs that had matching messages.
-
-        Args:
-            query: Search query string
-            limit: Maximum number of sessions to return
-
-        Returns:
-            List of session IDs, ordered by best-matching message score.
-        """
-        return self.search_session_hits(query, limit=limit, providers=providers).session_ids()
-
-    def search_session_hits(
-        self,
-        query: str,
-        limit: int = 20,
-        providers: list[str] | None = None,
-    ) -> SessionSearchResult:
-        """Search and return ordered session hits."""
-        if limit <= 0:
-            return SessionSearchResult(hits=[])
-
-        # Get message-level results (scored for ranking)
-        message_results = self.search_scored(query, limit=limit * 3)
-
-        if not message_results:
-            return SessionSearchResult(hits=[])
-
-        with open_connection(self.fts_provider.db_path) as conn:
-            return _resolve_ranked_session_hits(
-                conn,
-                message_results=message_results,
-                limit=limit,
-                scope_names=providers,
-            )
-
-
-__all__ = [
-    "HybridSearchProvider",
-    "_resolve_ranked_session_hits",
-    "_resolve_ranked_session_ids",
-    "create_hybrid_provider",
-    "reciprocal_rank_fusion",
-]
+__all__ = ["reciprocal_rank_fusion"]

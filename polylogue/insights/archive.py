@@ -15,7 +15,7 @@ from polylogue.archive.semantic.pricing import (
     CostUsagePayload,
 )
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,

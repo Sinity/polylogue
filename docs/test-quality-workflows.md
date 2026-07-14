@@ -11,14 +11,14 @@ Current registry snapshot:
 - contract lanes: `28`
 - live lanes: `19`
 - composite lanes: `24`
-- mutation campaigns: `19`
+- mutation campaigns: `18`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `111`
+- scenario projections: `110`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
   - inferred-corpus-scenario: `8`
-  - mutation-campaign: `19`
+  - mutation-campaign: `18`
   - synthetic-benchmark: `6`
   - validation-lane: `71`
 
@@ -245,8 +245,7 @@ Durable mutation ledgers live under `.local/mutation-campaigns/`; workflow polic
 | `daemon-http` | `polylogue/daemon/http.py` | `tests/unit/daemon/test_daemon_http.py` | Daemon HTTP API endpoint handler contracts |
 | `drive-client` | `polylogue/sources/drive/source.py`<br>`polylogue/sources/drive/gateway.py`<br>`polylogue/sources/drive/auth.py`<br>`polylogue/sources/drive/__init__.py` | `tests/unit/sources/test_drive_source_client.py`<br>`tests/unit/sources/test_drive_gateway.py`<br>`tests/unit/sources/test_drive_auth.py`<br>`tests/unit/sources/test_drive_ops.py` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `filters` | `polylogue/archive/filter/filters.py` | `tests/unit/core/test_filters_props.py` | SessionFilter semantics and summary/picker contracts |
-| `fts5` | `polylogue/storage/search_providers/fts5.py` | `tests/unit/storage/test_fts5.py` | FTS5 query escaping and session search semantics |
-| `hybrid` | `polylogue/storage/search_providers/hybrid.py` | `tests/unit/storage/test_hybrid.py`<br>`tests/unit/storage/test_hybrid_laws.py` | Hybrid search fusion and ranked-session resolution |
+| `hybrid` | `polylogue/storage/search_providers/hybrid.py` | `tests/unit/core/test_filters_props.py`<br>`tests/unit/archive/test_query_search_runtime.py` | Reciprocal Rank Fusion — the shared ranking primitive production hybrid retrieval composes directly (polylogue-a7xr.10 removed the unproven FTS5Provider/HybridSearchProvider classes and their fts5/hybrid campaigns; only reciprocal_rank_fusion in hybrid.py remains). |
 | `json` | `polylogue/core/json.py` | `tests/unit/core/test_json.py` | JSON serialization and parser laws |
 | `models` | `polylogue/archive/models.py` | `tests/unit/core/test_models.py`<br>`tests/unit/core/test_message_laws.py`<br>`tests/unit/core/test_session_semantics.py` | Message/Session semantic helpers and pairing logic |
 | `pipeline-services` | `polylogue/pipeline/services` | `tests/unit/pipeline/test_acquisition_streams.py`<br>`tests/unit/pipeline/test_parsing_service.py`<br>`tests/unit/pipeline/test_indexing.py`<br>`tests/unit/pipeline/test_ingest_batch.py`<br>`tests/unit/pipeline/test_stage_independence.py`<br>`tests/unit/pipeline/test_resilience.py` | Acquire/validate/parse planning and stage contracts |
@@ -328,8 +327,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `mutation-campaign` | `daemon-http` | — | — | — | — | `mutation` | Daemon HTTP API endpoint handler contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `mutation-campaign` | `filters` | — | — | — | — | `mutation` | SessionFilter semantics and summary/picker contracts |
-| `mutation-campaign` | `fts5` | — | — | — | — | `mutation` | FTS5 query escaping and session search semantics |
-| `mutation-campaign` | `hybrid` | — | — | — | — | `mutation` | Hybrid search fusion and ranked-session resolution |
+| `mutation-campaign` | `hybrid` | — | — | — | — | `mutation` | Reciprocal Rank Fusion — the shared ranking primitive production hybrid retrieval composes directly (polylogue-a7xr.10 removed the unproven FTS5Provider/HybridSearchProvider classes and their fts5/hybrid campaigns; only reciprocal_rank_fusion in hybrid.py remains). |
 | `mutation-campaign` | `json` | — | — | — | — | `mutation` | JSON serialization and parser laws |
 | `mutation-campaign` | `models` | — | — | — | — | `mutation` | Message/Session semantic helpers and pairing logic |
 | `mutation-campaign` | `pipeline-services` | — | — | — | — | `mutation` | Acquire/validate/parse planning and stage contracts |

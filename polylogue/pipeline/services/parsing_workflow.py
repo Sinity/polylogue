@@ -19,8 +19,8 @@ from polylogue.pipeline.services.parsing_models import IngestResult, IngestState
 
 if TYPE_CHECKING:
     from polylogue.config import Source
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.protocols import ProgressCallback
 
 logger = get_logger(__name__)
 

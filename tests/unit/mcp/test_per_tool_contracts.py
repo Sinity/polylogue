@@ -559,7 +559,7 @@ class TestMutationToolArgumentContracts:
         # envelope OR a typed ``PolylogueError`` (FastMCP marshals the
         # latter into ``isError=True`` for the MCP client). Either way,
         # no raw traceback bubbles out.
-        from polylogue.errors import PolylogueError
+        from polylogue.core.errors import PolylogueError
 
         try:
             result = invoke_surface(fn, **kwargs)
