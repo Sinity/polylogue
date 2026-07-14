@@ -257,7 +257,7 @@ back to the existing brain-artifact metadata walk. Both paths emit normalized
 |-------------|----------|------|
 | `Polylogue` | `api/__init__.py` | Async entry point. Wraps storage + search + pipeline. |
 | `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (10 mixins: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology). |
-| `VectorProvider` protocol | `protocols.py` | `SqliteVecProvider` implementation (sqlite-vec + Voyage AI embeddings). FTS/hybrid retrieval has no provider abstraction — production lexical search queries FTS5 directly and hybrid retrieval fuses results inline (`reciprocal_rank_fusion` in `storage/search_providers/hybrid.py`) against live query-plan state (`archive/query/archive_execution.py`, `cli/archive_query.py`); a prior `SearchProvider` protocol with FTS5/Hybrid provider classes was removed (polylogue-a7xr.10) after an audit found zero production consumers. |
+| `VectorProvider` protocol | `core/protocols.py` | `SqliteVecProvider` implementation (sqlite-vec + Voyage AI embeddings). FTS/hybrid retrieval has no provider abstraction — production lexical search queries FTS5 directly and hybrid retrieval fuses results inline (`reciprocal_rank_fusion` in `storage/search_providers/hybrid.py`) against live query-plan state (`archive/query/archive_execution.py`, `cli/archive_query.py`); a prior `SearchProvider` protocol with FTS5/Hybrid provider classes was removed (polylogue-a7xr.10) after an audit found zero production consumers. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
 | `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
@@ -404,21 +404,112 @@ and the cross-repo blocker on live Sinex transport.
 
 ## Placement Rules
 
-### Substrate (archive meaning)
-- `lib/` — domain types, invariants, shared primitives (no I/O, no storage)
-- `storage/` — SQLite backends, repositories, FTS, search providers
-- `sources/` — provider detection, parsing, acquisition
-- `pipeline/` — stage execution, daemon ingestion, validation, and indexing
-- `insights/` — derived read models, session insights, analytics
-- `operations/` — operation specs, artifact graph, declared runtime contracts
+**Package topology legibility (polylogue-c9y).** `polylogue/` has ~32
+top-level subpackages plus a handful of loose top-level modules
+(`__init__.py`, `__main__.py`, `config.py`, `version.py`, `assets.py`,
+`logging.py`, `services.py`). The boundaries between several packages used to
+be folklore — this section is a decision procedure, not just a description,
+so a newcomer or agent can predict where a new module goes without asking.
+Read this before creating a new top-level package; if none of the buckets
+below fit, that is a signal to extend an existing package, not proof a new
+top-level package is warranted.
 
-### Surfaces (presentation only)
-- `cli/` — Click commands, shared helpers, output formatting
-- `mcp/` — MCP server tools
-- `api/` — async library API
-- `rendering/` — markdown/HTML renderers
-- `ui/` — TUI, dashboard
-- `daemon/` — daemon convergence, HTTP API, and web reader
+### Decision procedure: "where does this module go?"
+
+Ask in this order — the first `yes` decides:
+
+1. **Does it define a shared type/protocol/error with no I/O of its own,
+   used by three or more otherwise-unrelated packages?** → `core/`. (`core/`
+   absorbed the former top-level `types.py`, `protocols.py`, `errors.py` —
+   the loose-module count for shared identifiers is now zero; new shared
+   primitives join `core/` directly rather than starting a fifth loose
+   module.)
+2. **Does it read or write SQLite directly (schema, connections, SQL
+   strings, migrations)?** → `storage/`. This is the only package allowed to
+   hold raw SQL. If your module needs a query, it either lives in
+   `storage/` or calls into something that does — it does not open a
+   connection itself.
+3. **Does it interpret archive DOMAIN MEANING over storage — identity,
+   filtering, the query DSL, topology/lineage composition, write-effect
+   choke points — without owning schema?** → `archive/`. `archive/` sits
+   above `storage/`: it composes storage reads/writes into session-shaped
+   answers (`SessionFilter`, `archive/query/`, `archive/topology/`,
+   `archive/write_effects.py`) but never writes a `CREATE TABLE` or a bare
+   `conn.execute("SELECT ...")` against a table it doesn't already have a
+   `storage/` accessor for.
+4. **Is it a multi-step, operator-facing WORKFLOW that orchestrates several
+   archive/storage calls into one operation (import, export, backup)?** →
+   `operations/`. Operations compose `archive/`+`storage/` calls; they do
+   not contain new domain semantics or new SQL.
+5. **Is it INTEGRITY REPAIR — detecting and fixing rows that violate an
+   invariant the write path should have prevented?** → `maintenance/`.
+   `maintenance/` is diagnostic-and-corrective, never the primary write
+   path; a normal write that needs new semantics belongs in `archive/` or
+   `storage/`, not a `maintenance/` shim that "fixes it up after."
+6. **Does it present data to a human or agent (CLI/MCP/web/API
+   response-shaping) with no persistence of its own?** → a *surface*
+   package (`cli/`, `mcp/`, `api/`, `daemon/` for the HTTP/web-reader
+   layer, `rendering/` for markdown/HTML string building). Surfaces may not
+   import substrate internals directly (`docs/plans/layering.yaml`
+   enforces this) — they call `archive/`, `storage/repository/`, or
+   `insights/` accessors, never raw SQL or storage-tier dataclasses.
+7. **Is it a MATERIALIZED derived read model (a table populated by
+   convergence, meant to be read back cheaply) or a pure COMPUTATION
+   (a measure, a statistic, a registry entry with no table of its own)?**
+   → see the insights-vs-analytics rule below.
+8. **Does it only exist to make the repo verifiable (tests, lints,
+   generated-surface rendering, fixtures)?** → `devtools/`, `tests/`,
+   `demo/`, or `scenarios/` per their existing scope — never a new
+   top-level package.
+
+### Worked examples
+
+| New module idea | Placement | Why |
+| --- | --- | --- |
+| A helper that batches N sessions into one `INSERT ... VALUES` statement | `storage/` | Raw SQL, no domain interpretation — rule 2. |
+| A function that decides whether a session is a "fork" vs a "resume" from `session_links` rows already read | `archive/topology/` | Domain meaning over already-fetched storage rows — rule 3. |
+| A CLI command that runs "detect orphaned messages, then re-run FTS repair, then print a summary" | `operations/` if it is a *new* multi-step orchestration reusable outside the CLI, otherwise a thin `cli/commands/` handler that calls existing `operations/` — rule 4, then rule 6 for the handler shell. |
+| A routine that finds `messages` rows whose `session_id` no longer exists in `sessions` and deletes them | `maintenance/` | Corrective repair for a write-path invariant violation — rule 5. |
+| A new Pydantic response model for an MCP tool's JSON payload | `mcp/payloads.py` (a surface package) | Presentation shaping, no persistence — rule 6. |
+| A shared `dataclass` used by `archive/`, `storage/`, and `mcp/` to represent "an evidence reference" with no I/O | `core/` | Shared type, 3+ unrelated consumers, no I/O — rule 1. |
+
+### Insights vs. analytics vocabulary rule
+
+This distinction must be decided **before** `polylogue/analytics/` is
+created (it does not exist yet; this rule is written pre-emptively per
+polylogue-c9y so the first PR that adds it has somewhere to look):
+
+- **`insights/`** = materialized derived **read models** — storage-backed,
+  rebuildable rows written by a convergence stage or write-effect
+  (`storage/insights/session/profiles.py`, `timeline/`, `topology/derivation.py`).
+  An insight has a table (or a view) and a staleness/rebuild story.
+- **`analytics/`** (future) = **computation** — measures, statistics,
+  registries of pure functions over already-materialized data. An analytic
+  is composable and stateless: it takes rows in, returns a number/summary
+  out, and owns no table of its own.
+- **The connecting rule**: an insight MAY be the materialization of an
+  analytic (a convergence stage calls an `analytics/` measure and stores
+  the result as an `insights/` row), but an analytic must never reach back
+  into `storage/` to fetch its own inputs — it receives them as arguments.
+  This keeps analytics testable in isolation and keeps `insights/` the
+  single place that knows about staleness/rebuild.
+
+### Presentation-layer consolidation (target, not yet executed)
+
+`surfaces/`, `rendering/`, `ui/`, and `cli/` currently split presentation
+four ways, and `surfaces/payloads.py` is itself a large, growing module.
+Target topology (execute opportunistically alongside surface work, not as a
+big-bang move — recorded here so the direction is not re-litigated per PR):
+
+- `ui/` (the Textual TUI) is slated for deletion (polylogue-f94, decided
+  KILL by the operator 2026-07-03) — once that lands, `ui/` should hold only
+  the web-reader-adjacent assets, if anything, not compete with `daemon/`'s
+  web-shell.
+- `rendering/` stays as the markdown/HTML string-building layer; it does
+  not grow response-shaping logic that belongs in `surfaces/`.
+- `surfaces/` payload shaping is the target home for response models
+  currently duplicated per-surface; new payload types join `surfaces/`
+  rather than a bespoke per-tool model living in `mcp/` or `cli/`.
 
 ### Verification (repo health)
 - `devtools/` — operator tooling, lints, campaigns, rendering
@@ -428,7 +519,17 @@ and the cross-repo blocker on live Sinex transport.
 ### Cross-cutting
 - `schemas/` — provider schemas, schema inference, validation
 - `scenarios/` — synthetic corpus, scenario families
+- `core/` — shared types, protocols, errors, enums, identity-law primitives
+  (no I/O; see rule 1 above)
 
 ### Key rules
 - Surfaces may not import substrate internals directly (see layering.yaml).
-- New semantics go into substrate or insights first, then surfaces adapt.
+- New semantics go into substrate (`archive/`/`storage/`) or `insights/`
+  first, then surfaces adapt.
+- A module that doesn't clearly satisfy one of the eight numbered questions
+  above joins an existing package's most-specific matching submodule; it is
+  not grounds for a new top-level package. `topology-target.yaml`'s
+  placement-rule audit (`devtools render topology-status`) is the
+  mechanical backstop — it enforces the *current* tree faithfully, but this
+  decision procedure is what keeps the current tree from drifting further
+  from a legible one.
