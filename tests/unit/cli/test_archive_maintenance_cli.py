@@ -1491,6 +1491,159 @@ def test_legacy_browser_native_id_repair_cli_is_bounded_and_requires_receipt_pro
     assert "--receipt" in missing_receipt.output
 
 
+def test_browser_canonical_authority_conflicts_cli_is_read_only_by_default(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    raw_id = "d" * 64
+    dry_run = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "browser-canonical-authority-conflicts",
+            "--raw-id",
+            raw_id,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert dry_run.exit_code == 0
+    payload = json.loads(dry_run.output)
+    assert payload["requested_count"] == 1
+    assert "assertion_ids" not in payload
+
+    plain = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "browser-canonical-authority-conflicts", "--raw-id", raw_id],
+        catch_exceptions=False,
+    )
+    assert plain.exit_code == 0
+    assert "Blocker:" not in plain.output
+
+
+def test_browser_canonical_authority_conflicts_cli_record_calls_the_recording_path(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """``--record`` routes through ``record_browser_canonical_authority_conflict_blockers``.
+
+    Exercises the CLI adapter's ``--record`` branch (polylogue-hleq NIT): the
+    JSON payload gains an ``assertion_ids`` key (absent without ``--record``,
+    per the sibling read-only test) and the plain-output loop over
+    ``assertion_ids`` runs without error. A raw id with no resolvable session
+    (this test's fixture) is exactly the shape
+    ``record_browser_canonical_authority_conflict_blockers`` itself declines
+    to persist a blocker for (no ``session_id`` to target), so this proves the
+    CLI calls the recording function and surfaces its real (empty) result
+    rather than fabricating one; the deep persistence/idempotency/judged-row-
+    protection behavior of the recording function itself is covered at the
+    storage layer in ``test_browser_capture_origin_repair.py``.
+    """
+    archive_root = cli_workspace["archive_root"]
+    raw_id = "e" * 64
+    dry_run = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "browser-canonical-authority-conflicts",
+            "--raw-id",
+            raw_id,
+            "--record",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert dry_run.exit_code == 0
+    payload = json.loads(dry_run.output)
+    assert payload["assertion_ids"] == []
+    with sqlite3.connect(archive_root / "user.db") as user_conn:
+        count = user_conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'blocker'").fetchone()[0]
+        assert count == 0
+
+    plain = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "browser-canonical-authority-conflicts", "--raw-id", raw_id, "--record"],
+        catch_exceptions=False,
+    )
+    assert plain.exit_code == 0
+    assert "Blocker:" not in plain.output
+
+
+def test_duplicate_raw_identity_cli_dry_run_is_bounded_and_requires_receipt_proof(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    del cli_workspace
+    stale_raw_id = "f" * 64
+    canonical_raw_id = "0" * 64
+    dry_run = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "duplicate-raw-identity",
+            "--pair",
+            f"{stale_raw_id}:{canonical_raw_id}",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert dry_run.exit_code == 0
+    payload = json.loads(dry_run.output)
+    assert payload["mode"] == "dry-run"
+    assert payload["requested_count"] == 1
+    assert payload["ineligible_count"] == 1
+    assert payload["items"][0]["stale_raw_id"] == stale_raw_id
+    assert payload["items"][0]["canonical_raw_id"] == canonical_raw_id
+
+    malformed = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "duplicate-raw-identity", "--pair", "not-a-pair"],
+    )
+    assert malformed.exit_code == 2
+    assert "STALE_RAW_ID:CANONICAL_RAW_ID" in malformed.output
+
+    missing_receipt = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "duplicate-raw-identity",
+            "--pair",
+            f"{stale_raw_id}:{canonical_raw_id}",
+            "--apply",
+        ],
+    )
+    assert missing_receipt.exit_code == 2
+    assert "--receipt" in missing_receipt.output
+    missing_proof = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "duplicate-raw-identity",
+            "--pair",
+            f"{stale_raw_id}:{canonical_raw_id}",
+            "--apply",
+            "--receipt",
+            "repair.jsonl",
+        ],
+    )
+    assert missing_proof.exit_code == 2
+    assert "--proof-digest" in missing_proof.output
+
+
 def test_archive_read_cli_lists_archive_sessions(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
