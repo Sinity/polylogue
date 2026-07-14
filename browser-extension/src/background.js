@@ -74,13 +74,52 @@ async function withExtensionInstanceAttribution(envelope) {
   };
 }
 
+// polylogue-06zm: best-effort mirror of the backfill-ledger checkpoint to the
+// local receiver. IndexedDB is always the fast primary source and the local
+// chrome.storage.local copy (BACKFILL_RECOVERY_CHECKPOINT_KEY, jlme.4) is the
+// first fallback; this receiver mirror only matters when BOTH of those are
+// gone (a browser profile that was fully destroyed/reinstalled, not merely
+// restarted). A mirror failure must never surface as a checkpoint error --
+// see BackfillCoordinator.persistCheckpoint(), which awaits only the
+// checkpoint() callback itself and already tolerates that throwing.
+function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
+  postJson(
+    "/v1/backfill-checkpoint",
+    { extension_instance_id: instanceId, checkpoint },
+    null,
+    PROVIDER_REQUEST_TIMEOUT_MS,
+  ).catch(() => undefined);
+}
+
+async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
+  try {
+    const remote = await getJson(
+      `/v1/backfill-checkpoint?extension_instance_id=${encodeURIComponent(instanceId)}`,
+      PROVIDER_REQUEST_TIMEOUT_MS,
+    );
+    if (remote?.checkpoint) return store.restoreRecoveryCheckpoint(remote.checkpoint);
+  } catch {
+    // No receiver-mirrored checkpoint reachable or available -- fall through
+    // to whatever local state already exists (typically none, the same
+    // empty-ledger outcome as before this fallback existed).
+  }
+  return { restored: 0, reason: "checkpoint_unavailable" };
+}
+
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
     const candidate = (async () => {
       const store = new IndexedDbBackfillStore();
-      const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
       const instanceId = await extensionInstanceId();
+      const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
+      const localRestore = await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      if (localRestore.reason === "checkpoint_unavailable") {
+        // Neither IndexedDB nor the local chrome.storage.local mirror had a
+        // usable checkpoint (restoreRecoveryCheckpoint already refuses to
+        // touch a non-empty IndexedDB, so this only ever runs when there is
+        // truly nothing local to lose).
+        await restoreBackfillCheckpointFromReceiver(store, instanceId);
+      }
       return new BackfillCoordinator({
         store,
         adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
@@ -92,7 +131,10 @@ async function backfillCoordinator() {
           true,
         ),
         receiverPreflight: backfillReceiverPreflight,
-        checkpoint: async (checkpoint) => chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint }),
+        checkpoint: async (checkpoint) => {
+          await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
+        },
         alarms: chrome.alarms,
         instanceId,
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
