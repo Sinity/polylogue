@@ -83,6 +83,37 @@ def test_verdict_mix_rates_are_preserved() -> None:
     assert report.n_total_verdicts == 4
 
 
+def test_order_swapped_items_with_matching_winner_are_treated_as_agreement() -> None:
+    """Blinding randomizes left/right placement per judgment; the same real
+    winner recorded as PREFER_LEFT under one item order and PREFER_RIGHT
+    under the reversed order must agree, not be misread as a raw-label
+    mismatch."""
+
+    gold = [_judgment(_GOLD_JUDGE, ("finding:a", "finding:b"), ComparativeVerdict.PREFER_LEFT, "gold-1")]
+    candidates = [
+        # opposite left/right placement, but items[1] ("finding:a") still wins
+        _judgment(_AGENT_CTX_A, ("finding:b", "finding:a"), ComparativeVerdict.PREFER_RIGHT, "a-1"),
+    ]
+    reports = compute_calibration(candidates, gold)
+    key = CalibrationKey(actor_ref="agent:sonnet", execution_context_id="ctx-a", dimension="correctness")
+    assert reports[key].agreement_rate == 1.0
+
+
+def test_order_swapped_items_with_same_raw_label_but_different_winner_disagree() -> None:
+    """Same raw PREFER_LEFT label under reversed item order names the
+    opposite winner and must be scored as disagreement."""
+
+    gold = [_judgment(_GOLD_JUDGE, ("finding:a", "finding:b"), ComparativeVerdict.PREFER_LEFT, "gold-1")]
+    candidates = [
+        # same raw label as gold, but items order is reversed so the winner
+        # (items[0] = "finding:b") is actually the opposite of gold's winner
+        _judgment(_AGENT_CTX_A, ("finding:b", "finding:a"), ComparativeVerdict.PREFER_LEFT, "a-1"),
+    ]
+    reports = compute_calibration(candidates, gold)
+    key = CalibrationKey(actor_ref="agent:sonnet", execution_context_id="ctx-a", dimension="correctness")
+    assert reports[key].agreement_rate == 0.0
+
+
 def test_no_cross_context_pooling_function_is_exposed() -> None:
     """AC: reports refuse unsupported cross-context pooling -- there is no pooling API."""
 

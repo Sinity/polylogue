@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from polylogue.core.enums import ComparativeVerdict
-from polylogue.insights.judgment.types import ComparativeJudgment, VerdictValue
+from polylogue.insights.judgment.types import ComparativeJudgment, decompose_to_pairwise
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +47,35 @@ def _overlap_key(judgment: ComparativeJudgment) -> tuple[str, ...]:
     return (judgment.dimension, *sorted(judgment.items))
 
 
-def _verdicts_agree(a: VerdictValue, b: VerdictValue) -> bool:
-    if isinstance(a, ComparativeVerdict) and isinstance(b, ComparativeVerdict):
-        return a is b
-    if isinstance(a, ComparativeVerdict) or isinstance(b, ComparativeVerdict):
-        return False
-    return tuple(a) == tuple(b)
+def _winner_identity(judgment: ComparativeJudgment) -> tuple[str, ...] | str | ComparativeVerdict:
+    """Order-independent identity for one verdict.
+
+    Blinding randomizes which item lands at ``items[0]`` (left) vs
+    ``items[1]`` (right) per judgment, so ``PREFER_LEFT``/``PREFER_RIGHT``
+    are only meaningful relative to *this judgment's own* ``items`` order --
+    the same real-world winner can be recorded as ``PREFER_LEFT`` in one
+    judgment and ``PREFER_RIGHT`` in another that happened to draw the
+    opposite left/right placement. Resolve to the winning item ref (via
+    :func:`decompose_to_pairwise`) before comparing two judgments on the
+    same (order-independent, see :func:`_overlap_key`) comparison. An
+    n-wise ordering verdict already names item refs best-to-worst, so it is
+    inherently order-independent and compared as-is. A non-directed verdict
+    (tie/incomparable/abstain/insufficient-evidence) carries no winner and
+    is compared by its own label.
+    """
+
+    if judgment.is_ordering:
+        return tuple(judgment.verdict)
+    verdict = judgment.verdict
+    assert isinstance(verdict, ComparativeVerdict)
+    if verdict in (ComparativeVerdict.PREFER_LEFT, ComparativeVerdict.PREFER_RIGHT):
+        (component,) = decompose_to_pairwise(judgment)
+        return component.winner_ref
+    return verdict
+
+
+def _verdicts_agree(candidate: ComparativeJudgment, gold: ComparativeJudgment) -> bool:
+    return _winner_identity(candidate) == _winner_identity(gold)
 
 
 def compute_calibration(
@@ -66,9 +89,9 @@ def compute_calibration(
     overlapping comparisons only.
     """
 
-    gold_by_key: dict[tuple[str, ...], VerdictValue] = {}
+    gold_by_key: dict[tuple[str, ...], ComparativeJudgment] = {}
     for gold in gold_judgments:
-        gold_by_key[_overlap_key(gold)] = gold.verdict
+        gold_by_key[_overlap_key(gold)] = gold
 
     grouped: dict[CalibrationKey, list[ComparativeJudgment]] = defaultdict(list)
     for judgment in candidate_judgments:
@@ -90,11 +113,11 @@ def compute_calibration(
         overlap_agree = 0
         overlap_total = 0
         for judgment in judgments:
-            gold_verdict = gold_by_key.get(_overlap_key(judgment))
-            if gold_verdict is None:
+            gold_judgment = gold_by_key.get(_overlap_key(judgment))
+            if gold_judgment is None:
                 continue
             overlap_total += 1
-            if _verdicts_agree(judgment.verdict, gold_verdict):
+            if _verdicts_agree(judgment, gold_judgment):
                 overlap_agree += 1
 
         reports[key] = CalibrationReport(
