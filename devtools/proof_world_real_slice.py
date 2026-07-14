@@ -42,7 +42,51 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from polylogue.api import Polylogue
+
+
+class _MessageLike(Protocol):
+    """Structural shape ``_flatten_session_text`` reads from a message.
+
+    A ``Protocol`` (not the concrete ``polylogue.archive.session.domain_models
+    .Session``/``Message`` classes) so the real session objects returned by
+    ``Polylogue.get_session`` and the lightweight duck-typed test doubles in
+    ``tests/unit/devtools/test_proof_world_real_slice.py`` both satisfy the
+    parameter type structurally, without the tests needing to construct or
+    subclass the full domain model. Declared as read-only ``@property``
+    members rather than plain attributes: mypy checks plain-attribute
+    Protocol members *invariantly* (both read and write), which the real
+    ``Message.blocks: list[dict[str, object]]`` fails against a plain
+    ``blocks: object`` attribute even though every value it can hold is
+    assignable to ``object``. Properties are read-only, so the check is
+    covariant instead and both the real model and the test doubles conform.
+    """
+
+    @property
+    def text(self) -> str | None: ...
+
+    @property
+    def blocks(self) -> object: ...
+
+
+class _SessionLike(Protocol):
+    """Structural shape ``_flatten_session_text`` reads from a session.
+
+    ``Iterable``, not ``Sequence`` — the real ``Session.messages`` is a
+    ``MessageCollection`` that supports iteration but is not a nominal
+    ``collections.abc.Sequence`` subclass, and ``Sequence`` is a concrete ABC
+    in typeshed (not a structural ``Protocol``) so mypy would reject it here
+    even though the object is sequence-*shaped*. Only iteration is needed.
+    """
+
+    @property
+    def messages(self) -> Iterable[_MessageLike]: ...
+
 
 # Patterns that indicate a live secret/credential shape. Kept intentionally
 # narrow (favor false negatives over drowning the report in noise) — this is
@@ -196,7 +240,7 @@ def scan_text(text: str) -> list[PatternHit]:
     return hits
 
 
-def _flatten_session_text(session: Any) -> str:
+def _flatten_session_text(session: _SessionLike) -> str:
     """Flatten every message's text and structured blocks to one string."""
 
     parts: list[str] = []
@@ -208,31 +252,49 @@ def _flatten_session_text(session: Any) -> str:
     return "\n".join(parts)
 
 
+async def _screen_session_with(poly: Polylogue, session_id: str) -> tuple[SessionScreeningResult, str]:
+    """Screen one session through an already-open ``Polylogue`` instance."""
+
+    session = await poly.get_session(session_id)
+    if session is None:
+        raise ValueError(f"session not found in archive: {session_id}")
+    text = _flatten_session_text(session)
+    word_count = len(text.split())
+    result = SessionScreeningResult(
+        session_id=str(session.id),
+        origin=str(session.origin),
+        title=session.title,
+        created_at=str(session.created_at) if session.created_at else None,
+        message_count=len(session.messages),
+        word_count=word_count,
+        hits=scan_text(text),
+    )
+    return result, text
+
+
 async def screen_session(archive_root: Path, session_id: str) -> tuple[SessionScreeningResult, str]:
-    """Load one session read-only and screen it. Returns (result, transcript_text)."""
+    """Load one session read-only and screen it. Returns (result, transcript_text).
+
+    Opens and closes its own scoped ``Polylogue`` instance — the convenient
+    single-session entry point used by tests and one-off callers. Batch
+    callers should use :func:`screen_sessions`, which opens the archive once
+    and reuses the same instance across every session id instead of paying
+    the open/close cost per id.
+    """
 
     from polylogue.api import Polylogue
 
     async with Polylogue(archive_root=archive_root) as pl:
-        session = await pl.get_session(session_id)
-        if session is None:
-            raise ValueError(f"session not found in archive: {session_id}")
-        text = _flatten_session_text(session)
-        word_count = len(text.split())
-        result = SessionScreeningResult(
-            session_id=str(session.id),
-            origin=str(session.origin),
-            title=session.title,
-            created_at=str(session.created_at) if session.created_at else None,
-            message_count=len(session.messages),
-            word_count=word_count,
-            hits=scan_text(text),
-        )
-        return result, text
+        return await _screen_session_with(pl, session_id)
 
 
 async def screen_sessions(archive_root: Path, session_ids: list[str]) -> list[tuple[SessionScreeningResult, str]]:
-    return [await screen_session(archive_root, session_id) for session_id in session_ids]
+    """Screen every id in ``session_ids`` through one shared archive open."""
+
+    from polylogue.api import Polylogue
+
+    async with Polylogue(archive_root=archive_root) as pl:
+        return [await _screen_session_with(pl, session_id) for session_id in session_ids]
 
 
 def render_report_markdown(results: list[SessionScreeningResult], *, archive_root: Path) -> str:

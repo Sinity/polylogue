@@ -271,6 +271,41 @@ async def test_screen_session_raises_for_unknown_session(workspace_env: dict[str
         await m.screen_session(db_path.parent, "claude-code-session:does-not-exist")
 
 
+async def test_screen_sessions_opens_the_archive_once_for_the_whole_batch(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for a CodeRabbit finding on PR #2885: ``screen_sessions``
+    must open one shared ``Polylogue`` instance and reuse it across every
+    session id in the batch, not reopen the archive tiers per id. Counts real
+    ``Polylogue.__aenter__`` calls (the actual archive-open chokepoint) while
+    driving the real screening path against a seeded archive — this fails if
+    ``screen_sessions`` regresses to calling ``screen_session`` (which opens
+    its own scoped instance) once per id."""
+
+    from polylogue.api import Polylogue
+
+    db_path = db_setup(workspace_env)
+    await _seed(db_path)
+    archive_root = db_path.parent
+
+    open_count = 0
+    original_aenter = Polylogue.__aenter__
+
+    async def counting_aenter(self: Polylogue) -> Polylogue:
+        nonlocal open_count
+        open_count += 1
+        return await original_aenter(self)
+
+    monkeypatch.setattr(Polylogue, "__aenter__", counting_aenter)
+
+    pairs = await m.screen_sessions(archive_root, [_CLEAN_ID, _SECRET_ID])
+
+    assert open_count == 1
+    assert [r.session_id for r, _ in pairs] == [_CLEAN_ID, _SECRET_ID]
+    assert pairs[0][0].verdict == "clean"
+    assert pairs[1][0].verdict == "flagged"
+
+
 # --- CLI argument handling ---------------------------------------------------
 
 
