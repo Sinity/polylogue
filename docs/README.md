@@ -135,3 +135,4 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and verification entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
+| [Security Policy](../SECURITY.md) | Trust-boundary summary, supported versions, and vulnerability reporting contact. |

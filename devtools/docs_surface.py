@@ -388,6 +388,12 @@ REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
         "Testing", "TESTING.md", "Baseline test matrix, protected surfaces, and verification entrypoints.", "operations"
     ),
     DocsEntry("Agent Guide", "CLAUDE.md", "Agent memory and working rules.", "operations"),
+    DocsEntry(
+        "Security Policy",
+        "SECURITY.md",
+        "Trust-boundary summary, supported versions, and vulnerability reporting contact.",
+        "operations",
+    ),
 )
 
 README_DOC_TITLES: tuple[str, ...] = (
