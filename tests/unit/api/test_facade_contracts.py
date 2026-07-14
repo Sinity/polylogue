@@ -244,6 +244,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "archive_debt",
         "list_assertion_claim_payloads",
         "get_context_delivery",
+        "correlate_hermes_context_deliveries",
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
         "judge_assertion_candidates",
@@ -1064,6 +1065,68 @@ async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: 
         assert receipt.context_image_sha256 == record.metadata["context_image_sha256"]
         assert receipt.evidence_refs == ("codex-session:source::m1",)
         assert wrong_recipient is None
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.11 x fs1.7: the facade method reaches the real spool + delivery ledger."""
+
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("hermes-session:hermes-conv-1@profile-abc",), read_views=(), max_tokens=2000),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:hermes-conv-1:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="hermes-turn-start")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        written = write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-conv-1",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="ctx-inject-facade-1",
+        provider="hermes",
+        event_type=CONTEXT_INJECTED,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"snapshot_ref": written.snapshot_ref},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 1
+
+    try:
+        correlations = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+
+        assert len(correlations) == 1
+        assert correlations[0].available is True
+        assert correlations[0].receipt is not None
+        assert correlations[0].receipt.context_image == image
+        assert correlations[0].rendered_bytes_sha256 == written.context_image_sha256
+        assert correlations[0].token_budget == "2000"
     finally:
         await archive.close()
 

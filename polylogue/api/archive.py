@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
+    from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
@@ -1091,6 +1092,47 @@ def _archive_get_context_delivery(
             conn.close()
     except (sqlite3.Error, ValueError):
         return None
+
+
+def _archive_correlate_hermes_context_deliveries(
+    config: Config,
+    *,
+    hermes_session_native_id: str,
+) -> tuple[HermesContextDeliveryCorrelation, ...]:
+    """Correlate a Hermes session's drained ``context_injected`` events with their receipts.
+
+    Read-only audit seam over two durable tiers (fs1.7 spool + fs1.11
+    delivery ledger); see ``context.hermes_delivery_correlation`` for the
+    join semantics. Returns an empty tuple, never raises, when either tier is
+    unavailable (archive not yet initialized) -- consistent with the
+    explicit-unavailable-state AC this correlation exists to satisfy.
+    """
+
+    from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    user_db = archive_root / "user.db"
+    if not source_db.exists() or not user_db.exists():
+        return ()
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            user_conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+            user_conn.row_factory = sqlite3.Row
+            try:
+                return correlate_hermes_context_deliveries(
+                    source_conn,
+                    user_conn,
+                    hermes_session_native_id=hermes_session_native_id,
+                )
+            finally:
+                user_conn.close()
+        finally:
+            source_conn.close()
+    except (sqlite3.Error, ValueError):
+        return ()
 
 
 def _archive_list_assertion_candidate_reviews(
@@ -2362,6 +2404,25 @@ class PolylogueArchiveMixin:
             self.config,
             snapshot_ref=snapshot_ref,
             recipient_ref=recipient_ref,
+        )
+
+    async def correlate_hermes_context_deliveries(
+        self, hermes_session_native_id: str
+    ) -> tuple[HermesContextDeliveryCorrelation, ...]:
+        """Correlate a Hermes session's ``context_injected`` events with delivery receipts.
+
+        Read-only audit seam (fs1.11 x fs1.7): for every durable
+        ``context_injected`` lifecycle event drained for this Hermes session,
+        resolves the exact delivered context-image bytes, token budget, and
+        rendered-token estimate from the existing delivery ledger. An event
+        with no resolvable receipt (archive outage, or the write has not
+        committed yet) is returned with ``available=False`` and an explicit
+        caveat rather than omitted.
+        """
+
+        return _archive_correlate_hermes_context_deliveries(
+            self.config,
+            hermes_session_native_id=hermes_session_native_id,
         )
 
     async def list_assertion_claim_payloads(
