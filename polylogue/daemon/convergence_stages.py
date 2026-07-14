@@ -556,11 +556,13 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
 
 def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
     """Build the daemon's default post-ingest convergence stage set."""
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+
     return (
         make_fts_stage(db_path),
         make_embed_stage(db_path),
         make_insights_stage(db_path),
-        make_standing_query_stage(db_path),
+        make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
     )
 
 

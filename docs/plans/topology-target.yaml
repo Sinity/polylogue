@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5813
+    loc: 5891
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -382,8 +382,13 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/predicate.py
-    loc: 245
+    loc: 389
     target: polylogue/archive/query/predicate.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/production_evaluator.py
+    loc: 244
+    target: polylogue/archive/query/production_evaluator.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/retrieval.py
@@ -1415,7 +1420,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 1675
+    loc: 1677
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
@@ -1744,6 +1749,10 @@ files:
   - path: polylogue/insights/feedback.py
     loc: 216
     target: polylogue/insights/feedback.py
+    owner: stable
+  - path: polylogue/insights/improvement_loops.py
+    loc: 215
+    target: polylogue/insights/improvement_loops.py
     owner: stable
   - path: polylogue/insights/otlp_correlation.py
     loc: 509
@@ -3740,6 +3749,10 @@ files:
     loc: 289
     target: polylogue/storage/sqlite/connection_profile.py
     owner: stable
+  - path: polylogue/storage/sqlite/finding_provenance.py
+    loc: 134
+    target: polylogue/storage/sqlite/finding_provenance.py
+    owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
     loc: 250
     target: polylogue/storage/sqlite/lifecycle.py
@@ -4022,7 +4035,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3569
+    loc: 3609
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py

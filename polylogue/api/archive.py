@@ -358,9 +358,7 @@ def _invalid_unicode_ref_payload(ref: str) -> Any | None:
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
 #: attempting a lookup against tables that do not exist yet.
-_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
-    {"query", "query-run", "result-set", "finding", "cohort", "analysis"}
-)
+_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort", "analysis"})
 
 
 def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
@@ -3020,6 +3018,8 @@ class PolylogueArchiveMixin:
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "finding":
+                return self._resolve_finding_object_ref(archive_root, ref, normalized_ref, object_ref)
             if object_ref.kind == "annotation-batch":
                 return self._resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind == "delegation":
@@ -3241,6 +3241,84 @@ class PolylogueArchiveMixin:
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_finding_object_ref(
+        self,
+        archive_root: Path,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
+        from polylogue.surfaces.payloads import (
+            FindingEvidenceRefState,
+            FindingProvenancePayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        user_db = archive_root / "user.db"
+        if not user_db.exists():
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
+            )
+        with closing(sqlite3.connect(user_db)) as conn:
+            conn.row_factory = sqlite3.Row
+            provenance = compute_finding_provenance(conn, object_ref.object_id)
+        if provenance is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
+            )
+        payload = FindingProvenancePayload(
+            assertion_id=provenance.assertion_id,
+            claim_key=provenance.claim_key,
+            target_ref=provenance.target_ref,
+            finding_kind=provenance.finding_kind,
+            query_ref=provenance.query_ref,
+            result_set_ref=provenance.result_set_ref,
+            baseline_ref=provenance.baseline_ref,
+            current_ref=provenance.current_ref,
+            detector_ref=provenance.detector_ref,
+            status=AssertionStatus.from_string(provenance.status),
+            evidence=tuple(
+                FindingEvidenceRefState(ref=item.ref, resolvable=item.resolvable, reason=item.reason)
+                for item in provenance.evidence
+            ),
+            staleness_verdict=provenance.staleness_verdict,
+            created_at_ms=provenance.created_at_ms,
+            updated_at_ms=provenance.updated_at_ms,
+        )
+        caveats: tuple[str, ...] = ()
+        if provenance.staleness_verdict != "current":
+            caveats = (f"finding evidence staleness verdict: {provenance.staleness_verdict}",)
+        object_refs = tuple(
+            dict.fromkeys(
+                ref_value
+                for ref_value in (
+                    normalized_ref,
+                    provenance.target_ref,
+                    provenance.query_ref,
+                    provenance.result_set_ref,
+                )
+                if ref_value
+            )
+        )
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="finding",
+            resolved=True,
+            payload_kind="finding-provenance",
+            payload=model_json_document(payload),
+            title=provenance.claim_key or provenance.finding_kind or "finding",
+            summary=f"{provenance.finding_kind or 'finding'} ({provenance.status})",
+            object_refs=object_refs,
+            evidence_refs=tuple(item.ref for item in provenance.evidence),
+            caveats=caveats,
+            actions=(_resolution_action("list target evidence", f"polylogue find {provenance.target_ref} then read"),),
         )
 
     def _resolve_annotation_batch_object_ref(
