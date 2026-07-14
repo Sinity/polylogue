@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
 
@@ -45,7 +44,7 @@ def _build_mcp_scope_filter(
 
     return MaintenanceScopeFilter(
         session_ids=tuple(session_ids) if session_ids else None,
-        provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
+        origin=Origin(origin).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
         time_range=time_range,

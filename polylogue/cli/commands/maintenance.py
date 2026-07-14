@@ -18,7 +18,6 @@ from polylogue.archive.raw_materialization import source_path_native_id_candidat
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.logging import configure_logging
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
@@ -159,7 +158,7 @@ def _build_scope_filter(
 
     return MaintenanceScopeFilter(
         session_ids=session_ids if session_ids else None,
-        provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
+        origin=Origin(origin).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
         time_range=time_range,

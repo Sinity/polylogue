@@ -54,7 +54,7 @@ _UNTIL = datetime(2026, 2, 1, tzinfo=timezone.utc)
 def _canonical_filter() -> MaintenanceScopeFilter:
     return MaintenanceScopeFilter(
         session_ids=("c1", "c2"),
-        provider="claude-code",
+        origin="claude-code-session",
         source_family="claude-code-session",
         source_root=Path("/data/claude"),
         time_range=(_SINCE, _UNTIL),
@@ -244,7 +244,7 @@ class TestDaemonBodyBuildsScopeFilter:
         body = {
             "targets": ["session_insights"],
             "session_ids": ["c1", "c2"],
-            "provider": "claude-code",
+            "origin": "claude-code-session",
             "source_family": "claude-code-session",
             "source_root": "/data/claude",
             "time_range": [

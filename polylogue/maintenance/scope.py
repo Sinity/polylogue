@@ -9,7 +9,7 @@ scope dimensions.
 The filter dimensions match the ones #996 AC #1 names explicitly:
 
 * ``session_ids`` — restrict to a specific set of session ids;
-* ``provider`` — restrict to one provider name (e.g. ``"claude"``);
+* ``origin`` — restrict to one origin token (e.g. ``"claude-code-session"``);
 * ``source_family`` — restrict to one source family (e.g.
   ``"claude-code-session"``);
 * ``source_root`` — restrict to artifacts acquired under one runtime
@@ -56,7 +56,7 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     session_ids: tuple[str, ...] | None = None
-    provider: str | None = None
+    origin: str | None = None
     source_family: str | None = None
     source_root: Path | None = None
     time_range: tuple[datetime, datetime] | None = None
@@ -97,7 +97,7 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
         """True when no scope dimension is set (full-scope request)."""
         return (
             self.session_ids is None
-            and self.provider is None
+            and self.origin is None
             and self.source_family is None
             and self.source_root is None
             and self.time_range is None

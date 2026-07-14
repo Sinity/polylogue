@@ -83,7 +83,7 @@ class MaintenanceScopePayload(SurfacePayloadModel):
     ``filter`` is the serialized form of
     :class:`polylogue.maintenance.scope.MaintenanceScopeFilter` —
     a dict of named scope dimensions (``session_ids``,
-    ``provider``, ``source_family``, ``source_root``,
+    ``origin``, ``source_family``, ``source_root``,
     ``time_range``, ``failure_kind``, ``parser_version``). It is typed
     as ``dict[str, Any]`` at the
     Pydantic boundary so the recursive ``JSONValue`` alias does not

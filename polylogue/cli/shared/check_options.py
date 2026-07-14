@@ -13,14 +13,6 @@ _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 CheckCommandDecorator = Callable[[Callable[..., object]], Callable[..., object]]
 
 
-class DeprecatedAliasOption(click.Option):
-    """Render a deprecated alias as its flag, not its private destination."""
-
-    @property
-    def human_readable_name(self) -> str:
-        return self.opts[0]
-
-
 CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
     click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format"),
     click.option("--verbose", "-v", is_flag=True, help="Show breakdown by origin"),
@@ -69,24 +61,10 @@ CHECK_COMMAND_OPTION_DECORATORS: tuple[CheckCommandDecorator, ...] = (
         help="Limit schema verification to archive origin (repeatable)",
     ),
     click.option(
-        "--schema-provider",
-        "legacy_schema_providers",
-        cls=DeprecatedAliasOption,
-        multiple=True,
-        deprecated="Use --schema-origin instead.",
-    ),
-    click.option(
         "--artifact-origin",
         "artifact_providers",
         multiple=True,
         help="Limit artifact coverage/listing/cohorting to effective origin (repeatable)",
-    ),
-    click.option(
-        "--artifact-provider",
-        "legacy_artifact_providers",
-        cls=DeprecatedAliasOption,
-        multiple=True,
-        deprecated="Use --artifact-origin instead.",
     ),
     click.option(
         "--artifact-status",
