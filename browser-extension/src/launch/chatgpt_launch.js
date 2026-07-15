@@ -23,6 +23,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   const requiredEffort = "Pro";
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   const textOf = (node) => String(node?.innerText || node?.textContent || "").trim();
+  const normalizedText = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const waitFor = async (predicate, timeoutMs, label) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -112,7 +113,10 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   composer.replaceChildren();
   composer.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "deleteContent" }));
   if (!document.execCommand("insertText", false, job.prompt)) throw new Error("protocol_prompt_insert_failed");
-  if (!textOf(composer).includes(job.prompt.trim().slice(0, 80))) throw new Error("protocol_prompt_verification_failed");
+  const expectedPromptPrefix = normalizedText(job.prompt).slice(0, 120);
+  if (!normalizedText(textOf(composer)).startsWith(expectedPromptPrefix)) {
+    throw new Error("protocol_prompt_verification_failed");
+  }
 
   // Re-read the mode after upload/composer work: React can rerender the mode
   // switch independently, and this is the final fail-closed submit boundary.
