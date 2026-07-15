@@ -128,7 +128,7 @@ describe("ChatGPT Sol Pro launch adapter", () => {
       <button class="composer-submit-button-color">Send</button>
     `, "https://chatgpt.com/");
     document.execCommand = vi.fn((_command, _ui, value) => {
-      document.querySelector("#prompt-textarea").textContent = value;
+      document.querySelector("#prompt-textarea").textContent = value.replaceAll("\n", "\n\n\n");
       return true;
     });
     document.querySelector(".composer-submit-button-color").addEventListener("click", () => {
@@ -145,7 +145,7 @@ describe("ChatGPT Sol Pro launch adapter", () => {
     });
 
     await expect(executeChatGptLaunchInPage({
-      prompt: "Produce a durable result.",
+      prompt: "# Mission: Produce a durable result.\n\nExplain the work directly and attach the handoff.",
       mode: "chat",
       model_slug: "gpt-5-6-pro",
       model_label: "GPT-5.6 Sol",
