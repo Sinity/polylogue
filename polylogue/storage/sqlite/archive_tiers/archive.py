@@ -1641,6 +1641,37 @@ class ArchiveStore:
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
         bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
 
+    def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
+        """Undo census-time bindings when index authority rejects adoption.
+
+        Only backfill-created full envelopes use ``source_revision=raw_id``;
+        asserted/live envelopes and append authority cannot match this guard.
+        """
+        if not raw_ids:
+            return
+        placeholders = ",".join("?" for _ in raw_ids)
+        conn = self._ensure_source_conn()
+        with conn:
+            conn.execute(
+                f"""
+                UPDATE raw_sessions
+                SET logical_source_key = NULL,
+                    revision_kind = 'unknown',
+                    source_revision = NULL,
+                    predecessor_source_revision = NULL,
+                    predecessor_raw_id = NULL,
+                    baseline_raw_id = NULL,
+                    append_start_offset = NULL,
+                    append_end_offset = NULL,
+                    acquisition_generation = NULL,
+                    revision_authority = 'quarantined'
+                WHERE raw_id IN ({placeholders})
+                  AND revision_kind = 'full'
+                  AND source_revision = raw_id
+                """,
+                tuple(raw_ids),
+            )
+
     def raw_full_revision_generation(self, logical_source_key: str) -> int:
         """Allocate the next generation from durable, authoritative evidence."""
         row = (
@@ -2235,8 +2266,17 @@ class ArchiveStore:
             keys = {
                 str(row[0])
                 for row in conn.execute(
-                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
-                    tuple(selected),
+                    f"""
+                    SELECT logical_source_key
+                    FROM raw_session_memberships
+                    WHERE raw_id IN ({placeholders})
+                    UNION
+                    SELECT logical_source_key
+                    FROM raw_sessions
+                    WHERE raw_id IN ({placeholders})
+                      AND logical_source_key IS NOT NULL
+                    """,
+                    (*selected, *selected),
                 )
             }
             before = len(selected)
@@ -2245,9 +2285,16 @@ class ArchiveStore:
                 selected.update(
                     str(row[0])
                     for row in conn.execute(
-                        f"SELECT DISTINCT raw_id FROM raw_session_memberships "
-                        f"WHERE logical_source_key IN ({key_marks})",
-                        tuple(keys),
+                        f"""
+                        SELECT raw_id
+                        FROM raw_session_memberships
+                        WHERE logical_source_key IN ({key_marks})
+                        UNION
+                        SELECT raw_id
+                        FROM raw_sessions
+                        WHERE logical_source_key IN ({key_marks})
+                        """,
+                        (*keys, *keys),
                     )
                 )
             changed = len(selected) != before
@@ -2258,8 +2305,17 @@ class ArchiveStore:
             sorted(
                 str(row[0])
                 for row in conn.execute(
-                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
-                    tuple(selected),
+                    f"""
+                    SELECT logical_source_key
+                    FROM raw_session_memberships
+                    WHERE raw_id IN ({placeholders})
+                    UNION
+                    SELECT logical_source_key
+                    FROM raw_sessions
+                    WHERE raw_id IN ({placeholders})
+                      AND logical_source_key IS NOT NULL
+                    """,
+                    (*selected, *selected),
                 )
             )
         )

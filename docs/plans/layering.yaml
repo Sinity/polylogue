@@ -31,7 +31,7 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [apply_raw_membership_classification, apply_raw_revision_replay, classify_raw_revision_cohort,
-        delete_sessions, replace_raw_membership_census,
+        delete_sessions, release_provisional_full_revisions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
       twin_write_contract: raw-membership-classification

@@ -12,7 +12,12 @@ from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+)
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
@@ -58,6 +63,8 @@ def backfill_historical_revision_evidence(
     quarantined = 0
     adoption_deferred = 0
     logical_keys: set[str] = set()
+    membership_candidates: dict[str, set[str]] = {}
+    provisional_full_raw_ids: dict[str, set[str]] = {}
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
@@ -102,7 +109,7 @@ def backfill_historical_revision_evidence(
                         quarantined += 1
                         continue
                     try:
-                        sessions, _payload_bytes = _parse_retained_raw(archive, raw_id)
+                        sessions, _payload_bytes, revision_kind = _parse_retained_raw(archive, raw_id)
                     except Exception as exc:
                         archive.replace_raw_membership_census(
                             raw_id,
@@ -115,12 +122,30 @@ def backfill_historical_revision_evidence(
                         continue
                     classified += int(len(sessions) == 1)
                     spill.add(raw_id, sessions, payload_bytes=_payload_bytes)
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        sessions,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                    )
+                    if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
+                        session = sessions[0]
+                        logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                        archive.bind_raw_revision(
+                            raw_id,
+                            RawRevisionEnvelope(
+                                logical_source_key=logical_key,
+                                kind=RawRevisionKind.FULL,
+                                source_revision=raw_id,
+                                acquisition_generation=0,
+                                authority=RawRevisionAuthority.QUARANTINED,
+                            ),
+                        )
+                        provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+                    elif revision_kind is RawRevisionKind.UNKNOWN:
+                        archive.replace_raw_membership_census(
+                            raw_id,
+                            sessions,
+                            parser_fingerprint="revision-membership-v1",
+                            censused_at_ms=0,
+                        )
+                        for session in sessions:
+                            logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                            membership_candidates.setdefault(logical_key, set()).add(raw_id)
                 if census_selection is None:
                     break
                 expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
@@ -130,12 +155,32 @@ def backfill_historical_revision_evidence(
 
         _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
         logical_keys.update(selected_keys)
-        _selected_membership_raws, membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        _selected_membership_raws, selected_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        membership_keys = set(selected_membership_keys)
 
         replayed = 0
+        byte_replayed_keys: set[str] = set()
         for logical_key in sorted(logical_keys):
             plan = archive.classify_raw_revision_cohort(logical_key)
             if not plan.accepted_raw_ids:
+                # Complete snapshots that are not a unique byte-prefix chain
+                # still carry semantic evidence. Move only that full-only
+                # cohort to membership governance and let parsed-content
+                # prefix rules decide it; append chains remain byte-governed.
+                for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                    sessions, _payload_bytes = spill.for_raw(raw_id)
+                    if len(sessions) != 1:
+                        raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        sessions,
+                        parser_fingerprint="revision-membership-v1",
+                        censused_at_ms=0,
+                        detail="historical non-prefix full revision governance",
+                        retire_full_revision_governance=True,
+                    )
+                    membership_candidates.setdefault(logical_key, set()).add(raw_id)
+                membership_keys.add(logical_key)
                 continue
             parsed_by_raw_id: dict[str, ParsedSession] = {}
             retained_bytes = 0
@@ -150,19 +195,25 @@ def backfill_historical_revision_evidence(
             accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
             if not archive.raw_revision_replay_adoptable(accepted_sessions):
                 archive.defer_raw_revision_adoption(plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions)
+                provisional_raw_ids = provisional_full_raw_ids.get(logical_key, set())
+                plan_raw_ids = {application.raw_id for application in plan.applications}
+                if plan_raw_ids and plan_raw_ids <= provisional_raw_ids:
+                    archive.release_provisional_full_revisions(sorted(plan_raw_ids))
                 adoption_deferred += len(plan.accepted_raw_ids)
                 continue
             archive.apply_raw_revision_replay(plan, parsed_by_raw_id, acquired_at_ms=0)
             replayed += 1
+            byte_replayed_keys.add(logical_key)
 
-        for logical_key in membership_keys:
-            if logical_key in logical_keys:
+        for logical_key in sorted(membership_keys):
+            if logical_key in byte_replayed_keys:
                 continue
             member_sessions: dict[str, ParsedSession] = {}
             revisions: list[MembershipRevision] = []
             projections = {}
             retained_bytes = 0
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
+            candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
             for raw_id, session, payload_bytes in spill.for_logical_key(logical_key):
                 if raw_id not in candidate_raw_ids:
                     continue
@@ -197,9 +248,9 @@ def backfill_historical_revision_evidence(
     return RevisionBackfillResult(scanned, classified, replayed, quarantined, adoption_deferred)
 
 
-def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
-    provider, payload, source_path, _kind = archive.raw_revision_material(raw_id)
-    return _parse_one(provider, payload, source_path), len(payload)
+def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+    provider, payload, source_path, kind = archive.raw_revision_material(raw_id)
+    return _parse_one(provider, payload, source_path), len(payload), kind
 
 
 class _ParsedSessionSpill:

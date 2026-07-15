@@ -630,9 +630,29 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")
+    _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     return result.repaired_count
+
+
+def _emit_raw_materialization_pass(result: Any) -> None:
+    """Persist the conserved plan outcomes for one bounded daemon pass."""
+    outcomes = tuple(getattr(result, "plan_outcomes", ()))
+    from polylogue.daemon.events import emit_daemon_event
+
+    metrics = dict(getattr(result, "metrics", {}))
+    emit_daemon_event(
+        "raw_materialization_pass",
+        payload={
+            "pass_id": f"raw-materialization:{os.urandom(16).hex()}",
+            "success": bool(result.success),
+            "repaired_count": int(result.repaired_count),
+            "detail": str(result.detail),
+            "metrics": metrics,
+            "plan_outcomes": [outcome.to_dict() for outcome in outcomes],
+        },
+    )
 
 
 def _close_raw_materialization_fts(index_db: Path) -> None:
