@@ -24,6 +24,8 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from polylogue.storage.table_existence import table_exists as _table_exists
+
 
 @dataclass(frozen=True, slots=True)
 class ArchiveSessionTag:
@@ -114,16 +116,6 @@ def _refresh_session_profile_count(
             {column} = excluded.{column}
         """,
         (session_id, count),
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
     )
 
 

@@ -35,6 +35,7 @@ from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 
 if TYPE_CHECKING:
@@ -173,7 +174,7 @@ class TestFormatMetricsExpositionShape:
         ):
             initialize_archive_database(tmp_path / filename, tier)
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
             conn.commit()
 
         body = format_metrics(tmp_path / "index.db")

@@ -87,7 +87,7 @@ def _status_report() -> InsightReadinessReport:
         checked_at="2026-04-23T00:00:00+00:00",
         aggregate_verdict="partial",
         total_sessions=10,
-        provider="codex",
+        origin="codex-session",
         since="2026-04-01",
         until="2026-04-30",
         insights=(
@@ -198,7 +198,7 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
     assert "session_profiles: partial rows=7 expected=10" in output
     assert "missing=1 stale=2 orphan=3 incompatible=4" in output
     assert "flags: fts=True" in output
-    assert "origins: codex-session=7" in output
+    assert "origins: codex=7" in output
     assert "versions: materializer_version={'4': 7}" in output
     assert "schema: missing field" in output
     assert "Insight export bundle:" in output
@@ -228,7 +228,7 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
 
     query = captured["query"]
     assert query.insights == ("profiles",)
-    assert query.provider == "codex"
+    assert query.origin == "codex-session"
     assert query.since == "2026-04-01T00:00:00+00:00"
     assert query.until == "2026-04-30T00:00:00+00:00"
     emit_success.assert_called_once()
@@ -305,7 +305,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     request = captured["request"]
     assert request.output_path == tmp_path / "bundle"
     assert request.insights == ("profiles",)
-    assert request.provider == "codex"
+    assert request.origin == "codex-session"
     assert request.since == "2026-04-01T00:00:00+00:00"
     assert request.until == "2026-04-30T00:00:00+00:00"
     assert request.overwrite is True

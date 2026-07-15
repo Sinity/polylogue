@@ -249,6 +249,7 @@ from polylogue.storage.sqlite.run_projection_relations import (
     run_relation_sql,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(slots=True)
@@ -10633,14 +10634,6 @@ def _count_rows(conn: sqlite3.Connection, table: str) -> int:
 def _count_scalar(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     return int(row[0] or 0) if row is not None else 0
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:

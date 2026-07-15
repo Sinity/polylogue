@@ -358,7 +358,7 @@ def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: Cl
             until_ms=None,
             limit=1,
         )
-        rows = archive.list_usage_timeline_insights(origin="chatgpt", limit=1)
+        rows = archive.list_usage_timeline_insights(origin="chatgpt-export", limit=1)
 
     assert cutoff_ms is not None
     assert skip_event_scan is True

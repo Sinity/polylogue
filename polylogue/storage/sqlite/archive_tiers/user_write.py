@@ -25,6 +25,7 @@ from polylogue.core.assertions import (
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
     from polylogue.insights.judgment.types import ComparativeJudgment
@@ -891,16 +892,6 @@ def read_archive_workspace_envelope(conn: sqlite3.Connection, name: str) -> Arch
         settings=assertion_value,
         created_at_ms=assertion.created_at_ms,
         updated_at_ms=assertion.updated_at_ms,
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
     )
 
 

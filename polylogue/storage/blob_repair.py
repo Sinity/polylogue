@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.config import Config
 from polylogue.logging import get_logger
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -17,14 +18,6 @@ class BlobRepairOutcome:
     repaired_count: int
     success: bool
     detail: str
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _blob_hash_text(value: object) -> str | None:

@@ -3808,7 +3808,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             )
 
         rollups = await archive.list_session_tag_rollup_insights(
-            SessionTagRollupQuery(origin=Provider.CODEX.value, query="foc", limit=10)
+            SessionTagRollupQuery(origin=Origin.CODEX_SESSION.value, query="foc", limit=10)
         )
 
         assert len(rollups) == 1
@@ -3909,15 +3909,15 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             ArchiveCoverageInsightQuery(group_by="origin", origin="codex-session")
         )
         day_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="day", origin=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="day", origin=Origin.CODEX_SESSION.value, limit=10)
         )
         week_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="week", origin=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="week", origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert len(provider_rows) == 1
         provider = provider_rows[0]
-        assert provider.source_name == Provider.CODEX.value
+        assert provider.source_name == Origin.CODEX_SESSION.value
         assert provider.session_count == 1
         assert provider.message_count == 2
         assert provider.user_message_count == 1
@@ -4219,7 +4219,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         )
         phases = await archive.get_session_phase_insights(session_id)
         filtered_phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(origin=Provider.CODEX.value, limit=10)
+            SessionPhaseInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert len(events) == 1
@@ -4509,13 +4509,13 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             )
 
         costs = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(origin=Provider.CODEX.value, status="priced", limit=10)
+            SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="priced", limit=10)
         )
         unavailable = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(origin=Provider.CHATGPT.value, status="unavailable", limit=10)
+            SessionCostInsightQuery(origin=Origin.CHATGPT_EXPORT.value, status="unavailable", limit=10)
         )
         model_filtered = await archive.list_session_cost_insights(SessionCostInsightQuery(model="claude-sonnet-4-5"))
-        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin=Provider.CODEX.value))
+        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin=Origin.CODEX_SESSION.value))
         all_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(limit=10))
         model_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(model="claude-sonnet-4-5"))
 
@@ -4622,13 +4622,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
 
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
         only_stuck = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, only_stuck=True, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, only_stuck=True, limit=10)
         )
         stuck = await archive.find_stuck_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(origin=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert profile is not None
@@ -5394,7 +5394,6 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
     conn = sqlite3.connect(user_db)
     conn.row_factory = sqlite3.Row
     try:
-        initialize_archive_tier(conn, ArchiveTier.USER)
         upsert_assertion(
             conn,
             assertion_id="candidate-api-1",

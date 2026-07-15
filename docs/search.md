@@ -604,7 +604,7 @@ a concrete lane — see below).
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
 | `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
-Implementation: `polylogue/storage/search_providers/fts5.py`,
+Implementation: `polylogue/storage/search/query_builders.py`,
 `polylogue/storage/search_providers/hybrid.py`,
 `polylogue/storage/search_providers/sqlite_vec_support.py`.
 

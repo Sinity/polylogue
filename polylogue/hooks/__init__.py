@@ -25,6 +25,7 @@ from typing import Literal, cast
 import tomllib
 
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 HookHarness = Literal["claude-code", "codex"]
 HookChangeAction = Literal["install", "uninstall"]
@@ -503,16 +504,6 @@ def plan_hook_change(
         before=before,
         after=after,
         diff=_unified_diff(target, before, after) if changed else "",
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table,),
-        ).fetchone()
-        is not None
     )
 
 

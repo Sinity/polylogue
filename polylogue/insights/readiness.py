@@ -13,6 +13,7 @@ from polylogue.archive.query.spec import parse_query_date
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.table_existence import table_exists_async as _table_exists
 
 InsightReadinessVerdict = Literal[
     "ready", "partial", "empty", "missing", "stale", "incompatible", "degraded", "unknown"
@@ -342,13 +343,6 @@ def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightRea
         if verdict in verdicts:
             return verdict
     return "ready"
-
-
-async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
-    row = await (
-        await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table,))
-    ).fetchone()
-    return bool(row)
 
 
 async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:

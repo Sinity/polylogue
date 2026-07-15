@@ -37,7 +37,7 @@ debugging landmarks. For the conceptual system shape, see
 | `storage/sqlite/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
 | `storage/repository/__init__.py` | Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology) |
-| `storage/search_providers/fts5.py` | Lexical search |
+| `storage/search/query_builders.py` | Lexical search |
 | `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
 
 ### Sources and Pipeline

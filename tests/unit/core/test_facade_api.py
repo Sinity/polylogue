@@ -473,7 +473,9 @@ class TestPolylogueArchiveInsights:
                 limit=10,
             )
         )
-        phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(origin="claude-code", limit=10))
+        phases = await archive.list_session_phase_insights(
+            SessionPhaseInsightQuery(origin="claude-code-session", limit=10)
+        )
         threads = await archive.list_thread_insights(ThreadInsightQuery(limit=10))
 
         assert profile is not None
@@ -506,18 +508,20 @@ class TestPolylogueArchiveInsights:
         assert threads[0].thread.member_evidence[1].role == "parent_continuation"
         assert threads[0].thread.member_evidence[1].parent_id == root_id
 
-        tag_rollups = await archive.list_session_tag_rollup_insights(SessionTagRollupQuery(origin="claude-code"))
+        tag_rollups = await archive.list_session_tag_rollup_insights(
+            SessionTagRollupQuery(origin="claude-code-session")
+        )
         day_coverage = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(origin="claude-code", group_by="day", limit=10)
+            ArchiveCoverageInsightQuery(origin="claude-code-session", group_by="day", limit=10)
         )
         week_coverage = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(origin="claude-code", group_by="week", limit=10)
+            ArchiveCoverageInsightQuery(origin="claude-code-session", group_by="week", limit=10)
         )
         archive_debt = await archive.list_archive_debt_insights(ArchiveDebtInsightQuery(limit=10))
         session_costs = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(origin="claude-code", limit=10)
+            SessionCostInsightQuery(origin="claude-code-session", limit=10)
         )
-        cost_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin="claude-code"))
+        cost_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin="claude-code-session"))
 
         assert any(item.tag == "origin:claude-code-session" for item in tag_rollups)
         assert len(day_coverage) == 1

@@ -277,7 +277,7 @@ def embed_command() -> None:
 @click.option("--note", default=None, help="Durable operator rationale for the resolution.")
 @click.option("--superseded-by", default=None, help="Replacement failure or remediation reference for supersession.")
 @click.option("--yes", is_flag=True, help="Confirm this lifecycle mutation.")
-@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default="text")
 @click.pass_obj
 def resolve_failure_subcommand(
     env: AppEnv,

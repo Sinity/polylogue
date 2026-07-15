@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from polylogue.config import load_polylogue_config
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -1187,14 +1188,6 @@ def _should_embed_archive_message(material_origin: object, message_type: object,
     if str(role) not in _PROSE_ROLES:
         return False
     return str(material_origin) in _PROSE_MATERIAL_ORIGINS
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _index_exists(conn: sqlite3.Connection, index: str) -> bool:

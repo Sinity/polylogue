@@ -490,7 +490,7 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
     backend = SQLiteBackend(db_path=db_path)
     repo = SessionRepository(backend=backend)
     try:
-        summaries = await repo.list_summaries_by_query(_record_query(origin="codex", limit=1))
+        summaries = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=1))
         assert len(summaries) == 1
         summary = summaries[0]
         assert str(summary.id) == "codex-session:conv-large-meta"

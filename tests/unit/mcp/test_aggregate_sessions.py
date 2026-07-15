@@ -40,7 +40,7 @@ async def test_aggregate_sessions_delegates_to_facade_method(mcp_server: MCPServ
         group_by="workflow_shape",
         since=None,
         until=None,
-        provider="claude-code",
+        origin="claude-code-session",
     )
 
 
@@ -82,5 +82,5 @@ async def test_aggregate_sessions_default_group_by_is_workflow_shape(mcp_server:
         group_by="workflow_shape",
         since=None,
         until=None,
-        provider=None,
+        origin=None,
     )

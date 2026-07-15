@@ -71,7 +71,7 @@ def test_read_view_neighbors_emits_json_payload(capsys: pytest.CaptureFixture[st
     env.polylogue.neighbor_candidates.assert_called_once_with(
         session_id="target",
         query=None,
-        provider="codex",
+        origin="codex-session",
         limit=10,
         window_hours=24,
     )
