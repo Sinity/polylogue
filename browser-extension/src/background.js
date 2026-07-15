@@ -36,6 +36,7 @@ let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
 let launchExecutorIdPromise = null;
+let launchPollPromise = null;
 let storageMutationQueue = Promise.resolve();
 let captureQueueMutationQueue = Promise.resolve();
 
@@ -1406,7 +1407,7 @@ async function dispatchLaunchJob(job, ownerInstanceId) {
   }
 }
 
-async function pollLaunchJobs() {
+async function pollLaunchJobsOnce() {
   const { launchEnabled } = await launchSettings();
   if (!launchEnabled) return { enabled: false, jobs: [] };
   const ownerInstanceId = await launchExecutorId();
@@ -1434,6 +1435,16 @@ async function pollLaunchJobs() {
     await dispatchLaunchJob(job, ownerInstanceId);
   }
   return { enabled: true, jobs: status.jobs || [], claimed: job || null };
+}
+
+function pollLaunchJobs() {
+  if (launchPollPromise) return launchPollPromise;
+  const candidate = pollLaunchJobsOnce();
+  const tracked = candidate.finally(() => {
+    if (launchPollPromise === tracked) launchPollPromise = null;
+  });
+  launchPollPromise = tracked;
+  return launchPollPromise;
 }
 
 // ---- Outbound posting (reverse channel) ---------------------------------

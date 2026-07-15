@@ -1244,6 +1244,46 @@ describe("Sol Pro launch worker", () => {
     ));
   });
 
+  it("coalesces concurrent wakeups before dispatching a leased job", async () => {
+    const job = {
+      job_id: "launch-coalesced",
+      prompt: "work",
+      attachments: [],
+      status: "leased",
+      mode: "chat",
+      model_slug: "gpt-5-6-pro",
+      model_label: "GPT-5.6 Sol",
+      effort_label: "Pro",
+      thinking_effort: "standard",
+    };
+    let releaseTab;
+    const tabGate = new Promise((resolve) => { releaseTab = resolve; });
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.tabs.create.mockImplementation(async (details) => {
+      await tabGate;
+      return { id: 99, url: details.url, status: "complete", active: details.active };
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      ok: true,
+      conversation_id: "conversation-coalesced",
+      conversation_url: "https://chatgpt.com/c/conversation-coalesced",
+    } }]);
+
+    const configure = sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledTimes(1));
+    const overlapping = sendRuntimeMessage({ type: "polylogue.launch.poll" });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
+    expect(chrome.tabs.create).toHaveBeenCalledTimes(1);
+    releaseTab();
+    await Promise.all([configure, overlapping]);
+  });
+
   it("leases through the receiver and creates an inactive ordinary Chat tab", async () => {
     const attachmentBytes = new TextEncoder().encode("targeted context");
     const job = {
