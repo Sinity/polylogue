@@ -1241,7 +1241,6 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
         conversation_url: inspection.conversation_url,
       });
     }
-    return;
   }
   if (inspection?.rate_limited) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
@@ -1265,7 +1264,7 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
     });
     return;
   }
-  if ((inspection?.busy || inspection?.assistant_turns) && job.phase !== "provider_running") {
+  if (!inspection?.soft_warning && (inspection?.busy || inspection?.assistant_turns) && job.phase !== "provider_running") {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "progress",
       phase: "provider_running",

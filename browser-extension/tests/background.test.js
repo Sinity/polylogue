@@ -1506,6 +1506,7 @@ describe("Sol Pro launch worker", () => {
       return [{ result: {
         busy: false,
         assistant_turns: 1,
+        soft_warning: true,
         handoff_name: "polylogue-sol-pro-launch-handoff.zip",
         conversation_id: "conversation-1",
         conversation_url: "https://chatgpt.com/c/conversation-1",
