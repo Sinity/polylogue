@@ -1230,6 +1230,19 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
     });
     return;
   }
+  if (inspection?.soft_warning) {
+    if (job.phase !== "provider_soft_warning") {
+      await updateLaunchJob(job.job_id, ownerInstanceId, {
+        outcome: "soft_warning",
+        phase: "provider_soft_warning",
+        detail: "provider conversation-access warning visible; submitted chat may still continue",
+        tab_id: job.tab_id,
+        conversation_id: inspection.conversation_id,
+        conversation_url: inspection.conversation_url,
+      });
+    }
+    return;
+  }
   if (inspection?.rate_limited) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "rate_limited",
@@ -1251,6 +1264,16 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       conversation_url: inspection.conversation_url,
     });
     return;
+  }
+  if ((inspection?.busy || inspection?.assistant_turns) && job.phase !== "provider_running") {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "provider_running",
+      detail: "provider accepted the submitted chat without a visible circuit",
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
   }
   if (inspection?.busy || !inspection?.assistant_turns) return;
   if (!inspection.handoff_name) {
@@ -1291,16 +1314,16 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       });
       return;
     }
-    const accepted = await postJson(`/v1/launch-jobs/${encodeURIComponent(job.job_id)}/handoff`, {
-      owner_instance_id: ownerInstanceId,
-      name: inspection.handoff_name,
-      content_base64: handoff.inline_base64,
-    });
+    // captureTab already sent these exact bytes through the ordinary capture
+    // envelope used for every user- or queue-created conversation. The
+    // receiver correlates that canonical artifact to the launch job; never
+    // repost or store assistant output through a launch-only side channel.
     await appendCaptureLog({
       ok: true,
-      reason: "sol_pro_handoff_validated",
+      reason: "sol_pro_handoff_captured",
       job_id: job.job_id,
-      artifact_ref: accepted.job?.handoff_artifact_ref || null,
+      provider_attachment_id: handoff.provider_attachment_id || null,
+      artifact_ref: captured?.captureResult?.artifact_ref || null,
     });
   } catch (error) {
     const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);

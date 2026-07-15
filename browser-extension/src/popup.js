@@ -455,7 +455,13 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
   statusNode.textContent = launchEnabled ? job.status : `${job.status} · disabled`;
   document.getElementById("launch-phase").textContent = job.phase || job.status;
   const due = job.next_attempt_at ? new Date(job.next_attempt_at).toLocaleTimeString() : "now";
-  document.getElementById("launch-cadence").textContent = `${job.cadence_minutes}m · ${job.cooldown_reason || due}`;
+  const remainingMinutes = job.next_attempt_at
+    ? Math.max(0, Math.ceil((Date.parse(job.next_attempt_at) - Date.now()) / 60_000))
+    : 0;
+  const cooldown = job.cooldown_reason
+    ? `${job.cooldown_reason} until ${due}${remainingMinutes ? ` (~${remainingMinutes}m)` : ""}`
+    : `due ${due}`;
+  document.getElementById("launch-cadence").textContent = `${job.cadence_minutes}m cadence · ${cooldown}`;
   document.getElementById("launch-owner").textContent = job.lease_owner
     ? (job.lease_owner === ownerInstanceId ? "this extension" : "another extension")
     : "unclaimed";

@@ -190,7 +190,20 @@ describe("ChatGPT Sol Pro launch adapter", () => {
 
   it("keeps ordinary rate limits distinct from provider safety locks", () => {
     installPage('<section data-testid="conversation-turn-2">Too many requests; rate limit reached</section>');
-    expect(inspectChatGptLaunchPage()).toMatchObject({ rate_limited: true, safety_lock: false });
+    expect(inspectChatGptLaunchPage()).toMatchObject({ soft_warning: false, rate_limited: true, safety_lock: false });
+  });
+
+  it("classifies the conversation-access anti-abuse banner as a soft warning", () => {
+    installPage(`<section data-testid="conversation-turn-2">
+      Too many requests. You’re making requests too quickly.
+      We’ve temporarily limited access to your conversations to protect your data.
+      Please wait a few minutes before trying again.
+    </section>`);
+    expect(inspectChatGptLaunchPage()).toMatchObject({
+      soft_warning: true,
+      rate_limited: false,
+      safety_lock: false,
+    });
   });
 
   it("treats the current Pro stop-answering control as a busy run", () => {

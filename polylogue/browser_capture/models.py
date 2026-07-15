@@ -470,6 +470,7 @@ BrowserLaunchOutcome = Literal[
     "progress",
     "submitted",
     "submission_unknown",
+    "soft_warning",
     "rate_limited",
     "safety_locked",
     "auth_challenge",
@@ -557,6 +558,12 @@ class BrowserLaunchEvent(BaseModel):
     kind: str
     detail: str | None = None
     owner_instance_id: str | None = None
+    phase: str | None = None
+    provider_state: Literal["accepted", "soft_warning", "hard_rate_limit", "safety_lock"] | None = None
+    provider_circuit_streak: int | None = Field(default=None, ge=0)
+    backoff_seconds: int | None = Field(default=None, ge=1)
+    backoff_source: Literal["receiver_adaptive", "provider_retry_after"] | None = None
+    cadence_minutes: BrowserLaunchCadenceMinutes | None = None
 
 
 class BrowserLaunchJob(BaseModel):
@@ -659,21 +666,6 @@ class BrowserLaunchJobControlRequest(BaseModel):
         return self
 
 
-class BrowserLaunchHandoffRequest(BaseModel):
-    """Exact cohesive ZIP acquired from the provider page by the lease owner."""
-
-    owner_instance_id: str = Field(min_length=1, max_length=200)
-    name: Literal["polylogue-sol-pro-launch-handoff.zip"]
-    content_base64: str
-
-
-class BrowserLaunchHandoffAcceptedPayload(BaseModel):
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    job: BrowserLaunchJob
-
-
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -720,8 +712,6 @@ __all__ = [
     "BrowserLaunchJobListPayload",
     "BrowserLaunchJobRequest",
     "BrowserLaunchJobUpdateRequest",
-    "BrowserLaunchHandoffAcceptedPayload",
-    "BrowserLaunchHandoffRequest",
     "BrowserLaunchOutcome",
     "BrowserLaunchStatus",
     "BrowserPostAckPayload",

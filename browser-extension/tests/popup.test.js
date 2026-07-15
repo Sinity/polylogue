@@ -336,7 +336,7 @@ describe("popup capture", () => {
 
     await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("cooldown"));
     expect(document.getElementById("launch-job").selectedOptions[0].textContent).toContain("#3 launch-1");
-    expect(document.getElementById("launch-cadence").textContent).toContain("5m · rate_limited");
+    expect(document.getElementById("launch-cadence").textContent).toContain("5m cadence · rate_limited until");
     expect(document.getElementById("launch-owner").textContent).toBe("another extension");
     expect(document.getElementById("launch-last").textContent).toContain("provider_http_429");
     expect(document.getElementById("launch-resume").disabled).toBe(true);

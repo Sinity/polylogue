@@ -18,15 +18,15 @@ from functools import wraps
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from threading import RLock
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
 import orjson
 
 from polylogue.browser_capture.models import (
+    BrowserCaptureEnvelope,
     BrowserLaunchAttachment,
     BrowserLaunchEvent,
-    BrowserLaunchHandoffRequest,
     BrowserLaunchJob,
     BrowserLaunchJobControlRequest,
     BrowserLaunchJobRequest,
@@ -174,10 +174,63 @@ def _backoff_with_jitter(job: BrowserLaunchJob, base_seconds: int, *, cap_second
     return int(exponential + int(exponential * 0.1 * seed / 255))
 
 
-def _event(job: BrowserLaunchJob, kind: str, *, detail: str | None = None, owner: str | None = None) -> None:
+def _provider_backoff_with_jitter(
+    job: BrowserLaunchJob, base_seconds: int, *, circuit_streak: int, cap_seconds: int
+) -> int:
+    exponential = min(cap_seconds, base_seconds * (2 ** min(max(circuit_streak - 1, 0), 5)))
+    seed = hashlib.sha256(f"{job.job_id}:{circuit_streak}:{job.cooldown_reason}".encode()).digest()[0]
+    return int(exponential + int(exponential * 0.1 * seed / 255))
+
+
+def _provider_circuit_streak(jobs: list[BrowserLaunchJob]) -> int:
+    signals = sorted(
+        (
+            parsed,
+            event.kind,
+            event.phase,
+        )
+        for job in jobs
+        for event in job.events
+        if (parsed := _parse(event.at)) is not None
+        if event.kind in {"soft_warning", "rate_limited", "safety_locked", "completed"}
+        or (event.kind == "progress" and event.phase == "provider_running")
+    )
+    streak = 0
+    for _at, kind, phase in signals:
+        if kind == "completed" or (kind == "progress" and phase == "provider_running"):
+            streak = 0
+        else:
+            streak += 1
+    return streak
+
+
+def _event(
+    job: BrowserLaunchJob,
+    kind: str,
+    *,
+    detail: str | None = None,
+    owner: str | None = None,
+    phase: str | None = None,
+    provider_state: Literal["accepted", "soft_warning", "hard_rate_limit", "safety_lock"] | None = None,
+    provider_circuit_streak: int | None = None,
+    backoff_seconds: int | None = None,
+    backoff_source: Literal["receiver_adaptive", "provider_retry_after"] | None = None,
+) -> None:
     job.events = [
         *job.events,
-        BrowserLaunchEvent(event_id=uuid4().hex, at=_iso(_now()), kind=kind, detail=detail, owner_instance_id=owner),
+        BrowserLaunchEvent(
+            event_id=uuid4().hex,
+            at=_iso(_now()),
+            kind=kind,
+            detail=detail,
+            owner_instance_id=owner,
+            phase=phase,
+            provider_state=provider_state,
+            provider_circuit_streak=provider_circuit_streak,
+            backoff_seconds=backoff_seconds,
+            backoff_source=backoff_source,
+            cadence_minutes=job.cadence_minutes,
+        ),
     ][-LAUNCH_EVENT_LIMIT:]
 
 
@@ -331,7 +384,7 @@ def claim_due_launch_job(
         _write_job(root, job)
         return job
 
-    global_cooldown_until = max(
+    hard_cooldown_until = max(
         (
             parsed
             for job in jobs
@@ -340,7 +393,22 @@ def claim_due_launch_job(
         ),
         default=None,
     )
-    if global_cooldown_until is not None and global_cooldown_until > now:
+    if hard_cooldown_until is not None and hard_cooldown_until > now:
+        return None
+    soft_cooldown_until = max(
+        (
+            parsed
+            for job in jobs
+            if job.cooldown_reason == "soft_warning"
+            if (parsed := _parse(job.next_attempt_at)) is not None
+        ),
+        default=None,
+    )
+    manual_override_ready = any(
+        job.manual_priority and job.status in {"queued", "cooldown"} and (_parse(job.not_before) or now) <= now
+        for job in jobs
+    )
+    if soft_cooldown_until is not None and soft_cooldown_until > now and not manual_override_ready:
         return None
 
     latest_submitted = _latest_submitted_at(jobs)
@@ -402,13 +470,19 @@ def update_launch_job(
     job.conversation_url = update.conversation_url or job.conversation_url
     job.handoff_attachment_id = update.handoff_attachment_id or job.handoff_attachment_id
     job.retry_after_seconds = update.retry_after_seconds
-    _event(job, update.outcome, detail=update.detail, owner=update.owner_instance_id)
+    provider_state: Literal["accepted", "soft_warning", "hard_rate_limit", "safety_lock"] | None = None
+    provider_circuit_streak: int | None = None
+    backoff_seconds: int | None = None
+    backoff_source: Literal["receiver_adaptive", "provider_retry_after"] | None = None
 
     if update.outcome == "progress":
         if job.status == "submitted":
             job.lease_expires_at = _iso(now + timedelta(hours=6))
             job.cooldown_reason = None
             job.last_error = None
+            if update.phase == "provider_running":
+                provider_state = "accepted"
+                provider_circuit_streak = 0
         elif update.phase == "submit_intent":
             job.status = "submitting"
             job.lease_expires_at = _iso(now + timedelta(hours=6))
@@ -432,19 +506,43 @@ def update_launch_job(
         job.last_error = update.detail or update.outcome
         job.lease_owner = None
         job.lease_expires_at = None
-    elif update.outcome in {"rate_limited", "safety_locked", "network_error"}:
-        job.attempts += 1
-        if update.outcome == "safety_locked":
-            default_delay = _backoff_with_jitter(job, 3600, cap_seconds=8 * 3600)
-        elif update.outcome == "rate_limited":
-            default_delay = _backoff_with_jitter(job, 900, cap_seconds=4 * 3600)
-        else:
+    elif update.outcome in {"soft_warning", "rate_limited", "safety_locked", "network_error"}:
+        # A provider observation after a successful submit is telemetry about
+        # that same attempt, not another dispatch attempt.
+        if not was_submitted:
+            job.attempts += 1
+        if update.outcome == "network_error":
             default_delay = _backoff_with_jitter(job, 60, cap_seconds=1800)
+        else:
+            provider_circuit_streak = _provider_circuit_streak(list_launch_jobs(spool_path=spool_path)) + 1
+            if update.outcome == "soft_warning":
+                provider_state = "soft_warning"
+                base_seconds, cap_seconds = 900, 4 * 3600
+            elif update.outcome == "rate_limited":
+                provider_state = "hard_rate_limit"
+                base_seconds, cap_seconds = 1800, 8 * 3600
+            else:
+                provider_state = "safety_lock"
+                base_seconds, cap_seconds = 3600, 12 * 3600
+            default_delay = _provider_backoff_with_jitter(
+                job,
+                base_seconds,
+                circuit_streak=provider_circuit_streak,
+                cap_seconds=cap_seconds,
+            )
         delay = update.retry_after_seconds or default_delay
+        backoff_seconds = delay
+        backoff_source = "provider_retry_after" if update.retry_after_seconds is not None else "receiver_adaptive"
         job.cooldown_reason = update.outcome
         job.last_error = update.detail or update.outcome
         job.next_attempt_at = _iso(now + timedelta(seconds=delay))
-        if was_submitted and update.outcome in {"rate_limited", "safety_locked"}:
+        if was_submitted and update.outcome == "soft_warning":
+            # The conversation may still run despite this advisory provider
+            # banner. Keep its durable identity monitored, never resubmit it,
+            # and use the warning only to pace later automatic launches.
+            job.status = "submitted"
+            job.lease_expires_at = _iso(now + timedelta(hours=6))
+        elif was_submitted and update.outcome in {"rate_limited", "safety_locked"}:
             # The provider may already have accepted the conversation. Never
             # turn a post-submit safety/rate response into an automatic new
             # conversation; pause this job while its circuit protects all
@@ -464,6 +562,17 @@ def update_launch_job(
         job.last_error = update.detail or update.outcome
         job.lease_owner = None
         job.lease_expires_at = None
+    _event(
+        job,
+        update.outcome,
+        detail=update.detail,
+        owner=update.owner_instance_id,
+        phase=update.phase,
+        provider_state=provider_state,
+        provider_circuit_streak=provider_circuit_streak,
+        backoff_seconds=backoff_seconds,
+        backoff_source=backoff_source,
+    )
     _write_job(root, job)
     return job
 
@@ -629,34 +738,83 @@ def _validate_handoff_zip(content: bytes, *, expected_prompt_profile: str) -> in
 
 
 @_serialized
-def accept_launch_handoff(
-    job_id: str,
-    request: BrowserLaunchHandoffRequest,
+def reconcile_launch_handoff_capture(
+    envelope: BrowserCaptureEnvelope,
+    artifact_ref: str,
     *,
     spool_path: Path | None = None,
 ) -> BrowserLaunchJob | None:
+    """Complete a launch job from its ordinary canonical capture artifact.
+
+    Assistant files are acquired by the provider-neutral browser capture path
+    for every conversation.  A launch job contributes only a correlation id;
+    it must not create a second file transport or a second copy of the result.
+    """
+
+    raw_job_id = envelope.provider_meta.get("launch_job_id")
+    if not isinstance(raw_job_id, str) or not raw_job_id:
+        return None
     root = launch_job_root(spool_path)
-    job = _read_job(_job_path(root, job_id))
+    job = _read_job(_job_path(root, raw_job_id))
     if job is None:
         return None
-    if job.lease_owner != request.owner_instance_id:
-        raise BrowserLaunchLeaseError("launch job lease owner mismatch")
-    if job.status != "submitted":
-        raise BrowserLaunchConflictError(f"cannot accept handoff for launch job in {job.status}")
+    if job.status == "completed":
+        return job
+    if job.status not in {"submitted", "paused"}:
+        return None
+    if job.conversation_id != envelope.session.provider_session_id or envelope.session.provider.value != "chatgpt":
+        return None
+    attachment = next(
+        (item for item in envelope.session.attachments if item.name == LAUNCH_HANDOFF_NAME),
+        None,
+    )
+    if attachment is None:
+        return None
+    encoded = attachment.inline_base64 or attachment.content_base64 or attachment.data
+    if not encoded:
+        return None
     try:
-        content = base64.b64decode(request.content_base64, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise BrowserLaunchHandoffError("handoff content is not valid base64") from exc
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        error = BrowserLaunchHandoffError("handoff content is not valid base64")
+        job.status = "paused"
+        job.phase = "handoff_invalid"
+        job.updated_at = _iso(_now())
+        job.last_error = str(error)
+        job.lease_owner = None
+        job.lease_expires_at = None
+        _event(job, "protocol_mismatch", detail=str(error), phase="handoff_invalid")
+        _write_job(root, job)
+        return job
     if len(content) > LAUNCH_HANDOFF_MAX_BYTES:
-        raise BrowserLaunchQuotaError("launch handoff byte quota exceeded")
-    file_count = _validate_handoff_zip(content, expected_prompt_profile=job.prompt_profile)
-    path = _job_dir(root, job_id) / "handoff" / LAUNCH_HANDOFF_NAME
-    _atomic_write(path, content)
+        quota_error = BrowserLaunchQuotaError("launch handoff byte quota exceeded")
+        job.status = "paused"
+        job.phase = "handoff_invalid"
+        job.updated_at = _iso(_now())
+        job.last_error = str(quota_error)
+        job.lease_owner = None
+        job.lease_expires_at = None
+        _event(job, "protocol_mismatch", detail=str(quota_error), phase="handoff_invalid")
+        _write_job(root, job)
+        return job
+    try:
+        file_count = _validate_handoff_zip(content, expected_prompt_profile=job.prompt_profile)
+    except BrowserLaunchHandoffError as exc:
+        job.status = "paused"
+        job.phase = "handoff_invalid"
+        job.updated_at = _iso(_now())
+        job.last_error = str(exc)
+        job.lease_owner = None
+        job.lease_expires_at = None
+        _event(job, "protocol_mismatch", detail=str(exc), phase="handoff_invalid")
+        _write_job(root, job)
+        return job
     now = _now()
     job.status = "completed"
     job.phase = "handoff_validated"
     job.updated_at = _iso(now)
-    job.handoff_artifact_ref = path.relative_to(root.parent).as_posix()
+    job.handoff_artifact_ref = artifact_ref
+    job.handoff_attachment_id = attachment.provider_attachment_id
     job.handoff_sha256 = hashlib.sha256(content).hexdigest()
     job.handoff_size_bytes = len(content)
     job.handoff_file_count = file_count
@@ -664,7 +822,14 @@ def accept_launch_handoff(
     job.lease_owner = None
     job.lease_expires_at = None
     job.last_error = None
-    _event(job, "completed", detail=f"validated {file_count} handoff files", owner=request.owner_instance_id)
+    _event(
+        job,
+        "completed",
+        detail=f"validated {file_count} handoff files in canonical capture {artifact_ref}",
+        phase="handoff_validated",
+        provider_state="accepted",
+        provider_circuit_streak=0,
+    )
     _write_job(root, job)
     return job
 
@@ -675,12 +840,12 @@ __all__ = [
     "BrowserLaunchLeaseError",
     "BrowserLaunchQuotaError",
     "BrowserLaunchStateError",
-    "accept_launch_handoff",
     "claim_due_launch_job",
     "control_launch_job",
     "enqueue_launch_job",
     "launch_job_root",
     "list_launch_jobs",
     "read_launch_attachment",
+    "reconcile_launch_handoff_capture",
     "update_launch_job",
 ]

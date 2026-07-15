@@ -1403,6 +1403,7 @@ describe("Sol Pro launch worker", () => {
   });
 
   it.each([
+    ["soft warning", { soft_warning: true }, "soft_warning", "provider_soft_warning"],
     ["rate limit", { rate_limited: true }, "rate_limited", "provider_rate_limit"],
     ["safety lock", { safety_lock: true }, "safety_locked", "provider_safety_lock"],
   ])("delegates %s backoff duration to the receiver", async (_label, inspection, outcome, phase) => {
@@ -1428,6 +1429,7 @@ describe("Sol Pro launch worker", () => {
       assistant_turns: 0,
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",
+      soft_warning: false,
       rate_limited: false,
       safety_lock: false,
       ...inspection,
@@ -1441,7 +1443,46 @@ describe("Sol Pro launch worker", () => {
     expect(event).not.toHaveProperty("retry_after_seconds");
   });
 
-  it("completes only after authenticated capture returns the exact handoff bytes", async () => {
+  it("records a clean provider-running observation", async () => {
+    const job = {
+      job_id: "launch-provider-running",
+      status: "submitted",
+      phase: "submitted",
+      lease_owner: "launch-executor-test",
+      tab_id: 42,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/events")) return responseJson({ job: { ...job, phase: "provider_running" } });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      busy: true,
+      assistant_turns: 0,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+      soft_warning: false,
+      rate_limited: false,
+      safety_lock: false,
+    } }]);
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
+    const event = JSON.parse(fetchCalls.find((call) => String(call.url).endsWith("/events")).options.body);
+    expect(event).toMatchObject({
+      outcome: "progress",
+      phase: "provider_running",
+      detail: expect.stringContaining("accepted"),
+    });
+  });
+
+  it("reuses canonical capture for a launched chat handoff", async () => {
     const zipBase64 = btoa("PK synthetic handoff");
     const job = {
       job_id: "launch-complete",
@@ -1458,9 +1499,6 @@ describe("Sol Pro launch worker", () => {
       if (path.includes("claim_by=")) return responseJson({ jobs: [] });
       if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
       if (path.endsWith("/events")) return responseJson({ job });
-      if (path.endsWith("/handoff")) {
-        return responseJson({ job: { ...job, status: "completed", handoff_artifact_ref: "launch-jobs/result.zip" } });
-      }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
     chrome.scripting.executeScript.mockImplementation(async (details) => {
@@ -1483,24 +1521,24 @@ describe("Sol Pro launch worker", () => {
           attachments: [{ name: "polylogue-sol-pro-launch-handoff.zip", inline_base64: zipBase64 }],
         },
       },
-      captureResult: { ok: true, provider: "chatgpt", provider_session_id: "conversation-1" },
+      captureResult: {
+        ok: true,
+        provider: "chatgpt",
+        provider_session_id: "conversation-1",
+        artifact_ref: "chatgpt/conversation-1.json",
+      },
       archiveState: { captured: true, state: "archived" },
     });
 
     await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
 
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(true));
+    await vi.waitFor(() => expect(chrome.tabs.sendMessage).toHaveBeenCalled());
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
       reason: "launch_job_handoff",
       capture_context: { launch_job_id: "launch-complete" },
     });
-    const handoffCall = fetchCalls.find((call) => String(call.url).endsWith("/handoff"));
-    expect(JSON.parse(handoffCall.options.body)).toEqual({
-      owner_instance_id: "launch-executor-test",
-      name: "polylogue-sol-pro-launch-handoff.zip",
-      content_base64: zipBase64,
-    });
+    expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(false);
   });
 
   it("lets the owning extension close a cancelled background run", async () => {

@@ -19,19 +19,18 @@ from click.testing import CliRunner
 
 from polylogue.browser_capture.launch_jobs import (
     BrowserLaunchConflictError,
-    BrowserLaunchHandoffError,
     BrowserLaunchLeaseError,
-    accept_launch_handoff,
     claim_due_launch_job,
     control_launch_job,
     enqueue_launch_job,
     list_launch_jobs,
     read_launch_attachment,
+    reconcile_launch_handoff_capture,
     update_launch_job,
 )
 from polylogue.browser_capture.models import (
+    BrowserCaptureEnvelope,
     BrowserLaunchAttachmentInput,
-    BrowserLaunchHandoffRequest,
     BrowserLaunchJobControlRequest,
     BrowserLaunchJobRequest,
     BrowserLaunchJobUpdateRequest,
@@ -123,6 +122,39 @@ def _handoff_zip(
         for name, content in files.items():
             archive.writestr(name, content)
     return buffer.getvalue()
+
+
+def _handoff_capture(
+    job_id: str,
+    content: bytes,
+    *,
+    conversation_id: str = "conversation-1",
+) -> BrowserCaptureEnvelope:
+    return BrowserCaptureEnvelope.model_validate(
+        {
+            "provenance": {
+                "source_url": f"https://chatgpt.com/c/{conversation_id}",
+                "captured_at": "2026-07-16T00:00:00+00:00",
+                "extension_instance_id": "capture-instance",
+                "adapter_name": "chatgpt-native",
+            },
+            "provider_meta": {"launch_job_id": job_id},
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": conversation_id,
+                "turns": [{"provider_turn_id": "turn-1", "role": "assistant", "text": "Done."}],
+                "attachments": [
+                    {
+                        "provider_attachment_id": "file-handoff",
+                        "message_provider_id": "turn-1",
+                        "name": "polylogue-sol-pro-launch-handoff.zip",
+                        "mime_type": "application/zip",
+                        "inline_base64": base64.b64encode(content).decode(),
+                    }
+                ],
+            },
+        }
+    )
 
 
 def test_enqueue_copies_and_hash_verifies_attachment(tmp_path: Path) -> None:
@@ -359,6 +391,115 @@ def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path
     assert retry_at < frozen_clock.now() + timedelta(minutes=33)
 
 
+def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    jobs = [
+        enqueue_launch_job(_request(job_id=job_id), spool_path=tmp_path)
+        for job_id in ("warning-one", "warning-two", "accepted", "warning-after-acceptance")
+    ]
+
+    def submit(job_id: str, owner: str) -> None:
+        claimed = claim_due_launch_job(owner, spool_path=tmp_path) or pytest.fail("not claimed")
+        assert claimed.job_id == job_id
+        update_launch_job(
+            job_id,
+            BrowserLaunchJobUpdateRequest(owner_instance_id=owner, outcome="submitted", phase="submitted"),
+            spool_path=tmp_path,
+        )
+
+    submit(jobs[0].job_id, "one")
+    first = update_launch_job(
+        jobs[0].job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="one",
+            outcome="soft_warning",
+            phase="provider_soft_warning",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing first warning")
+    first_event = first.events[-1]
+    assert first.status == "submitted"
+    assert first.attempts == 1
+    assert first_event.provider_state == "soft_warning"
+    assert first_event.provider_circuit_streak == 1
+    assert first_event.backoff_source == "receiver_adaptive"
+    assert 900 <= (first_event.backoff_seconds or 0) < 990
+
+    frozen_clock.advance(1_000)
+    submit(jobs[1].job_id, "two")
+    second = update_launch_job(
+        jobs[1].job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="two",
+            outcome="soft_warning",
+            phase="provider_soft_warning",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing second warning")
+    second_event = second.events[-1]
+    assert second_event.provider_circuit_streak == 2
+    assert 1_800 <= (second_event.backoff_seconds or 0) < 1_980
+
+    frozen_clock.advance(2_000)
+    submit(jobs[2].job_id, "accepted")
+    accepted = update_launch_job(
+        jobs[2].job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="accepted",
+            outcome="progress",
+            phase="provider_running",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing accepted observation")
+    assert accepted.events[-1].provider_state == "accepted"
+    assert accepted.events[-1].provider_circuit_streak == 0
+
+    frozen_clock.advance(61)
+    submit(jobs[3].job_id, "after")
+    after = update_launch_job(
+        jobs[3].job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="after",
+            outcome="soft_warning",
+            phase="provider_soft_warning",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing warning after acceptance")
+    assert after.events[-1].provider_circuit_streak == 1
+    assert 900 <= (after.events[-1].backoff_seconds or 0) < 990
+
+
+def test_manual_priority_can_bypass_soft_warning_circuit(
+    tmp_path: Path,
+) -> None:
+    warned = enqueue_launch_job(_request(job_id="soft-warning"), spool_path=tmp_path)
+    manual = enqueue_launch_job(_request(job_id="manual"), spool_path=tmp_path)
+    claim_due_launch_job("one", spool_path=tmp_path)
+    update_launch_job(
+        warned.job_id,
+        BrowserLaunchJobUpdateRequest(owner_instance_id="one", outcome="submitted", phase="submitted"),
+        spool_path=tmp_path,
+    )
+    update_launch_job(
+        warned.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="one",
+            outcome="soft_warning",
+            phase="provider_soft_warning",
+        ),
+        spool_path=tmp_path,
+    )
+
+    control_launch_job(
+        manual.job_id,
+        BrowserLaunchJobControlRequest(action="launch_now"),
+        spool_path=tmp_path,
+    )
+    claimed = claim_due_launch_job("two", spool_path=tmp_path) or pytest.fail("manual job not claimed")
+    assert claimed.job_id == manual.job_id
+
+
 def test_unknown_submit_is_quarantined_until_operator_confirms_absence(tmp_path: Path) -> None:
     job = enqueue_launch_job(_request(), spool_path=tmp_path)
     enqueue_launch_job(_request(), spool_path=tmp_path)
@@ -483,16 +624,18 @@ def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Pat
         )
     update_launch_job(
         job.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
         spool_path=tmp_path,
     )
-    completed = accept_launch_handoff(
-        job.job_id,
-        BrowserLaunchHandoffRequest(
-            owner_instance_id="owner",
-            name="polylogue-sol-pro-launch-handoff.zip",
-            content_base64=base64.b64encode(_handoff_zip()).decode(),
-        ),
+    completed = reconcile_launch_handoff_capture(
+        _handoff_capture(job.job_id, _handoff_zip()),
+        "chatgpt/conversation-1.json",
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
     assert completed.status == "completed"
@@ -504,54 +647,63 @@ def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Pat
         )
 
 
-def test_handoff_completion_requires_locally_validated_cohesive_zip(tmp_path: Path) -> None:
-    job = enqueue_launch_job(_request(), spool_path=tmp_path)
-    claim_due_launch_job("owner", spool_path=tmp_path)
+def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: Path) -> None:
+    for index, (content, expected_error) in enumerate(
+        (
+            (_handoff_zip(corrupt_checksum=True), "checksum mismatch"),
+            (_handoff_zip(prompt_profile=None), "prompt profile mismatch"),
+            (_handoff_zip(prompt_profile="polylogue-sol-pro-worker-wrong"), "prompt profile mismatch"),
+        )
+    ):
+        invalid_spool = tmp_path / f"invalid-{index}"
+        invalid = enqueue_launch_job(_request(job_id=f"invalid-{index}"), spool_path=invalid_spool)
+        claim_due_launch_job(f"invalid-owner-{index}", spool_path=invalid_spool)
+        update_launch_job(
+            invalid.job_id,
+            BrowserLaunchJobUpdateRequest(
+                owner_instance_id=f"invalid-owner-{index}",
+                outcome="submitted",
+                phase="submitted",
+                conversation_id="conversation-1",
+                conversation_url="https://chatgpt.com/c/conversation-1",
+            ),
+            spool_path=invalid_spool,
+        )
+        rejected = reconcile_launch_handoff_capture(
+            _handoff_capture(invalid.job_id, content),
+            "chatgpt/conversation-1.json",
+            spool_path=invalid_spool,
+        ) or pytest.fail("missing invalid job")
+        assert rejected.status == "paused"
+        assert rejected.phase == "handoff_invalid"
+        assert expected_error in (rejected.last_error or "")
+
+    valid_spool = tmp_path / "valid"
+    job = enqueue_launch_job(_request(job_id="valid-handoff"), spool_path=valid_spool)
+    claim_due_launch_job("owner", spool_path=valid_spool)
     update_launch_job(
         job.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
-        spool_path=tmp_path,
-    )
-
-    with pytest.raises(BrowserLaunchHandoffError, match="checksum mismatch"):
-        accept_launch_handoff(
-            job.job_id,
-            BrowserLaunchHandoffRequest(
-                owner_instance_id="owner",
-                name="polylogue-sol-pro-launch-handoff.zip",
-                content_base64=base64.b64encode(_handoff_zip(corrupt_checksum=True)).decode(),
-            ),
-            spool_path=tmp_path,
-        )
-
-    for profile in (None, "polylogue-sol-pro-worker-wrong"):
-        with pytest.raises(BrowserLaunchHandoffError, match="prompt profile mismatch"):
-            accept_launch_handoff(
-                job.job_id,
-                BrowserLaunchHandoffRequest(
-                    owner_instance_id="owner",
-                    name="polylogue-sol-pro-launch-handoff.zip",
-                    content_base64=base64.b64encode(_handoff_zip(prompt_profile=profile)).decode(),
-                ),
-                spool_path=tmp_path,
-            )
-
-    content = _handoff_zip()
-    completed = accept_launch_handoff(
-        job.job_id,
-        BrowserLaunchHandoffRequest(
+        BrowserLaunchJobUpdateRequest(
             owner_instance_id="owner",
-            name="polylogue-sol-pro-launch-handoff.zip",
-            content_base64=base64.b64encode(content).decode(),
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
         ),
-        spool_path=tmp_path,
+        spool_path=valid_spool,
+    )
+    content = _handoff_zip()
+    completed = reconcile_launch_handoff_capture(
+        _handoff_capture(job.job_id, content),
+        "chatgpt/conversation-1.json",
+        spool_path=valid_spool,
     ) or pytest.fail("missing job")
     assert completed.status == "completed"
     assert completed.phase == "handoff_validated"
     assert completed.handoff_sha256 == hashlib.sha256(content).hexdigest()
     assert completed.handoff_file_count == 7
-    assert completed.handoff_artifact_ref is not None
-    assert (tmp_path / completed.handoff_artifact_ref).read_bytes() == content
+    assert completed.handoff_artifact_ref == "chatgpt/conversation-1.json"
+    assert completed.handoff_attachment_id == "file-handoff"
 
 
 def test_future_job_is_not_claimed_early(tmp_path: Path, frozen_clock: FrozenClock) -> None:
@@ -634,22 +786,25 @@ def test_receiver_routes_enqueue_claim_and_serve_hash_pinned_inputs(tmp_path: Pa
             port,
             "POST",
             f"/v1/launch-jobs/{job_id}/events",
-            {"owner_instance_id": "live-browser", "outcome": "submitted", "phase": "submitted"},
+            {
+                "owner_instance_id": "live-browser",
+                "outcome": "submitted",
+                "phase": "submitted",
+                "conversation_id": "conversation-1",
+                "conversation_url": "https://chatgpt.com/c/conversation-1",
+            },
         )
         submitted.read()
         handoff_content = _handoff_zip()
-        handoff = _http(
+        capture = _http(
             host,
             port,
             "POST",
-            f"/v1/launch-jobs/{job_id}/handoff",
-            {
-                "owner_instance_id": "live-browser",
-                "name": "polylogue-sol-pro-launch-handoff.zip",
-                "content_base64": base64.b64encode(handoff_content).decode(),
-            },
+            "/v1/browser-captures",
+            _handoff_capture(job_id, handoff_content).model_dump(mode="json", exclude_none=True),
         )
-        handoff_body = json.loads(handoff.read())
+        capture_body = json.loads(capture.read())
+        completed_body = json.loads(_http(host, port, "GET", "/v1/launch-jobs").read())
 
     assert created.status == HTTPStatus.ACCEPTED
     assert claimed.status == HTTPStatus.OK
@@ -658,9 +813,12 @@ def test_receiver_routes_enqueue_claim_and_serve_hash_pinned_inputs(tmp_path: Pa
     assert attachment_response.status == HTTPStatus.OK
     assert attachment_response.getheader("Content-Disposition") == 'attachment; filename="context.tar.gz"'
     assert attachment_bytes == b"project context"
-    assert handoff.status == HTTPStatus.OK
-    assert handoff_body["job"]["status"] == "completed"
-    assert handoff_body["job"]["handoff_sha256"] == hashlib.sha256(handoff_content).hexdigest()
+    assert capture.status == HTTPStatus.ACCEPTED
+    completed_job = next(job for job in completed_body["jobs"] if job["job_id"] == job_id)
+    assert completed_job["status"] == "completed"
+    assert completed_job["handoff_sha256"] == hashlib.sha256(handoff_content).hexdigest()
+    assert completed_job["handoff_artifact_ref"] == capture_body["artifact_ref"]
+    assert not (tmp_path / "launch-jobs" / job_id / "handoff").exists()
 
 
 def test_receiver_reports_corrupt_launch_state_instead_of_hiding_it(tmp_path: Path) -> None:
