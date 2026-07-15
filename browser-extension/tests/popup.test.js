@@ -68,6 +68,7 @@ function installDom() {
       <button id="launch-pause"><span class="button-status"></span></button>
       <button id="launch-resume"><span class="button-status"></span></button>
       <button id="launch-retry"><span class="button-status"></span></button>
+      <button id="launch-confirm-existing"><span class="button-status"></span></button>
       <button id="launch-confirm-absent"><span class="button-status"></span></button>
       <button id="launch-cancel"><span class="button-status"></span></button>
       <button id="launch-inspect"><span class="button-status"></span></button>
@@ -121,6 +122,7 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage 
     },
     tabs: {
       create: vi.fn(async (details) => ({ id: 99, ...details })),
+      get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId) || { id: tabId }),
       update: vi.fn(async (tabId, details) => ({ id: tabId, ...details })),
       query: vi.fn(async () => tabs),
       sendMessage: vi.fn(async () => {
@@ -383,12 +385,24 @@ describe("popup capture", () => {
       }
       return { ok: true, job: { ...job, status: "queued" } };
     });
+    chrome.tabs.get.mockResolvedValue({ id: 42, url: "https://chatgpt.com/c/conversation-from-unknown" });
 
     await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("submission_unknown"));
     expect(document.getElementById("launch-retry").disabled).toBe(true);
+    expect(document.getElementById("launch-confirm-existing").disabled).toBe(false);
     expect(document.getElementById("launch-confirm-absent").disabled).toBe(false);
     document.getElementById("launch-inspect").click();
     await vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true }));
+
+    document.getElementById("launch-confirm-existing").click();
+    await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.launch.control",
+      job_id: "launch-unknown",
+      action: "confirm_existing_conversation",
+      inspection_receipt: "operator inspected the retained launch tab and confirmed the matching ChatGPT conversation exists",
+      conversation_id: "conversation-from-unknown",
+      conversation_url: "https://chatgpt.com/c/conversation-from-unknown",
+    }));
 
     document.getElementById("launch-confirm-absent").click();
     await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
@@ -405,7 +419,7 @@ describe("popup capture", () => {
       return { ok: true };
     });
     await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("idle"));
-    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
+    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-existing", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
       expect(document.getElementById(id).disabled).toBe(true);
     }
 

@@ -2107,8 +2107,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const result = await postJson(`/v1/launch-jobs/${encodeURIComponent(message.job_id)}/control`, {
         action: message.action,
         inspection_receipt: message.inspection_receipt || null,
+        conversation_id: message.conversation_id || null,
+        conversation_url: message.conversation_url || null,
       });
-      if (["resume", "retry", "launch_now", "confirm_no_conversation"].includes(message.action)) {
+      if (["resume", "retry", "launch_now", "confirm_no_conversation", "confirm_existing_conversation"].includes(message.action)) {
         void pollLaunchJobs();
       }
       sendResponse({ ok: true, job: result.job });

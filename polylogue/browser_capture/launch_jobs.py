@@ -277,7 +277,7 @@ def _latest_submitted_at(jobs: list[BrowserLaunchJob]) -> datetime | None:
         _parse(event.at)
         for job in jobs
         for event in job.events
-        if event.kind == "submitted" and _parse(event.at) is not None
+        if event.kind in {"submitted", "operator_confirm_existing_conversation"} and _parse(event.at) is not None
     ]
     return max((value for value in timestamps if value is not None), default=None)
 
@@ -514,6 +514,17 @@ def control_launch_job(
         job.last_error = None
         job.cooldown_reason = None
         job.manual_priority = True
+    elif request.action == "confirm_existing_conversation":
+        if job.status != "submission_unknown":
+            raise BrowserLaunchConflictError(f"cannot confirm existing conversation for launch job in {job.status}")
+        job.status = "submitted"
+        job.phase = "operator_confirmed_existing_conversation"
+        job.conversation_id = request.conversation_id
+        job.conversation_url = request.conversation_url
+        job.attempts += 1
+        job.last_error = None
+        job.cooldown_reason = None
+        job.manual_priority = False
     else:
         if job.status not in {"paused", "failed", "cooldown"}:
             raise BrowserLaunchConflictError(f"cannot {request.action} launch job in {job.status}")
