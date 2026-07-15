@@ -1,7 +1,12 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
-const { operatorPresentationForState, operatorStatusForState } = globalThis.PolylogueOperatorStatus;
+// `operator_status.js` is loaded immediately before this file as a classic
+// script.  Its top-level function declarations therefore occupy the shared
+// global lexical environment; binding the same names here makes the browser
+// reject this entire script before the popup can start.  Keep the namespace as
+// the sole cross-script binding and call through it instead.
+const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
 function hostMatches(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -133,7 +138,7 @@ function relativeAge(iso) {
 }
 
 function stateExplanation(state) {
-  return operatorPresentationForState(state);
+  return operatorStatusApi.operatorPresentationForState(state);
 }
 
 function conversationKey(provider, providerSessionId) {
@@ -229,7 +234,7 @@ function renderOpenTabs(tabs, ledger, activeTabId) {
     return;
   }
   node.innerHTML = supported.map(({ tab, provider, sessionId, ledger: item }) => {
-    const status = operatorStatusForState({
+    const status = operatorStatusApi.operatorStatusForState({
       online: true,
       captured: item.archive_state?.state === "archived" || Boolean(item.receiver_request_id),
       archive_state: item.archive_state,
@@ -482,7 +487,7 @@ async function render() {
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
   const state = activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
-  const status = operatorStatusForState(state || {});
+  const status = operatorStatusApi.operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");
   const turnsNode = document.getElementById("turns");

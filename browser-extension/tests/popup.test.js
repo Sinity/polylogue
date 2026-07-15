@@ -1,5 +1,11 @@
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
 const CHATGPT_TAB = {
   id: 42,
@@ -127,6 +133,27 @@ async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = 
 describe("popup capture", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("starts in the manifest classic-script load order without a global redeclaration", () => {
+    const context = vm.createContext({});
+    context.globalThis = context;
+    const operatorSource = readFileSync(join(TEST_DIR, "../src/operator_status.js"), "utf8");
+    const popupSource = readFileSync(join(TEST_DIR, "../src/popup.js"), "utf8");
+
+    new vm.Script(operatorSource, { filename: "operator_status.js" }).runInContext(context);
+    let startupError = null;
+    try {
+      new vm.Script(popupSource, { filename: "popup.js" }).runInContext(context);
+    } catch (error) {
+      startupError = error;
+    }
+
+    // The intentionally minimal context has no DOM, so execution reaches the
+    // first document access and stops there.  A classic-script global binding
+    // collision fails earlier as SyntaxError and made the real popup inert.
+    expect(startupError?.name).toBe("ReferenceError");
+    expect(startupError?.message).toContain("document is not defined");
   });
 
   it("injects provider content scripts before retrying an already-open tab capture", async () => {

@@ -485,7 +485,7 @@ async function checkReceiverHealth() {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   try {
-    const response = await fetch(`${settings.baseUrl}/api/health`, {
+    const response = await fetch(`${settings.baseUrl}/v1/status`, {
       headers: await requestHeaders({ requestId }),
     });
     const body = await response.json().catch(() => null);

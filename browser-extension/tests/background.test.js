@@ -1228,7 +1228,7 @@ describe("receiver health probe", () => {
     await loadBackground();
   });
 
-  it("reports the receiver as reachable and authorized when /api/health returns ok:true", async () => {
+  it("reports the receiver as reachable and authorized when /v1/status returns ok:true", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       fetchCalls.push({ url });
       return responseJson({ ok: true });
@@ -1237,7 +1237,7 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
     expect(response).toEqual({ ok: true, status: "ok", detail: null });
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/api/health");
+    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
   });
 
   it("reports the receiver as reachable but unauthorized when no valid token is configured", async () => {
