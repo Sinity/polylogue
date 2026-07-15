@@ -1402,6 +1402,45 @@ describe("Sol Pro launch worker", () => {
     expect(finalEvent.detail).toContain("without a durable acknowledgement");
   });
 
+  it.each([
+    ["rate limit", { rate_limited: true }, "rate_limited", "provider_rate_limit"],
+    ["safety lock", { safety_lock: true }, "safety_locked", "provider_safety_lock"],
+  ])("delegates %s backoff duration to the receiver", async (_label, inspection, outcome, phase) => {
+    const job = {
+      job_id: `launch-${outcome}`,
+      status: "submitted",
+      phase: "submitted",
+      lease_owner: "launch-executor-test",
+      tab_id: 42,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      busy: false,
+      assistant_turns: 0,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+      rate_limited: false,
+      safety_lock: false,
+      ...inspection,
+    } }]);
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
+    const event = JSON.parse(fetchCalls.find((call) => String(call.url).endsWith("/events")).options.body);
+    expect(event).toMatchObject({ outcome, phase, tab_id: 42 });
+    expect(event).not.toHaveProperty("retry_after_seconds");
+  });
+
   it("completes only after authenticated capture returns the exact handoff bytes", async () => {
     const zipBase64 = btoa("PK synthetic handoff");
     const job = {
