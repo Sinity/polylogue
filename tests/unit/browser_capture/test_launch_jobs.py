@@ -333,6 +333,32 @@ def test_post_submit_provider_circuit_never_auto_launches_duplicate_conversation
     assert list_launch_jobs(spool_path=tmp_path)[-1].status == "paused"
 
 
+def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        spool_path=tmp_path,
+    )
+
+    blocked = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="rate_limited",
+            phase="provider_rate_limit",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+
+    retry_at = datetime.fromisoformat(blocked.next_attempt_at)
+    assert blocked.status == "paused"
+    assert blocked.retry_after_seconds is None
+    assert frozen_clock.now() + timedelta(minutes=30) <= retry_at
+    assert retry_at < frozen_clock.now() + timedelta(minutes=33)
+
+
 def test_unknown_submit_is_quarantined_until_operator_confirms_absence(tmp_path: Path) -> None:
     job = enqueue_launch_job(_request(), spool_path=tmp_path)
     enqueue_launch_job(_request(), spool_path=tmp_path)
