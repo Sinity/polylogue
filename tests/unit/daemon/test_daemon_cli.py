@@ -562,6 +562,83 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     }
 
 
+def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    outcome = SimpleNamespace(
+        status=SimpleNamespace(value="executed"),
+        plan_id="raw-replay:stable",
+        reason="applied",
+        to_dict=lambda: {
+            "plan_id": "raw-replay:stable",
+            "input_raw_ids": ["raw-a"],
+            "status": "executed",
+            "reason": "applied",
+            "next_action": "none",
+        },
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"x" * 16)
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=1,
+            detail="done",
+            metrics={
+                "raw_materialization_candidate_count": 1.0,
+                "raw_materialization_remaining_candidate_count": 0.0,
+            },
+            plan_outcomes=(outcome,),
+        )
+    )
+
+    assert events == [
+        (
+            "raw_materialization_pass",
+            {
+                "pass_id": f"raw-materialization:{(b'x' * 16).hex()}",
+                "success": True,
+                "repaired_count": 1,
+                "detail": "done",
+                "metrics": {
+                    "raw_materialization_candidate_count": 1.0,
+                    "raw_materialization_remaining_candidate_count": 0.0,
+                },
+                "plan_outcomes": [outcome.to_dict()],
+            },
+        )
+    ]
+
+
+def test_raw_materialization_pass_emits_zero_work_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"z" * 16)
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=0,
+            detail="Executable raw replay converged",
+            metrics={"raw_materialization_candidate_count": 0.0},
+            plan_outcomes=(),
+        )
+    )
+
+    assert events[0][1]["success"] is True
+    assert events[0][1]["plan_outcomes"] == []
+
+
 def test_raw_materialization_closes_fts_on_cancellation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -705,12 +782,16 @@ def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
         sleep_calls += 1
         raise asyncio.CancelledError
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
         pytest.raises(asyncio.CancelledError),
@@ -729,13 +810,17 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
 
     calls: list[str] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         task = asyncio.create_task(
             daemon_cli._periodic_raw_materialization_convergence_after(catch_up_complete=catch_up_complete)
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -253,6 +254,9 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_byte_authority_fragment_count": 0.0,
         "raw_materialization_byte_authority_pending_count": 0.0,
         "raw_materialization_byte_authority_quarantined_count": 0.0,
+        "raw_materialization_before_component_count": 1.0,
+        "raw_materialization_selected_executable_component_count": 1.0,
+        "raw_materialization_selected_blocked_component_count": 0.0,
     }
     assert "per-session revision authority" in result.detail
     assert "selected raw payload bytes total=" in result.detail
@@ -1903,8 +1907,12 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
         lambda *_args, **_kwargs: pytest.fail("aggregate cohort limit must be checked before blob open"),
     )
     result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    repeated = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert result.success is False
     assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
+    assert len(result.plan_outcomes) == 1
+    assert result.plan_outcomes[0].status.value == "retryable"
+    assert result.plan_outcomes[0].plan_id == repeated.plan_outcomes[0].plan_id
     assert "aggregate payload exceeds 1.0 GiB" in result.detail
 
 
@@ -1949,6 +1957,157 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
         repaired_per_pass.append(result.repaired_count)
     assert repaired_per_pass == [5, 5, 5, 5, 5]
     assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
+
+
+def test_raw_materialization_receipts_rotate_retryable_plan_behind_unattempted_work(tmp_path: Path) -> None:
+    """A retryable oldest component must not monopolize a bounded daemon slot."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"session-{index}",'
+                    '"timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+                ).encode(),
+                source_path=f"session-{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index in range(3)
+        ]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_ids[0]),
+        )
+        conn.commit()
+
+    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    assert first.plan_outcomes[0].status.value == "retryable"
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (1, 'raw_materialization_pass', ?)",
+            (json.dumps({"plan_outcomes": [outcome.to_dict() for outcome in first.plan_outcomes]}),),
+        )
+        conn.commit()
+
+    second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    assert second.repaired_count == 1
+    assert second.plan_outcomes[0].input_raw_ids == (raw_ids[1],)
+
+
+def test_raw_materialization_isolates_failed_component_and_continues_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One runtime failure must produce a receipt without starving peers."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"session-{index}"}}}}\n'.encode(),
+                source_path=f"session-{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index in range(3)
+        ]
+
+    original = revision_backfill.backfill_historical_revision_evidence
+
+    def fail_oldest(*args: Any, selected_raw_ids: list[str] | None = None, **kwargs: Any) -> Any:
+        if selected_raw_ids == [raw_ids[0]]:
+            raise RuntimeError("injected component failure")
+        return original(*args, selected_raw_ids=selected_raw_ids, **kwargs)
+
+    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_oldest)
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=3)
+
+    assert result.repaired_count == 2
+    assert [outcome.status.value for outcome in result.plan_outcomes].count("retryable") == 1
+    assert [outcome.status.value for outcome in result.plan_outcomes].count("executed") == 2
+
+
+def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: Path) -> None:
+    """One revision-heavy source must not consume the whole daemon batch."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    session_meta = b'{"type":"session_meta","payload":{"id":"shared-session","timestamp":"2026-07-15T00:00:00Z"}}\n'
+    shared_raw_ids: list[str] = []
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for revision in range(5):
+            messages = b"".join(
+                (
+                    b'{"type":"response_item","payload":{"type":"message",'
+                    b'"role":"user","content":[{"type":"input_text","text":"revision-'
+                    + str(index).encode()
+                    + b'"}]}}\n'
+                )
+                for index in range(revision + 1)
+            )
+            shared_raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=session_meta + messages,
+                    source_path="shared-session.jsonl",
+                    acquired_at_ms=revision + 1,
+                )
+            )
+        independent_raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"independent-{index}",'
+                    '"timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+                ).encode(),
+                source_path=f"independent-{index}.jsonl",
+                acquired_at_ms=100 + index,
+            )
+            for index in range(4)
+        ]
+
+    # The previous scheduler sorted individual raws by size before applying
+    # the batch limit. Force that old ordering deterministically: the fixed
+    # scheduler must still select three complete, oldest-first components.
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            [
+                *((index + 1, raw_id) for index, raw_id in enumerate(shared_raw_ids)),
+                *((100 + index, raw_id) for index, raw_id in enumerate(independent_raw_ids)),
+            ],
+        )
+        source_conn.commit()
+
+    config = _config(tmp_path)
+    before = repair_mod.raw_materialization_replay_backlog(config)
+    assert before["candidate_count"] == 9
+    assert before["authority_component_count"] == 5
+
+    preview = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_limit=3)
+    first = repair_mod.repair_raw_materialization(config, raw_artifact_limit=3)
+    after = repair_mod.raw_materialization_replay_backlog(config)
+
+    assert first.repaired_count == 3, (first.detail, first.metrics, after)
+    assert first.metrics["raw_materialization_selected_component_count"] == 3.0
+    assert first.metrics["raw_materialization_plan_outcome_count"] == 3.0
+    assert first.metrics["raw_materialization_plan_executed_count"] == 3.0
+    assert {outcome.plan_id for outcome in first.plan_outcomes} == {
+        outcome.plan_id for outcome in preview.plan_outcomes
+    }
+    assert {outcome.status.value for outcome in first.plan_outcomes} == {"executed"}
+    assert after["candidate_count"] == 2
 
 
 def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
@@ -158,6 +159,45 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
         )
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
+
+
+def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path: Path) -> None:
+    """A newly parsed path must not split an already-known byte cohort."""
+    initialize_active_archive_root(tmp_path)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"shared","timestamp":"2026-07-15T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"old"}]}}\n'
+    )
+    newest = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","role":"assistant","content":'
+        b'[{"type":"output_text","text":"new"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        old_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path="first/shared.jsonl",
+            acquired_at_ms=1,
+        )
+    assert backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[old_raw_id]).replayed_logical_sources == 1
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        new_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=newest,
+            source_path="moved/shared.jsonl",
+            acquired_at_ms=2,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[new_raw_id])
+
+    assert result.scanned == 2
+    assert result.replayed_logical_sources == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id, message_count, raw_id FROM sessions").fetchall() == [
+            ("shared", 2, new_raw_id)
+        ]
 
 
 def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
@@ -417,7 +457,7 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     original_parse = revision_backfill._parse_retained_raw
     opened: list[str] = []
 
-    def observed_parse(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+    def observed_parse(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
         opened.append(raw_id)
         return original_parse(archive, raw_id)
 
