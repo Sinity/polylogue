@@ -53,6 +53,13 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "action_affordances",
         "diagnostics",
         "route_state",
+        # Additive fields from PR #2899 (rxdo core): populated only when a
+        # canonical query:<hash> definition backs the search, byte-compat
+        # for surfaces that don't set them (all default to None).
+        "query_run_ref",
+        "query_hash",
+        "result_fingerprint",
+        "exactness",
     }
 )
 
