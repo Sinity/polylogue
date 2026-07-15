@@ -117,9 +117,25 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   // Re-read the mode after upload/composer work: React can rerender the mode
   // switch independently, and this is the final fail-closed submit boundary.
   const finalMode = selectedMode();
-  const finalChecked = checkedModelOptions();
   const finalPill = [...document.querySelectorAll("button")]
     .find((button) => button.classList.contains("__composer-pill") && textOf(button) === requiredEffort);
+  if (finalPill) pointerClick(finalPill);
+  const finalModelMenu = finalPill
+    ? await waitFor(
+      () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
+        .find((node) => textOf(node) === requiredModel),
+      5_000,
+      "final_model_menu",
+    )
+    : null;
+  if (finalModelMenu) pointerClick(finalModelMenu);
+  const finalChecked = finalModelMenu
+    ? await waitFor(() => {
+      const values = checkedModelOptions();
+      return values.length ? values : null;
+    }, 5_000, "final_model_selection")
+    : [];
+  if (finalPill) pointerClick(finalPill);
   if (
     !finalMode.chat
     || finalMode.work

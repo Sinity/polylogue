@@ -92,7 +92,9 @@ describe("ChatGPT Sol Pro launch adapter", () => {
     vi.spyOn(document, "querySelectorAll").mockImplementation((selector) => {
       if (selector === '[role="menuitemradio"][aria-checked="true"]') {
         checkedReads += 1;
-        if (checkedReads >= 3) return [];
+        if (checkedReads >= 3) {
+          return [original(selector)[1]];
+        }
       }
       return original(selector);
     });
