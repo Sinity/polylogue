@@ -114,7 +114,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   composer.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "deleteContent" }));
   if (!document.execCommand("insertText", false, job.prompt)) throw new Error("protocol_prompt_insert_failed");
   const expectedPromptPrefix = normalizedText(job.prompt).slice(0, 120);
-  if (!normalizedText(textOf(composer)).includes(expectedPromptPrefix)) {
+  if (!normalizedText(textOf(composer)).startsWith(expectedPromptPrefix)) {
     throw new Error("protocol_prompt_verification_failed");
   }
 
