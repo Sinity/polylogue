@@ -113,6 +113,9 @@ function installChromeMock(storagePatch = {}) {
   };
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     fetchCalls.push({ url, options });
+    if (String(url).includes("/v1/launch-jobs")) {
+      return responseJson({ jobs: [] });
+    }
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
     }
@@ -1230,6 +1233,15 @@ describe("Sol Pro launch worker", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await loadBackground();
+  });
+
+  it("recreates the minute wake alarm when an enabled service worker restarts", async () => {
+    await loadBackground({ launchEnabled: true });
+
+    await vi.waitFor(() => expect(chrome.alarms.create).toHaveBeenCalledWith(
+      "polylogueLaunchWake",
+      { delayInMinutes: 0.1, periodInMinutes: 1 },
+    ));
   });
 
   it("leases through the receiver and creates an inactive ordinary Chat tab", async () => {

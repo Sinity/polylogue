@@ -1138,12 +1138,16 @@ async function launchSettings() {
 async function saveLaunchSettings(launchEnabled) {
   await chrome.storage.local.set({ launchEnabled: Boolean(launchEnabled) });
   if (launchEnabled) {
-    await chrome.alarms?.create?.(LAUNCH_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
+    await ensureLaunchAlarm();
     void pollLaunchJobs();
   } else {
     await chrome.alarms?.clear?.(LAUNCH_ALARM);
   }
   return launchSettings();
+}
+
+async function ensureLaunchAlarm() {
+  await chrome.alarms?.create?.(LAUNCH_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
 }
 
 async function updateLaunchJob(jobId, ownerInstanceId, patch) {
@@ -1747,7 +1751,10 @@ function stopPostPolling() {
 void startPostPolling();
 void loadCaptureQueueIntoCache();
 void launchSettings().then(({ launchEnabled }) => {
-  if (launchEnabled) void pollLaunchJobs();
+  if (launchEnabled) {
+    void ensureLaunchAlarm();
+    void pollLaunchJobs();
+  }
 });
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
