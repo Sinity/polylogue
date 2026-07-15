@@ -12,7 +12,7 @@ from http.client import HTTPConnection, HTTPResponse
 from io import BytesIO
 from pathlib import Path
 from threading import Thread
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from click.testing import CliRunner
@@ -69,12 +69,18 @@ def _http(host: str, port: int, method: str, path: str, body: object | None = No
     return conn.getresponse()
 
 
-def _request(*, not_before: str | None = None) -> BrowserLaunchJobRequest:
+def _request(
+    *,
+    not_before: str | None = None,
+    job_id: str | None = None,
+    cadence_minutes: Literal[1, 5, 15, 30, 60] = 1,
+) -> BrowserLaunchJobRequest:
     return BrowserLaunchJobRequest(
         job_title="Implement the durable Sol Pro launch queue",
         scope_prompt="Implement the receiver queue described by the relevant Bead.",
-        cadence_minutes=1,
+        cadence_minutes=cadence_minutes,
         not_before=not_before,
+        job_id=job_id,
         attachments=[
             BrowserLaunchAttachmentInput(
                 name="context.tar.gz",
@@ -367,6 +373,67 @@ def test_unknown_submit_is_quarantined_until_operator_confirms_absence(tmp_path:
     assert requeued.manual_priority is True
     assert requeued.events[-1].kind == "operator_confirm_no_conversation"
     assert requeued.events[-1].detail == "operator inspected ChatGPT and found no matching conversation"
+
+
+def test_unknown_submit_can_be_reconciled_to_an_existing_conversation(tmp_path: Path) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    next_job = enqueue_launch_job(
+        _request(job_id="launch-after-reconciliation", cadence_minutes=15),
+        spool_path=tmp_path,
+    )
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submission_unknown",
+            phase="unknown_submit_outcome",
+            detail="provider accepted submit before the execution channel ended",
+            tab_id=42,
+        ),
+        spool_path=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="conversation id and URL"):
+        BrowserLaunchJobControlRequest(
+            action="confirm_existing_conversation",
+            inspection_receipt="inspected retained tab",
+        )
+    with pytest.raises(ValueError, match="matching its id"):
+        BrowserLaunchJobControlRequest(
+            action="confirm_existing_conversation",
+            inspection_receipt="inspected retained tab",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/different-conversation",
+        )
+
+    reconciled = control_launch_job(
+        job.job_id,
+        BrowserLaunchJobControlRequest(
+            action="confirm_existing_conversation",
+            inspection_receipt="operator inspected retained tab and found the matching conversation",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+
+    assert reconciled.status == "submitted"
+    assert reconciled.phase == "operator_confirmed_existing_conversation"
+    assert reconciled.conversation_id == "conversation-1"
+    assert reconciled.conversation_url == "https://chatgpt.com/c/conversation-1"
+    assert reconciled.attempts == 1
+    assert reconciled.last_error is None
+    assert reconciled.lease_owner is None
+    assert reconciled.events[-1].kind == "operator_confirm_existing_conversation"
+    adopted = claim_due_launch_job("monitor", spool_path=tmp_path) or pytest.fail("monitor did not adopt job")
+    assert adopted.job_id == job.job_id
+    assert adopted.status == "submitted"
+    assert adopted.lease_owner == "monitor"
+    assert claim_due_launch_job("other", spool_path=tmp_path) is None
+    delayed = next(item for item in list_launch_jobs(spool_path=tmp_path) if item.job_id == next_job.job_id)
+    assert delayed.status == "cooldown"
+    assert delayed.cooldown_reason == "cadence"
 
 
 def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Path) -> None:

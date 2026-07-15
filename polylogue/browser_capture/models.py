@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -463,6 +464,7 @@ BrowserLaunchControlAction = Literal[
     "retry",
     "launch_now",
     "confirm_no_conversation",
+    "confirm_existing_conversation",
 ]
 BrowserLaunchOutcome = Literal[
     "progress",
@@ -634,11 +636,26 @@ class BrowserLaunchJobUpdateRequest(BaseModel):
 class BrowserLaunchJobControlRequest(BaseModel):
     action: BrowserLaunchControlAction
     inspection_receipt: str | None = Field(default=None, min_length=1, max_length=2_000)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=200)
+    conversation_url: str | None = Field(default=None, min_length=1, max_length=2_048)
 
     @model_validator(mode="after")
     def require_inspection_receipt(self) -> BrowserLaunchJobControlRequest:
-        if self.action == "confirm_no_conversation" and not self.inspection_receipt:
-            raise ValueError("confirm_no_conversation requires an inspection receipt")
+        if self.action in {"confirm_no_conversation", "confirm_existing_conversation"} and not self.inspection_receipt:
+            raise ValueError(f"{self.action} requires an inspection receipt")
+        if self.action == "confirm_existing_conversation":
+            if not self.conversation_id or not self.conversation_url:
+                raise ValueError("confirm_existing_conversation requires a conversation id and URL")
+            parsed = urlsplit(self.conversation_url)
+            path_parts = [part for part in parsed.path.split("/") if part]
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "chatgpt.com"
+                or len(path_parts) != 2
+                or path_parts[0] != "c"
+                or path_parts[1] != self.conversation_id
+            ):
+                raise ValueError("confirmed conversation must be an exact ChatGPT conversation URL matching its id")
         return self
 
 

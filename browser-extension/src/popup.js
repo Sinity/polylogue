@@ -447,7 +447,7 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     for (const id of ["launch-phase", "launch-cadence", "launch-owner", "launch-last"]) {
       document.getElementById(id).textContent = "--";
     }
-    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
+    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-existing", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
       document.getElementById(id).disabled = true;
     }
     return;
@@ -471,6 +471,8 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     || !["paused", "cooldown", "failed"].includes(job.status);
   document.getElementById("launch-retry").disabled = protectedCircuit
     || !["paused", "cooldown", "failed"].includes(job.status);
+  document.getElementById("launch-confirm-existing").disabled = job.status !== "submission_unknown"
+    || (!job.tab_id && !job.conversation_url);
   document.getElementById("launch-confirm-absent").disabled = job.status !== "submission_unknown";
   document.getElementById("launch-cancel").disabled = ["completed", "cancelled"].includes(job.status);
   document.getElementById("launch-inspect").disabled = !job.tab_id && !job.conversation_url;
@@ -821,6 +823,42 @@ document.getElementById("launch-inspect")?.addEventListener("click", async () =>
   } else if (selectedLaunchJob?.conversation_url) {
     await chrome.tabs.create({ url: selectedLaunchJob.conversation_url, active: true });
   }
+});
+
+function exactChatGptConversation(url) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parts.length !== 2 || parts[0] !== "c") {
+      return null;
+    }
+    return { conversation_id: parts[1], conversation_url: parsed.href };
+  } catch {
+    return null;
+  }
+}
+
+document.getElementById("launch-confirm-existing")?.addEventListener("click", async () => {
+  if (!selectedLaunchJobId || selectedLaunchJob?.status !== "submission_unknown") return;
+  const tab = selectedLaunchJob.tab_id ? await chrome.tabs.get(selectedLaunchJob.tab_id) : null;
+  const conversation = exactChatGptConversation(tab?.url || selectedLaunchJob.conversation_url || "");
+  if (!conversation) {
+    await withAction("launch-confirm-existing", async () => {
+      throw new Error("The inspected tab is not an exact ChatGPT conversation URL");
+    });
+    return;
+  }
+  if (!globalThis.confirm(`Confirm that this job submitted conversation ${conversation.conversation_id}.`)) return;
+  await withAction("launch-confirm-existing", async () => {
+    await chrome.runtime.sendMessage({
+      type: "polylogue.launch.control",
+      job_id: selectedLaunchJobId,
+      action: "confirm_existing_conversation",
+      inspection_receipt: "operator inspected the retained launch tab and confirmed the matching ChatGPT conversation exists",
+      ...conversation,
+    });
+    await refreshLaunches();
+  }, { busy: "Recording…", ok: "Submitted" });
 });
 
 document.getElementById("launch-confirm-absent")?.addEventListener("click", async () => {

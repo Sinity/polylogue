@@ -179,7 +179,7 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "bearer_if_web_origin",
         "BrowserLaunchJobControlRequest",
         "BrowserLaunchJobEnqueuedPayload | BrowserCaptureErrorPayload",
-        "Operator pause/resume/cancel/retry; terminal completion cannot be reopened.",
+        "Operator pause/resume/cancel/retry and ambiguous-submit reconciliation; terminal completion cannot be reopened.",
     ),
     BrowserCaptureRouteContract(
         "POST",
