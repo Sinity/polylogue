@@ -1,10 +1,11 @@
 """Run-projection row builders and hydration helpers.
 
-The ``session_runs`` / ``session_observed_events`` / ``session_context_snapshots``
-derived tables materialize the storage-free
-:class:`polylogue.insights.run_projection.RunProjection`. Each record wraps the
-source pydantic model; typed columns are projected from it on write and the full
-``model_dump(mode="json")`` is stored in ``payload_json`` for lossless read-back.
+polylogue-dab/itvd: run/observed-event/context-snapshot rows are no longer
+materialized -- ``run_projection_relations.py``'s CTEs compute them on every
+read from ``sessions``/``blocks``. ``hydrate_projected_run``/
+``hydrate_observed_event``/``hydrate_context_snapshot`` here unwrap the
+already-hydrated :class:`polylogue.insights.run_projection.RunProjection`
+member models from a :class:`SessionRunRecord`/etc.
 """
 
 from __future__ import annotations

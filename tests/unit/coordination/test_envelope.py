@@ -14,6 +14,16 @@ from polylogue.coordination.envelope import CommandResult, _session_ref, build_c
 
 
 def _seed_coordination_archive(index: Path) -> None:
+    """Seed a minimal but schema-complete archive for coordination-evidence tests.
+
+    polylogue-dab/itvd: session_runs/session_observed_events/
+    session_context_snapshots are no longer materialized tables --
+    run_projection_relations.py computes them on read from `sessions` and
+    `blocks`. `codex-session:child-42` is its own session (branch_type=
+    'subagent', parent_session_id=thread-1), not a synthesized row under the
+    parent's session_id as the old materialized writer produced -- one run
+    row per subagent session is the new model's guarantee.
+    """
     conn = sqlite3.connect(index)
     try:
         conn.executescript(
@@ -28,6 +38,10 @@ def _seed_coordination_archive(index: Path) -> None:
                 root_session_id TEXT,
                 branch_type TEXT,
                 git_branch TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                tool_use_count INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
                 sort_key_ms INTEGER
             );
             CREATE TABLE session_links (
@@ -37,67 +51,36 @@ def _seed_coordination_archive(index: Path) -> None:
                 link_type TEXT,
                 observed_at_ms INTEGER
             );
-            CREATE TABLE session_runs (
-                run_ref TEXT PRIMARY KEY,
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                materialized_at TEXT NOT NULL,
-                source_updated_at TEXT,
-                native_session_id TEXT,
-                native_parent_session_id TEXT,
-                parent_run_ref TEXT,
-                agent_ref TEXT,
-                context_snapshot_ref TEXT,
-                provider_origin TEXT NOT NULL DEFAULT 'codex-session',
-                harness TEXT NOT NULL DEFAULT 'codex',
-                role TEXT NOT NULL DEFAULT 'main',
-                status TEXT NOT NULL,
-                confidence TEXT NOT NULL DEFAULT 'raw',
-                title TEXT,
-                cwd TEXT,
-                git_branch TEXT,
-                lineage_refs_json TEXT NOT NULL DEFAULT '[]',
-                search_text TEXT,
-                evidence_refs_json TEXT NOT NULL,
-                transcript_ref TEXT,
-                payload_json TEXT NOT NULL DEFAULT '{}'
-            );
-            CREATE TABLE session_observed_events (
-                event_ref TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                run_ref TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                materialized_at TEXT NOT NULL,
-                source_updated_at TEXT,
-                kind TEXT NOT NULL,
-                summary TEXT,
-                delivery_state TEXT NOT NULL DEFAULT 'observed',
-                subject_ref TEXT,
-                object_refs_json TEXT NOT NULL DEFAULT '[]',
-                evidence_refs_json TEXT NOT NULL,
-                payload_json TEXT NOT NULL
-            );
-            CREATE TABLE session_context_snapshots (
-                snapshot_ref TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                run_ref TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                materialized_at TEXT NOT NULL,
-                source_updated_at TEXT,
-                boundary TEXT NOT NULL,
-                inheritance_mode TEXT,
-                segment_refs_json TEXT NOT NULL,
-                evidence_refs_json TEXT NOT NULL
+                block_type TEXT NOT NULL,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             """
         )
         conn.execute(
             """
             INSERT INTO sessions
-                (session_id, native_id, origin, title, parent_session_id, root_session_id, branch_type, git_branch, sort_key_ms)
+                (session_id, native_id, origin, title, parent_session_id, root_session_id, branch_type,
+                 git_branch, message_count, tool_use_count, created_at_ms, updated_at_ms, sort_key_ms)
             VALUES
-                ('codex-session:root', 'root', 'codex-session', 'Root work', NULL, 'codex-session:root', NULL, 'feature/coordination-envelope', 10),
-                ('codex-session:thread-1', 'thread-1', 'codex-session', 'Coordination child', 'codex-session:root', 'codex-session:root', 'continuation', 'feature/coordination-envelope', 20)
+                ('codex-session:root', 'root', 'codex-session', 'Root work', NULL, 'codex-session:root', NULL,
+                 'feature/coordination-envelope', 1, 0, 1780304400000, 1780304400000, 10),
+                ('codex-session:thread-1', 'thread-1', 'codex-session', 'Coordination child', 'codex-session:root',
+                 'codex-session:root', 'continuation', 'feature/coordination-envelope', 2, 1, 1780308000000,
+                 1780308060000, 20),
+                ('codex-session:child-42', 'child-42', 'codex-session', 'Map the coordination surface and report caveats.',
+                 'codex-session:thread-1', 'codex-session:root', 'subagent', 'feature/coordination-envelope', 1, 0,
+                 1780308120000, 1780308120000, 30)
             """
         )
         conn.execute(
@@ -109,41 +92,14 @@ def _seed_coordination_archive(index: Path) -> None:
         )
         conn.execute(
             """
-            INSERT INTO session_runs
-                (run_ref, session_id, position, materialized_at, source_updated_at, role, status, title, search_text, evidence_refs_json)
+            INSERT INTO blocks
+                (block_id, session_id, block_type, message_id, position, tool_id, tool_name,
+                 tool_result_exit_code, search_text)
             VALUES
-                ('run:thread-1', 'codex-session:thread-1', 0, '2026-07-04T18:00:00+00:00', '2026-07-04T18:01:00+00:00', 'main', 'completed', 'main run', 'main run', '["session:thread-1"]'),
-                ('run:thread-1:subagent:0:tool-2', 'codex-session:thread-1', 1, '2026-07-04T18:00:00+00:00', '2026-07-04T18:01:30+00:00', 'subagent', 'completed', 'Map the coordination surface and report caveats.', 'Map the coordination surface and report caveats.', '["message:m2"]')
-            """
-        )
-        conn.execute(
-            """
-            UPDATE session_runs
-            SET native_session_id = 'codex-session:child-42',
-                native_parent_session_id = 'codex-session:thread-1',
-                parent_run_ref = 'run:thread-1',
-                agent_ref = 'agent:codex/Explore',
-                context_snapshot_ref = 'context-snapshot:run:thread-1:subagent:0:tool-2:subagent_start',
-                lineage_refs_json = '["run:thread-1","run:thread-1:subagent:0:tool-2"]'
-            WHERE run_ref = 'run:thread-1:subagent:0:tool-2'
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO session_observed_events
-                (event_ref, session_id, run_ref, position, materialized_at, source_updated_at, kind, summary, evidence_refs_json, payload_json)
-            VALUES
-                ('event:tool', 'codex-session:thread-1', 'run:thread-1', 1, '2026-07-04T18:00:00+00:00', '2026-07-04T18:02:00+00:00', 'tool_finished', 'pytest passed', '["message:m1"]', '{"status":"passed"}'),
-                ('event:subagent-started', 'codex-session:thread-1', 'run:thread-1', 2, '2026-07-04T18:00:00+00:00', '2026-07-04T18:02:30+00:00', 'subagent_started', 'Explore subagent started', '["message:m2"]', '{}'),
-                ('event:subagent-finished', 'codex-session:thread-1', 'run:thread-1:subagent:0:tool-2', 3, '2026-07-04T18:00:00+00:00', '2026-07-04T18:03:00+00:00', 'subagent_finished', 'Subagent done: coordination surface mapped; caveat: web fixture only.', '["message:m3"]', '{}')
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO session_context_snapshots
-                (snapshot_ref, session_id, run_ref, position, materialized_at, source_updated_at, boundary, inheritance_mode, segment_refs_json, evidence_refs_json)
-            VALUES
-                ('context:thread-1:start', 'codex-session:thread-1', 'run:thread-1', 0, '2026-07-04T18:00:00+00:00', '2026-07-04T18:03:00+00:00', 'session_start', 'prefix-sharing', '["segment:root"]', '["message:m0"]')
+                ('codex-session:thread-1::m1::0', 'codex-session:thread-1', 'tool_use', 'm1', 0,
+                 'tool-2', 'pytest', NULL, 'run pytest'),
+                ('codex-session:thread-1::m1::1', 'codex-session:thread-1', 'tool_result', 'm1', 1,
+                 'tool-2', NULL, 0, 'passed')
             """
         )
         conn.commit()
@@ -450,25 +406,40 @@ def test_coordination_envelope_composes_archive_evidence(
     tree = payload.session_trees[0]
     assert tree.target_session_id == "codex-session:thread-1"
     assert tree.root_session_id == "codex-session:root"
-    assert len(tree.nodes) == 2
-    assert len(tree.edges) == 2
+    # 3 nodes: root, thread-1 (target), and the child-42 subagent session
+    # (its own session sharing root_session_id, unlike the pre-dab model
+    # where the subagent run was synthesized under thread-1's own session_id).
+    assert len(tree.nodes) == 3
+    # 2 resolved edges (thread-1->root, child-42->thread-1) + 1 unresolved
+    # fork edge from session_links.
+    assert len(tree.edges) == 3
     assert any(edge.parent_native_id == "native-missing-parent" for edge in tree.edges)
     assert tree.provenance.source == "archive-session-topology"
-    assert len(payload.activity_episodes) == 4
-    assert {"run", "tool_finished", "subagent_finished"} <= {episode.kind for episode in payload.activity_episodes}
+    # polylogue-dab/itvd: activity is scoped to the exact target session
+    # (thread-1) only -- its own main run, session_started event, and
+    # tool_finished event. The subagent's run lives under its own session
+    # (child-42) and is out of exact-session scope here (see
+    # subagent_exchanges below, which uses the branch-scope fallback).
+    assert len(payload.activity_episodes) == 3
+    assert {episode.kind for episode in payload.activity_episodes} == {"run", "session_started", "tool_finished"}
     assert all(episode.provenance.source == "archive-run-projection" for episode in payload.activity_episodes)
     assert len(payload.subagent_exchanges) == 1
     exchange = payload.subagent_exchanges[0]
-    assert exchange.run_ref == "run:thread-1:subagent:0:tool-2"
+    assert exchange.run_ref == "run:codex-session:child-42"
     assert exchange.dispatch_prompt == "Map the coordination surface and report caveats."
-    assert exchange.returned_final_message == "Subagent done: coordination surface mapped; caveat: web fixture only."
+    # polylogue-dab/itvd: the source-derived CTE has no 'subagent_finished'
+    # event kind (the pre-dab writer's synthesized report-text marker), so
+    # this is always None now -- only the dispatch side survives.
+    assert exchange.returned_final_message is None
     assert exchange.child_session_id == "codex-session:child-42"
     assert exchange.provenance.source == "archive-subagent-exchange"
     assert len(payload.proof_refs) == 1
-    assert payload.proof_refs[0].status == "passed"
+    # 'ok'/'failed'/'unknown' derived from tool_result_exit_code, not the
+    # pre-dab writer's freeform 'status' string.
+    assert payload.proof_refs[0].status == "ok"
     assert payload.proof_refs[0].provenance.source == "archive-proof-outcome"
     assert len(payload.context_flow_refs) == 1
-    assert payload.context_flow_refs[0].segment_refs == ("segment:root",)
+    assert payload.context_flow_refs[0].segment_refs == ("session:codex-session:thread-1",)
     assert payload.context_flow_refs[0].provenance.source == "archive-context-flow"
 
 

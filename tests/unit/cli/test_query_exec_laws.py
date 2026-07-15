@@ -150,11 +150,10 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
             now_ms=1_700_000_010_000,
         )
 
-    # Materialize derived insight read-models (session_profiles, work events,
-    # and the run-projection tables session_runs/session_observed_events/
-    # session_context_snapshots) so the SQL-backed run/observed-event/
-    # context-snapshot query units have rows to return, mirroring a real
-    # post-ingest archive.
+    # Materialize derived insight read-models (session_profiles, work events)
+    # so the SQL-backed query units have rows to return, mirroring a real
+    # post-ingest archive. Run/observed-event/context-snapshot query units are
+    # source-derived (polylogue-dab) and need no separate materialization.
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     with sqlite3.connect(index_db) as insight_conn:

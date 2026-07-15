@@ -49,14 +49,26 @@ def _insert_session(
     native_id: str,
     origin: str = "claude-code-session",
     created_at_ms: int = 1_767_225_600_000,
+    branch_type: str | None = None,
+    parent_session_id: str | None = None,
 ) -> str:
     conn.execute(
         """
         INSERT INTO sessions (
-            native_id, origin, title, content_hash, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            native_id, origin, title, content_hash, created_at_ms, updated_at_ms,
+            branch_type, parent_session_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (native_id, origin, f"session {native_id}", _HASH, created_at_ms, created_at_ms + 1000),
+        (
+            native_id,
+            origin,
+            f"session {native_id}",
+            _HASH,
+            created_at_ms,
+            created_at_ms + 1000,
+            branch_type,
+            parent_session_id,
+        ),
     )
     return str(
         conn.execute(
@@ -601,7 +613,7 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
 def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     parent_id = _insert_session(conn, native_id="parent")
-    child_id = _insert_session(conn, native_id="child")
+    child_id = _insert_session(conn, native_id="child", branch_type="subagent", parent_session_id=parent_id)
     context_message_ids: list[str] = []
     for position in range(4):
         message_id = _insert_message(
@@ -657,23 +669,6 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         dst_native_id="parent",
         parent_session_id=parent_id,
     )
-    conn.execute(
-        """
-        INSERT INTO session_runs (
-            run_ref, session_id, position, native_session_id,
-            provider_origin, harness, role, status, confidence, title,
-            evidence_refs_json
-        ) VALUES (?, ?, 0, ?, 'claude-code-session', 'claude-code',
-                  'subagent', 'completed', 'raw', ?, ?)
-        """,
-        (
-            f"run:{parent_id}:subagent:task-1",
-            parent_id,
-            child_id,
-            instruction,
-            json.dumps([f"block:{dispatch_message_id}:0"]),
-        ),
-    )
     conn.commit()
     conn.close()
 
@@ -713,8 +708,11 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         assert card.instruction == instruction
         assert card.parent_session_title == "session parent"
         assert card.child_session_title == "session child"
-        assert card.run_ref == f"run:{parent_id}:subagent:task-1"
-        assert card.run_title == instruction
+        # run_relation_sql() (polylogue-dab) keys run_ref to the subagent's
+        # own session_id, not the parent's -- see get_delegation_card's
+        # native_session_id-matching comment in archive.py.
+        assert card.run_ref == f"run:{child_id}"
+        assert card.run_title == f"session {child_id.split(':', 1)[1]}"
         assert card.dispatch_result == "three bounded findings"
         assert card.dispatch_result_truncated is False
         assert card.child_excerpt == "actual child findings"

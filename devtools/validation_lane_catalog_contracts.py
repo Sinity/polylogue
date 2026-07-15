@@ -452,9 +452,12 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             classification_override=AssertionClass.SMOKE_PROCESS,
         ),
         path_targets=("session-insight-materialization-loop", "raw-materialization-loop"),
+        # polylogue-dab/itvd: "session_runs" renamed to "run_projection" --
+        # run/observed-event/context-snapshot rows are source-derived CTE
+        # relations (run_projection_relations.py), not a materialized table.
         artifact_targets=(
             "session_profile",
-            "session_runs",
+            "run_projection",
             "raw_sessions",
             "archive_tiers",
         ),

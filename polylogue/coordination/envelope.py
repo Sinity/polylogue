@@ -45,6 +45,11 @@ from polylogue.coordination.payloads import (
 )
 from polylogue.logging import get_logger
 from polylogue.paths import active_index_db_path, archive_root
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
 
 logger = get_logger(__name__)
 
@@ -1696,16 +1701,15 @@ def _archive_evidence_payloads(
         logger.warning("coordination archive-evidence connect failed: %s", exc, exc_info=True)
         return (*empty, f"archive-evidence connect failed: {exc}")
     try:
-        if not _archive_tables_present(
-            conn,
-            (
-                "sessions",
-                "session_links",
-                "session_runs",
-                "session_observed_events",
-                "session_context_snapshots",
-            ),
-        ):
+        # polylogue-dab/itvd: session_runs/session_observed_events/
+        # session_context_snapshots are source-derived CTE relations
+        # (run_projection_relations.py), not tables -- they can never appear
+        # in sqlite_master, so requiring their presence here always
+        # short-circuited to "no evidence", silently degrading every
+        # coordination archive-evidence query. Only `sessions`/`session_links`
+        # need to exist; the run/event/snapshot relations are always
+        # computable once `sessions` does.
+        if not _archive_tables_present(conn, ("sessions", "session_links")):
             return (*empty, None)
         target_session_id = _resolve_coordination_session(conn, repo, self_payload)
         session_tree: tuple[CoordinationSessionTreePayload, ...] = ()
@@ -1731,6 +1735,26 @@ def _archive_tables_present(conn: sqlite3.Connection, names: tuple[str, ...]) ->
         names,
     ).fetchall()
     return {str(row["name"]) for row in rows} >= set(names)
+
+
+def _combined_relation_sql(*fragments: str) -> str:
+    """Merge multiple ``run_projection_relations.py`` ``WITH`` fragments into one clause.
+
+    Each ``*_relation_sql()`` helper returns its own standalone ``WITH ...``
+    string (one or two independently-named CTEs). SQLite allows only one
+    ``WITH`` keyword per statement, so a query that needs relations from more
+    than one helper (e.g. runs LEFT JOIN observed_events) must merge their
+    CTE bodies under a single ``WITH``. The CTE names declared by the run,
+    observed-event, and context-snapshot fragments are disjoint by
+    construction, so concatenation is safe.
+    """
+    bodies = []
+    for fragment in fragments:
+        stripped = fragment.strip()
+        if not stripped.upper().startswith("WITH "):
+            raise ValueError(f"expected a WITH-clause fragment, got: {stripped[:40]!r}")
+        bodies.append(stripped[len("WITH ") :])
+    return "WITH " + ",\n".join(bodies) + "\n"
 
 
 def _resolve_coordination_session(
@@ -1954,11 +1978,12 @@ def _archive_activity_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="r")
     run_rows = conn.execute(
         f"""
+        {run_relation_sql()}
         SELECT r.run_ref AS ref, r.session_id, r.run_ref, 'run' AS kind, r.status,
                COALESCE(NULLIF(r.title, ''), r.search_text) AS summary,
                r.source_updated_at AS occurred_at,
                r.evidence_refs_json AS refs_json
-        FROM session_runs r
+        FROM runs r
         {where}
         ORDER BY COALESCE(r.source_updated_at, r.materialized_at) DESC, r.position
         LIMIT ?
@@ -1969,10 +1994,11 @@ def _archive_activity_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="e")
     event_rows = conn.execute(
         f"""
+        {observed_event_relation_sql(source_where="1")}
         SELECT e.event_ref AS ref, e.session_id, e.run_ref, e.kind, NULL AS status,
                e.summary, e.source_updated_at AS occurred_at,
                e.evidence_refs_json AS refs_json
-        FROM session_observed_events e
+        FROM observed_events e
         {where}
         ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
         LIMIT ?
@@ -2022,8 +2048,16 @@ def _archive_subagent_exchange_rows(
     else:
         where = "WHERE "
     where += "r.role = 'subagent'"
+    # polylogue-dab/itvd: the pre-dab materialized writer synthesized a
+    # 'subagent_finished' marker event carrying the child's final report
+    # text; the source-derived CTE (run_projection_relations.py) has no
+    # equivalent event kind, so `finished` never matches and
+    # finished_event_ref/returned_final_message are always NULL now. The
+    # subagent run row itself (status/title/context_snapshot_ref) is still
+    # accurate -- only the "what did it report back" enrichment is gone.
     rows = conn.execute(
         f"""
+        {_combined_relation_sql(run_relation_sql(), observed_event_relation_sql(source_where="1"))}
         SELECT
             r.run_ref,
             r.session_id,
@@ -2036,8 +2070,8 @@ def _archive_subagent_exchange_rows(
             finished.event_ref AS finished_event_ref,
             finished.summary AS returned_final_message,
             finished.evidence_refs_json AS finished_evidence_refs_json
-        FROM session_runs r
-        LEFT JOIN session_observed_events finished
+        FROM runs r
+        LEFT JOIN observed_events finished
           ON finished.run_ref = r.run_ref
          AND finished.kind = 'subagent_finished'
         {where}
@@ -2062,11 +2096,16 @@ def _archive_proof_rows(
         where += " AND "
     else:
         where = "WHERE "
+    # polylogue-dab/itvd: the source-derived observed-event CTE only ever
+    # emits kind in ('session_started', 'tool_finished') -- the pre-dab
+    # writer's richer command/test/session-finished marker kinds have no
+    # equivalent, so this now only ever matches plain tool_finished events.
     where += "e.kind IN ('tool_finished', 'command_finished', 'test_finished', 'session_finished')"
     rows = conn.execute(
         f"""
+        {observed_event_relation_sql(source_where="1")}
         SELECT e.event_ref, e.session_id, e.kind, e.summary, e.evidence_refs_json, e.payload_json
-        FROM session_observed_events e
+        FROM observed_events e
         {where}
         ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
         LIMIT ?
@@ -2100,9 +2139,10 @@ def _archive_context_flow_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="c")
     rows = conn.execute(
         f"""
+        {context_snapshot_relation_sql()}
         SELECT c.snapshot_ref, c.session_id, c.run_ref, c.boundary, c.inheritance_mode,
                c.segment_refs_json, c.evidence_refs_json
-        FROM session_context_snapshots c
+        FROM context_snapshots c
         {where}
         ORDER BY COALESCE(c.source_updated_at, c.materialized_at) DESC, c.position
         LIMIT ?

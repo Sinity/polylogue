@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import get_args
-
 from polylogue.core.enums import (
     BlockType,
     BranchType,
@@ -16,25 +14,15 @@ from polylogue.core.enums import (
     SessionKind,
     WebConstructType,
 )
-from polylogue.insights.run_projection import (
-    ContextBoundary,
-    ContextInheritanceMode,
-    ObservedDeliveryState,
-    ObservedEventKind,
-    RunHarness,
-    RunStatus,
-)
 from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
     json_object_check,
-    literal_check,
     nullable_check,
 )
 
-INDEX_SCHEMA_VERSION = 36
+INDEX_SCHEMA_VERSION = 37
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -1335,119 +1323,6 @@ ON session_tag_rollups(bucket_day DESC, source_name, tag);
 
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
 ON session_tag_rollups(source_name, tag);
-
-CREATE TABLE IF NOT EXISTS session_runs (
-    run_ref                  TEXT PRIMARY KEY,
-    session_id               TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position                 INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version     INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at          TEXT NOT NULL DEFAULT '',
-    source_updated_at        TEXT,
-    native_session_id        TEXT,
-    native_parent_session_id TEXT,
-    parent_run_ref           TEXT,
-    agent_ref                TEXT,
-    context_snapshot_ref     TEXT,
-    provider_origin          TEXT NOT NULL DEFAULT 'unknown',
-    harness                  TEXT NOT NULL CHECK({literal_check("harness", *get_args(RunHarness))}),
-    role                     TEXT NOT NULL CHECK({literal_check("role", "main", "subagent")}),
-    status                   TEXT NOT NULL CHECK({literal_check("status", *get_args(RunStatus))}),
-    confidence               TEXT NOT NULL CHECK({literal_check("confidence", "raw", "inferred")}),
-    title                    TEXT NOT NULL DEFAULT '',
-    cwd                      TEXT,
-    git_branch               TEXT,
-    lineage_refs_json        TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json       TEXT NOT NULL DEFAULT '[]',
-    transcript_ref           TEXT,
-    payload_json             TEXT NOT NULL DEFAULT '{{}}',
-    search_text              TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_session
-ON session_runs(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_harness
-ON session_runs(harness);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_status
-ON session_runs(status);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_role
-ON session_runs(role);
-
-CREATE TABLE IF NOT EXISTS session_observed_events (
-    event_ref            TEXT PRIMARY KEY,
-    session_id           TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    run_ref              TEXT NOT NULL,
-    position             INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at      TEXT NOT NULL DEFAULT '',
-    source_updated_at    TEXT,
-    kind                 TEXT NOT NULL CHECK({literal_check("kind", *get_args(ObservedEventKind))}),
-    summary              TEXT NOT NULL DEFAULT '',
-    delivery_state       TEXT NOT NULL CHECK({literal_check("delivery_state", *get_args(ObservedDeliveryState))}),
-    subject_ref          TEXT,
-    object_refs_json     TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json   TEXT NOT NULL DEFAULT '[]',
-    payload_json         TEXT NOT NULL DEFAULT '{{}}',
-    search_text          TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_session
-ON session_observed_events(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind
-ON session_observed_events(kind);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_run
-ON session_observed_events(run_ref);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_delivery
-ON session_observed_events(delivery_state);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_tool
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.tool_name'), ''), 'unknown')
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_handler
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.handler_kind'), ''), 'unknown')
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_status
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.status'), ''), 'unknown')
-);
-
-CREATE TABLE IF NOT EXISTS session_context_snapshots (
-    snapshot_ref         TEXT PRIMARY KEY,
-    session_id           TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    run_ref              TEXT NOT NULL,
-    position             INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at      TEXT NOT NULL DEFAULT '',
-    source_updated_at    TEXT,
-    boundary             TEXT NOT NULL CHECK({literal_check("boundary", *get_args(ContextBoundary))}),
-    inheritance_mode     TEXT NOT NULL CHECK({literal_check("inheritance_mode", *get_args(ContextInheritanceMode))}),
-    segment_refs_json    TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json   TEXT NOT NULL DEFAULT '[]',
-    metadata_json        TEXT NOT NULL DEFAULT '{{}}',
-    payload_json         TEXT NOT NULL DEFAULT '{{}}',
-    search_text          TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_session
-ON session_context_snapshots(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_boundary
-ON session_context_snapshots(boundary);
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_run
-ON session_context_snapshots(run_ref);
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into

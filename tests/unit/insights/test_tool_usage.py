@@ -527,38 +527,40 @@ class TestListToolUsageInsightsEndToEnd:
         ]
 
     async def test_observed_event_mcp_filter_uses_tool_expression_index(self, tmp_path: Path) -> None:
+        """Tool-outcome rollups (canonical blocks, polylogue-dab) use idx_blocks_type_tool, not a table scan."""
         archive = _archive(tmp_path)
         db_path = archive.archive_root / "index.db"
         (
             SessionBuilder(db_path, "cc-1")
             .provider("claude-code")
             .title("CC")
-            .add_message("cc-1-msg", role="assistant", text="Tools")
+            .add_message(
+                "cc-1-msg",
+                role="assistant",
+                text="Tools",
+                blocks=[
+                    {"type": "tool_use", "tool_name": "mcp__serena__find_symbol", "tool_id": "s1"},
+                    {"type": "tool_result", "tool_id": "s1", "text": "ok", "tool_result_is_error": 0},
+                ],
+            )
             .save()
         )
-        tool_expr = "COALESCE(NULLIF(json_extract(payload_json, '$.tool_name'), ''), 'unknown')"
-        mcp_prefix = "mcp__serena__"
+
+        statements: list[str] = []
+        with ArchiveStore.open_existing(archive.archive_root) as store:
+            store._conn.set_trace_callback(statements.append)
+            store.list_tool_observed_event_count_rows(ToolUsageInsightQuery(mcp_server="serena", limit=5))
+            store._conn.set_trace_callback(None)
+
+        aggregate_statement = next(statement for statement in statements if "GROUP BY s.origin" in statement)
 
         conn = sqlite3.connect(db_path)
         try:
-            plan = [
-                str(row[-1])
-                for row in conn.execute(
-                    f"""
-                    EXPLAIN QUERY PLAN
-                    SELECT COUNT(*)
-                    FROM session_observed_events
-                    WHERE kind = 'tool_finished'
-                      AND {tool_expr} >= ?
-                      AND {tool_expr} < ?
-                    """,
-                    (mcp_prefix, f"{mcp_prefix}\U0010ffff"),
-                )
-            ]
+            plan = [str(row[-1]) for row in conn.execute(f"EXPLAIN QUERY PLAN {aggregate_statement}")]
         finally:
             conn.close()
 
-        assert any("idx_session_observed_events_kind_tool" in row for row in plan)
+        assert any("idx_blocks_type_tool" in row for row in plan)
         assert any("<expr>>?" in row and "<expr><?" in row for row in plan)
 
     async def test_action_evidence_counts_normalize_detail_matches(self, tmp_path: Path) -> None:

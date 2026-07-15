@@ -169,10 +169,21 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         ready_flags=("phase_rows_ready",),
         artifacts=("session_phases",),
     ),
+    # polylogue-dab/itvd: session_runs/session_observed_events/
+    # session_context_snapshots are source-derived CTE relations
+    # (run_projection_relations.py), not tables, so they can never appear in
+    # sqlite_master. table_name points at the always-present `sessions`
+    # table purely so the presence gate (`table_present` in `_entry()`)
+    # reports true and the real row_count/ready_flags (already computed in
+    # `status` from the CTE) actually drive the verdict, instead of
+    # permanently reporting "missing". `artifacts` intentionally keeps the
+    # legacy table name -- it is genuinely, permanently absent, and
+    # InsightStorageArtifact.present reporting that honestly is useful
+    # diagnostic info distinguishing "no cache table" from "not ready".
     InsightReadinessSpec(
         insight_name="session_runs",
         display_name="Session Runs",
-        table_name="session_runs",
+        table_name="sessions",
         row_count_attr="run_count",
         ready_flags=("run_rows_ready",),
         artifacts=("session_runs",),
@@ -181,7 +192,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec(
         insight_name="session_observed_events",
         display_name="Observed Events",
-        table_name="session_observed_events",
+        table_name="sessions",
         row_count_attr="observed_event_count",
         ready_flags=("observed_event_rows_ready",),
         artifacts=("session_observed_events",),
@@ -190,7 +201,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec(
         insight_name="session_context_snapshots",
         display_name="Context Snapshots",
-        table_name="session_context_snapshots",
+        table_name="sessions",
         row_count_attr="context_snapshot_count",
         ready_flags=("context_snapshot_rows_ready",),
         artifacts=("session_context_snapshots",),

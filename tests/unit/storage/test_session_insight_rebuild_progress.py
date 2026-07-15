@@ -129,13 +129,14 @@ def test_full_rebuild_emits_orphan_prune_progress_per_table(
 
     _rebuild(db_path, progress_callback=progress)
 
+    # polylogue-dab/itvd: session_runs/session_observed_events/
+    # session_context_snapshots are no longer materialized tables (they are
+    # computed on read by run_projection_relations.py's CTEs), so there is
+    # nothing to orphan-prune for them anymore.
     prune_events = [desc for desc in events if desc and desc.startswith("rebuild: pruned orphans from ")]
     assert prune_events == [
         "rebuild: pruned orphans from session_work_events",
         "rebuild: pruned orphans from session_phases",
-        "rebuild: pruned orphans from session_runs",
-        "rebuild: pruned orphans from session_observed_events",
-        "rebuild: pruned orphans from session_context_snapshots",
         "rebuild: pruned orphans from session_latency_profiles",
         "rebuild: pruned orphans from session_profiles",
     ]

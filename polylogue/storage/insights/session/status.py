@@ -15,6 +15,11 @@ from polylogue.storage.insights.session.runtime import (
     session_profile_stale_predicate,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
 
 TablePresence: TypeAlias = dict[str, bool]
 StatusCounts: TypeAlias = dict[str, int]
@@ -182,9 +187,14 @@ SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
 SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
 SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
-SESSION_RUN_COUNT_SQL = "SELECT COUNT(*) FROM session_runs"
-SESSION_OBSERVED_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_observed_events"
-SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = "SELECT COUNT(*) FROM session_context_snapshots"
+# polylogue-dab: session_runs/session_observed_events/session_context_snapshots
+# are no longer materialized tables; these are source-derived counts via
+# run_projection_relations.py's CTEs, not raw table scans.
+SESSION_RUN_COUNT_SQL = f"{run_relation_sql()} SELECT COUNT(*) FROM runs"
+SESSION_OBSERVED_EVENT_COUNT_SQL = (
+    f"{observed_event_relation_sql(source_where='1')} SELECT COUNT(*) FROM observed_events"
+)
+SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = f"{context_snapshot_relation_sql()} SELECT COUNT(*) FROM context_snapshots"
 THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
 THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM threads_fts"
 THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM threads_fts"
@@ -416,21 +426,28 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_key="phase_inference_count",
         count_sql=SESSION_PHASE_COUNT_SQL,
     ),
+    # polylogue-dab/itvd: session_runs/session_observed_events/session_context_snapshots
+    # are source-derived CTE relations, not tables, so they can never appear in
+    # sqlite_master. `table_name` here points at the always-present `sessions`
+    # table purely so the presence gate (`exists_sql`, `tables[self.key]`)
+    # reports true and the real count_sql/readiness checks actually run,
+    # instead of the descriptor's key-driven presence check permanently
+    # short-circuiting to "table missing".
     SessionInsightTableDescriptor(
         key="session_runs",
-        table_name="session_runs",
+        table_name="sessions",
         count_key="run_count",
         count_sql=SESSION_RUN_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
         key="session_observed_events",
-        table_name="session_observed_events",
+        table_name="sessions",
         count_key="observed_event_count",
         count_sql=SESSION_OBSERVED_EVENT_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
         key="session_context_snapshots",
-        table_name="session_context_snapshots",
+        table_name="sessions",
         count_key="context_snapshot_count",
         count_sql=SESSION_CONTEXT_SNAPSHOT_COUNT_SQL,
     ),

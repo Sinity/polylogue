@@ -25,21 +25,16 @@ from polylogue.archive.message.roles import Role
 from polylogue.cli import cli
 from polylogue.config import Config
 from polylogue.core.enums import BlockType, Origin, Provider
-from polylogue.insights.run_projection import build_run_projection
-from polylogue.insights.transforms import SubagentReport, TransformRawRef
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session import rebuild as rebuild_mod
-from polylogue.storage.insights.session.run_projection_rows import build_session_run_records
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
-from polylogue.storage.insights.session.storage import replace_session_runs_bulk_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
-
-_MATERIALIZED_AT = "2026-07-04T00:00:00+00:00"
+from polylogue.storage.sqlite.run_projection_relations import run_relation_sql
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,90 +314,57 @@ def _check_reset_preserves_source(root: Path) -> ScaleRegressionCheck:
 
 
 def _check_run_ref_no_drop(root: Path) -> ScaleRegressionCheck:
+    """Subagent run rows stay distinct and don't collide with the parent's main run.
+
+    polylogue-dab/itvd: the pre-dab materialized-writer model synthesized N
+    virtual subagent run rows under the *parent's* session_id (one per
+    Task-tool report), and this check originally guarded against two reports
+    sharing a tool_id producing colliding synthesized run_refs. That writer
+    (and the session_runs table it wrote to) no longer exists --
+    run_projection_relations.py's CTE gives exactly one run row per subagent
+    *session* (sessions.branch_type = 'subagent'), keyed by its own
+    session_id, so the run_ref collision this check used to guard against is
+    now structurally impossible. This exercises the replacement guarantee:
+    two subagent sessions under the same parent still produce two distinct,
+    non-colliding run rows on every read.
+    """
     db_path = root / "run-ref-index.db"
     initialize_archive_database(db_path, ArchiveTier.INDEX)
-    parent_ref = TransformRawRef(session_id="codex-session:parent")
-    report_0_ref = TransformRawRef(session_id="codex-session:parent", message_id="m1", block_index=0, ref_kind="block")
-    report_1_ref = TransformRawRef(session_id="codex-session:parent", message_id="m2", block_index=0, ref_kind="block")
-    child_ref = TransformRawRef(session_id="codex-session:child")
-    reports = (
-        SubagentReport(
-            subagent_type="Explore",
-            tool_id="shared-tool",
-            task_id="task-a",
-            child_session_id="codex-session:child",
-            prompt="first",
-            final_report_preview="first done",
-            raw_refs=(report_0_ref,),
-        ),
-        SubagentReport(
-            subagent_type="Explore",
-            tool_id="shared-tool",
-            task_id="task-b",
-            child_session_id="codex-session:child",
-            prompt="second",
-            final_report_preview="second done",
-            raw_refs=(report_1_ref,),
-        ),
-    )
-    parent = build_run_projection(
-        session_id="codex-session:parent",
-        source_origin="codex-session",
-        title="parent",
-        git_branch=None,
-        working_directories=(),
-        session_raw_refs=(parent_ref,),
-        tool_summaries=(),
-        subagent_reports=reports,
-        session_digest_events=(),
-    )
-    parent_again = build_run_projection(
-        session_id="codex-session:parent",
-        source_origin="codex-session",
-        title="parent",
-        git_branch=None,
-        working_directories=(),
-        session_raw_refs=(parent_ref,),
-        tool_summaries=(),
-        subagent_reports=reports,
-        session_digest_events=(),
-    )
-    child = build_run_projection(
-        session_id="codex-session:child",
-        source_origin="codex-session",
-        title="child",
-        git_branch=None,
-        working_directories=(),
-        session_raw_refs=(child_ref,),
-        tool_summaries=(),
-        subagent_reports=(),
-        session_digest_events=(),
-    )
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        for native in ("parent", "child"):
-            conn.execute(
-                "INSERT INTO sessions(native_id, origin, content_hash) VALUES(?, ?, ?)",
-                (native, "codex-session", bytes(32)),
-            )
-        conn.commit()
-        replace_session_runs_bulk_sync(
-            conn,
-            {
-                "codex-session:parent": build_session_run_records(parent, materialized_at=_MATERIALIZED_AT),
-                "codex-session:child": build_session_run_records(child, materialized_at=_MATERIALIZED_AT),
-            },
+        conn.execute(
+            "INSERT INTO sessions(native_id, origin, content_hash) VALUES(?, ?, ?)",
+            ("parent", "codex-session", bytes(32)),
         )
-        rows = conn.execute("SELECT run_ref, session_id, role FROM session_runs ORDER BY run_ref").fetchall()
+        conn.execute(
+            "INSERT INTO sessions(native_id, origin, content_hash, branch_type, parent_session_id) "
+            "VALUES(?, ?, ?, ?, ?)",
+            ("child-a", "codex-session", bytes([1]) * 32, "subagent", "codex-session:parent"),
+        )
+        conn.execute(
+            "INSERT INTO sessions(native_id, origin, content_hash, branch_type, parent_session_id) "
+            "VALUES(?, ?, ?, ?, ?)",
+            ("child-b", "codex-session", bytes([2]) * 32, "subagent", "codex-session:parent"),
+        )
+        conn.commit()
+        rows = conn.execute(
+            f"{run_relation_sql()} SELECT run_ref, session_id, role FROM runs ORDER BY run_ref"
+        ).fetchall()
+        rows_again = conn.execute(
+            f"{run_relation_sql()} SELECT run_ref, session_id, role FROM runs ORDER BY run_ref"
+        ).fetchall()
 
     row_tuples = tuple((str(row["run_ref"]), str(row["session_id"]), str(row["role"])) for row in rows)
     expected = (
-        ("run:codex-session:child", "codex-session:child", "main"),
+        ("run:codex-session:child-a", "codex-session:child-a", "subagent"),
+        ("run:codex-session:child-b", "codex-session:child-b", "subagent"),
         ("run:codex-session:parent", "codex-session:parent", "main"),
-        ("run:codex-session:parent:subagent:0:shared-tool", "codex-session:parent", "subagent"),
-        ("run:codex-session:parent:subagent:1:shared-tool", "codex-session:parent", "subagent"),
     )
-    ok = row_tuples == expected and [run.run_ref for run in parent.runs] == [run.run_ref for run in parent_again.runs]
+    ok = (
+        row_tuples == expected
+        and len({run_ref for run_ref, _, _ in row_tuples}) == len(row_tuples)
+        and len(rows_again) == len(rows)
+    )
     return ScaleRegressionCheck(
         "run_ref_no_drop",
         ok,

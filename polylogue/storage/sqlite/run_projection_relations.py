@@ -1,9 +1,9 @@
 """Shared SQLite relations for run-projection reads.
 
 These relations are the query substrate for ``run``, ``observed-event``, and
-``context-snapshot`` reads. They synthesize cheap source rows directly from
-``sessions`` and ``blocks`` and optionally union richer materialized rows when
-the corresponding cache table exists.
+``context-snapshot`` reads. They synthesize source rows directly from
+``sessions`` and ``blocks`` (polylogue-dab: there is no materialized cache
+table to union anymore -- ``include_materialized=True`` raises).
 """
 
 from __future__ import annotations
@@ -77,7 +77,13 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
         if isinstance(current, QueryFieldPredicate):
             field = current.bound_field_name(context="lowering observed-event source predicates")
             if field == "kind":
-                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=False)
+                # 'tool_finished' discriminates against session_started_base
+                # (the other branch of the source_observed_events UNION), so
+                # it is itself selective -- without this, "kind:tool_finished"
+                # alone (no tool:/handler:/status: predicate alongside it)
+                # falls through to the "not selective" 0=1 fallback below and
+                # silently returns zero rows despite real matching evidence.
+                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=True)
                 return "tool_finished" in {value.strip().lower() for value in current.values}
             if field == "delivery_state":
                 add_clause("'observed' = ?", ["observed"], is_selective=False)
@@ -140,50 +146,20 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
     return " AND ".join(clauses) if clauses else "1=1", params
 
 
-def run_relation_sql(*, include_materialized: bool = True) -> str:
-    materialized = (
-        """
-,
-materialized_runs AS (
-    SELECT
-        'materialized' AS row_source,
-        r.run_ref,
-        r.session_id,
-        r.position,
-        r.source_updated_at,
-        r.native_session_id,
-        r.native_parent_session_id,
-        r.parent_run_ref,
-        r.agent_ref,
-        r.lineage_refs_json,
-        r.provider_origin,
-        r.harness,
-        r.role,
-        r.title,
-        r.cwd,
-        r.git_branch,
-        r.status,
-        r.confidence,
-        r.transcript_ref,
-        r.evidence_refs_json,
-        r.context_snapshot_ref,
-        r.search_text,
-        r.payload_json,
-        r.materializer_version,
-        r.materialized_at
-    FROM session_runs r
-    WHERE r.role <> 'main'
-        OR NOT EXISTS (
-            SELECT 1
-            FROM source_runs source
-            WHERE source.session_id = r.session_id
+def run_relation_sql(*, include_materialized: bool = False) -> str:
+    """Construct run projection relation SQL.
+
+    The materialized cache tables (session_runs) are no longer populated
+    after polylogue-dab. Always use source-derived. This function
+    must now return source-only queries; the materialized union code is
+    dead and reserved for future deletion.
+    """
+    if include_materialized:
+        raise ValueError(
+            "session_runs materialized table is no longer written to (polylogue-dab). "
+            "Pass include_materialized=False or omit the argument."
         )
-)"""
-        if include_materialized
-        else ""
-    )
-    union = "UNION ALL SELECT * FROM materialized_runs" if include_materialized else ""
-    return f"""
+    return """
 WITH source_runs AS (
     SELECT
         'source' AS row_source,
@@ -201,7 +177,7 @@ WITH source_runs AS (
                 WHEN s0.origin = 'chatgpt-export' THEN 'chatgpt'
                 WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
                 ELSE 'unknown'
-            END || '/main' AS agent_ref,
+            END || CASE WHEN s0.branch_type = 'subagent' THEN '/subagent' ELSE '/main' END AS agent_ref,
         json_array('run:' || s0.session_id) AS lineage_refs_json,
         s0.origin AS provider_origin,
         CASE
@@ -211,7 +187,13 @@ WITH source_runs AS (
             WHEN s0.origin IN ('gemini-cli-session', 'hermes-session', 'antigravity-session') THEN 'local'
             ELSE 'unknown'
         END AS harness,
-        'main' AS role,
+        -- branch_type='subagent' (BranchType.SUBAGENT, core/enums.py) is the
+        -- session-level flag a parsed subagent session already carries; no
+        -- Task-tool-report parsing needed here (unlike the pre-polylogue-dab
+        -- Python writer in insights/run_projection.py, which additionally
+        -- derived agent_ref's subagent_type segment from the parent's Task
+        -- tool_input -- that finer distinction is not reconstructed here).
+        CASE WHEN s0.branch_type = 'subagent' THEN 'subagent' ELSE 'main' END AS role,
         COALESCE(NULLIF(s0.title, ''), s0.session_id) AS title,
         NULL AS cwd,
         s0.git_branch AS git_branch,
@@ -220,59 +202,34 @@ WITH source_runs AS (
         s0.session_id AS transcript_ref,
         json_array(s0.session_id) AS evidence_refs_json,
         'context-snapshot:' || s0.session_id || ':' ||
-            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS context_snapshot_ref,
+            CASE
+                WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+                WHEN s0.branch_type = 'continuation' THEN 'resume'
+                ELSE 'session_start'
+            END AS context_snapshot_ref,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text,
         NULL AS payload_json,
         1 AS materializer_version,
         '' AS materialized_at
     FROM sessions s0
-){materialized},
+),
 runs AS (
     SELECT * FROM source_runs
-    {union}
 )
 """
 
 
-def observed_event_relation_sql(*, source_where: str, include_materialized: bool = True) -> str:
-    materialized = (
-        """
-,
-materialized_observed_events AS (
-    SELECT
-        'materialized' AS row_source,
-        e.event_ref,
-        e.session_id,
-        e.run_ref,
-        e.position,
-        e.source_updated_at,
-        e.kind,
-        e.summary,
-        e.delivery_state,
-        e.subject_ref,
-        e.object_refs_json,
-        e.evidence_refs_json,
-        e.payload_json,
-        e.search_text,
-        NULL AS subject_message_id,
-        NULL AS tool_use_position,
-        NULL AS result_message_id,
-        NULL AS result_position,
-        e.materializer_version,
-        e.materialized_at
-    FROM session_observed_events e
-    WHERE e.kind NOT IN ('session_started', 'tool_finished')
-        OR NOT EXISTS (
-            SELECT 1
-            FROM source_observed_events source
-            WHERE source.session_id = e.session_id
-                AND source.kind = e.kind
+def observed_event_relation_sql(*, source_where: str, include_materialized: bool = False) -> str:
+    """Construct observed-event projection relation SQL.
+
+    The materialized cache tables (session_observed_events) are no longer populated
+    after polylogue-dab. Always use source-derived.
+    """
+    if include_materialized:
+        raise ValueError(
+            "session_observed_events materialized table is no longer written to (polylogue-dab). "
+            "Pass include_materialized=False or omit the argument."
         )
-)"""
-        if include_materialized
-        else ""
-    )
-    union = "UNION ALL SELECT * FROM materialized_observed_events" if include_materialized else ""
     return f"""
 WITH session_started_base AS (
     SELECT
@@ -380,63 +337,43 @@ source_observed_events AS (
         1 AS materializer_version,
         '' AS materialized_at
     FROM tool_finished_base
-){materialized},
+),
 observed_events AS (
     SELECT * FROM source_observed_events
-    {union}
 )
 """
 
 
-def context_snapshot_relation_sql(*, include_materialized: bool = True) -> str:
-    materialized = (
-        """
-,
-materialized_context_snapshots AS (
-    SELECT
-        'materialized' AS row_source,
-        c.snapshot_ref,
-        c.session_id,
-        c.run_ref,
-        c.position,
-        c.source_updated_at,
-        c.boundary,
-        c.inheritance_mode,
-        c.segment_refs_json,
-        c.evidence_refs_json,
-        c.metadata_json,
-        c.search_text,
-        c.payload_json,
-        c.materializer_version,
-        c.materialized_at
-    FROM session_context_snapshots c
-    -- 'session_start'/'resume' are the two boundaries the cheap source CTE below
-    -- can synthesize live from sessions.branch_type (polylogue-aoe5); excluding
-    -- both here (not just 'session_start') keeps the cheap path authoritative
-    -- for the main run's snapshot even if a materialized row predates a
-    -- branch_type backfill, avoiding a stale-boundary duplicate row.
-    WHERE c.boundary NOT IN ('session_start', 'resume')
-        OR NOT EXISTS (
-            SELECT 1
-            FROM source_context_snapshots source
-            WHERE source.session_id = c.session_id
+def context_snapshot_relation_sql(*, include_materialized: bool = False) -> str:
+    """Construct context-snapshot projection relation SQL.
+
+    The materialized cache tables (session_context_snapshots) are no longer populated
+    after polylogue-dab. Always use source-derived.
+    """
+    if include_materialized:
+        raise ValueError(
+            "session_context_snapshots materialized table is no longer written to (polylogue-dab). "
+            "Pass include_materialized=False or omit the argument."
         )
-)"""
-        if include_materialized
-        else ""
-    )
-    union = "UNION ALL SELECT * FROM materialized_context_snapshots" if include_materialized else ""
-    return f"""
+    return """
 WITH source_context_snapshots AS (
     SELECT
         'source' AS row_source,
         'context-snapshot:' || s0.session_id || ':' ||
-            CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS snapshot_ref,
+            CASE
+                WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+                WHEN s0.branch_type = 'continuation' THEN 'resume'
+                ELSE 'session_start'
+            END AS snapshot_ref,
         s0.session_id AS session_id,
         'run:' || s0.session_id AS run_ref,
         0 AS position,
         printf('%016d', COALESCE(s0.updated_at_ms, s0.created_at_ms, 0)) AS source_updated_at,
-        CASE WHEN s0.branch_type = 'continuation' THEN 'resume' ELSE 'session_start' END AS boundary,
+        CASE
+            WHEN s0.branch_type = 'subagent' THEN 'subagent_start'
+            WHEN s0.branch_type = 'continuation' THEN 'resume'
+            ELSE 'session_start'
+        END AS boundary,
         'unknown' AS inheritance_mode,
         json_array('session:' || s0.session_id) AS segment_refs_json,
         json_array(s0.session_id) AS evidence_refs_json,
@@ -446,17 +383,25 @@ WITH source_context_snapshots AS (
         1 AS materializer_version,
         '' AS materialized_at
     FROM sessions s0
-){materialized},
+),
 context_snapshots AS (
     SELECT * FROM source_context_snapshots
-    {union}
 )
 """
 
 
 def projected_run_from_row(row: RowLike) -> ProjectedRun:
+    """Hydrate ProjectedRun from row.
+
+    The materialized cache path (payload_json deserialization) was removed
+    in polylogue-dab. Always use source-derived construction.
+    """
+    # Regression guard: ensure no stray materialized rows slipped through
     if str(row["row_source"]) == "materialized":
-        return ProjectedRun.model_validate(json.loads(str(row["payload_json"])))
+        raise ValueError(
+            "Unexpected materialized row in projected_run_from_row; "
+            "session_runs table should not be populated after polylogue-dab."
+        )
     return ProjectedRun(
         run_ref=ObjectRef.parse(str(row["run_ref"])),
         native_session_id=str(row["native_session_id"]) if row["native_session_id"] is not None else None,
@@ -468,7 +413,7 @@ def projected_run_from_row(row: RowLike) -> ProjectedRun:
         lineage_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["lineage_refs_json"])),
         provider_origin=str(row["provider_origin"]),
         harness=str(row["harness"]),  # type: ignore[arg-type]
-        role="main",
+        role=str(row["role"]),  # type: ignore[arg-type]
         title=str(row["title"]),
         cwd=str(row["cwd"]) if row["cwd"] is not None else None,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
@@ -483,8 +428,17 @@ def projected_run_from_row(row: RowLike) -> ProjectedRun:
 
 
 def observed_event_from_row(row: RowLike) -> ObservedEvent:
+    """Hydrate ObservedEvent from row.
+
+    The materialized cache path (payload_json deserialization) was removed
+    in polylogue-dab. Always use source-derived construction.
+    """
+    # Regression guard: ensure no stray materialized rows slipped through
     if str(row["row_source"]) == "materialized":
-        return ObservedEvent.model_validate(json.loads(str(row["payload_json"])))
+        raise ValueError(
+            "Unexpected materialized row in observed_event_from_row; "
+            "session_observed_events table should not be populated after polylogue-dab."
+        )
     payload = json.loads(str(row["payload_json"] or "{}"))
     subject_ref = row["subject_ref"]
     return ObservedEvent(
@@ -505,8 +459,17 @@ def observed_event_from_row(row: RowLike) -> ObservedEvent:
 
 
 def context_snapshot_from_row(row: RowLike) -> ContextSnapshot:
+    """Hydrate ContextSnapshot from row.
+
+    The materialized cache path (payload_json deserialization) was removed
+    in polylogue-dab. Always use source-derived construction.
+    """
+    # Regression guard: ensure no stray materialized rows slipped through
     if str(row["row_source"]) == "materialized":
-        return ContextSnapshot.model_validate(json.loads(str(row["payload_json"])))
+        raise ValueError(
+            "Unexpected materialized row in context_snapshot_from_row; "
+            "session_context_snapshots table should not be populated after polylogue-dab."
+        )
     return ContextSnapshot(
         snapshot_ref=ObjectRef.parse(str(row["snapshot_ref"])),
         run_ref=ObjectRef.parse(str(row["run_ref"])),

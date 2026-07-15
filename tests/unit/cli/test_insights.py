@@ -795,9 +795,6 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
     assert [desc for _, desc in prune_events] == [
         "rebuild: pruned orphans from session_work_events",
         "rebuild: pruned orphans from session_phases",
-        "rebuild: pruned orphans from session_runs",
-        "rebuild: pruned orphans from session_observed_events",
-        "rebuild: pruned orphans from session_context_snapshots",
         "rebuild: pruned orphans from session_latency_profiles",
         "rebuild: pruned orphans from session_profiles",
     ]

@@ -223,8 +223,30 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -252,8 +274,30 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -345,8 +389,30 @@ def test_status_treats_run_projection_materialization_as_optional_cache() -> Non
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             CREATE TABLE session_runs (session_id TEXT NOT NULL);
             CREATE TABLE session_observed_events (session_id TEXT NOT NULL);
@@ -436,8 +502,30 @@ def test_status_tracks_work_and_phase_staleness_from_materialization_ledger() ->
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -508,8 +596,30 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
             VALUES ('root', NULL, 1000, 1775001600000);
@@ -539,8 +649,30 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
                 sort_key_ms INTEGER,
+                created_at_ms INTEGER,
                 updated_at_ms INTEGER
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
