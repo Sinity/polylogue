@@ -53,6 +53,13 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "action_affordances",
         "diagnostics",
         "route_state",
+        # Additive fields from PR #2899 (rxdo core): populated only when a
+        # canonical query:<hash> definition backs the search, byte-compat
+        # for surfaces that don't set them (all default to None).
+        "query_run_ref",
+        "query_hash",
+        "result_fingerprint",
+        "exactness",
     }
 )
 
@@ -94,6 +101,23 @@ def test_envelope_required_fields_are_stable() -> None:
     extra = declared - REQUIRED_ENVELOPE_FIELDS
     assert not missing, f"SearchEnvelope lost required fields: {missing}"
     assert not extra, f"SearchEnvelope grew unexpected fields: {extra} — extend REQUIRED_ENVELOPE_FIELDS or revert."
+
+
+def test_envelope_additive_fields_stay_optional_with_none_default() -> None:
+    """PR #2899's additive fields must stay Optional[None] for byte-compat.
+
+    A later change could make one of these required or give it a non-None
+    default while test_envelope_required_fields_are_stable still passes
+    (it only checks names, not optionality) -- silently breaking every
+    surface that doesn't set them.
+    """
+    additive_fields = ("query_run_ref", "query_hash", "result_fingerprint", "exactness")
+    for name in additive_fields:
+        field = SearchEnvelope.model_fields[name]
+        assert field.default is None, f"{name} must default to None for byte-compat, got {field.default!r}"
+        assert type(None) in getattr(field.annotation, "__args__", ()), (
+            f"{name} must remain Optional, got {field.annotation!r}"
+        )
 
 
 def test_envelope_ranking_policy_defaults_are_declared() -> None:

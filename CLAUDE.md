@@ -206,10 +206,12 @@ commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`
   (`storage/repository/__init__.py`: archive reads, archive writes, raw,
   vectors, + six insight readers — profile, run-projection, timeline, thread,
   summary, topology) and on `services.py`.
-- **MCP** (`mcp/`): the large agent-facing surface (~130 tools across
-  `server_*.py`) — search/list/get, insights, corrections, context/recall,
-  postmortem bundles. This, not the API, is the continuity surface. Adding a
-  tool requires updating `EXPECTED_TOOL_NAMES` + a tool contract.
+- **MCP** (`mcp/`): the large agent-facing surface (103 tools across
+  `server_*.py`, pinned by `tests/unit/mcp/test_server_surfaces.py` against
+  `EXPECTED_TOOL_NAMES`) — search/list/get, insights, corrections,
+  context/recall, postmortem bundles. This, not the API, is the continuity
+  surface. Adding a tool requires updating `EXPECTED_TOOL_NAMES` + a tool
+  contract.
 - **Insights** (`insights/registry.py`): descriptor-driven — one
   `INSIGHT_REGISTRY` where each `InsightType` declares field accessors + a
   Pydantic query model + operations method + CLI/MCP metadata, driving
@@ -397,10 +399,6 @@ isolated XDG paths + archive root.
   (`tests/infra/frozen_clock.py`), not the host wall clock. The
   `verify-test-clock-hygiene` lint rejects new direct `datetime.now`/`time.time`
   in tests outside `docs/plans/test-clock-allowlist.yaml`.
-- **Protected — never delete:** `tests/unit/sources/test_parsers_props.py`,
-  `test_null_guard_properties.py`; `tests/unit/core/test_properties.py`;
-  `tests/integration/`; `tests/unit/security/`;
-  `tests/unit/storage/test_crud.py`.
 - Pytest temp DBs default to `/realm/tmp/polylogue-pytest` (not `/dev/shm`).
   `seeded_db`/`corpus_seeded_db` build a shared DB once under a `.build.done`
   guard — a SIGKILL mid-build leaves a partial DB + set guard →
@@ -472,7 +470,7 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
 - New MCP tool → update `EXPECTED_TOOL_NAMES` (lives in `tests/infra/mcp.py`,
-  96 tools currently) + tool contract, or discovery tests fail.
+  103 tools currently) + tool contract, or discovery tests fail.
 - New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green

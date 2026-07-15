@@ -21,6 +21,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab policy schema-versioning",
     "lab policy timestamp-doctrine",
     "lab provider completeness",
+    "lab probe bead-pr-reconciliation",
     "lab probe capture-regression",
     "lab probe cost-reconciliation",
     "lab probe pipeline",
@@ -1023,6 +1024,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and smoke installed runtime console scripts."
         ),
         examples=("devtools release verify-distribution",),
+    ),
+    CommandSpec(
+        "lab probe bead-pr-reconciliation",
+        "verification lab",
+        "Surface beads whose referenced PR merged but the bead is still open.",
+        "devtools.verify_bead_pr_reconciliation",
+        use_when=(
+            "After a merge-heavy stretch (a Workflow campaign, a merge train, or just several PRs "
+            "landed close together), check for beads left open by a PR that referenced them -- catches "
+            "the reconciliation gap where workers/agents are barred from closing beads themselves and no "
+            "follow-up pass ever ran (2026-07-14: a 55-bead campaign left every bead open despite ~20 "
+            "PRs merging clean). Advisory only -- reports candidates for a human/agent AC check, never "
+            "auto-closes and never fails a gate."
+        ),
+        examples=(
+            "devtools lab probe bead-pr-reconciliation",
+            "devtools lab probe bead-pr-reconciliation --since 2026-07-01 --json",
+            "devtools lab probe bead-pr-reconciliation --limit 50",
+        ),
     ),
     CommandSpec(
         "lab probe cost-reconciliation",
