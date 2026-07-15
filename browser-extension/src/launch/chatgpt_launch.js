@@ -132,7 +132,9 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   const finalChecked = finalModelMenu
     ? await waitFor(() => {
       const values = checkedModelOptions();
-      return values.length ? values : null;
+      return values.includes(requiredModel) && values.includes(requiredEffort)
+        ? values
+        : null;
     }, 5_000, "final_model_selection")
     : [];
   if (finalPill) pointerClick(finalPill);

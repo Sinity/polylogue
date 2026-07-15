@@ -20,6 +20,7 @@ function installPage(body, url = "https://chatgpt.com/c/conversation-1") {
 
 describe("ChatGPT Sol Pro launch adapter", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     delete globalThis.window;
@@ -73,6 +74,7 @@ describe("ChatGPT Sol Pro launch adapter", () => {
   });
 
   it("fails closed when the selected model disappears before submit", async () => {
+    vi.useFakeTimers();
     installPage(`
       <button aria-pressed="true">Chat</button>
       <button aria-pressed="false">Work</button>
@@ -99,6 +101,49 @@ describe("ChatGPT Sol Pro launch adapter", () => {
       return original(selector);
     });
 
+    const launch = executeChatGptLaunchInPage({
+      prompt: "Produce a durable result.",
+      mode: "chat",
+      model_slug: "gpt-5-6-pro",
+      model_label: "GPT-5.6 Sol",
+      effort_label: "Pro",
+    }, []);
+    await vi.advanceTimersByTimeAsync(5_100);
+    await expect(launch).resolves.toMatchObject({
+      ok: false,
+      detail: "final_model_selection_timeout",
+      submission_may_have_occurred: false,
+    });
+  });
+
+  it("waits for both final selector radios before submitting", async () => {
+    installPage(`
+      <button aria-pressed="true">Chat</button>
+      <button aria-pressed="false">Work</button>
+      <button class="__composer-pill">Pro</button>
+      <div role="menuitem" data-has-submenu>GPT-5.6 Sol</div>
+      <div role="menuitemradio" aria-checked="true">GPT-5.6 Sol</div>
+      <div role="menuitemradio" aria-checked="true">Pro</div>
+      <div id="prompt-textarea"></div>
+      <button class="composer-submit-button-color">Send</button>
+    `, "https://chatgpt.com/");
+    document.execCommand = vi.fn((_command, _ui, value) => {
+      document.querySelector("#prompt-textarea").textContent = value;
+      return true;
+    });
+    document.querySelector(".composer-submit-button-color").addEventListener("click", () => {
+      globalThis.window.history.pushState({}, "", "/c/conversation-new");
+    });
+    const original = document.querySelectorAll.bind(document);
+    let checkedReads = 0;
+    vi.spyOn(document, "querySelectorAll").mockImplementation((selector) => {
+      if (selector === '[role="menuitemradio"][aria-checked="true"]') {
+        checkedReads += 1;
+        if (checkedReads === 3) return [original(selector)[0]];
+      }
+      return original(selector);
+    });
+
     await expect(executeChatGptLaunchInPage({
       prompt: "Produce a durable result.",
       mode: "chat",
@@ -106,10 +151,11 @@ describe("ChatGPT Sol Pro launch adapter", () => {
       model_label: "GPT-5.6 Sol",
       effort_label: "Pro",
     }, [])).resolves.toMatchObject({
-      ok: false,
-      detail: "preflight_changed_before_submit",
-      submission_may_have_occurred: false,
+      ok: true,
+      conversation_id: "conversation-new",
+      preflight: { mode: "Chat", model: "GPT-5.6 Sol", effort: "Pro" },
     });
+    expect(checkedReads).toBeGreaterThanOrEqual(4);
   });
 
   it("only recognizes a required ZIP produced in an assistant turn", () => {
