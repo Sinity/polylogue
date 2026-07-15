@@ -442,6 +442,194 @@ class BrowserPostAckPayload(BaseModel):
     status: BrowserPostCommandStatus
 
 
+BrowserLaunchCadenceMinutes = Literal[1, 5, 15, 30, 60]
+BrowserLaunchStatus = Literal[
+    "queued",
+    "leased",
+    "uploading",
+    "submitting",
+    "submitted",
+    "cooldown",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+]
+BrowserLaunchControlAction = Literal["pause", "resume", "cancel", "retry", "launch_now"]
+BrowserLaunchOutcome = Literal[
+    "progress",
+    "submitted",
+    "completed",
+    "rate_limited",
+    "safety_locked",
+    "auth_challenge",
+    "network_error",
+    "protocol_mismatch",
+    "failed",
+]
+
+
+class BrowserLaunchAttachmentInput(BaseModel):
+    """One explicit local input copied into receiver-owned job storage."""
+
+    name: str = Field(max_length=255)
+    mime_type: str = Field(default="application/octet-stream", max_length=255)
+    content_base64: str
+
+    @field_validator("name")
+    @classmethod
+    def require_safe_name(cls, value: str) -> str:
+        name = value.strip()
+        if (
+            not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        ):
+            raise ValueError("launch attachment name must be a basename")
+        return name
+
+    @field_validator("mime_type")
+    @classmethod
+    def require_safe_mime_type(cls, value: str) -> str:
+        mime_type = value.strip()
+        if not mime_type or any(ord(character) < 32 or ord(character) == 127 for character in mime_type):
+            raise ValueError("launch attachment mime type is invalid")
+        return mime_type
+
+
+class BrowserLaunchAttachment(BaseModel):
+    """Receiver-owned immutable attachment metadata exposed to an extension."""
+
+    attachment_id: str
+    name: str
+    mime_type: str
+    size_bytes: int
+    sha256: str
+
+
+class BrowserLaunchJobRequest(BaseModel):
+    """Operator-authorized request for one ordinary ChatGPT Chat conversation."""
+
+    scope_prompt: str = Field(max_length=100_000)
+    attachments: list[BrowserLaunchAttachmentInput] = Field(default_factory=list)
+    cadence_minutes: BrowserLaunchCadenceMinutes = 5
+    not_before: str | None = Field(default=None, max_length=64)
+    job_id: str | None = Field(default=None, min_length=1, max_length=160)
+    required_output: Literal["cohesive_handoff_zip"] = "cohesive_handoff_zip"
+    mode: Literal["chat"] = "chat"
+    model_slug: Literal["gpt-5-6-pro"] = "gpt-5-6-pro"
+    model_label: Literal["GPT-5.6 Sol"] = "GPT-5.6 Sol"
+    effort_label: Literal["Pro"] = "Pro"
+    thinking_effort: Literal["standard"] = "standard"
+
+    @field_validator("scope_prompt")
+    @classmethod
+    def require_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("launch scope must not be empty")
+        return value
+
+
+class BrowserLaunchEvent(BaseModel):
+    event_id: str
+    at: str
+    kind: str
+    detail: str | None = None
+    owner_instance_id: str | None = None
+
+
+class BrowserLaunchJob(BaseModel):
+    """Durable receiver-authoritative launch job and current projection."""
+
+    polylogue_launch_job_kind: Literal["browser_launch_job"] = "browser_launch_job"
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    job_id: str
+    prompt_profile: Literal["polylogue-sol-pro-worker-v1"] = "polylogue-sol-pro-worker-v1"
+    prompt_prefix_sha256: str
+    scope_prompt: str
+    prompt: str
+    attachments: list[BrowserLaunchAttachment] = Field(default_factory=list)
+    cadence_minutes: BrowserLaunchCadenceMinutes
+    required_output: Literal["cohesive_handoff_zip"] = "cohesive_handoff_zip"
+    mode: Literal["chat"] = "chat"
+    model_slug: Literal["gpt-5-6-pro"] = "gpt-5-6-pro"
+    model_label: Literal["GPT-5.6 Sol"] = "GPT-5.6 Sol"
+    effort_label: Literal["Pro"] = "Pro"
+    thinking_effort: Literal["standard"] = "standard"
+    status: BrowserLaunchStatus = "queued"
+    phase: str = "queued"
+    queue_position: int = Field(default=0, ge=0)
+    created_at: str
+    updated_at: str
+    not_before: str
+    next_attempt_at: str
+    attempts: int = 0
+    lease_owner: str | None = None
+    executor_instance_id: str | None = None
+    lease_expires_at: str | None = None
+    cooldown_reason: str | None = None
+    last_error: str | None = None
+    retry_after_seconds: int | None = None
+    manual_priority: bool = False
+    tab_id: int | None = None
+    conversation_id: str | None = None
+    conversation_url: str | None = None
+    handoff_attachment_id: str | None = None
+    handoff_artifact_ref: str | None = None
+    handoff_sha256: str | None = None
+    handoff_size_bytes: int | None = None
+    handoff_file_count: int | None = None
+    handoff_validated_at: str | None = None
+    events: list[BrowserLaunchEvent] = Field(default_factory=list)
+
+
+class BrowserLaunchJobListPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    jobs: list[BrowserLaunchJob] = Field(default_factory=list)
+
+
+class BrowserLaunchJobEnqueuedPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    job: BrowserLaunchJob
+
+
+class BrowserLaunchJobUpdateRequest(BaseModel):
+    owner_instance_id: str = Field(min_length=1, max_length=200)
+    outcome: BrowserLaunchOutcome = "progress"
+    phase: str = Field(min_length=1, max_length=120)
+    detail: str | None = Field(default=None, max_length=2_000)
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    tab_id: int | None = None
+    conversation_id: str | None = Field(default=None, max_length=200)
+    conversation_url: str | None = Field(default=None, max_length=2_048)
+    handoff_attachment_id: str | None = Field(default=None, max_length=255)
+
+
+class BrowserLaunchJobControlRequest(BaseModel):
+    action: BrowserLaunchControlAction
+
+
+class BrowserLaunchHandoffRequest(BaseModel):
+    """Exact cohesive ZIP acquired from the provider page by the lease owner."""
+
+    owner_instance_id: str = Field(min_length=1, max_length=200)
+    name: Literal["polylogue-sol-pro-launch-handoff.zip"]
+    content_base64: str
+
+
+class BrowserLaunchHandoffAcceptedPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    job: BrowserLaunchJob
+
+
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -477,6 +665,21 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
+    "BrowserLaunchAttachment",
+    "BrowserLaunchAttachmentInput",
+    "BrowserLaunchCadenceMinutes",
+    "BrowserLaunchControlAction",
+    "BrowserLaunchEvent",
+    "BrowserLaunchJob",
+    "BrowserLaunchJobControlRequest",
+    "BrowserLaunchJobEnqueuedPayload",
+    "BrowserLaunchJobListPayload",
+    "BrowserLaunchJobRequest",
+    "BrowserLaunchJobUpdateRequest",
+    "BrowserLaunchHandoffAcceptedPayload",
+    "BrowserLaunchHandoffRequest",
+    "BrowserLaunchOutcome",
+    "BrowserLaunchStatus",
     "BrowserPostAckPayload",
     "BrowserPostAckStatus",
     "BrowserPostCommand",

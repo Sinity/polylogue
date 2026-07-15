@@ -69,6 +69,10 @@ function installChromeMock(storagePatch = {}) {
           stored = { ...stored, ...patch };
         }),
       },
+      session: {
+        get: vi.fn(async (defaults) => ({ ...defaults, polylogueLaunchExecutorId: "launch-executor-test" })),
+        set: vi.fn(async () => undefined),
+      },
     },
     tabs: {
       create: vi.fn(async ({ url }) => ({ id: 99, url, status: "complete" })),
@@ -1218,6 +1222,171 @@ describe("capture retry queue", () => {
     });
 
     await vi.waitFor(() => expect(stored.polylogueCaptureQueue.entries).toHaveLength(0));
+  });
+});
+
+describe("Sol Pro launch worker", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await loadBackground();
+  });
+
+  it("leases through the receiver and creates an inactive ordinary Chat tab", async () => {
+    const attachmentBytes = new TextEncoder().encode("targeted context");
+    const job = {
+      job_id: "launch-1",
+      prompt: "Produce exactly one cohesive handoff ZIP.",
+      attachments: [{
+        attachment_id: "a1",
+        name: "context.tar.gz",
+        mime_type: "application/gzip",
+        size_bytes: attachmentBytes.length,
+      }],
+      status: "leased",
+      mode: "chat",
+      model_slug: "gpt-5-6-pro",
+      model_label: "GPT-5.6 Sol",
+      effort_label: "Pro",
+      thinking_effort: "standard",
+    };
+    let claimCount = 0;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("/attachments/")) {
+        return {
+          arrayBuffer: vi.fn(async () => attachmentBytes.buffer),
+          headers: { get: vi.fn(() => null) },
+          ok: true,
+          status: 200,
+        };
+      }
+      if (path.includes("claim_by=")) {
+        claimCount += 1;
+        return responseJson({ jobs: claimCount === 1 ? [job] : [] });
+      }
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.tabs.create.mockImplementation(async (details) => {
+      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
+      tabs.push(tab);
+      return tab;
+    });
+    chrome.scripting.executeScript.mockImplementation(async (details) => {
+      if (!details.func) return undefined;
+      return [{ result: {
+        ok: true,
+        conversation_id: "conversation-1",
+        conversation_url: "https://chatgpt.com/c/conversation-1",
+      } }];
+    });
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/",
+      active: false,
+    }));
+    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events"))).toHaveLength(3));
+    const eventBodies = fetchCalls
+      .filter((call) => String(call.url).endsWith("/events"))
+      .map((call) => JSON.parse(call.options.body));
+    expect(eventBodies[1]).toMatchObject({ outcome: "progress", phase: "submit_intent", tab_id: 99 });
+    const submitted = eventBodies[2];
+    expect(submitted).toMatchObject({
+      outcome: "submitted",
+      phase: "submitted",
+      conversation_id: "conversation-1",
+    });
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 99 },
+      world: "MAIN",
+      args: [job, [expect.objectContaining({ name: "context.tar.gz" })]],
+    }));
+  });
+
+  it("completes only after authenticated capture returns the exact handoff bytes", async () => {
+    const zipBase64 = btoa("PK synthetic handoff");
+    const job = {
+      job_id: "launch-complete",
+      status: "submitted",
+      phase: "submitted",
+      lease_owner: "launch-executor-test",
+      tab_id: 42,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      if (path.endsWith("/handoff")) {
+        return responseJson({ job: { ...job, status: "completed", handoff_artifact_ref: "launch-jobs/result.zip" } });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.scripting.executeScript.mockImplementation(async (details) => {
+      if (!details.func) return undefined;
+      return [{ result: {
+        busy: false,
+        assistant_turns: 1,
+        handoff_name: "polylogue-sol-pro-launch-handoff.zip",
+        conversation_id: "conversation-1",
+        conversation_url: "https://chatgpt.com/c/conversation-1",
+      } }];
+    });
+    chrome.tabs.sendMessage.mockResolvedValue({
+      ok: true,
+      envelope: {
+        session: {
+          provider: "chatgpt",
+          provider_session_id: "conversation-1",
+          turns: [{ role: "assistant", text: "handoff" }],
+          attachments: [{ name: "polylogue-sol-pro-launch-handoff.zip", inline_base64: zipBase64 }],
+        },
+      },
+      captureResult: { ok: true, provider: "chatgpt", provider_session_id: "conversation-1" },
+      archiveState: { captured: true, state: "archived" },
+    });
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(true));
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "launch_job_handoff",
+      capture_context: { launch_job_id: "launch-complete" },
+    });
+    const handoffCall = fetchCalls.find((call) => String(call.url).endsWith("/handoff"));
+    expect(JSON.parse(handoffCall.options.body)).toEqual({
+      owner_instance_id: "launch-executor-test",
+      name: "polylogue-sol-pro-launch-handoff.zip",
+      content_base64: zipBase64,
+    });
+  });
+
+  it("lets the owning extension close a cancelled background run", async () => {
+    const cancelled = {
+      job_id: "launch-cancelled",
+      status: "cancelled",
+      executor_instance_id: "launch-executor-test",
+      tab_id: 42,
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [cancelled] });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(chrome.tabs.remove).toHaveBeenCalledWith(42));
   });
 });
 

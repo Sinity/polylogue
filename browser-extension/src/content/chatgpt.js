@@ -626,7 +626,7 @@
     });
   }
 
-  async function capture(reason = null) {
+  async function capture(reason = null, captureContext = null) {
     const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
     let assetAcquisition = null;
     if (nativePayload) {
@@ -674,6 +674,16 @@
     };
     const finalEnvelope = envelope || fallbackEnvelope();
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
+    const launchJobId = typeof captureContext?.launch_job_id === "string"
+      ? captureContext.launch_job_id.slice(0, 160)
+      : null;
+    if (launchJobId) {
+      finalEnvelope.provider_meta = { ...(finalEnvelope.provider_meta || {}), launch_job_id: launchJobId };
+      finalEnvelope.session.provider_meta = {
+        ...(finalEnvelope.session.provider_meta || {}),
+        launch_job_id: launchJobId,
+      };
+    }
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });
@@ -704,7 +714,9 @@
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    capture(message.reason || null, message.capture_context || null)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
   // Outbound posting (reverse channel). Selectors target the ChatGPT composer

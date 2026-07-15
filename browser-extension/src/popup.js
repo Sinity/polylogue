@@ -412,6 +412,72 @@ async function refreshBackfills() {
   return result;
 }
 
+let selectedLaunchJobId = null;
+let selectedLaunchJob = null;
+
+function launchEventLabel(job) {
+  const events = Array.isArray(job?.events) ? job.events : [];
+  const latest = events[events.length - 1];
+  if (!latest) return job?.last_error || "--";
+  return [latest.kind, latest.detail].filter(Boolean).join(" · ");
+}
+
+function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = {}) {
+  const statusNode = document.getElementById("launch-status");
+  if (!statusNode) return;
+  const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
+    const active = new Set(["leased", "uploading", "submitting", "submitted", "cooldown", "paused"]);
+    return Number(active.has(right.status)) - Number(active.has(left.status))
+      || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
+  }) : [];
+  const job = list.find((candidate) => candidate.job_id === selectedLaunchJobId) || list[0] || null;
+  selectedLaunchJob = job;
+  selectedLaunchJobId = job?.job_id || null;
+  const enabled = document.getElementById("launch-enabled");
+  if (enabled) enabled.checked = Boolean(launchEnabled);
+  const selector = document.getElementById("launch-job");
+  if (selector) {
+    selector.innerHTML = list.length
+      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`${candidate.status} · ${candidate.phase} · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
+      : '<option value="">No jobs yet</option>';
+    if (job) selector.value = job.job_id;
+  }
+  if (!job) {
+    statusNode.textContent = launchEnabled ? "idle" : "disabled";
+    for (const id of ["launch-phase", "launch-cadence", "launch-owner", "launch-last"]) {
+      document.getElementById(id).textContent = "--";
+    }
+    return;
+  }
+  statusNode.textContent = launchEnabled ? job.status : `${job.status} · disabled`;
+  document.getElementById("launch-phase").textContent = job.phase || job.status;
+  const due = job.next_attempt_at ? new Date(job.next_attempt_at).toLocaleTimeString() : "now";
+  document.getElementById("launch-cadence").textContent = `${job.cadence_minutes}m · ${job.cooldown_reason || due}`;
+  document.getElementById("launch-owner").textContent = job.lease_owner
+    ? (job.lease_owner === ownerInstanceId ? "this extension" : "another extension")
+    : "unclaimed";
+  document.getElementById("launch-last").textContent = launchEventLabel(job);
+  const active = ["leased", "uploading", "submitting", "submitted"].includes(job.status);
+  const protectedCircuit = ["rate_limited", "safety_locked"].includes(job.cooldown_reason)
+    && (!job.next_attempt_at || Date.parse(job.next_attempt_at) > Date.now());
+  document.getElementById("launch-pause").disabled = active || ["completed", "cancelled"].includes(job.status);
+  document.getElementById("launch-now").disabled = active
+    || ["completed", "cancelled"].includes(job.status)
+    || protectedCircuit;
+  document.getElementById("launch-resume").disabled = protectedCircuit
+    || !["paused", "cooldown", "failed"].includes(job.status);
+  document.getElementById("launch-retry").disabled = protectedCircuit
+    || !["paused", "cooldown", "failed"].includes(job.status);
+  document.getElementById("launch-cancel").disabled = ["completed", "cancelled"].includes(job.status);
+  document.getElementById("launch-inspect").disabled = !job.conversation_url;
+}
+
+async function refreshLaunches() {
+  const result = await chrome.runtime.sendMessage({ type: "polylogue.launch.status" });
+  renderLaunch(result?.jobs || [], result || {});
+  return result;
+}
+
 function renderDebugLog(items) {
   const debug = document.getElementById("debug-log");
   const safeItems = Array.isArray(items) ? items.slice(0, 24) : [];
@@ -523,6 +589,7 @@ async function render() {
   renderTimeline(stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
   renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id);
   await refreshBackfills().catch(() => renderBackfill([]));
+  await refreshLaunches().catch(() => renderLaunch([]));
 }
 
 async function refreshStatus(reason = "popup_manual") {
@@ -689,6 +756,57 @@ document.getElementById("backfill-export")?.addEventListener("click", async () =
     link.click();
     globalThis.URL.revokeObjectURL(url);
   }, { busy: "Exporting", ok: "Exported" });
+});
+
+document.getElementById("launch-enabled")?.addEventListener("change", async (event) => {
+  await chrome.runtime.sendMessage({
+    type: "polylogue.launch.configure",
+    launchEnabled: Boolean(event.target.checked),
+  });
+  await refreshLaunches();
+});
+
+document.getElementById("launch-job")?.addEventListener("change", async (event) => {
+  selectedLaunchJobId = event.target.value || null;
+  await refreshLaunches();
+});
+
+document.getElementById("launch-poll")?.addEventListener("click", async () => {
+  await withAction("launch-poll", async () => {
+    await chrome.runtime.sendMessage({ type: "polylogue.launch.poll" });
+    await refreshLaunches();
+  }, { busy: "Checking", ok: "Checked" });
+});
+
+for (const action of ["pause", "resume", "retry", "cancel"]) {
+  document.getElementById(`launch-${action}`)?.addEventListener("click", async () => {
+    if (!selectedLaunchJobId) return;
+    await withAction(`launch-${action}`, async () => {
+      await chrome.runtime.sendMessage({
+        type: "polylogue.launch.control",
+        job_id: selectedLaunchJobId,
+        action,
+      });
+      await refreshLaunches();
+    }, { busy: `${action}…`, ok: action });
+  });
+}
+
+document.getElementById("launch-now")?.addEventListener("click", async () => {
+  if (!selectedLaunchJobId) return;
+  await withAction("launch-now", async () => {
+    await chrome.runtime.sendMessage({
+      type: "polylogue.launch.control",
+      job_id: selectedLaunchJobId,
+      action: "launch_now",
+    });
+    await refreshLaunches();
+  }, { busy: "Prioritizing", ok: "Queued now" });
+});
+
+document.getElementById("launch-inspect")?.addEventListener("click", async () => {
+  if (!selectedLaunchJob?.conversation_url) return;
+  await chrome.tabs.create({ url: selectedLaunchJob.conversation_url, active: true });
 });
 
 void (async () => {
