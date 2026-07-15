@@ -223,6 +223,7 @@ def post_command(
     default="5",
     show_default=True,
 )
+@click.option("--title", "job_title", required=True, help="Readable mission title shown at the top of the chat.")
 @click.option("--not-before", default=None, help="Optional ISO-8601 earliest launch time.")
 @click.option("--job-id", default=None, help="Optional stable external job id.")
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
@@ -236,6 +237,7 @@ def launch_command(
     verification_paths: tuple[Path, ...],
     full_worktree_fallback: bool,
     cadence_minutes: str,
+    job_title: str,
     not_before: str | None,
     job_id: str | None,
     spool_path: Path | None,
@@ -259,6 +261,7 @@ def launch_command(
         if project_root is not None:
             package = build_sol_pro_work_package(
                 repo_root=project_root,
+                job_title=job_title,
                 scope_prompt=scope_prompt,
                 bead_ids=bead_ids,
                 source_paths=source_paths,
@@ -277,6 +280,7 @@ def launch_command(
             raise ValueError("--bead/--source/--verification/full fallback require --project-root")
         job = enqueue_launch_job(
             BrowserLaunchJobRequest(
+                job_title=job_title,
                 scope_prompt=scope_prompt,
                 attachments=attachments,
                 cadence_minutes=int(cadence_minutes),  # type: ignore[arg-type]

@@ -1319,7 +1319,7 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
 async function recoverSubmittingLaunch(job, ownerInstanceId) {
   if (!job.tab_id) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "protocol_mismatch",
+      outcome: "submission_unknown",
       phase: "unknown_submit_outcome",
       detail: "submit intent was recorded without a recoverable tab; operator inspection required",
     });
@@ -1343,7 +1343,7 @@ async function recoverSubmittingLaunch(job, ownerInstanceId) {
     });
   } catch (error) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "protocol_mismatch",
+      outcome: "submission_unknown",
       phase: "unknown_submit_outcome",
       detail: `submit intent cannot be reconciled automatically: ${String(error.message || error)}`,
       tab_id: job.tab_id,
@@ -1353,6 +1353,7 @@ async function recoverSubmittingLaunch(job, ownerInstanceId) {
 
 async function dispatchLaunchJob(job, ownerInstanceId) {
   let tab = null;
+  let pageExecutionStarted = false;
   try {
     const attachments = await loadLaunchAttachments(job);
     tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
@@ -1370,13 +1371,18 @@ async function dispatchLaunchJob(job, ownerInstanceId) {
       detail: "durable intent recorded before the single submit boundary",
       tab_id: tab.id,
     });
+    pageExecutionStarted = true;
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
       func: executeChatGptLaunchInPage,
       args: [job, attachments],
     });
-    if (!result?.ok) throw new Error(result?.detail || "protocol_launch_result_missing");
+    if (!result?.ok) {
+      const error = new Error(result?.detail || "protocol_launch_result_missing");
+      error.submissionMayHaveOccurred = Boolean(result?.submission_may_have_occurred);
+      throw error;
+    }
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "submitted",
       phase: "submitted",
@@ -1392,7 +1398,15 @@ async function dispatchLaunchJob(job, ownerInstanceId) {
       conversation_id: result.conversation_id,
     });
   } catch (error) {
-    const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);
+    const ambiguous = error?.submissionMayHaveOccurred === true
+      || (pageExecutionStarted && error?.submissionMayHaveOccurred !== false);
+    const classified = ambiguous
+      ? {
+        outcome: "submission_unknown",
+        retry_after_seconds: null,
+        detail: `submit execution channel ended without a durable acknowledgement: ${String(error.message || error)}`,
+      }
+      : classifyLaunchFailure(error, error?.retryAfterSeconds || null);
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       ...classified,
       phase: "launch",
@@ -2092,8 +2106,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "polylogue.launch.control") {
       const result = await postJson(`/v1/launch-jobs/${encodeURIComponent(message.job_id)}/control`, {
         action: message.action,
+        inspection_receipt: message.inspection_receipt || null,
       });
-      if (["resume", "retry", "launch_now"].includes(message.action)) void pollLaunchJobs();
+      if (["resume", "retry", "launch_now", "confirm_no_conversation"].includes(message.action)) {
+        void pollLaunchJobs();
+      }
       sendResponse({ ok: true, job: result.job });
       return;
     }

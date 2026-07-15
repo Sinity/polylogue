@@ -448,6 +448,7 @@ BrowserLaunchStatus = Literal[
     "leased",
     "uploading",
     "submitting",
+    "submission_unknown",
     "submitted",
     "cooldown",
     "paused",
@@ -455,10 +456,18 @@ BrowserLaunchStatus = Literal[
     "failed",
     "cancelled",
 ]
-BrowserLaunchControlAction = Literal["pause", "resume", "cancel", "retry", "launch_now"]
+BrowserLaunchControlAction = Literal[
+    "pause",
+    "resume",
+    "cancel",
+    "retry",
+    "launch_now",
+    "confirm_no_conversation",
+]
 BrowserLaunchOutcome = Literal[
     "progress",
     "submitted",
+    "submission_unknown",
     "completed",
     "rate_limited",
     "safety_locked",
@@ -512,6 +521,7 @@ class BrowserLaunchAttachment(BaseModel):
 class BrowserLaunchJobRequest(BaseModel):
     """Operator-authorized request for one ordinary ChatGPT Chat conversation."""
 
+    job_title: str = Field(min_length=1, max_length=200)
     scope_prompt: str = Field(max_length=100_000)
     attachments: list[BrowserLaunchAttachmentInput] = Field(default_factory=list)
     cadence_minutes: BrowserLaunchCadenceMinutes = 5
@@ -531,6 +541,14 @@ class BrowserLaunchJobRequest(BaseModel):
             raise ValueError("launch scope must not be empty")
         return value
 
+    @field_validator("job_title")
+    @classmethod
+    def require_readable_title(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("launch job title must not be empty")
+        return title
+
 
 class BrowserLaunchEvent(BaseModel):
     event_id: str
@@ -546,8 +564,11 @@ class BrowserLaunchJob(BaseModel):
     polylogue_launch_job_kind: Literal["browser_launch_job"] = "browser_launch_job"
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     job_id: str
-    prompt_profile: Literal["polylogue-sol-pro-worker-v1"] = "polylogue-sol-pro-worker-v1"
+    prompt_profile: Literal["polylogue-sol-pro-worker-v1", "polylogue-sol-pro-worker-v2"] = (
+        "polylogue-sol-pro-worker-v1"
+    )
     prompt_prefix_sha256: str
+    job_title: str = "Polylogue project work"
     scope_prompt: str
     prompt: str
     attachments: list[BrowserLaunchAttachment] = Field(default_factory=list)
@@ -613,6 +634,13 @@ class BrowserLaunchJobUpdateRequest(BaseModel):
 
 class BrowserLaunchJobControlRequest(BaseModel):
     action: BrowserLaunchControlAction
+    inspection_receipt: str | None = Field(default=None, min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def require_inspection_receipt(self) -> BrowserLaunchJobControlRequest:
+        if self.action == "confirm_no_conversation" and not self.inspection_receipt:
+            raise ValueError("confirm_no_conversation requires an inspection receipt")
+        return self
 
 
 class BrowserLaunchHandoffRequest(BaseModel):

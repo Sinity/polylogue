@@ -1360,6 +1360,48 @@ describe("Sol Pro launch worker", () => {
     }));
   });
 
+  it("quarantines an ambiguous submit result instead of retrying", async () => {
+    const job = {
+      job_id: "launch-ambiguous",
+      prompt: "Produce exactly one cohesive handoff ZIP.",
+      attachments: [],
+      status: "leased",
+      mode: "chat",
+      model_slug: "gpt-5-6-pro",
+      model_label: "GPT-5.6 Sol",
+      effort_label: "Pro",
+      thinking_effort: "standard",
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.tabs.create.mockImplementation(async (details) => {
+      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
+      tabs.push(tab);
+      return tab;
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      ok: false,
+      detail: "protocol_conversation_navigation_timeout",
+      submission_may_have_occurred: true,
+    } }]);
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events"))).toHaveLength(3));
+    const finalEvent = JSON.parse(fetchCalls.filter((call) => String(call.url).endsWith("/events"))[2].options.body);
+    expect(finalEvent).toMatchObject({
+      outcome: "submission_unknown",
+      phase: "launch",
+    });
+    expect(finalEvent.detail).toContain("without a durable acknowledgement");
+  });
+
   it("completes only after authenticated capture returns the exact handoff bytes", async () => {
     const zipBase64 = btoa("PK synthetic handoff");
     const job = {

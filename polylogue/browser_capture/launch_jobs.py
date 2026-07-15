@@ -214,8 +214,9 @@ def enqueue_launch_job(request: BrowserLaunchJobRequest, *, spool_path: Path | N
         job_id=job_id,
         prompt_profile=SOL_PRO_PROMPT_PROFILE,
         prompt_prefix_sha256=sol_pro_prompt_sha256(),
+        job_title=request.job_title,
         scope_prompt=request.scope_prompt,
-        prompt=build_sol_pro_prompt(request.scope_prompt),
+        prompt=build_sol_pro_prompt(request.job_title, request.scope_prompt),
         attachments=attachments,
         cadence_minutes=request.cadence_minutes,
         required_output=request.required_output,
@@ -277,7 +278,13 @@ def claim_due_launch_job(
     for job in jobs:
         expiry = _parse(job.lease_expires_at)
         if job.status in active and expiry and expiry > now:
-            return job if job.lease_owner == owner_instance_id else None
+            # A second worker generation can briefly overlap the first while
+            # sharing the profile's session-scoped executor id. Never return
+            # a leased/uploading job reentrantly: that would dispatch another
+            # tab. Only submit-intent recovery is safe to resume in place.
+            if job.lease_owner == owner_instance_id and job.status == "submitting":
+                return job
+            return None
         if job.status in active and (expiry is None or expiry <= now):
             job.status = "queued"
             job.phase = "lease_expired"
@@ -389,6 +396,12 @@ def update_launch_job(
         job.attempts += 1
         job.last_error = None
         job.lease_expires_at = _iso(now + timedelta(hours=6))
+    elif update.outcome == "submission_unknown":
+        job.status = "submission_unknown"
+        job.cooldown_reason = "submission_unknown"
+        job.last_error = update.detail or "submission outcome is unknown; operator inspection required"
+        job.lease_owner = None
+        job.lease_expires_at = None
     elif update.outcome == "completed":
         job.status = "completed"
         job.lease_owner = None
@@ -472,6 +485,15 @@ def control_launch_job(
         job.last_error = None
         job.cooldown_reason = None
         job.manual_priority = True
+    elif request.action == "confirm_no_conversation":
+        if job.status != "submission_unknown":
+            raise BrowserLaunchConflictError(f"cannot confirm absent conversation for launch job in {job.status}")
+        job.status = "queued"
+        job.phase = "operator_confirmed_no_conversation"
+        job.next_attempt_at = _iso(now)
+        job.last_error = None
+        job.cooldown_reason = None
+        job.manual_priority = True
     else:
         if job.status not in {"paused", "failed", "cooldown"}:
             raise BrowserLaunchConflictError(f"cannot {request.action} launch job in {job.status}")
@@ -491,7 +513,7 @@ def control_launch_job(
     job.lease_owner = None
     job.lease_expires_at = None
     job.updated_at = _iso(now)
-    _event(job, f"operator_{request.action}")
+    _event(job, f"operator_{request.action}", detail=request.inspection_receipt)
     _write_job(root, job)
     return job
 

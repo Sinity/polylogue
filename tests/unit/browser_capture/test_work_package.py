@@ -32,12 +32,14 @@ def test_targeted_work_package_is_deterministic_and_manifest_checked(tmp_path: P
     repo = _repo(tmp_path)
     first = build_sol_pro_work_package(
         repo_root=repo,
+        job_title="Implement the selected worker safely",
         scope_prompt="Implement the selected worker safely.",
         bead_ids=("polylogue-test",),
         source_paths=(Path("src/worker.py"),),
     )
     second = build_sol_pro_work_package(
         repo_root=repo,
+        job_title="Implement the selected worker safely",
         scope_prompt="Implement the selected worker safely.",
         bead_ids=("polylogue-test",),
         source_paths=(Path("src/worker.py"),),
@@ -50,7 +52,11 @@ def test_targeted_work_package_is_deterministic_and_manifest_checked(tmp_path: P
         assert "REPO/src/worker.py" in names
         assert "ignored.txt" not in names
         assert "PROMPT.md" in names
+        assert "MISSION.txt" in names
         assert "BEADS/selected.json" in names
+        prompt = archive.extractfile("PROMPT.md").read().decode()  # type: ignore[union-attr]
+        assert prompt.startswith("# Mission: Implement the selected worker safely\n")
+        assert "substantive operator-facing work report" in prompt
         manifest = json.load(archive.extractfile("MANIFEST.json"))  # type: ignore[arg-type]
         records = {item["path"]: item for item in manifest["files"]}
         for name in names - {"MANIFEST.json"}:
@@ -64,15 +70,24 @@ def test_unknown_bead_and_repository_escape_fail_closed(tmp_path: Path) -> None:
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     with pytest.raises(ValueError, match="unknown Beads"):
-        build_sol_pro_work_package(repo_root=repo, scope_prompt="work", bead_ids=("missing",))
+        build_sol_pro_work_package(
+            repo_root=repo, job_title="Find missing Bead", scope_prompt="work", bead_ids=("missing",)
+        )
     with pytest.raises(ValueError, match="escapes repository"):
-        build_sol_pro_work_package(repo_root=repo, scope_prompt="work", source_paths=(outside,))
+        build_sol_pro_work_package(
+            repo_root=repo, job_title="Reject escaped input", scope_prompt="work", source_paths=(outside,)
+        )
 
 
 def test_full_worktree_is_only_included_by_explicit_fallback(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
-    targeted = build_sol_pro_work_package(repo_root=repo, scope_prompt="work")
-    full = build_sol_pro_work_package(repo_root=repo, scope_prompt="work", full_worktree_fallback=True)
+    targeted = build_sol_pro_work_package(repo_root=repo, job_title="Targeted work", scope_prompt="work")
+    full = build_sol_pro_work_package(
+        repo_root=repo,
+        job_title="Full snapshot work",
+        scope_prompt="work",
+        full_worktree_fallback=True,
+    )
     with tarfile.open(fileobj=io.BytesIO(targeted.content), mode="r:gz") as archive:
         assert not any(name.startswith("REPO/") for name in archive.getnames())
     with tarfile.open(fileobj=io.BytesIO(full.content), mode="r:gz") as archive:

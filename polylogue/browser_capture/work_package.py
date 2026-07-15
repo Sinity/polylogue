@@ -152,6 +152,7 @@ def _render_tar(entries: dict[str, tuple[bytes, str]]) -> bytes:
 def build_sol_pro_work_package(
     *,
     repo_root: Path,
+    job_title: str,
     scope_prompt: str,
     bead_ids: Sequence[str] = (),
     source_paths: Sequence[Path] = (),
@@ -168,8 +169,9 @@ def build_sol_pro_work_package(
         # Linked worktrees use a .git file, so existence rather than is_dir is intentional.
         raise ValueError(f"not a git repository root: {root}")
     entries: dict[str, tuple[bytes, str]] = {}
-    full_prompt = build_sol_pro_prompt(scope_prompt)
+    full_prompt = build_sol_pro_prompt(job_title, scope_prompt)
     _add_entry(entries, "PROMPT.md", full_prompt.encode(), "Exact submitted worker prompt")
+    _add_entry(entries, "MISSION.txt", job_title.strip().encode() + b"\n", "Human-readable job title")
     _add_entry(entries, "SCOPE.md", scope_prompt.strip().encode() + b"\n", "Job-specific scope")
 
     for instruction_name in ("CLAUDE.md", "AGENTS.md"):

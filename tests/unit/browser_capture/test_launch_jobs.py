@@ -71,6 +71,7 @@ def _http(host: str, port: int, method: str, path: str, body: object | None = No
 
 def _request(*, not_before: str | None = None) -> BrowserLaunchJobRequest:
     return BrowserLaunchJobRequest(
+        job_title="Implement the durable Sol Pro launch queue",
         scope_prompt="Implement the receiver queue described by the relevant Bead.",
         cadence_minutes=1,
         not_before=not_before,
@@ -149,7 +150,22 @@ def test_two_instances_cannot_overlap_the_submission_critical_section(tmp_path: 
     claimed = claim_due_launch_job("live-browser", spool_path=tmp_path)
     assert claimed is not None and claimed.job_id == first.job_id
     assert claimed.lease_owner == "live-browser"
+    assert claim_due_launch_job("live-browser", spool_path=tmp_path) is None
     assert claim_due_launch_job("private-browser", spool_path=tmp_path) is None
+
+    submitting = update_launch_job(
+        first.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="live-browser",
+            outcome="progress",
+            phase="submit_intent",
+            tab_id=42,
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing submitting job")
+    assert submitting.status == "submitting"
+    recovered = claim_due_launch_job("live-browser", spool_path=tmp_path)
+    assert recovered is not None and recovered.job_id == first.job_id
 
 
 def test_submitted_chats_continue_in_parallel_at_configured_cadence(tmp_path: Path, frozen_clock: FrozenClock) -> None:
@@ -304,6 +320,48 @@ def test_post_submit_provider_circuit_never_auto_launches_duplicate_conversation
     assert list_launch_jobs(spool_path=tmp_path)[-1].status == "paused"
 
 
+def test_unknown_submit_is_quarantined_until_operator_confirms_absence(tmp_path: Path) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    unknown = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submission_unknown",
+            phase="unknown_submit_outcome",
+            detail="execution channel ended after the submit boundary",
+            tab_id=42,
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+
+    assert unknown.status == "submission_unknown"
+    assert unknown.lease_owner is None
+    assert claim_due_launch_job("other", spool_path=tmp_path) is not None
+    with pytest.raises(BrowserLaunchConflictError):
+        control_launch_job(
+            job.job_id,
+            BrowserLaunchJobControlRequest(action="retry"),
+            spool_path=tmp_path,
+        )
+    with pytest.raises(ValueError, match="inspection receipt"):
+        BrowserLaunchJobControlRequest(action="confirm_no_conversation")
+
+    requeued = control_launch_job(
+        job.job_id,
+        BrowserLaunchJobControlRequest(
+            action="confirm_no_conversation",
+            inspection_receipt="operator inspected ChatGPT and found no matching conversation",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+    assert requeued.status == "queued"
+    assert requeued.manual_priority is True
+    assert requeued.events[-1].kind == "operator_confirm_no_conversation"
+    assert requeued.events[-1].detail == "operator inspected ChatGPT and found no matching conversation"
+
+
 def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Path) -> None:
     job = enqueue_launch_job(_request(), spool_path=tmp_path)
     claim_due_launch_job("owner", spool_path=tmp_path)
@@ -395,6 +453,8 @@ def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: P
             "launch",
             "--prompt-file",
             str(prompt),
+            "--title",
+            "Build a durable launch handoff",
             "--attachment",
             str(attachment),
             "--cadence",
@@ -412,6 +472,8 @@ def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: P
     assert result.exit_code == 0
     job = list_launch_jobs(spool_path=spool)[0]
     assert job.job_id == "launch-cli-test"
+    assert job.job_title == "Build a durable launch handoff"
+    assert job.prompt.startswith("# Mission: Build a durable launch handoff\n")
     assert (job.mode, job.model_label, job.effort_label) == ("chat", "GPT-5.6 Sol", "Pro")
     assert job.cadence_minutes == 60
     stored_attachment = read_launch_attachment(job.job_id, job.attachments[0].attachment_id, spool_path=spool)

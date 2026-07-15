@@ -44,7 +44,11 @@ describe("ChatGPT Sol Pro launch adapter", () => {
       model_slug: "gpt-5-6-pro",
       model_label: "GPT-5.6 Sol",
       effort_label: "Pro",
-    }, [])).rejects.toThrow("protocol_job_target_mismatch");
+    }, [])).resolves.toMatchObject({
+      ok: false,
+      detail: "protocol_job_target_mismatch",
+      submission_may_have_occurred: false,
+    });
   });
 
   it("survives chrome.scripting MAIN-world serialization without module bindings", async () => {
@@ -55,7 +59,11 @@ describe("ChatGPT Sol Pro launch adapter", () => {
       model_slug: "gpt-5-6-pro",
       model_label: "GPT-5.6 Sol",
       effort_label: "Pro",
-    }, [])).rejects.toThrow("protocol_job_target_mismatch");
+    }, [])).resolves.toMatchObject({
+      ok: false,
+      detail: "protocol_job_target_mismatch",
+      submission_may_have_occurred: false,
+    });
   });
 
   it("only recognizes a required ZIP produced in an assistant turn", () => {

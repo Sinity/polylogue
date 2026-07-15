@@ -68,6 +68,7 @@ function installDom() {
       <button id="launch-pause"><span class="button-status"></span></button>
       <button id="launch-resume"><span class="button-status"></span></button>
       <button id="launch-retry"><span class="button-status"></span></button>
+      <button id="launch-confirm-absent"><span class="button-status"></span></button>
       <button id="launch-cancel"><span class="button-status"></span></button>
       <button id="launch-inspect"><span class="button-status"></span></button>
       <span id="mode"></span>
@@ -120,6 +121,7 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage 
     },
     tabs: {
       create: vi.fn(async (details) => ({ id: 99, ...details })),
+      update: vi.fn(async (tabId, details) => ({ id: tabId, ...details })),
       query: vi.fn(async () => tabs),
       sendMessage: vi.fn(async () => {
         captureAttempts += 1;
@@ -360,6 +362,40 @@ describe("popup capture", () => {
       type: "polylogue.launch.control",
       job_id: "launch-1",
       action: "launch_now",
+    }));
+  });
+
+  it("requires confirmation before requeueing an unknown submission", async () => {
+    const job = {
+      job_id: "launch-unknown",
+      queue_position: 1,
+      status: "submission_unknown",
+      phase: "unknown_submit_outcome",
+      cadence_minutes: 1,
+      tab_id: 42,
+      attachments: [],
+      events: [{ kind: "submission_unknown", detail: "acknowledgement lost" }],
+    };
+    globalThis.confirm = vi.fn(() => true);
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") {
+        return { ok: true, launchEnabled: true, ownerInstanceId: "this-instance", jobs: [job] };
+      }
+      return { ok: true, job: { ...job, status: "queued" } };
+    });
+
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("submission_unknown"));
+    expect(document.getElementById("launch-retry").disabled).toBe(true);
+    expect(document.getElementById("launch-confirm-absent").disabled).toBe(false);
+    document.getElementById("launch-inspect").click();
+    await vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true }));
+
+    document.getElementById("launch-confirm-absent").click();
+    await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.launch.control",
+      job_id: "launch-unknown",
+      action: "confirm_no_conversation",
+      inspection_receipt: "operator inspected ChatGPT and confirmed that no matching conversation exists",
     }));
   });
 

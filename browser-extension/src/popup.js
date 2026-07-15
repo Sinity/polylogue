@@ -426,7 +426,7 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
   const statusNode = document.getElementById("launch-status");
   if (!statusNode) return;
   const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
-    const active = new Set(["leased", "uploading", "submitting", "submitted", "cooldown", "paused"]);
+    const active = new Set(["leased", "uploading", "submitting", "submission_unknown", "submitted", "cooldown", "paused"]);
     return Number(active.has(right.status)) - Number(active.has(left.status))
       || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
   }) : [];
@@ -468,8 +468,9 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     || !["paused", "cooldown", "failed"].includes(job.status);
   document.getElementById("launch-retry").disabled = protectedCircuit
     || !["paused", "cooldown", "failed"].includes(job.status);
+  document.getElementById("launch-confirm-absent").disabled = job.status !== "submission_unknown";
   document.getElementById("launch-cancel").disabled = ["completed", "cancelled"].includes(job.status);
-  document.getElementById("launch-inspect").disabled = !job.conversation_url;
+  document.getElementById("launch-inspect").disabled = !job.tab_id && !job.conversation_url;
 }
 
 async function refreshLaunches() {
@@ -805,8 +806,25 @@ document.getElementById("launch-now")?.addEventListener("click", async () => {
 });
 
 document.getElementById("launch-inspect")?.addEventListener("click", async () => {
-  if (!selectedLaunchJob?.conversation_url) return;
-  await chrome.tabs.create({ url: selectedLaunchJob.conversation_url, active: true });
+  if (selectedLaunchJob?.tab_id) {
+    await chrome.tabs.update(selectedLaunchJob.tab_id, { active: true });
+  } else if (selectedLaunchJob?.conversation_url) {
+    await chrome.tabs.create({ url: selectedLaunchJob.conversation_url, active: true });
+  }
+});
+
+document.getElementById("launch-confirm-absent")?.addEventListener("click", async () => {
+  if (!selectedLaunchJobId || selectedLaunchJob?.status !== "submission_unknown") return;
+  if (!globalThis.confirm("Confirm that you inspected ChatGPT and no matching conversation exists. This permits one new submission.")) return;
+  await withAction("launch-confirm-absent", async () => {
+    await chrome.runtime.sendMessage({
+      type: "polylogue.launch.control",
+      job_id: selectedLaunchJobId,
+      action: "confirm_no_conversation",
+      inspection_receipt: "operator inspected ChatGPT and confirmed that no matching conversation exists",
+    });
+    await refreshLaunches();
+  }, { busy: "Recording…", ok: "Requeued" });
 });
 
 void (async () => {

@@ -1,11 +1,11 @@
-"""Versioned general work contract prepended to every Sol Pro launch job."""
+"""Versioned general work contract embedded after every readable Sol Pro mission."""
 
 from __future__ import annotations
 
 import hashlib
 from typing import Literal
 
-SOL_PRO_PROMPT_PROFILE: Literal["polylogue-sol-pro-worker-v1"] = "polylogue-sol-pro-worker-v1"
+SOL_PRO_PROMPT_PROFILE: Literal["polylogue-sol-pro-worker-v2"] = "polylogue-sol-pro-worker-v2"
 
 SOL_PRO_WORKER_PREFIX = """\
 You are a long-running GPT-5.6 Sol Pro engineering and research worker supporting the Polylogue project. Your job is to turn the supplied immutable project snapshot and the job-specific scope below into the maximum amount of reviewable, durable project progress.
@@ -22,22 +22,29 @@ WORKING MODE
 DELIVERY CONTRACT
 - Create exactly one final downloadable ZIP named `polylogue-sol-pro-launch-handoff.zip`. Essential work must not exist only in chat prose or scattered sandbox links.
 - The ZIP root must contain `MANIFEST.json`, `README.md`, `SUMMARY.md`, `PATCHES/`, `DESIGN/`, `TESTS/`, and `VERIFICATION-LIMITS.md`. Each required directory must contain at least one useful file.
-- `MANIFEST.json` must contain a `files` array covering every ZIP file except `MANIFEST.json` itself. Every record must contain `path`, `sha256`, `size_bytes`, `purpose`, and `apply_order`. Also record this prompt profile: `polylogue-sol-pro-worker-v1`.
+- `MANIFEST.json` must contain a `files` array covering every ZIP file except `MANIFEST.json` itself. Every record must contain `path`, `sha256`, `size_bytes`, `purpose`, and `apply_order`. Also record this prompt profile: `polylogue-sol-pro-worker-v2`.
 - `SUMMARY.md` must give the executive result and an acceptance-criteria matrix. `README.md` must give a read/apply order. `DESIGN/` must preserve reasoning and rejected alternatives. `PATCHES/` must contain an ordered unified patch series (plus full replacements only where genuinely useful). `TESTS/` must contain test changes, fixtures, and/or an executable verification plan. `VERIFICATION-LIMITS.md` must state exactly what was and was not run.
 - Keep patches scoped to the supplied snapshot. Include base revision/worktree assumptions and identify conflicts with pre-existing dirty state rather than silently overwriting it.
 - Before answering, reopen the finished ZIP, reject unsafe/duplicate paths, recompute every declared size and SHA-256, and report the ZIP byte size and file count.
-- Your final chat response must be short: link the single ZIP, report its validation result, and name only genuine residual risks. Do not substitute prose for the archive.
-
-JOB-SPECIFIC SCOPE FOLLOWS
+- Your final chat response is a substantive operator-facing work report, not merely a download receipt. It must be understandable without opening Beads or the ZIP: restate the mission, explain what you did and why, summarize the most important findings/decisions and concrete changes, report verification, link the ZIP prominently, and name genuine residual risks. The ZIP remains the durable complete handoff; do not omit material from it merely because you discussed it in chat.
 """
 
 
-def build_sol_pro_prompt(scope_prompt: str) -> str:
-    """Return the invariant worker contract plus one narrow job scope."""
+def build_sol_pro_prompt(job_title: str, scope_prompt: str) -> str:
+    """Lead with a readable mission, then provide scope and worker contract."""
+    title = job_title.strip()
     scope = scope_prompt.strip()
+    if not title:
+        raise ValueError("Sol Pro job title must not be empty")
     if not scope:
         raise ValueError("Sol Pro job scope must not be empty")
-    return f"{SOL_PRO_WORKER_PREFIX}\n--- BEGIN JOB SCOPE ---\n{scope}\n--- END JOB SCOPE ---\n"
+    return (
+        f"# Mission: {title}\n\n"
+        "## What you are being asked to accomplish\n\n"
+        f"{scope}\n\n"
+        "## How to work and what to deliver\n\n"
+        f"{SOL_PRO_WORKER_PREFIX}"
+    )
 
 
 def sol_pro_prompt_sha256() -> str:

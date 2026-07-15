@@ -55,6 +55,8 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   const checkedModelOptions = () => [...document.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')]
     .map((node) => textOf(node));
 
+  let submissionMayHaveOccurred = false;
+  try {
   if (location.hostname !== chatGptHost && !location.hostname.endsWith(`.${chatGptHost}`)) {
     throw new Error("protocol_wrong_host");
   }
@@ -121,6 +123,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
     30_000,
     "send_button",
   );
+  submissionMayHaveOccurred = true;
   pointerClick(send);
   const navigationDeadline = Date.now() + 30_000;
   while (!/^\/c\//.test(location.pathname) && Date.now() < navigationDeadline) {
@@ -140,6 +143,13 @@ export async function executeChatGptLaunchInPage(job, attachments) {
     conversation_url: location.href,
     preflight: { mode: "Chat", model: requiredModel, effort: requiredEffort },
   };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: String(error?.message || error),
+      submission_may_have_occurred: submissionMayHaveOccurred,
+    };
+  }
 }
 
 export function inspectChatGptLaunchPage() {
