@@ -20,6 +20,7 @@ from typing import Any
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,14 +101,6 @@ def _active_archive_db(_db_anchor: Path, root: Path) -> Path | None:
     if archive_db.exists():
         return archive_db
     return None
-
-
-def _table_exists(conn: Any, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _count_searchable_sessions(conn: Any) -> int:

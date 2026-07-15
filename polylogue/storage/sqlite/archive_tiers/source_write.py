@@ -16,6 +16,7 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 class ContentExcisedError(RuntimeError):
@@ -45,16 +46,6 @@ class ContentExcisedError(RuntimeError):
         super().__init__(
             f"content at {source_path!r} (blob_hash={blob_hash.hex()}) was durably excised; refusing to re-acquire"
         )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
 
 
 def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes) -> bool:

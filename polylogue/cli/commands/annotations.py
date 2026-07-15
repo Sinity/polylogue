@@ -102,7 +102,7 @@ def import_annotations_command(
 )
 @click.option("--target-kind", default=None)
 @click.option("--group-by", multiple=True, type=click.Choice(("repo", "model", "time", "origin")))
-@click.option("--limit", default=500, show_default=True, type=click.IntRange(min=1, max=1_000))
+@click.option("--limit", "-l", default=500, show_default=True, type=click.IntRange(min=1, max=1_000))
 @click.option("--offset", default=0, show_default=True, type=click.IntRange(min=0))
 def join_annotations_command(
     schema_id: str,

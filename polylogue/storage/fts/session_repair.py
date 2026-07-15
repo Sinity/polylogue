@@ -5,11 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, cast
 
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return bool(
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table_name,)).fetchone()
-    )
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 def _row_int(row: sqlite3.Row | tuple[object, ...] | None, key: int | str) -> int:

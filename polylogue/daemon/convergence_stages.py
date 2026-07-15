@@ -31,6 +31,7 @@ from polylogue.storage.source_sessions import (
     session_ids_for_source_paths,
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
     pass
@@ -568,14 +569,6 @@ def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ..
 
 
 # ── Helpers ────────────────────────────────────────────────────────
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _fts_doc_count(conn: sqlite3.Connection, table: str) -> int:

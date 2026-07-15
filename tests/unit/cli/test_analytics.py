@@ -137,7 +137,7 @@ class TestListArchiveCoverageInsights:
         result = await _coverage(archive)
 
         assert len(result) == 1
-        assert result[0].source_name == "claude-ai"
+        assert result[0].source_name == "claude-ai-export"
         assert result[0].session_count == 1
         assert result[0].message_count == 2
         assert result[0].user_message_count == 1
@@ -173,9 +173,9 @@ class TestListArchiveCoverageInsights:
 
         assert len(result) == 2
         # ChatGPT has more sessions, should be first
-        assert result[0].source_name == "chatgpt"
+        assert result[0].source_name == "chatgpt-export"
         assert result[0].session_count == 3
-        assert result[1].source_name == "claude-ai"
+        assert result[1].source_name == "claude-ai-export"
         assert result[1].session_count == 2
 
     @pytest.mark.asyncio
@@ -653,5 +653,5 @@ class TestCrossProviderConsistency:
         results = await _coverage(archive)
 
         by_provider = {r.source_name: r for r in results}
-        assert by_provider["chatgpt"].tool_use_count == 1
-        assert by_provider["claude-ai"].tool_use_count == 1
+        assert by_provider["chatgpt-export"].tool_use_count == 1
+        assert by_provider["claude-ai-export"].tool_use_count == 1

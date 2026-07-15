@@ -59,7 +59,6 @@ def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
 def _seed_assertion_export_rows(archive_root: Path) -> None:
     with sqlite3.connect(archive_root / "user.db") as conn:
         conn.row_factory = sqlite3.Row
-        initialize_archive_tier(conn, ArchiveTier.USER)
         upsert_assertion(
             conn,
             assertion_id="export-mark",
@@ -839,6 +838,24 @@ def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
             (session_id,),
         )
         conn.commit()
+    index_db = archive_root / "index.db"
+    (archive_root / ".index-active-pointer").write_text(str(index_db.resolve()), encoding="utf-8")
+    generations = archive_root / ".index-generations" / "gen-current"
+    generations.mkdir(parents=True, exist_ok=True)
+    (generations / "generation.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "gen-current",
+                "owner_id": "test",
+                "archive_root": str(archive_root),
+                "index_path": str(index_db.resolve()),
+                "state": "active",
+                "created_at_ms": 1_700_000_000_000,
+                "source_snapshot": "source-at-rebuild-start",
+            }
+        ),
+        encoding="utf-8",
+    )
     return session_id, orphan_message_id
 
 
@@ -1163,7 +1180,7 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
     assert payload["tier"] == "user"
     assert payload["from_version"] == 3
     assert payload["to_version"] == USER_SCHEMA_VERSION
-    assert payload["applied_versions"] == [4, 5]
+    assert payload["applied_versions"] == list(range(4, USER_SCHEMA_VERSION + 1))
     assert payload["backup_receipt"] == str(manifest.with_name("verification-receipt.json"))
     with sqlite3.connect(user_db) as conn:
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()

@@ -450,6 +450,37 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "index",
         "summarizes workflow-shape profiles from index.db",
     ),
+    "capture_assertion_candidate": (
+        "archive_routed",
+        "user",
+        "writes a terminal candidate assertion through user.db",
+    ),
+    "correlate_hermes_context_deliveries": (
+        "archive_routed",
+        "user",
+        "correlates Hermes lifecycle events with delivery receipts from user.db",
+    ),
+    "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "import_annotation_batch": (
+        "archive_routed",
+        "user",
+        "imports bounded, provenance-stamped annotation candidates through user.db",
+    ),
+    "join_typed_annotations": (
+        "archive_routed",
+        "user",
+        "joins typed annotations to structural targets from user.db",
+    ),
+    "judge_assertion_candidates": (
+        "archive_routed",
+        "user",
+        "writes a batch of candidate assertion judgments through user.db",
+    ),
+    "reconcile_hermes_session_lifecycle": (
+        "archive_routed",
+        "source",
+        "reconciles Hermes lifecycle events against the durable source.db spool",
+    ),
 }
 
 

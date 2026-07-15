@@ -29,6 +29,7 @@ from polylogue.archive.semantic.subscription_pricing import (
     credits_to_usd,
 )
 from polylogue.core.enums import Origin, Provider
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -1733,11 +1734,6 @@ def _event_origin_args(origin: str | None) -> tuple[str, ...]:
         return ()
     prefix = f"{origin}:"
     return (origin, prefix, f"{origin};")
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
-    return row is not None
 
 
 def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:

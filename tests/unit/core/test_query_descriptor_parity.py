@@ -17,7 +17,7 @@ def test_descriptor_mcp_names_match_mcp_query_request_fields() -> None:
     declared: set[str] = set()
     for d in QUERY_FIELD_DESCRIPTORS:
         declared.update(d.mcp_names)
-    control_fields = {"limit", "offset", "sort"}
+    control_fields = {"limit", "offset", "sort", "include_affordances"}
     query_fields = mcp_fields - control_fields
     assert query_fields - declared == set()
 

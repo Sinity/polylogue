@@ -568,6 +568,27 @@
           "lost_source_evidence_samples": []
         }
       },
+      "raw_frontier_integrity": {
+        "component": "raw_frontier_integrity",
+        "scope": "archive",
+        "state": "ready",
+        "summary": "ready",
+        "last_success": null,
+        "last_attempt": null,
+        "counts": {
+          "broken_head_count": 0,
+          "broken_head_checked_count": 2,
+          "missing_source_raw_count": 0,
+          "cursor_ahead_count": 0,
+          "cursor_ahead_checked_count": 0,
+          "cursor_head_comparison_count": 0,
+          "cursor_ahead_comparison_count": 0,
+          "cursor_authority_gap_count": 0
+        },
+        "caveats": [],
+        "repair_hint": null,
+        "evidence_refs": []
+      },
       "embeddings": {
         "component": "embeddings",
         "scope": "semantic",
@@ -840,6 +861,17 @@
                 "deleted_count": 0,
                 "candidate_count": 0,
                 "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "findings",
+                "storage": "assertions",
+                "assertion_kind": "finding",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
               }
             ]
           }
@@ -865,13 +897,39 @@
         ]
       }
     },
+    "claim_guard": {
+      "openable": {
+        "claim": "openable",
+        "value": true,
+        "reason": "all archive tiers present with matching schema version",
+        "signal": "archive_storage.archive_schema_ready (per-tier PRAGMA user_version match)"
+      },
+      "converged": {
+        "claim": "converged",
+        "value": true,
+        "reason": "ready",
+        "signal": "raw_materialization_readiness (debt zero or fully classified)"
+      },
+      "search_ready": {
+        "claim": "search_ready",
+        "value": false,
+        "reason": "unknown",
+        "signal": "component_readiness.search (FTS freshness)"
+      },
+      "perf_measurable": {
+        "claim": "perf_measurable",
+        "value": true,
+        "reason": "no concurrent archive write/rebuild detected",
+        "signal": "live_ingest_attempts.running_count / active_rebuild_index_attempts"
+      }
+    },
     "archive_tiers": {
       "source": {
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 4,
-        "user_version": 4,
+        "expected_user_version": 11,
+        "user_version": 11,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
@@ -894,8 +952,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 30,
-        "user_version": 30,
+        "expected_user_version": 36,
+        "user_version": 36,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -924,8 +982,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 1,
-        "user_version": 1,
+        "expected_user_version": 2,
+        "user_version": 2,
         "version_status": "ok",
         "table_counts": {
           "message_embeddings_meta": 0,
@@ -940,14 +998,22 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 4,
-        "user_version": 4,
+        "expected_user_version": 9,
+        "user_version": 9,
         "version_status": "ok",
         "table_counts": {
-          "assertions": 0
+          "assertions": 0,
+          "annotation_schemas": 1,
+          "annotation_batches": 0,
+          "user_settings": 0,
+          "context_deliveries": 0
         },
         "table_count_precision": {
-          "assertions": "exact"
+          "assertions": "exact",
+          "annotation_schemas": "exact",
+          "annotation_batches": "exact",
+          "user_settings": "exact",
+          "context_deliveries": "exact"
         }
       },
       "ops": {
@@ -987,14 +1053,15 @@
       "tiers_with_planner_stats": [
         "source",
         "index",
-        "embeddings"
+        "embeddings",
+        "user"
       ],
       "tiers": {
         "source": {
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 7,
+          "sqlite_stat1_rows": 8,
           "planner_stats_present": true
         },
         "index": {
@@ -1015,8 +1082,8 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 0,
-          "planner_stats_present": false
+          "sqlite_stat1_rows": 1,
+          "planner_stats_present": true
         },
         "ops": {
           "path": "<PATH>",
@@ -1085,8 +1152,35 @@
       },
       "source_family_counts": {}
     },
+    "raw_frontier_integrity": {
+      "available": true,
+      "overall_status": "healthy",
+      "broken_head_status": "healthy",
+      "broken_head_count": 0,
+      "broken_head_checked_count": 2,
+      "broken_head_reason": "",
+      "missing_source_raw_status": "healthy",
+      "missing_source_raw_count": 0,
+      "missing_source_raw_reason": "",
+      "cursor_ahead_status": "healthy",
+      "cursor_ahead_count": 0,
+      "cursor_ahead_checked_count": 0,
+      "cursor_head_comparison_count": 0,
+      "cursor_ahead_comparison_count": 0,
+      "cursor_authority_gap_count": 0,
+      "cursor_ahead_reason": ""
+    },
     "raw_replay_backlog": {
       "available": true,
+      "execution_blocked": false,
+      "execution_block_reason": null,
+      "blocked_candidate_count": 0,
+      "durable_authority_debt_count": 0,
+      "authority_quarantined_count": 0,
+      "byte_authority_fragment_count": 0,
+      "byte_authority_quarantined_count": 0,
+      "byte_authority_pending_count": 0,
+      "adoption_deferred_count": 0,
       "candidate_count": 0,
       "missing_blob_count": 0,
       "missing_blob_source_available_count": 0,
@@ -1095,6 +1189,12 @@
       "total_blob_bytes": 0,
       "max_blob_bytes": 0,
       "execute_blob_limit_bytes": 1073741824,
+      "expanded_candidate_count": 0,
+      "expanded_total_blob_bytes": 0,
+      "expanded_aggregate_blocked": false,
+      "authority_component_count": 0,
+      "blocked_authority_component_count": 0,
+      "executable_authority_component_count": 0,
       "oversized_count": 0,
       "oversized_stream_safe_count": 0,
       "top_raw_rows": [],

@@ -165,7 +165,7 @@ async def test_query_seed_returns_explainable_candidates(db_path: Path) -> None:
 
     ids = await _discover(
         db_path,
-        NeighborDiscoveryRequest(query="schema audit", origin="chatgpt"),
+        NeighborDiscoveryRequest(query="schema audit", origin="chatgpt-export"),
     )
 
     assert ids == [native_session_id_for("chatgpt", "query-candidate")]

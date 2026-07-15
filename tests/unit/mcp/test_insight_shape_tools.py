@@ -56,7 +56,7 @@ async def test_workflow_shape_distribution_delegates_to_facade_method(
     payload = json.loads(raw)
     assert payload["buckets"]["claude-code-session"]["agentic_loop"] == 1
     mock_poly.workflow_shape_distribution.assert_awaited_once_with(
-        group_by="origin", since=None, until=None, provider=None
+        group_by="origin", since=None, until=None, origin=None
     )
 
 
@@ -156,7 +156,7 @@ async def test_tool_call_latency_distribution_delegates_to_facade_method(
     assert payload["median_tool_call_ms"] == 120_000
     assert payload["stuck_tool_count"] == 1
     mock_poly.tool_call_latency_distribution.assert_awaited_once_with(
-        since=None, until=None, provider=None, tool_category="shell", limit=5
+        since=None, until=None, origin=None, tool_category="shell", limit=5
     )
 
 

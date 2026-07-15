@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.frozen_clock import FrozenClock
 
 
 class _CapturingConsole:
@@ -72,10 +73,10 @@ def _healthy_raw_frontier_integrity() -> dict[str, Any]:
     }
 
 
-def _fresh_status_snapshot() -> dict[str, object]:
+def _fresh_status_snapshot(frozen_clock: FrozenClock) -> dict[str, object]:
     return {
         "state": "fresh",
-        "captured_at": "2026-07-12T14:00:00+00:00",
+        "captured_at": frozen_clock.now().isoformat(),
         "age_s": 0.1,
     }
 
@@ -1645,7 +1646,8 @@ class TestNoArchiveStatus:
 
         assert "FTS: [green]100.0% indexed[/green]" in _combined_calls(env)
 
-    def test_daemon_status_renders_raw_frontier_integrity(self) -> None:
+    @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+    def test_daemon_status_renders_raw_frontier_integrity(self, frozen_clock: FrozenClock) -> None:
         env = _make_app_env()
         unknown = _healthy_raw_frontier_integrity()
         unknown.update(
@@ -1663,7 +1665,7 @@ class TestNoArchiveStatus:
             env,
             {
                 "daemon_liveness": True,
-                "status_snapshot": _fresh_status_snapshot(),
+                "status_snapshot": _fresh_status_snapshot(frozen_clock),
                 "raw_frontier_integrity": unknown,
             },
         )
@@ -1672,7 +1674,8 @@ class TestNoArchiveStatus:
         assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
         assert "ops cursor authority unavailable" in rendered
 
-    def test_compact_daemon_status_cannot_preserve_stale_green_frontier(self) -> None:
+    @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+    def test_compact_daemon_status_cannot_preserve_stale_green_frontier(self, frozen_clock: FrozenClock) -> None:
         env = _make_app_env()
         violated = _healthy_raw_frontier_integrity()
         violated.update(
@@ -1689,7 +1692,7 @@ class TestNoArchiveStatus:
             {
                 "ok": True,
                 "daemon_liveness": True,
-                "status_snapshot": _fresh_status_snapshot(),
+                "status_snapshot": _fresh_status_snapshot(frozen_clock),
                 "raw_frontier_integrity": violated,
             },
         )
@@ -1710,7 +1713,8 @@ class TestNoArchiveStatus:
         assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
         assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
 
-    def test_status_ok_requires_complete_fresh_frontier_authority(self) -> None:
+    @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+    def test_status_ok_requires_complete_fresh_frontier_authority(self, frozen_clock: FrozenClock) -> None:
         assert _status_ok({"ok": True, "daemon_liveness": True}) is False
         healthy = _healthy_raw_frontier_integrity()
         assert _status_ok({"ok": True, "raw_frontier_integrity": healthy}) is True
@@ -1725,7 +1729,7 @@ class TestNoArchiveStatus:
             _status_ok(
                 {
                     "ok": True,
-                    "status_snapshot": _fresh_status_snapshot(),
+                    "status_snapshot": _fresh_status_snapshot(frozen_clock),
                     "raw_frontier_integrity": healthy,
                 },
                 require_fresh_snapshot=True,
@@ -1769,7 +1773,7 @@ class TestNoArchiveStatus:
         payload = json.loads(_combined_calls(env))
         assert payload["ok"] is False
         assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
-        assert "stale" in payload["raw_frontier_integrity"]["broken_head_reason"]
+        assert "omitted freshness provenance" in payload["raw_frontier_integrity"]["broken_head_reason"]
 
     def test_daemon_status_json_is_compact_by_default(self) -> None:
         env = _make_app_env()

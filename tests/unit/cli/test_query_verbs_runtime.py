@@ -19,7 +19,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
@@ -479,6 +479,7 @@ def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
         "recent_files": (),
         "candidate_limit": 10,
         "output_format": None,
+        "execute": False,
     }
     defaults.update(overrides)
     return defaults
@@ -703,7 +704,7 @@ def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:
     """Context-image Markdown should be readable as one composed packet."""
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
+    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
 
     projection_spec = projection_from_views(
         ("temporal", "chronicle"),
@@ -787,40 +788,20 @@ def test_context_image_markdown_renderer_adds_document_structure() -> None:
     assert "session:def [budget]" in rendered
 
 
-def test_continue_verb_compiles_context_from_query_unit_recipe() -> None:
-    """``continue`` composes messages plus terminal query-unit DSL segments."""
+def test_continue_verb_rejects_non_terminal_destination() -> None:
+    """``continue`` only prints its resume command to terminal/stdout (#2827)."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    captured_specs: list[ContextSpec] = []
-    image = ContextImage(
-        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("messages",)), segments=()
-    )
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        captured_specs.append(spec)
-        return image
-
     async def get_session(session_id: str) -> object:
         assert session_id == "codex-session:abc123"
-        return object()
+        return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    child.obj.polylogue = SimpleNamespace(compile_context=compile_context, get_session=get_session)
-    with (
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
-    ):
+    child.obj.polylogue = SimpleNamespace(get_session=get_session)
+
+    with pytest.raises(click.UsageError, match="continue prints its command to terminal/stdout"):
         wrapped(child, **_continue_verb_kwargs(destination="clipboard"))
-
-    called_spec = captured_specs[0]
-    assert called_spec.read_views == ("messages",)
-    assert called_spec.unit_queries == (
-        "runs where session.id:codex-session:abc123",
-        "observed-events where session.id:codex-session:abc123",
-        "context-snapshots where session.id:codex-session:abc123",
-        "actions where session.id:codex-session:abc123",
-    )
-    deliver.assert_called_once()
 
 
 def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
@@ -841,59 +822,20 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
             wrapped(child, **_continue_verb_kwargs())
 
 
-def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[str]) -> None:
-    """``continue --format json`` exposes the shared ContextImage payload."""
+def test_continue_verb_rejects_json_format(capsys: pytest.CaptureFixture[str]) -> None:
+    """``continue`` emits a shell command; --format/--json are not supported (#2827)."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
-    spec = ContextSpec(
-        purpose="continue",
-        seed_refs=("session:codex-session:abc123",),
-        read_views=("messages",),
-        unit_queries=("runs where session.id:codex-session:abc123",),
-    )
-    image = ContextImage(
-        spec=spec,
-        segments=(
-            ContextSegment(
-                segment_id="query-unit:abc123",
-                kind="query_unit",
-                title="Query: runs",
-                markdown="Temporal rows.",
-                token_estimate=3,
-            ),
-        ),
-        token_estimate=3,
-    )
-    seen: dict[str, ContextSpec] = {}
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        seen["spec"] = spec
-        return image
 
     async def get_session(session_id: str) -> object:
         assert session_id == "codex-session:abc123"
-        return object()
+        return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(compile_context=compile_context, get_session=get_session))
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(get_session=get_session))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    wrapped(child, **_continue_verb_kwargs(output_format="json"))
-
-    emitted = json.loads(capsys.readouterr().out)
-    assert emitted["spec"]["purpose"] == "continue"
-    assert emitted["spec"]["seed_refs"] == ["session:codex-session:abc123"]
-    assert emitted["spec"]["read_views"] == ["messages"]
-    assert emitted["segments"][0]["kind"] == "query_unit"
-    spec = seen["spec"]
-    assert spec.purpose == "continue"
-    assert spec.seed_refs == ("session:codex-session:abc123",)
-    assert spec.read_views == ("messages",)
-    assert spec.unit_queries == (
-        "runs where session.id:codex-session:abc123",
-        "observed-events where session.id:codex-session:abc123",
-        "context-snapshots where session.id:codex-session:abc123",
-        "actions where session.id:codex-session:abc123",
-    )
+    with pytest.raises(click.UsageError, match="continue emits a shell command"):
+        wrapped(child, **_continue_verb_kwargs(output_format="json"))
 
 
 def test_continue_candidates_ranks_context_without_session_resolution() -> None:

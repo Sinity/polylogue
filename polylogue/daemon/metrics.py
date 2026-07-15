@@ -103,6 +103,7 @@ from polylogue.storage.archive_layout import (
 )
 from polylogue.storage.archive_readiness import active_rebuild_index_attempts
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -220,14 +221,6 @@ def _emit_metric(
 # ---------------------------------------------------------------------------
 # State collection
 # ---------------------------------------------------------------------------
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: str) -> bool:

@@ -12,6 +12,7 @@ from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
 from polylogue.rendering.core_markdown import format_message_text
 from polylogue.rendering.core_messages import normalize_render_timestamp
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 def stream_exact_session_markdown(
@@ -97,19 +98,6 @@ def _has_prefix_sharing_edge(conn: sqlite3.Connection, session_id: str) -> bool:
         LIMIT 1
         """,
         (session_id,),
-    ).fetchone()
-    return row is not None
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        """
-        SELECT 1
-        FROM sqlite_master
-        WHERE type = 'table' AND name = ?
-        LIMIT 1
-        """,
-        (name,),
     ).fetchone()
     return row is not None
 

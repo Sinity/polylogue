@@ -590,8 +590,8 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                 "Tool-usage totals are direct action-view counts; zero means no matching action rows.",
                 "total_call_count",
                 "total_distinct_tools",
-                "providers_with_data",
-                "providers_without_data",
+                "origins_with_data",
+                "origins_without_data",
                 "materializer_version",
             ),
             *_true_zero_paths(
@@ -611,7 +611,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             *_true_zero_paths(
                 "Per-origin coverage values are direct action-view counts.",
                 *(
-                    ("provider_coverage", name)
+                    ("origin_coverage", name)
                     for name in (
                         "action_count",
                         "distinct_action_kind_count",

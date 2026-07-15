@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -13,7 +14,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.batch_support import _AppendPlan
+from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
 from tests.infra.frozen_clock import FrozenClock
 
@@ -39,6 +40,7 @@ def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="test", root=root),), cursor=cursor)
     stat = unchanged.stat()
+    unchanged_digest = hashlib.sha256(unchanged.read_bytes()).hexdigest()
     cursor.set(
         unchanged,
         stat.st_size,
@@ -46,6 +48,15 @@ def test_catch_up_plan_carries_statted_candidates_without_payload_reads(
         last_complete_newline=stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        # Modern cursor authority (#2710): the hot stat-match skip only trusts
+        # cursors carrying an encoded prefix/tail digest bound to this file's
+        # ctime. A legacy cursor without one deliberately takes one full
+        # route to (re-)establish that authority instead of hot-skipping.
+        tail_hash=encode_cursor_hash_authority(
+            unchanged_digest,
+            unchanged_digest,
+            ctime_ns=stat.st_ctime_ns,
+        ),
         source_name="test",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -77,10 +88,15 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
     cursor = CursorStore(tmp_path / "ops.db")
     source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
-        blob_hash = b"a" * 32
-        write_source_raw_session_blob_ref(
+        # Reconciliation (#2710) now re-verifies the archived blob hash
+        # against the live file's real bytes, so this must be the file's
+        # actual digest rather than an arbitrary placeholder.
+        blob_hash = hashlib.sha256(archived.read_bytes()).digest()
+        raw_id = write_source_raw_session_blob_ref(
             conn,
             origin="codex-session",
             source_path=str(archived),
@@ -90,6 +106,20 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
             acquired_at_ms=1,
             native_id="archived",
         )
+        # Archive reconciliation (#2676) only trusts a raw row that is both
+        # parsed and materialized into a session, so mark it parsed here.
+        conn.execute("UPDATE raw_sessions SET parsed_at_ms = ? WHERE raw_id = ?", (1, raw_id))
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("archived", "codex-session", raw_id, 1, b"c" * 32, 1, 1),
+        )
+        conn.commit()
     _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
     watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
 
@@ -100,7 +130,7 @@ def test_catch_up_repairs_missing_cursor_from_archive_source_row(tmp_path: Path)
     assert plan.skipped_file_count == 1
     assert record is not None
     assert record.byte_size == archived.stat().st_size
-    assert record.content_fingerprint == ("61" * 32)
+    assert record.content_fingerprint == blob_hash.hex()
     assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
 
 
@@ -149,10 +179,15 @@ def test_catch_up_reconciles_browser_capture_cursor_from_archive_origin(tmp_path
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
     cursor = CursorStore(tmp_path / "ops.db")
     source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
-        blob_hash = b"b" * 32
-        write_source_raw_session_blob_ref(
+        # Reconciliation (#2710) now re-verifies the archived blob hash
+        # against the live file's real bytes, so this must be the file's
+        # actual digest rather than an arbitrary placeholder.
+        blob_hash = hashlib.sha256(archived.read_bytes()).digest()
+        raw_id = write_source_raw_session_blob_ref(
             conn,
             origin="chatgpt-export",
             source_path=str(archived),
@@ -162,6 +197,20 @@ def test_catch_up_reconciles_browser_capture_cursor_from_archive_origin(tmp_path
             acquired_at_ms=1,
             native_id="capture",
         )
+        # Archive reconciliation (#2676) only trusts a raw row that is both
+        # parsed and materialized into a session, so mark it parsed here.
+        conn.execute("UPDATE raw_sessions SET parsed_at_ms = ? WHERE raw_id = ?", (1, raw_id))
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, raw_id, message_count, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("capture", "chatgpt-export", raw_id, 1, b"d" * 32, 1, 1),
+        )
+        conn.commit()
     _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
     watcher = LiveWatcher(
         cast(Any, polylogue),
@@ -193,11 +242,13 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
     root.mkdir()
     source = root / "rollout-2026-06-18T02-59-46-conv-hot.jsonl"
     prefix = b'{"timestamp":"2026-06-18T01:05:23.888Z","type":"session_meta","payload":{"id":"conv-hot"}}\n'
-    source.write_bytes(prefix + b'{"type":"message","payload":{"role":"user","content":"old"}}\n')
+    old_content = prefix + b'{"type":"message","payload":{"role":"user","content":"old"}}\n'
+    source.write_bytes(old_content)
     old_offset = source.stat().st_size
     with source.open("ab") as handle:
         handle.write(b'{"type":"message","payload":{"role":"assistant","content":"new"}}\n')
     stat = source.stat()
+    old_content_digest = hashlib.sha256(old_content).hexdigest()
 
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
@@ -219,6 +270,14 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
         last_complete_newline=old_offset,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        # Modern cursor authority (#2710): append planning only trusts a
+        # cursor carrying an encoded accepted-prefix digest. A legacy cursor
+        # without one is correctly refused the append route.
+        tail_hash=encode_cursor_hash_authority(
+            old_content_digest,
+            old_content_digest,
+            ctime_ns=stat.st_ctime_ns,
+        ),
         source_name="codex",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,

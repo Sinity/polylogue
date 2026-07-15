@@ -479,7 +479,7 @@ polylogue-c9y so the first PR that adds it has somewhere to look):
 
 - **`insights/`** = materialized derived **read models** — storage-backed,
   rebuildable rows written by a convergence stage or write-effect
-  (`storage/insights/session/profiles.py`, `timeline/`, `topology/derivation.py`).
+  (`storage/insights/session/profiles.py`, `timeline/`, `storage/insights/topology/derivation.py`).
   An insight has a table (or a view) and a staleness/rebuild story.
 - **`analytics/`** (future) = **computation** — measures, statistics,
   registries of pure functions over already-materialized data. An analytic

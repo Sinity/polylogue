@@ -28,6 +28,7 @@ from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -451,14 +452,6 @@ class BlobReferenceSourceReplaceReport:
             "by_source_shape": dict(self.by_source_shape),
             "samples": [sample.to_dict() for sample in self.samples],
         }
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _blob_hash_text(value: object) -> str | None:
