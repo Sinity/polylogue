@@ -112,8 +112,7 @@ def _bead_statuses(bead_ids: set[str]) -> dict[str, str]:
     return statuses
 
 
-def collect_findings(*, since: str, limit: int) -> list[DriftCandidate]:
-    prs = _merged_prs_since(since=since, limit=limit)
+def collect_findings(prs: list[_MergedPr]) -> list[DriftCandidate]:
     per_pr_beads: dict[int, set[str]] = {}
     all_ids: set[str] = set()
     for pr in prs:
@@ -185,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=14)).strftime("%Y-%m-%d")
 
     prs = _merged_prs_since(since=since, limit=args.limit)
-    findings = collect_findings(since=since, limit=args.limit)
+    findings = collect_findings(prs)
 
     if args.json:
         payload = {
