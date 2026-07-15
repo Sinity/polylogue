@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import json
 import os
@@ -57,7 +58,15 @@ def _serialized(function: Callable[..., _T]) -> Callable[..., _T]:
     @wraps(function)
     def guarded(*args: Any, **kwargs: Any) -> _T:
         with _LAUNCH_LOCK:
-            return function(*args, **kwargs)
+            root = launch_job_root(cast(Path | None, kwargs.get("spool_path")))
+            root.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(root / ".queue.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                return function(*args, **kwargs)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     return cast(Callable[..., _T], guarded)
 
@@ -76,6 +85,10 @@ class BrowserLaunchQuotaError(RuntimeError):
 
 class BrowserLaunchHandoffError(RuntimeError):
     """Raised when a provider result is not the required cohesive handoff."""
+
+
+class BrowserLaunchStateError(RuntimeError):
+    """Raised when durable launch state exists but cannot be read safely."""
 
 
 def launch_job_root(spool_path: Path | None = None) -> Path:
@@ -108,6 +121,11 @@ def _atomic_write(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -121,9 +139,15 @@ def _write_job(root: Path, job: BrowserLaunchJob) -> None:
 
 def _read_job(path: Path) -> BrowserLaunchJob | None:
     try:
-        return BrowserLaunchJob.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, ValueError):
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except OSError:
+        raise
+    try:
+        return BrowserLaunchJob.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise BrowserLaunchStateError(f"corrupt launch job state: {path.name}") from exc
 
 
 def _now() -> datetime:
@@ -402,10 +426,6 @@ def update_launch_job(
         job.last_error = update.detail or "submission outcome is unknown; operator inspection required"
         job.lease_owner = None
         job.lease_expires_at = None
-    elif update.outcome == "completed":
-        job.status = "completed"
-        job.lease_owner = None
-        job.lease_expires_at = None
     elif update.outcome in {"auth_challenge", "protocol_mismatch"}:
         job.status = "paused"
         job.cooldown_reason = update.outcome
@@ -531,14 +551,14 @@ def read_launch_attachment(
     path = _job_dir(root, job_id) / "attachments" / _safe_token(attachment_id)
     try:
         content = path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return None
     if len(content) != attachment.size_bytes or hashlib.sha256(content).hexdigest() != attachment.sha256:
         raise BrowserLaunchConflictError("launch attachment integrity mismatch")
     return attachment, content
 
 
-def _validate_handoff_zip(content: bytes) -> int:
+def _validate_handoff_zip(content: bytes, *, expected_prompt_profile: str) -> int:
     try:
         archive = zipfile.ZipFile(BytesIO(content))
     except (OSError, zipfile.BadZipFile) as exc:
@@ -570,6 +590,9 @@ def _validate_handoff_zip(content: bytes) -> int:
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise BrowserLaunchHandoffError("handoff manifest is not valid JSON") from exc
         records = manifest.get("files") if isinstance(manifest, dict) else None
+        prompt_profile = manifest.get("prompt_profile") if isinstance(manifest, dict) else None
+        if prompt_profile != expected_prompt_profile:
+            raise BrowserLaunchHandoffError("handoff manifest prompt profile mismatch")
         if not isinstance(records, list):
             raise BrowserLaunchHandoffError("handoff manifest must contain a files list")
         by_path = {
@@ -615,7 +638,7 @@ def accept_launch_handoff(
         raise BrowserLaunchHandoffError("handoff content is not valid base64") from exc
     if len(content) > LAUNCH_HANDOFF_MAX_BYTES:
         raise BrowserLaunchQuotaError("launch handoff byte quota exceeded")
-    file_count = _validate_handoff_zip(content)
+    file_count = _validate_handoff_zip(content, expected_prompt_profile=job.prompt_profile)
     path = _job_dir(root, job_id) / "handoff" / LAUNCH_HANDOFF_NAME
     _atomic_write(path, content)
     now = _now()
@@ -640,6 +663,7 @@ __all__ = [
     "BrowserLaunchHandoffError",
     "BrowserLaunchLeaseError",
     "BrowserLaunchQuotaError",
+    "BrowserLaunchStateError",
     "accept_launch_handoff",
     "claim_due_launch_job",
     "control_launch_job",

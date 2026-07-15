@@ -3,7 +3,7 @@ export function classifyLaunchFailure(value, retryAfterSeconds = null) {
   if (/too many requests|rate.?limit|http_?429/.test(text)) {
     return { outcome: "rate_limited", retry_after_seconds: retryAfterSeconds, detail: String(value) };
   }
-  if (/safety|temporarily blocked|unusual activity|access to conversations|try again later/.test(text)) {
+  if (/safety|temporarily blocked|unusual activity|access to conversations/.test(text)) {
     return { outcome: "safety_locked", retry_after_seconds: retryAfterSeconds, detail: String(value) };
   }
   if (/challenge|captcha|cloudflare|unauthorized|forbidden|http_?401|http_?403|sign.?in/.test(text)) {
@@ -69,9 +69,12 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   const mode = selectedMode();
   if (!mode.chat || mode.work) throw new Error(`preflight_mode_mismatch:chat=${mode.chat}:work=${mode.work}`);
 
-  const pill = [...document.querySelectorAll("button")]
-    .find((button) => button.classList.contains("__composer-pill") && textOf(button) === requiredEffort);
-  if (!pill) throw new Error("preflight_effort_pill_missing");
+  const pill = await waitFor(
+    () => [...document.querySelectorAll("button")]
+      .find((button) => button.classList.contains("__composer-pill") && textOf(button) === requiredEffort),
+    10_000,
+    "effort_pill",
+  );
   pointerClick(pill);
   const modelMenu = await waitFor(
     () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
@@ -114,7 +117,16 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   // Re-read the mode after upload/composer work: React can rerender the mode
   // switch independently, and this is the final fail-closed submit boundary.
   const finalMode = selectedMode();
-  if (!finalMode.chat || finalMode.work || textOf(pill) !== requiredEffort) {
+  const finalChecked = checkedModelOptions();
+  const finalPill = [...document.querySelectorAll("button")]
+    .find((button) => button.classList.contains("__composer-pill") && textOf(button) === requiredEffort);
+  if (
+    !finalMode.chat
+    || finalMode.work
+    || !finalPill
+    || !finalChecked.includes(requiredModel)
+    || !finalChecked.includes(requiredEffort)
+  ) {
     throw new Error("preflight_changed_before_submit");
   }
   const send = await waitFor(

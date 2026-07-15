@@ -85,7 +85,11 @@ def _request(*, not_before: str | None = None) -> BrowserLaunchJobRequest:
     )
 
 
-def _handoff_zip(*, corrupt_checksum: bool = False) -> bytes:
+def _handoff_zip(
+    *,
+    corrupt_checksum: bool = False,
+    prompt_profile: str | None = SOL_PRO_PROMPT_PROFILE,
+) -> bytes:
     files = {
         "README.md": b"read me\n",
         "SUMMARY.md": b"summary\n",
@@ -106,7 +110,10 @@ def _handoff_zip(*, corrupt_checksum: bool = False) -> bytes:
     ]
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("MANIFEST.json", json.dumps({"files": records}))
+        manifest: dict[str, object] = {"files": records}
+        if prompt_profile is not None:
+            manifest["prompt_profile"] = prompt_profile
+        archive.writestr("MANIFEST.json", json.dumps(manifest))
         for name, content in files.items():
             archive.writestr(name, content)
     return buffer.getvalue()
@@ -377,9 +384,22 @@ def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Pat
             BrowserLaunchJobControlRequest(action="pause"),
             spool_path=tmp_path,
         )
-    completed = update_launch_job(
+    with pytest.raises(ValueError):
+        BrowserLaunchJobUpdateRequest.model_validate(
+            {"owner_instance_id": "owner", "outcome": "completed", "phase": "handoff_validated"}
+        )
+    update_launch_job(
         job.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="completed", phase="handoff_validated"),
+        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        spool_path=tmp_path,
+    )
+    completed = accept_launch_handoff(
+        job.job_id,
+        BrowserLaunchHandoffRequest(
+            owner_instance_id="owner",
+            name="polylogue-sol-pro-launch-handoff.zip",
+            content_base64=base64.b64encode(_handoff_zip()).decode(),
+        ),
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
     assert completed.status == "completed"
@@ -411,6 +431,18 @@ def test_handoff_completion_requires_locally_validated_cohesive_zip(tmp_path: Pa
             spool_path=tmp_path,
         )
 
+    for profile in (None, "polylogue-sol-pro-worker-wrong"):
+        with pytest.raises(BrowserLaunchHandoffError, match="prompt profile mismatch"):
+            accept_launch_handoff(
+                job.job_id,
+                BrowserLaunchHandoffRequest(
+                    owner_instance_id="owner",
+                    name="polylogue-sol-pro-launch-handoff.zip",
+                    content_base64=base64.b64encode(_handoff_zip(prompt_profile=profile)).decode(),
+                ),
+                spool_path=tmp_path,
+            )
+
     content = _handoff_zip()
     completed = accept_launch_handoff(
         job.job_id,
@@ -437,6 +469,12 @@ def test_future_job_is_not_claimed_early(tmp_path: Path, frozen_clock: FrozenClo
     assert stored.job_id == job.job_id
     assert stored.status == "cooldown"
     assert stored.cooldown_reason == "cadence"
+    control_launch_job(
+        job.job_id,
+        BrowserLaunchJobControlRequest(action="launch_now"),
+        spool_path=tmp_path,
+    )
+    assert claim_due_launch_job("one", spool_path=tmp_path) is None
 
 
 def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: Path) -> None:
@@ -530,3 +568,16 @@ def test_receiver_routes_enqueue_claim_and_serve_hash_pinned_inputs(tmp_path: Pa
     assert handoff.status == HTTPStatus.OK
     assert handoff_body["job"]["status"] == "completed"
     assert handoff_body["job"]["handoff_sha256"] == hashlib.sha256(handoff_content).hexdigest()
+
+
+def test_receiver_reports_corrupt_launch_state_instead_of_hiding_it(tmp_path: Path) -> None:
+    corrupt = tmp_path / "launch-jobs" / "corrupt" / "job.json"
+    corrupt.parent.mkdir(parents=True)
+    corrupt.write_text("{not-json", encoding="utf-8")
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _http(host, port, "GET", "/v1/launch-jobs")
+        body = json.loads(response.read())
+
+    assert response.status == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert body["error"] == "write_failed"

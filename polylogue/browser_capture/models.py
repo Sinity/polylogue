@@ -468,7 +468,6 @@ BrowserLaunchOutcome = Literal[
     "progress",
     "submitted",
     "submission_unknown",
-    "completed",
     "rate_limited",
     "safety_locked",
     "auth_challenge",

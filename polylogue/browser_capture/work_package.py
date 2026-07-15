@@ -18,6 +18,9 @@ import orjson
 from polylogue.browser_capture.sol_pro_prompt import build_sol_pro_prompt
 
 WORK_PACKAGE_MAX_BYTES = 16 * 1024 * 1024
+WORK_PACKAGE_MAX_FILES = 2_000
+WORK_PACKAGE_MAX_ENTRY_BYTES = 16 * 1024 * 1024
+WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 _SKIP_PARTS = frozenset({".git", ".cache", ".direnv", ".venv", "__pycache__", "node_modules"})
 
 
@@ -39,6 +42,10 @@ def _git(repo_root: Path, *args: str) -> bytes:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    if result.returncode != 0:
+        command = " ".join(("git", *args))
+        detail = result.stdout.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"{command} failed: {detail or f'exit {result.returncode}'}")
     return result.stdout
 
 
@@ -116,7 +123,27 @@ def _add_entry(entries: dict[str, tuple[bytes, str]], path: str, content: bytes,
     pure = PurePosixPath(path)
     if pure.is_absolute() or ".." in pure.parts or path in entries:
         raise ValueError(f"invalid or duplicate work-package path: {path}")
+    if len(entries) >= WORK_PACKAGE_MAX_FILES:
+        raise ValueError(f"work package exceeds {WORK_PACKAGE_MAX_FILES} files")
+    if len(content) > WORK_PACKAGE_MAX_ENTRY_BYTES:
+        raise ValueError(f"work-package entry exceeds {WORK_PACKAGE_MAX_ENTRY_BYTES} bytes: {path}")
+    if sum(len(value) for value, _purpose in entries.values()) + len(content) > WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(f"work package exceeds {WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES} uncompressed bytes")
     entries[path] = (content, purpose)
+
+
+def _preflight_paths(paths: Sequence[Path]) -> None:
+    """Reject oversized path sets before any selected source is buffered."""
+    if len(paths) > WORK_PACKAGE_MAX_FILES:
+        raise ValueError(f"work package exceeds {WORK_PACKAGE_MAX_FILES} files")
+    total = 0
+    for path in paths:
+        size = path.stat().st_size
+        if size > WORK_PACKAGE_MAX_ENTRY_BYTES:
+            raise ValueError(f"work-package entry exceeds {WORK_PACKAGE_MAX_ENTRY_BYTES} bytes: {path}")
+        total += size
+        if total > WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES:
+            raise ValueError(f"work package exceeds {WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES} uncompressed bytes")
 
 
 def _render_tar(entries: dict[str, tuple[bytes, str]]) -> bytes:
@@ -178,13 +205,17 @@ def build_sol_pro_work_package(
         path = root / instruction_name
         if path.exists():
             resolved = path.resolve(strict=True)
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(f"repository instruction escapes project root: {instruction_name}") from exc
+            _preflight_paths([resolved])
             _add_entry(
                 entries,
                 f"INSTRUCTIONS/{instruction_name}",
                 resolved.read_bytes(),
                 "Repository agent instructions",
             )
-            break
 
     bead_records = _read_beads(root, bead_ids)
     if bead_records:
@@ -197,6 +228,8 @@ def build_sol_pro_work_package(
         )
 
     selected = _all_worktree_files(root) if full_worktree_fallback else _selected_files(root, source_paths)
+    verification = _selected_files(root, verification_paths)
+    _preflight_paths([*(root / relative for relative in selected), *(root / relative for relative in verification)])
     diff_pathspec = [path.as_posix() for path in selected]
     unstaged_diff = _git(root, "diff", "--binary", "--no-ext-diff", "--", *diff_pathspec) if diff_pathspec else b""
     staged_diff = (
@@ -220,7 +253,7 @@ def build_sol_pro_work_package(
             (root / relative).read_bytes(),
             "Selected repository source" if not full_worktree_fallback else "Explicit full-worktree fallback",
         )
-    for relative in _selected_files(root, verification_paths):
+    for relative in verification:
         _add_entry(
             entries, f"VERIFICATION/{relative.as_posix()}", (root / relative).read_bytes(), "Verification receipt"
         )
@@ -252,5 +285,8 @@ def build_sol_pro_work_package(
 __all__ = [
     "SolProWorkPackage",
     "WORK_PACKAGE_MAX_BYTES",
+    "WORK_PACKAGE_MAX_ENTRY_BYTES",
+    "WORK_PACKAGE_MAX_FILES",
+    "WORK_PACKAGE_MAX_UNCOMPRESSED_BYTES",
     "build_sol_pro_work_package",
 ]

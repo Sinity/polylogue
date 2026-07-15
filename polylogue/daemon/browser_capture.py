@@ -10,7 +10,13 @@ from typing import get_args
 import click
 from pydantic import ValidationError
 
-from polylogue.browser_capture.launch_jobs import enqueue_launch_job
+from polylogue.browser_capture.launch_jobs import (
+    LAUNCH_ATTACHMENT_MAX_BYTES,
+    LAUNCH_JOB_MAX_ATTACHMENT_BYTES,
+    BrowserLaunchConflictError,
+    BrowserLaunchQuotaError,
+    enqueue_launch_job,
+)
 from polylogue.browser_capture.models import (
     BrowserLaunchAttachmentInput,
     BrowserLaunchJobRequest,
@@ -250,14 +256,26 @@ def launch_command(
     """
     try:
         scope_prompt = prompt_file.read_text(encoding="utf-8")
-        attachments = [
-            BrowserLaunchAttachmentInput(
-                name=path.name,
-                mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-                content_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
+        attachments = []
+        attachment_bytes = 0
+        for path in attachment_paths:
+            size = path.stat().st_size
+            if size > LAUNCH_ATTACHMENT_MAX_BYTES:
+                raise BrowserLaunchQuotaError(
+                    f"launch attachment exceeds {LAUNCH_ATTACHMENT_MAX_BYTES} bytes: {path.name}"
+                )
+            attachment_bytes += size
+            if attachment_bytes > LAUNCH_JOB_MAX_ATTACHMENT_BYTES:
+                raise BrowserLaunchQuotaError(
+                    f"launch attachments exceed {LAUNCH_JOB_MAX_ATTACHMENT_BYTES} total bytes"
+                )
+            attachments.append(
+                BrowserLaunchAttachmentInput(
+                    name=path.name,
+                    mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                    content_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
+                )
             )
-            for path in attachment_paths
-        ]
         if project_root is not None:
             package = build_sol_pro_work_package(
                 repo_root=project_root,
@@ -289,7 +307,7 @@ def launch_command(
             ),
             spool_path=spool_path,
         )
-    except (OSError, ValueError, ValidationError) as exc:
+    except (OSError, ValueError, ValidationError, BrowserLaunchConflictError, BrowserLaunchQuotaError) as exc:
         raise click.ClickException(str(exc)) from None
     payload = job.model_dump(mode="json", exclude_none=True)
     if output_format == "json":

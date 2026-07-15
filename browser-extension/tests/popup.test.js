@@ -399,6 +399,23 @@ describe("popup capture", () => {
     }));
   });
 
+  it("distinguishes an empty queue from an unavailable receiver", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") return { ok: true, launchEnabled: true, jobs: [] };
+      return { ok: true };
+    });
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("idle"));
+    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
+      expect(document.getElementById(id).disabled).toBe(true);
+    }
+
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") throw new Error("receiver offline");
+      return { ok: true };
+    });
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("unavailable"));
+  });
+
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {
     await loadPopup({
       polylogueState: {

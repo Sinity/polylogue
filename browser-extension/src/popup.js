@@ -447,6 +447,9 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     for (const id of ["launch-phase", "launch-cadence", "launch-owner", "launch-last"]) {
       document.getElementById(id).textContent = "--";
     }
+    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
+      document.getElementById(id).disabled = true;
+    }
     return;
   }
   statusNode.textContent = launchEnabled ? job.status : `${job.status} · disabled`;
@@ -474,9 +477,16 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
 }
 
 async function refreshLaunches() {
-  const result = await chrome.runtime.sendMessage({ type: "polylogue.launch.status" });
-  renderLaunch(result?.jobs || [], result || {});
-  return result;
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.launch.status" });
+    if (!result?.ok) throw new Error(result?.error || "launch_status_unavailable");
+    renderLaunch(result.jobs || [], result);
+    return result;
+  } catch (error) {
+    renderLaunch([], { launchEnabled: false });
+    document.getElementById("launch-status").textContent = "unavailable";
+    throw error;
+  }
 }
 
 function renderDebugLog(items) {
@@ -590,7 +600,7 @@ async function render() {
   renderTimeline(stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
   renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id);
   await refreshBackfills().catch(() => renderBackfill([]));
-  await refreshLaunches().catch(() => renderLaunch([]));
+  await refreshLaunches().catch(() => undefined);
 }
 
 async function refreshStatus(reason = "popup_manual") {

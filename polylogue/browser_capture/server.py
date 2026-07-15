@@ -20,6 +20,7 @@ from polylogue.browser_capture.launch_jobs import (
     BrowserLaunchHandoffError,
     BrowserLaunchLeaseError,
     BrowserLaunchQuotaError,
+    BrowserLaunchStateError,
     accept_launch_handoff,
     claim_due_launch_job,
     control_launch_job,
@@ -177,6 +178,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _send_bytes(self, payload: bytes, *, content_type: str, filename: str) -> None:
+        if any(ord(character) < 32 or ord(character) == 127 for character in filename):
+            raise BrowserLaunchConflictError("download filename contains control characters")
         origin = self.headers.get("Origin")
         self.send_response(HTTPStatus.OK.value)
         self.send_header("X-Request-ID", self._request_id())
@@ -294,7 +297,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     jobs = [claimed] if claimed is not None else []
                 else:
                     jobs = list_launch_jobs(spool_path=self.server.config.spool_path)
-            except OSError as exc:
+            except (OSError, BrowserLaunchStateError) as exc:
                 logger.warning("browser_capture.launch_list_failed", request_id=self._request_id(), error=repr(exc))
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
                 return
@@ -308,11 +311,20 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             except BrowserLaunchConflictError:
                 self._safe_error(HTTPStatus.CONFLICT, "launch_attachment_integrity_mismatch")
                 return
+            except (OSError, BrowserLaunchStateError) as exc:
+                logger.warning(
+                    "browser_capture.launch_attachment_read_failed", request_id=self._request_id(), error=repr(exc)
+                )
+                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
             if result is None:
                 self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_attachment")
                 return
             attachment, content = result
-            self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
+            try:
+                self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
+            except BrowserLaunchConflictError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_attachment")
             return
         if parsed.path == "/v1/backfill-checkpoint":
             params = parse_qs(parsed.query)
@@ -409,7 +421,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.spool_quota_exceeded", request_id=self._request_id(), error=str(exc))
             self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "spool_quota_exceeded")
             return
-        except OSError as exc:
+        except (OSError, BrowserLaunchStateError) as exc:
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
@@ -501,7 +513,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except BrowserLaunchQuotaError:
             self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "launch_job_quota_exceeded")
             return
-        except (OSError, ValueError) as exc:
+        except (OSError, BrowserLaunchStateError) as exc:
+            logger.warning("browser_capture.launch_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        except ValueError as exc:
             logger.warning("browser_capture.launch_enqueue_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_attachment")
             return
@@ -523,6 +539,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except BrowserLaunchLeaseError:
             self._safe_error(HTTPStatus.CONFLICT, "launch_lease_owner_mismatch")
             return
+        except (OSError, BrowserLaunchStateError) as exc:
+            logger.warning("browser_capture.launch_update_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
         if job is None:
             self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
             return
@@ -540,6 +560,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         except BrowserLaunchConflictError:
             self._safe_error(HTTPStatus.CONFLICT, "invalid_launch_job_state")
+            return
+        except (OSError, BrowserLaunchStateError) as exc:
+            logger.warning("browser_capture.launch_control_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
         if job is None:
             self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
@@ -568,6 +592,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except BrowserLaunchHandoffError as exc:
             logger.warning("browser_capture.launch_handoff_invalid", request_id=self._request_id(), error=str(exc))
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_handoff_archive")
+            return
+        except (OSError, BrowserLaunchStateError) as exc:
+            logger.warning("browser_capture.launch_handoff_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
         if job is None:
             self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
