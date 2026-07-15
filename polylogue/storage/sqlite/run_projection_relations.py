@@ -1,9 +1,9 @@
 """Shared SQLite relations for run-projection reads.
 
 These relations are the query substrate for ``run``, ``observed-event``, and
-``context-snapshot`` reads. They synthesize cheap source rows directly from
-``sessions`` and ``blocks`` and optionally union richer materialized rows when
-the corresponding cache table exists.
+``context-snapshot`` reads. They synthesize source rows directly from
+``sessions`` and ``blocks`` (polylogue-dab: there is no materialized cache
+table to union anymore -- ``include_materialized=True`` raises).
 """
 
 from __future__ import annotations
@@ -77,7 +77,13 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
         if isinstance(current, QueryFieldPredicate):
             field = current.bound_field_name(context="lowering observed-event source predicates")
             if field == "kind":
-                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=False)
+                # 'tool_finished' discriminates against session_started_base
+                # (the other branch of the source_observed_events UNION), so
+                # it is itself selective -- without this, "kind:tool_finished"
+                # alone (no tool:/handler:/status: predicate alongside it)
+                # falls through to the "not selective" 0=1 fallback below and
+                # silently returns zero rows despite real matching evidence.
+                add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=True)
                 return "tool_finished" in {value.strip().lower() for value in current.values}
             if field == "delivery_state":
                 add_clause("'observed' = ?", ["observed"], is_selective=False)
@@ -407,7 +413,7 @@ def projected_run_from_row(row: RowLike) -> ProjectedRun:
         lineage_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["lineage_refs_json"])),
         provider_origin=str(row["provider_origin"]),
         harness=str(row["harness"]),  # type: ignore[arg-type]
-        role="main",
+        role=str(row["role"]),  # type: ignore[arg-type]
         title=str(row["title"]),
         cwd=str(row["cwd"]) if row["cwd"] is not None else None,
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,

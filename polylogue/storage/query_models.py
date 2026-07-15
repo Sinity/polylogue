@@ -249,12 +249,13 @@ class ArtifactObservationListQuery:
 
 @dataclass(frozen=True, slots=True)
 class RunProjectionListQuery:
-    """Canonical selection for stored run-projection read-models.
+    """Canonical selection for source-derived run-projection read-models.
 
-    One query shape covers ``session_runs``, ``session_observed_events``, and
-    ``session_context_snapshots``; each reader honours only the filter fields
-    that map to its table columns and ignores the rest. ``sort`` selects
-    ``position`` (default) or ``recency`` ordering.
+    One query shape covers the run/observed-event/context-snapshot relations
+    computed on read by ``run_projection_relations.py``'s CTEs; each reader
+    honours only the filter fields that map to its relation's columns and
+    ignores the rest. ``sort`` selects ``position`` (default) or ``recency``
+    ordering.
     """
 
     session_id: str | None = None

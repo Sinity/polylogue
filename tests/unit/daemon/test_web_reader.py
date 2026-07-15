@@ -2088,6 +2088,12 @@ class TestReaderQueryUnits:
         assert [item["session_id"] for item in items] == [C2]
 
     def test_query_units_endpoint_returns_run_rows(self, workspace_env: dict[str, Path]) -> None:
+        """polylogue-dab/itvd: a run's ``role:subagent`` is now derived from
+        ``sessions.branch_type = 'subagent'`` on the child's own session, not
+        synthesized from a Task-tool report parsed out of the parent's
+        transcript -- so the query needs a real ingested subagent session,
+        not just a Task tool_use/tool_result block pair in the parent.
+        """
         from tests.infra.storage_records import SessionBuilder
 
         index_db = workspace_env["archive_root"] / "index.db"
@@ -2100,7 +2106,7 @@ class TestReaderQueryUnits:
             .add_message(
                 "m-run",
                 role="assistant",
-                text="Subagent finished daemon run query wiring.",
+                text="Dispatched a subagent for daemon run query wiring.",
                 blocks=[
                     {
                         "type": "tool_use",
@@ -2122,6 +2128,17 @@ class TestReaderQueryUnits:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "daemon-run-child")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .working_directories(["/realm/project/polylogue"])
+            .title("Map daemon run query wiring.")
+            .parent_session("ext-daemon-run")
+            .branch_type("subagent")
+            .add_message("m-child", role="assistant", text="Subagent done: daemon run query wired.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
@@ -2133,10 +2150,10 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert len(items) == 1
         assert items[0]["unit"] == "run"
-        assert items[0]["session_id"] == "codex-session:ext-daemon-run"
+        assert items[0]["session_id"] == "codex-session:ext-daemon-run-child"
         assert items[0]["role"] == "subagent"
         assert items[0]["status"] == "completed"
-        assert items[0]["agent_ref"] == "agent:codex/Explore"
+        assert items[0]["agent_ref"] == "agent:codex/subagent"
 
     def test_query_units_endpoint_returns_observed_event_rows(self, workspace_env: dict[str, Path]) -> None:
         from tests.infra.storage_records import SessionBuilder

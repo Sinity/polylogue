@@ -14,6 +14,11 @@ from typing import Any
 
 from polylogue.config import Config, get_config
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,6 +53,11 @@ def _user_version(conn: Connection) -> int:
 
 def _count(conn: Connection, table: str) -> int:
     row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _relation_count(conn: Connection, relation_sql: str, relation: str) -> int:
+    row = conn.execute(f"{relation_sql} SELECT COUNT(*) FROM {relation}").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -113,43 +123,53 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "logical_root_sessions": _logical_root_session_count(conn, physical_sessions),
             "session_profiles": session_profiles,
             "session_profile_coverage_exact": session_profiles is not None,
-            "runs": _count(conn, "session_runs"),
-            "observed_events": _count(conn, "session_observed_events"),
-            "context_snapshots": _count(conn, "session_context_snapshots"),
+            "runs": _relation_count(conn, run_relation_sql(), "runs"),
+            "observed_events": _relation_count(conn, observed_event_relation_sql(source_where="1"), "observed_events"),
+            "context_snapshots": _relation_count(conn, context_snapshot_relation_sql(), "context_snapshots"),
         }
+        # polylogue-dab/itvd: session_runs/session_observed_events/
+        # session_context_snapshots are source-derived CTE relations, not
+        # tables. Their `source_updated_at` column is a zero-padded 16-digit
+        # epoch-ms string (for lexicographic ORDER BY), not an ISO-8601
+        # timestamp -- the old `substr(source_updated_at,1,7)` ISO-prefix
+        # trick would silently bucket everything into one bogus "month", so
+        # the epoch-ms string is cast back to a real date first.
         monthly_runs = _rows(
             conn,
-            """
-            SELECT coalesce(substr(source_updated_at,1,7),'unknown') AS month,
+            f"""
+            {run_relation_sql()}
+            SELECT coalesce(strftime('%Y-%m', CAST(source_updated_at AS INTEGER) / 1000, 'unixepoch'), 'unknown') AS month,
                    harness,
                    role,
                    status,
                    count(*) AS runs
-            FROM session_runs
+            FROM runs
             GROUP BY 1,2,3,4
             ORDER BY 1,2,3,4
             """,
         )
         monthly_observed_events = _rows(
             conn,
-            """
-            SELECT coalesce(substr(source_updated_at,1,7),'unknown') AS month,
+            f"""
+            {observed_event_relation_sql(source_where="1")}
+            SELECT coalesce(strftime('%Y-%m', CAST(source_updated_at AS INTEGER) / 1000, 'unixepoch'), 'unknown') AS month,
                    kind,
                    delivery_state,
                    count(*) AS events
-            FROM session_observed_events
+            FROM observed_events
             GROUP BY 1,2,3
             ORDER BY 1,2,3
             """,
         )
         monthly_context_boundaries = _rows(
             conn,
-            """
-            SELECT coalesce(substr(source_updated_at,1,7),'unknown') AS month,
+            f"""
+            {context_snapshot_relation_sql()}
+            SELECT coalesce(strftime('%Y-%m', CAST(source_updated_at AS INTEGER) / 1000, 'unixepoch'), 'unknown') AS month,
                    boundary,
                    inheritance_mode,
                    count(*) AS snapshots
-            FROM session_context_snapshots
+            FROM context_snapshots
             GROUP BY 1,2,3
             ORDER BY 1,2,3
             """,

@@ -17,6 +17,7 @@ from polylogue.scenarios import (
     DEMO_SESSION_IDS,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql, run_relation_sql
 
 
 @pytest.mark.asyncio
@@ -104,9 +105,11 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         ).fetchall()
         sidechain_sessions = conn.execute("SELECT session_id FROM sessions WHERE branch_type = 'sidechain'").fetchall()
         subagent_snapshots = conn.execute(
-            "SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'"
+            f"{context_snapshot_relation_sql()} SELECT COUNT(*) FROM context_snapshots WHERE boundary = 'subagent_start'"
         ).fetchone()[0]
-        subagent_runs = conn.execute("SELECT COUNT(*) FROM session_runs WHERE role = 'subagent'").fetchone()[0]
+        subagent_runs = conn.execute(
+            f"{run_relation_sql()} SELECT COUNT(*) FROM runs WHERE role = 'subagent'"
+        ).fetchone()[0]
         unfinished_terminal_states = conn.execute(
             "SELECT terminal_state, COUNT(*) FROM session_profiles GROUP BY terminal_state"
         ).fetchall()

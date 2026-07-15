@@ -148,11 +148,10 @@ and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
 `runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed terminal rows
-over source-derived archive relations plus any non-duplicate materialized
-projection enrichments. Main runs, `session_started` events, tool-finished
-events, and session-start context snapshots are computed directly from
-`sessions` and `blocks`; richer digest-derived rows can still come from
-`session_runs`, `session_observed_events`, and `session_context_snapshots`.
+over source-derived archive relations (polylogue-dab): main runs,
+`session_started` events, tool-finished events, and session-start context
+snapshots are computed directly from `sessions` and `blocks`, with no
+separate materialized cache table.
 These units support `sort by time`, `limit`, and `offset` and are usable as
 `exists run(...)` / `exists observed-event(...)` /
 `exists context-snapshot(...)` session selectors. They do not yet expose

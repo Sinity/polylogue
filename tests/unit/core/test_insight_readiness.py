@@ -181,8 +181,31 @@ async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: P
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
                 source_name TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
                 sort_key REAL,
                 updated_at TEXT
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             INSERT INTO sessions (session_id, parent_session_id, source_name, sort_key, updated_at)
             VALUES ('missing-root', NULL, 'codex', 1.0, '2026-04-01T00:00:00Z');

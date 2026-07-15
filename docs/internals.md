@@ -173,6 +173,27 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 37 drops the three run-projection materialized cache
+  tables — `session_runs`, `session_observed_events`,
+  `session_context_snapshots` — added by v11 (polylogue-dab). Their write
+  path (`replace_session_*_bulk_sync`) is deleted; `run_relation_sql()`,
+  `observed_event_relation_sql()`, and `context_snapshot_relation_sql()` now
+  raise `ValueError` if ever called with `include_materialized=True`. All
+  `run` / `observed-event` / `context-snapshot` reads (CLI query units,
+  `coordination/envelope.py` agent-coordination evidence, MCP tools) are
+  purely source-derived from `sessions` and `blocks` — main runs from
+  `sessions`, subagent runs from `branch_type='subagent'` sessions,
+  tool-finished events from paired `tool_use`/`tool_result` blocks joined by
+  `tool_id`. `projected_run_from_row()` reads `role` from the query row
+  rather than hardcoding `"main"` (a bug that had made every subagent run
+  report as `role="main"` regardless of the materialized/source split).
+  Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`); the drop needs no
+  migration since derived tiers are rebuilt wholesale, not migrated in place.
+- Index schema version 36 has no structural DDL change of its own; it is the
+  version bump accompanying `beads-issue` origin ingestion support
+  (polylogue-2800) landing alongside other index-tier work in the same
+  release window.
 - Index schema version 35 adds Polish lexical search-recall folding
   (polylogue-9jsi). The `messages_fts`, `threads_fts`, and
   `session_work_events_fts` tokenizers move from `unicode61` to

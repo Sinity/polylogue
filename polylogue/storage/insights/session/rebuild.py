@@ -42,11 +42,6 @@ from polylogue.storage.insights.session.profiles import (
     hydrate_session_profile,
     now_iso,
 )
-from polylogue.storage.insights.session.run_projection_rows import (
-    build_session_context_snapshot_records,
-    build_session_observed_event_records,
-    build_session_run_records,
-)
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 from polylogue.storage.insights.session.storage import (
     _epoch_ms_or_none,
@@ -72,14 +67,11 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
     MessageRecord,
-    SessionContextSnapshotRecord,
     SessionEventRecord,
     SessionLatencyProfileRecord,
-    SessionObservedEventRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionRecord,
-    SessionRunRecord,
     SessionWorkEventRecord,
     ThreadRecord,
 )
@@ -249,9 +241,16 @@ class SessionInsightRecordBundle:
     latency_profile_record: SessionLatencyProfileRecord
     work_event_records: list[SessionWorkEventRecord]
     phase_records: list[SessionPhaseRecord]
-    run_records: list[SessionRunRecord]
-    observed_event_records: list[SessionObservedEventRecord]
-    context_snapshot_records: list[SessionContextSnapshotRecord]
+    # polylogue-dab/itvd: run/observed-event/context-snapshot rows are no
+    # longer materialized into tables (they are computed on read by
+    # run_projection_relations.py's CTEs), so the bundle only needs counts
+    # for the insight_materialization ledger stamp below, not full record
+    # lists -- building SessionRunRecord/etc. objects here would be pure
+    # waste (a full RunProjection compile + search_text join per session)
+    # for values nothing ever reads back.
+    run_count: int
+    observed_event_count: int
+    context_snapshot_count: int
     repo_observations: tuple[object, ...] = ()
     """Repo observations for ``session_repos`` (#1253).
 
@@ -271,18 +270,6 @@ class SessionInsightRecordBundle:
     @property
     def phase_count(self) -> int:
         return len(self.phase_records)
-
-    @property
-    def run_count(self) -> int:
-        return len(self.run_records)
-
-    @property
-    def observed_event_count(self) -> int:
-        return len(self.observed_event_records)
-
-    @property
-    def context_snapshot_count(self) -> int:
-        return len(self.context_snapshot_records)
 
 
 @dataclass(slots=True, frozen=True)
@@ -700,39 +687,28 @@ def build_session_insight_records(
     add_timing("build_records.phase_records", t0)
     t0 = time.perf_counter()
     # The run projection is computed from the same hydrated Session, with no
-    # cross-session links (session_links=()), so the materialized rows match the
-    # runtime query path exactly. The projection helper always yields a main run,
-    # so RunProjection's ">=1 run" invariant holds for every session, including
-    # empty ones. A projection failure must surface, not be swallowed, so the
-    # rebuild fails loudly on malformed evidence.
+    # cross-session links (session_links=()), so its counts match what the
+    # runtime CTE query path (run_projection_relations.py) would return. The
+    # projection helper always yields a main run, so RunProjection's ">=1 run"
+    # invariant holds for every session, including empty ones. A projection
+    # failure must surface, not be swallowed, so the rebuild fails loudly on
+    # malformed evidence. polylogue-dab/itvd: only the counts are needed here
+    # (for the insight_materialization ledger stamp) -- run/observed-event/
+    # context-snapshot rows are no longer materialized into tables, so
+    # building full SessionRunRecord/etc. objects (a search_text join per
+    # row) would be wasted work.
     from polylogue.insights.transforms import compile_session_run_projection
 
     run_projection = compile_session_run_projection(session, session_links=())
-    source_updated_at = profile_record.source_updated_at
-    run_records = build_session_run_records(
-        run_projection,
-        materialized_at=materialized_at,
-        source_updated_at=source_updated_at,
-    )
-    observed_event_records = build_session_observed_event_records(
-        run_projection,
-        materialized_at=materialized_at,
-        source_updated_at=source_updated_at,
-    )
-    context_snapshot_records = build_session_context_snapshot_records(
-        run_projection,
-        materialized_at=materialized_at,
-        source_updated_at=source_updated_at,
-    )
     add_timing("build_records.run_projection_records", t0)
     return SessionInsightRecordBundle(
         profile_record=profile_record,
         latency_profile_record=latency_profile_record,
         work_event_records=work_event_records,
         phase_records=phase_records,
-        run_records=run_records,
-        observed_event_records=observed_event_records,
-        context_snapshot_records=context_snapshot_records,
+        run_count=len(run_projection.runs),
+        observed_event_count=len(run_projection.events),
+        context_snapshot_count=len(run_projection.context_snapshots),
         repo_observations=repo_observations,
     )
 
@@ -972,9 +948,9 @@ def build_large_session_insight_record_bundle_sync(
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
         work_event_records=[],
         phase_records=[],
-        run_records=[],
-        observed_event_records=[],
-        context_snapshot_records=[],
+        run_count=0,
+        observed_event_count=0,
+        context_snapshot_count=0,
     )
 
 
@@ -998,9 +974,9 @@ async def build_large_session_insight_record_bundle_async(
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
         work_event_records=[],
         phase_records=[],
-        run_records=[],
-        observed_event_records=[],
-        context_snapshot_records=[],
+        run_count=0,
+        observed_event_count=0,
+        context_snapshot_count=0,
     )
 
 
@@ -1060,9 +1036,9 @@ def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsig
         ("latency", profile.materializer_version, bundle.latency_profile_record.input_row_count),
         ("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.work_event_records)),
         ("phases", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.phase_records)),
-        ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.run_records)),
-        ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.observed_event_records)),
-        ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.context_snapshot_records)),
+        ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.run_count),
+        ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.observed_event_count),
+        ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.context_snapshot_count),
         ("thread", SESSION_INSIGHT_MATERIALIZER_VERSION, 1),
         ("provider_usage", SESSION_INSIGHT_MATERIALIZER_VERSION, provider_usage_row_count),
     ):
@@ -1279,12 +1255,15 @@ def _delete_tables_with_progress_sync(
 # not-yet-processed sessions stay visible until their chunk runs (no empty
 # window). Rows whose session was deleted since the last rebuild are pruned
 # after the chunk loop instead (see _delete_orphan_session_insights_*).
+#
+# polylogue-dab/itvd: session_runs/session_observed_events/
+# session_context_snapshots are deliberately absent -- they are no longer
+# materialized tables (run_projection_relations.py computes them on read
+# from sessions/blocks), so there is nothing to orphan-prune. Listing them
+# here crashed every full rebuild with "no such table: session_runs".
 _PER_SESSION_INSIGHT_TABLES: tuple[str, ...] = (
     "session_work_events",
     "session_phases",
-    "session_runs",
-    "session_observed_events",
-    "session_context_snapshots",
     "session_latency_profiles",
     "session_profiles",
 )
