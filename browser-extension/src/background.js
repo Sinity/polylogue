@@ -3,6 +3,11 @@ import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_M
 import { providerAdapters } from "./backfill/providers.js";
 import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
+import {
+  classifyLaunchFailure,
+  executeChatGptLaunchInPage,
+  inspectChatGptLaunchPage,
+} from "./launch/chatgpt_launch.js";
 
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
@@ -15,6 +20,8 @@ const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const POST_POLL_INTERVAL_MS = 5000;
+const LAUNCH_ALARM = "polylogueLaunchWake";
+const LAUNCH_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
@@ -28,6 +35,8 @@ const pendingPostCommandAcks = new Map();
 let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
+let launchExecutorIdPromise = null;
+let launchPollPromise = null;
 let storageMutationQueue = Promise.resolve();
 let captureQueueMutationQueue = Promise.resolve();
 
@@ -59,6 +68,26 @@ function extensionInstanceId() {
     });
   }
   return extensionInstanceIdPromise;
+}
+
+function launchExecutorId() {
+  if (!launchExecutorIdPromise) {
+    const key = "polylogueLaunchExecutorId";
+    const candidate = (async () => {
+      const session = chrome.storage.session;
+      if (!session?.get || !session?.set) return `launch-${BACKFILL_WORKER_EPOCH}`;
+      const stored = await session.get({ [key]: "" });
+      if (stored[key]) return stored[key];
+      const created = `launch-${globalThis.crypto?.randomUUID?.() || BACKFILL_WORKER_EPOCH}`;
+      await session.set({ [key]: created });
+      return created;
+    })();
+    launchExecutorIdPromise = candidate;
+    void candidate.catch(() => {
+      if (launchExecutorIdPromise === candidate) launchExecutorIdPromise = null;
+    });
+  }
+  return launchExecutorIdPromise;
 }
 
 async function withExtensionInstanceAttribution(envelope) {
@@ -485,7 +514,7 @@ async function checkReceiverHealth() {
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   try {
-    const response = await fetch(`${settings.baseUrl}/api/health`, {
+    const response = await fetch(`${settings.baseUrl}/v1/status`, {
       headers: await requestHeaders({ requestId }),
     });
     const body = await response.json().catch(() => null);
@@ -961,7 +990,7 @@ async function cleanupBackfillTransportTab(alarmName) {
   }
 }
 
-async function captureTab(tab, reason = "background", expectedConversation = null) {
+async function captureTab(tab, reason = "background", expectedConversation = null, captureContext = null) {
   if (expectedConversation && tab?.id && chrome.tabs?.get) {
     const currentTab = await chrome.tabs.get(tab.id);
     const currentUrl = currentTab?.url || currentTab?.pendingUrl || "";
@@ -976,17 +1005,23 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
   if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
-  if (reason !== "extension_installed_or_updated" && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS) {
+  if (
+    reason !== "extension_installed_or_updated"
+    && !reason.startsWith("launch_job_")
+    && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS
+  ) {
     return { ok: false, skipped: true, reason: "background_capture_throttled" };
   }
   recentBackgroundCaptures.set(tab.id, now);
   await ensureCaptureScripts(tab);
   try {
+    const captureMessage = {
+      type: "polylogue.capturePage",
+      reason,
+      ...(captureContext ? { capture_context: captureContext } : {}),
+    };
     const resultWithTimeout = await withTimeout(
-      chrome.tabs.sendMessage(tab.id, {
-        type: "polylogue.capturePage",
-        reason
-      }),
+      chrome.tabs.sendMessage(tab.id, captureMessage),
       CAPTURE_MESSAGE_TIMEOUT_MS,
       "capture_message",
     );
@@ -1092,6 +1127,338 @@ async function captureSupportedTabs(reason) {
   if (!chrome.tabs?.query) return;
   const tabs = await chrome.tabs.query({});
   await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
+}
+
+// ---- GPT-5.6 Sol Pro Chat launch queue ----------------------------------
+
+async function launchSettings() {
+  const stored = await chrome.storage.local.get({ launchEnabled: false });
+  return { launchEnabled: Boolean(stored.launchEnabled) };
+}
+
+async function saveLaunchSettings(launchEnabled) {
+  await chrome.storage.local.set({ launchEnabled: Boolean(launchEnabled) });
+  if (launchEnabled) {
+    await ensureLaunchAlarm();
+    void pollLaunchJobs();
+  } else {
+    await chrome.alarms?.clear?.(LAUNCH_ALARM);
+  }
+  return launchSettings();
+}
+
+async function ensureLaunchAlarm() {
+  await chrome.alarms?.create?.(LAUNCH_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
+}
+
+async function updateLaunchJob(jobId, ownerInstanceId, patch) {
+  return postJson(`/v1/launch-jobs/${encodeURIComponent(jobId)}/events`, {
+    owner_instance_id: ownerInstanceId,
+    ...patch,
+  });
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function loadLaunchAttachments(job) {
+  const settings = await receiverSettings();
+  const attachments = [];
+  let total = 0;
+  for (const item of job.attachments || []) {
+    total += Number(item.size_bytes || 0);
+    if (total > LAUNCH_MAX_EXTENSION_TRANSPORT_BYTES) {
+      throw new Error(`protocol_attachment_transport_limit:${total}`);
+    }
+    const requestId = buildReceiverRequestId();
+    const response = await fetch(
+      `${settings.baseUrl}/v1/launch-jobs/${encodeURIComponent(job.job_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+      { headers: await requestHeaders({ requestId }) },
+    );
+    if (!response.ok) {
+      const retryAfter = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
+      const error = new Error(`launch_attachment_http_${response.status}`);
+      error.retryAfterSeconds = retryAfter;
+      throw error;
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length !== item.size_bytes) throw new Error(`protocol_attachment_size_mismatch:${item.attachment_id}`);
+    attachments.push({
+      attachment_id: item.attachment_id,
+      name: item.name,
+      mime_type: item.mime_type,
+      content_base64: bytesToBase64(bytes),
+    });
+  }
+  return attachments;
+}
+
+async function waitForTabComplete(tabId, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete") return tab;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+  }
+  throw new Error("protocol_chatgpt_tab_load_timeout");
+}
+
+async function monitorSubmittedLaunch(job, ownerInstanceId) {
+  if (!job.tab_id) return;
+  let inspection;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: job.tab_id },
+      world: "MAIN",
+      func: inspectChatGptLaunchPage,
+    });
+    inspection = result;
+  } catch (error) {
+    const classified = classifyLaunchFailure(error);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      ...classified,
+      phase: "monitoring",
+      tab_id: job.tab_id,
+      conversation_id: job.conversation_id,
+      conversation_url: job.conversation_url,
+    });
+    return;
+  }
+  if (inspection?.rate_limited) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "rate_limited",
+      phase: "provider_rate_limit",
+      detail: "provider rate limit visible in conversation",
+      retry_after_seconds: 900,
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+    return;
+  }
+  if (inspection?.safety_lock) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "safety_locked",
+      phase: "provider_safety_lock",
+      detail: "provider safety lock visible in conversation",
+      retry_after_seconds: 3600,
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+    return;
+  }
+  if (inspection?.busy || !inspection?.assistant_turns) return;
+  if (!inspection.handoff_name) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "protocol_mismatch",
+      phase: "handoff_validation",
+      detail: "assistant completed without required cohesive handoff archive",
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+    return;
+  }
+  try {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "handoff_visible_pending_acquisition",
+      detail: "required cohesive handoff archive is visible; acquiring bytes for receiver validation",
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+      handoff_attachment_id: inspection.handoff_name,
+    });
+    const captured = await captureTab(await chrome.tabs.get(job.tab_id), "launch_job_handoff", null, {
+      launch_job_id: job.job_id,
+    });
+    const handoff = captured?.envelope?.session?.attachments?.find(
+      (attachment) => attachment.name === inspection.handoff_name && attachment.inline_base64,
+    );
+    if (!handoff) {
+      await updateLaunchJob(job.job_id, ownerInstanceId, {
+        outcome: "progress",
+        phase: "handoff_asset_pending",
+        detail: "handoff link is visible but authenticated capture has not acquired its bytes yet",
+        tab_id: job.tab_id,
+        conversation_id: inspection.conversation_id,
+        conversation_url: inspection.conversation_url,
+      });
+      return;
+    }
+    const accepted = await postJson(`/v1/launch-jobs/${encodeURIComponent(job.job_id)}/handoff`, {
+      owner_instance_id: ownerInstanceId,
+      name: inspection.handoff_name,
+      content_base64: handoff.inline_base64,
+    });
+    await appendCaptureLog({
+      ok: true,
+      reason: "sol_pro_handoff_validated",
+      job_id: job.job_id,
+      artifact_ref: accepted.job?.handoff_artifact_ref || null,
+    });
+  } catch (error) {
+    const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      ...classified,
+      phase: "handoff_acquisition",
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+  }
+}
+
+async function recoverSubmittingLaunch(job, ownerInstanceId) {
+  if (!job.tab_id) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "submission_unknown",
+      phase: "unknown_submit_outcome",
+      detail: "submit intent was recorded without a recoverable tab; operator inspection required",
+    });
+    return;
+  }
+  try {
+    await chrome.tabs.get(job.tab_id);
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: job.tab_id },
+      world: "MAIN",
+      func: inspectChatGptLaunchPage,
+    });
+    if (!result?.conversation_id) return;
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "submitted",
+      phase: "submitted_recovered",
+      detail: "recovered the conversation after an unknown submit acknowledgement outcome",
+      tab_id: job.tab_id,
+      conversation_id: result.conversation_id,
+      conversation_url: result.conversation_url,
+    });
+  } catch (error) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "submission_unknown",
+      phase: "unknown_submit_outcome",
+      detail: `submit intent cannot be reconciled automatically: ${String(error.message || error)}`,
+      tab_id: job.tab_id,
+    });
+  }
+}
+
+async function dispatchLaunchJob(job, ownerInstanceId) {
+  let tab = null;
+  let pageExecutionStarted = false;
+  try {
+    const attachments = await loadLaunchAttachments(job);
+    tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
+    if (!tab?.id) throw new Error("protocol_background_tab_create_failed");
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "uploading",
+      detail: "background Chat tab created without activation",
+      tab_id: tab.id,
+    });
+    await waitForTabComplete(tab.id);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "submit_intent",
+      detail: "durable intent recorded before the single submit boundary",
+      tab_id: tab.id,
+    });
+    pageExecutionStarted = true;
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: executeChatGptLaunchInPage,
+      args: [job, attachments],
+    });
+    if (!result?.ok) {
+      const error = new Error(result?.detail || "protocol_launch_result_missing");
+      error.submissionMayHaveOccurred = Boolean(result?.submission_may_have_occurred);
+      throw error;
+    }
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "submitted",
+      phase: "submitted",
+      detail: "Chat / GPT-5.6 Sol / Pro preflight passed and frontend submitted",
+      tab_id: tab.id,
+      conversation_id: result.conversation_id,
+      conversation_url: result.conversation_url,
+    });
+    await appendCaptureLog({
+      ok: true,
+      reason: "sol_pro_launch_submitted",
+      job_id: job.job_id,
+      conversation_id: result.conversation_id,
+    });
+  } catch (error) {
+    const ambiguous = error?.submissionMayHaveOccurred === true
+      || (pageExecutionStarted && error?.submissionMayHaveOccurred !== false);
+    const classified = ambiguous
+      ? {
+        outcome: "submission_unknown",
+        retry_after_seconds: null,
+        detail: `submit execution channel ended without a durable acknowledgement: ${String(error.message || error)}`,
+      }
+      : classifyLaunchFailure(error, error?.retryAfterSeconds || null);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      ...classified,
+      phase: "launch",
+      tab_id: tab?.id || null,
+    }).catch(() => undefined);
+    await appendCaptureLog({
+      ok: false,
+      reason: "sol_pro_launch_failed",
+      job_id: job.job_id,
+      error: String(error.message || error),
+    });
+  }
+}
+
+async function pollLaunchJobsOnce() {
+  const { launchEnabled } = await launchSettings();
+  if (!launchEnabled) return { enabled: false, jobs: [] };
+  const ownerInstanceId = await launchExecutorId();
+  const status = await getJson("/v1/launch-jobs").catch(() => ({ jobs: [] }));
+  for (const job of status.jobs || []) {
+    if (job.status === "cancelled" && job.executor_instance_id === ownerInstanceId && job.tab_id) {
+      await chrome.tabs.remove(job.tab_id).catch(() => undefined);
+    } else if (
+      job.status === "submitted" &&
+      job.lease_owner === ownerInstanceId &&
+      (!job.next_attempt_at || Date.parse(job.next_attempt_at) <= Date.now())
+    ) {
+      await monitorSubmittedLaunch(job, ownerInstanceId);
+    } else if (job.status === "submitting" && job.lease_owner === ownerInstanceId) {
+      await recoverSubmittingLaunch(job, ownerInstanceId);
+    }
+  }
+  const claim = await getJson(`/v1/launch-jobs?claim_by=${encodeURIComponent(ownerInstanceId)}`);
+  const [job] = claim.jobs || [];
+  if (job?.status === "submitted") {
+    await monitorSubmittedLaunch(job, ownerInstanceId);
+  } else if (job?.status === "submitting") {
+    await recoverSubmittingLaunch(job, ownerInstanceId);
+  } else if (job?.status === "leased") {
+    await dispatchLaunchJob(job, ownerInstanceId);
+  }
+  return { enabled: true, jobs: status.jobs || [], claimed: job || null };
+}
+
+function pollLaunchJobs() {
+  if (launchPollPromise) return launchPollPromise;
+  const candidate = pollLaunchJobsOnce();
+  const tracked = candidate.finally(() => {
+    if (launchPollPromise === tracked) launchPollPromise = null;
+  });
+  launchPollPromise = tracked;
+  return launchPollPromise;
 }
 
 // ---- Outbound posting (reverse channel) ---------------------------------
@@ -1408,8 +1775,18 @@ function stopPostPolling() {
 
 void startPostPolling();
 void loadCaptureQueueIntoCache();
+void launchSettings().then(({ launchEnabled }) => {
+  if (launchEnabled) {
+    void ensureLaunchAlarm();
+    void pollLaunchJobs();
+  }
+});
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name === LAUNCH_ALARM) {
+    void pollLaunchJobs();
+    return;
+  }
   if (alarm?.name?.startsWith(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:`)) {
     void cleanupBackfillTransportTab(alarm.name);
     return;
@@ -1430,6 +1807,7 @@ chrome.runtime.onInstalled?.addListener(() => {
 chrome.runtime.onStartup?.addListener(() => {
   void refreshCurrentActiveTab("browser_startup");
   void backfillCoordinator().then((coordinator) => coordinator.wake());
+  void pollLaunchJobs();
 });
 
 chrome.tabs?.onActivated?.addListener((activeInfo) => {
@@ -1709,6 +2087,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const settings = await savePostingSettings(message.postingEnabled);
       await startPostPolling();
       sendResponse({ ok: true, postingEnabled: settings.postingEnabled });
+      return;
+    }
+    if (message.type === "polylogue.launch.configure") {
+      const settings = await saveLaunchSettings(message.launchEnabled);
+      sendResponse({ ok: true, ...settings });
+      return;
+    }
+    if (message.type === "polylogue.launch.status") {
+      const [settings, status, ownerInstanceId] = await Promise.all([
+        launchSettings(),
+        getJson("/v1/launch-jobs"),
+        launchExecutorId(),
+      ]);
+      sendResponse({ ok: true, ...settings, ownerInstanceId, jobs: status.jobs || [] });
+      return;
+    }
+    if (message.type === "polylogue.launch.control") {
+      const result = await postJson(`/v1/launch-jobs/${encodeURIComponent(message.job_id)}/control`, {
+        action: message.action,
+        inspection_receipt: message.inspection_receipt || null,
+      });
+      if (["resume", "retry", "launch_now", "confirm_no_conversation"].includes(message.action)) {
+        void pollLaunchJobs();
+      }
+      sendResponse({ ok: true, job: result.job });
+      return;
+    }
+    if (message.type === "polylogue.launch.poll") {
+      sendResponse({ ok: true, ...(await pollLaunchJobs()) });
       return;
     }
     if (message.type === "polylogue.pollPostCommands") {

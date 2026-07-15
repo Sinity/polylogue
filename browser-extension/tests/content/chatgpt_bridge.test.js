@@ -373,6 +373,25 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
 });
 
 describe("ChatGPT authenticated asset capture envelope", () => {
+  it("links a launch-job completion capture back to its durable job", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter());
+    const captureListener = harness.runtimeListeners[0];
+    const result = await new Promise((resolve) => {
+      const accepted = captureListener({
+        type: "polylogue.capturePage",
+        reason: "launch_job_completed",
+        capture_context: { launch_job_id: "launch-job-1" },
+      }, {}, resolve);
+      expect(accepted).toBe(true);
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.envelope.provider_meta.launch_job_id).toBe("launch-job-1");
+    expect(result.envelope.session.provider_meta.launch_job_id).toBe("launch-job-1");
+    const [captureMessage] = harness.runtimeMessages.filter((message) => message.type === "polylogue.capture");
+    expect(captureMessage.envelope.session.provider_meta.launch_job_id).toBe("launch-job-1");
+  });
+
   it("records stable attachment identity, bytes, size, and SHA receipt across repeat capture", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter);

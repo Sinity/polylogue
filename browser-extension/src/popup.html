@@ -381,6 +381,34 @@
         <p class="log-meta">Runs against the authenticated provider inventory without activating foreground tabs. Provider controls and cooldowns are always honored.</p>
       </section>
 
+      <section id="launch-panel">
+        <div class="section-head">
+          <strong>Agent work</strong>
+          <span id="launch-status" class="value">disabled</span>
+        </div>
+        <div class="setting-row">
+          <label for="launch-enabled">Run queued jobs in background tabs</label>
+          <input id="launch-enabled" type="checkbox">
+        </div>
+        <select id="launch-job" aria-label="Agent work job"><option value="">No jobs yet</option></select>
+        <div class="row"><span class="label">Target</span><span class="value">Chat · GPT-5.6 Sol · Pro</span></div>
+        <div class="row"><span class="label">Phase</span><span id="launch-phase" class="value">--</span></div>
+        <div class="row"><span class="label">Cadence / cooldown</span><span id="launch-cadence" class="value">--</span></div>
+        <div class="row"><span class="label">Owner</span><span id="launch-owner" class="value">--</span></div>
+        <div class="row"><span class="label">Last receipt / error</span><span id="launch-last" class="value">--</span></div>
+        <div class="controls">
+          <button id="launch-poll" class="primary"><span class="button-label">Run due job</span><span class="button-status"></span></button>
+          <button id="launch-now"><span class="button-label">Launch now</span><span class="button-status"></span></button>
+          <button id="launch-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
+          <button id="launch-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
+          <button id="launch-retry"><span class="button-label">Retry</span><span class="button-status"></span></button>
+          <button id="launch-confirm-absent" disabled><span class="button-label">Confirmed absent</span><span class="button-status"></span></button>
+          <button id="launch-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
+          <button id="launch-inspect"><span class="button-label">Inspect chat</span><span class="button-status"></span></button>
+        </div>
+        <p class="log-meta">The receiver owns the queue and grants one submission lease across every installed extension instance; submitted chats may continue in parallel. Launch now bypasses ordinary cadence, never a provider rate/safety circuit. Jobs fail closed if Chat, Sol, or Pro is not selected exactly.</p>
+      </section>
+
       <section>
         <div class="section-head">
           <span class="label">Queued retries</span>

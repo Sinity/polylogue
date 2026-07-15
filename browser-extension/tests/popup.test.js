@@ -1,5 +1,11 @@
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 
 const CHATGPT_TAB = {
   id: 42,
@@ -50,6 +56,21 @@ function installDom() {
       <button id="backfill-resume"><span class="button-status"></span></button>
       <button id="backfill-cancel"><span class="button-status"></span></button>
       <button id="backfill-export"><span class="button-status"></span></button>
+      <input id="launch-enabled" type="checkbox" />
+      <select id="launch-job"></select>
+      <span id="launch-status"></span>
+      <span id="launch-phase"></span>
+      <span id="launch-cadence"></span>
+      <span id="launch-owner"></span>
+      <span id="launch-last"></span>
+      <button id="launch-poll"><span class="button-status"></span></button>
+      <button id="launch-now"><span class="button-status"></span></button>
+      <button id="launch-pause"><span class="button-status"></span></button>
+      <button id="launch-resume"><span class="button-status"></span></button>
+      <button id="launch-retry"><span class="button-status"></span></button>
+      <button id="launch-confirm-absent"><span class="button-status"></span></button>
+      <button id="launch-cancel"><span class="button-status"></span></button>
+      <button id="launch-inspect"><span class="button-status"></span></button>
       <span id="mode"></span>
       <span id="fidelity"></span>
       <span id="turns"></span>
@@ -99,6 +120,8 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage 
       },
     },
     tabs: {
+      create: vi.fn(async (details) => ({ id: 99, ...details })),
+      update: vi.fn(async (tabId, details) => ({ id: tabId, ...details })),
       query: vi.fn(async () => tabs),
       sendMessage: vi.fn(async () => {
         captureAttempts += 1;
@@ -127,6 +150,27 @@ async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = 
 describe("popup capture", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("starts in the manifest classic-script load order without a global redeclaration", () => {
+    const context = vm.createContext({});
+    context.globalThis = context;
+    const operatorSource = readFileSync(join(TEST_DIR, "../src/operator_status.js"), "utf8");
+    const popupSource = readFileSync(join(TEST_DIR, "../src/popup.js"), "utf8");
+
+    new vm.Script(operatorSource, { filename: "operator_status.js" }).runInContext(context);
+    let startupError = null;
+    try {
+      new vm.Script(popupSource, { filename: "popup.js" }).runInContext(context);
+    } catch (error) {
+      startupError = error;
+    }
+
+    // The intentionally minimal context has no DOM, so execution reaches the
+    // first document access and stops there.  A classic-script global binding
+    // collision fails earlier as SyntaxError and made the real popup inert.
+    expect(startupError?.name).toBe("ReferenceError");
+    expect(startupError?.message).toContain("document is not defined");
   });
 
   it("injects provider content scripts before retrying an already-open tab capture", async () => {
@@ -253,6 +297,123 @@ describe("popup capture", () => {
     await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("bridge limit reached"));
     expect(document.getElementById("backfill-last").textContent).toContain("held; Resume explicitly retries");
     expect(document.getElementById("backfill-resume").disabled).toBe(false);
+  });
+
+  it("renders and controls the receiver-owned Sol Pro launch queue", async () => {
+    let enabled = true;
+    let status = "cooldown";
+    let cooldownReason = "rate_limited";
+    const job = () => ({
+      job_id: "launch-1",
+      queue_position: 3,
+      status,
+      phase: status === "cooldown" ? "cadence_wait" : status,
+      cadence_minutes: 5,
+      cooldown_reason: status === "cooldown" ? cooldownReason : null,
+      next_attempt_at: new Date(Date.now() + 60_000).toISOString(),
+      lease_owner: "other-instance",
+      attachments: [{ attachment_id: "a1" }],
+      conversation_url: "https://chatgpt.com/c/launch-1",
+      events: [{ kind: "rate_limited", detail: "provider_http_429" }],
+    });
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") {
+        return { ok: true, launchEnabled: enabled, ownerInstanceId: "this-instance", jobs: [job()] };
+      }
+      if (message.type === "polylogue.launch.configure") {
+        enabled = message.launchEnabled;
+        return { ok: true, launchEnabled: enabled };
+      }
+      if (message.type === "polylogue.launch.control") {
+        status = ["resume", "launch_now"].includes(message.action) ? "queued" : message.action;
+        cooldownReason = null;
+        return { ok: true, job: job() };
+      }
+      return { ok: true };
+    });
+
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("cooldown"));
+    expect(document.getElementById("launch-job").selectedOptions[0].textContent).toContain("#3 launch-1");
+    expect(document.getElementById("launch-cadence").textContent).toContain("5m · rate_limited");
+    expect(document.getElementById("launch-owner").textContent).toBe("another extension");
+    expect(document.getElementById("launch-last").textContent).toContain("provider_http_429");
+    expect(document.getElementById("launch-resume").disabled).toBe(true);
+    expect(document.getElementById("launch-now").disabled).toBe(true);
+
+    cooldownReason = "cadence";
+    document.getElementById("launch-poll").click();
+    await vi.waitFor(() => expect(document.getElementById("launch-resume").disabled).toBe(false));
+    document.getElementById("launch-resume").click();
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("queued"));
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.launch.control",
+      job_id: "launch-1",
+      action: "resume",
+    });
+
+    document.getElementById("launch-inspect").click();
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/c/launch-1",
+      active: true,
+    }));
+
+    document.getElementById("launch-now").click();
+    await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.launch.control",
+      job_id: "launch-1",
+      action: "launch_now",
+    }));
+  });
+
+  it("requires confirmation before requeueing an unknown submission", async () => {
+    const job = {
+      job_id: "launch-unknown",
+      queue_position: 1,
+      status: "submission_unknown",
+      phase: "unknown_submit_outcome",
+      cadence_minutes: 1,
+      tab_id: 42,
+      attachments: [],
+      events: [{ kind: "submission_unknown", detail: "acknowledgement lost" }],
+    };
+    globalThis.confirm = vi.fn(() => true);
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") {
+        return { ok: true, launchEnabled: true, ownerInstanceId: "this-instance", jobs: [job] };
+      }
+      return { ok: true, job: { ...job, status: "queued" } };
+    });
+
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("submission_unknown"));
+    expect(document.getElementById("launch-retry").disabled).toBe(true);
+    expect(document.getElementById("launch-confirm-absent").disabled).toBe(false);
+    document.getElementById("launch-inspect").click();
+    await vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true }));
+
+    document.getElementById("launch-confirm-absent").click();
+    await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.launch.control",
+      job_id: "launch-unknown",
+      action: "confirm_no_conversation",
+      inspection_receipt: "operator inspected ChatGPT and confirmed that no matching conversation exists",
+    }));
+  });
+
+  it("distinguishes an empty queue from an unavailable receiver", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") return { ok: true, launchEnabled: true, jobs: [] };
+      return { ok: true };
+    });
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("idle"));
+    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
+      expect(document.getElementById(id).disabled).toBe(true);
+    }
+
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.launch.status") throw new Error("receiver offline");
+      return { ok: true };
+    });
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("unavailable"));
   });
 
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {
