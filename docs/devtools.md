@@ -56,6 +56,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
+| `devtools lab probe bead-pr-reconciliation` | After a merge-heavy stretch (a Workflow campaign, a merge train, or just several PRs landed close together), check for beads left open by a PR that referenced them -- catches the reconciliation gap where workers/agents are barred from closing beads themselves and no follow-up pass ever ran (2026-07-14: a 55-bead campaign left every bead open despite ~20 PRs merging clean). Advisory only -- reports candidates for a human/agent AC check, never auto-closes and never fails a gate. |
 | `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
 | `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
@@ -136,6 +137,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
+| `devtools lab probe bead-pr-reconciliation` | Surface beads whose referenced PR merged but the bead is still open. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
