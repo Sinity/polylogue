@@ -1,7 +1,3 @@
-const CHATGPT_HOST = "chatgpt.com";
-const REQUIRED_MODEL = "GPT-5.6 Sol";
-const REQUIRED_EFFORT = "Pro";
-
 export function classifyLaunchFailure(value, retryAfterSeconds = null) {
   const text = String(value?.message || value || "").toLowerCase();
   if (/too many requests|rate.?limit|http_?429/.test(text)) {
@@ -20,9 +16,13 @@ export function classifyLaunchFailure(value, retryAfterSeconds = null) {
 }
 
 export async function executeChatGptLaunchInPage(job, attachments) {
+  // chrome.scripting serializes this function into MAIN world without module
+  // lexical bindings. Keep every submit-boundary constant inside the body.
+  const chatGptHost = "chatgpt.com";
+  const requiredModel = "GPT-5.6 Sol";
+  const requiredEffort = "Pro";
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   const textOf = (node) => String(node?.innerText || node?.textContent || "").trim();
-  const visible = (node) => Boolean(node && (node.offsetWidth || node.offsetHeight || node.getClientRects().length));
   const waitFor = async (predicate, timeoutMs, label) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -55,10 +55,10 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   const checkedModelOptions = () => [...document.querySelectorAll('[role="menuitemradio"][aria-checked="true"]')]
     .map((node) => textOf(node));
 
-  if (location.hostname !== CHATGPT_HOST && !location.hostname.endsWith(`.${CHATGPT_HOST}`)) {
+  if (location.hostname !== chatGptHost && !location.hostname.endsWith(`.${chatGptHost}`)) {
     throw new Error("protocol_wrong_host");
   }
-  if (job.mode !== "chat" || job.model_slug !== "gpt-5-6-pro" || job.model_label !== REQUIRED_MODEL || job.effort_label !== REQUIRED_EFFORT) {
+  if (job.mode !== "chat" || job.model_slug !== "gpt-5-6-pro" || job.model_label !== requiredModel || job.effort_label !== requiredEffort) {
     throw new Error("protocol_job_target_mismatch");
   }
   if (/^\/c\//.test(location.pathname)) throw new Error("protocol_new_chat_required");
@@ -68,19 +68,19 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   if (!mode.chat || mode.work) throw new Error(`preflight_mode_mismatch:chat=${mode.chat}:work=${mode.work}`);
 
   const pill = [...document.querySelectorAll("button")]
-    .find((button) => button.classList.contains("__composer-pill") && textOf(button) === REQUIRED_EFFORT);
+    .find((button) => button.classList.contains("__composer-pill") && textOf(button) === requiredEffort);
   if (!pill) throw new Error("preflight_effort_pill_missing");
   pointerClick(pill);
   const modelMenu = await waitFor(
     () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
-      .find((node) => textOf(node) === REQUIRED_MODEL),
+      .find((node) => textOf(node) === requiredModel),
     5_000,
     "model_menu",
   );
   pointerClick(modelMenu);
-  await waitFor(() => checkedModelOptions().includes(REQUIRED_MODEL), 5_000, "model_submenu");
+  await waitFor(() => checkedModelOptions().includes(requiredModel), 5_000, "model_submenu");
   const checked = checkedModelOptions();
-  if (!checked.includes(REQUIRED_MODEL) || !checked.includes(REQUIRED_EFFORT)) {
+  if (!checked.includes(requiredModel) || !checked.includes(requiredEffort)) {
     throw new Error(`preflight_model_mismatch:${checked.join("|")}`);
   }
   pointerClick(pill);
@@ -112,7 +112,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   // Re-read the mode after upload/composer work: React can rerender the mode
   // switch independently, and this is the final fail-closed submit boundary.
   const finalMode = selectedMode();
-  if (!finalMode.chat || finalMode.work || textOf(pill) !== REQUIRED_EFFORT) {
+  if (!finalMode.chat || finalMode.work || textOf(pill) !== requiredEffort) {
     throw new Error("preflight_changed_before_submit");
   }
   const send = await waitFor(
@@ -138,7 +138,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
     phase: "submitted",
     conversation_id: conversationId,
     conversation_url: location.href,
-    preflight: { mode: "Chat", model: REQUIRED_MODEL, effort: REQUIRED_EFFORT },
+    preflight: { mode: "Chat", model: requiredModel, effort: requiredEffort },
   };
 }
 

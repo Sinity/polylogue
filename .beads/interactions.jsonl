@@ -986,3 +986,4 @@
 {"id":"int-60533491","kind":"field_change","created_at":"2026-07-15T20:10:34.818376572Z","actor":"Sinity","issue_id":"polylogue-t46.8.3","extra":{"field":"priority","new_value":"2","old_value":"3"}}
 {"id":"int-181d9b81","kind":"field_change","created_at":"2026-07-15T20:19:46.700337517Z","actor":"Sinity","issue_id":"polylogue-3gd","extra":{"field":"priority","new_value":"1","old_value":"2"}}
 {"id":"int-5fc6e780","kind":"field_change","created_at":"2026-07-15T20:19:50.541168289Z","actor":"Sinity","issue_id":"polylogue-jnj.8","extra":{"field":"priority","new_value":"2","old_value":"3"}}
+{"id":"int-52fb46f0","kind":"field_change","created_at":"2026-07-15T20:54:50.643870544Z","actor":"Sinity","issue_id":"polylogue-hjpx","extra":{"field":"priority","new_value":"0","old_value":"1"}}

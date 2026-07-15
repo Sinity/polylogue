@@ -438,7 +438,7 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
   const selector = document.getElementById("launch-job");
   if (selector) {
     selector.innerHTML = list.length
-      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`${candidate.status} · ${candidate.phase} · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
+      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`#${candidate.queue_position || "?"} ${candidate.job_id} · ${candidate.status}/${candidate.phase} · ${candidate.cadence_minutes}m · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
       : '<option value="">No jobs yet</option>';
     if (job) selector.value = job.job_id;
   }

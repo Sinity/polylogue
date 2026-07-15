@@ -303,6 +303,7 @@ describe("popup capture", () => {
     let cooldownReason = "rate_limited";
     const job = () => ({
       job_id: "launch-1",
+      queue_position: 3,
       status,
       phase: status === "cooldown" ? "cadence_wait" : status,
       cadence_minutes: 5,
@@ -330,6 +331,7 @@ describe("popup capture", () => {
     });
 
     await vi.waitFor(() => expect(document.getElementById("launch-status").textContent).toBe("cooldown"));
+    expect(document.getElementById("launch-job").selectedOptions[0].textContent).toContain("#3 launch-1");
     expect(document.getElementById("launch-cadence").textContent).toContain("5m · rate_limited");
     expect(document.getElementById("launch-owner").textContent).toBe("another extension");
     expect(document.getElementById("launch-last").textContent).toContain("provider_http_429");

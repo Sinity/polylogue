@@ -47,6 +47,17 @@ describe("ChatGPT Sol Pro launch adapter", () => {
     }, [])).rejects.toThrow("protocol_job_target_mismatch");
   });
 
+  it("survives chrome.scripting MAIN-world serialization without module bindings", async () => {
+    installPage('<div id="prompt-textarea"></div>', "https://chatgpt.com/");
+    const serialized = (0, eval)(`(${executeChatGptLaunchInPage.toString()})`);
+    await expect(serialized({
+      mode: "work",
+      model_slug: "gpt-5-6-pro",
+      model_label: "GPT-5.6 Sol",
+      effort_label: "Pro",
+    }, [])).rejects.toThrow("protocol_job_target_mismatch");
+  });
+
   it("only recognizes a required ZIP produced in an assistant turn", () => {
     installPage(`
       <section data-testid="conversation-turn-1">
