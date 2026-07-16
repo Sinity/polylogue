@@ -27,6 +27,7 @@ from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 FROM_VERSION = 36
 TO_VERSION = 37
@@ -69,6 +70,7 @@ def _schema_objects(conn: sqlite3.Connection) -> dict[str, str]:
 def _canonical_schema_objects() -> dict[str, str]:
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.executescript(INDEX_DDL)
+        ensure_runtime_indexes_sync(conn)
         return _schema_objects(conn)
 
 

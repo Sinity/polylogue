@@ -12,6 +12,7 @@ from polylogue.storage.index_generation import IndexGeneration, IndexGenerationS
 from polylogue.storage.sqlite.archive_tiers import index as index_tier
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 
 def _v36_ddl() -> str:
@@ -40,6 +41,7 @@ def _archive(tmp_path: Path) -> Path:
     active = active_root / "index.db"
     with sqlite3.connect(active) as conn:
         conn.executescript(_v36_ddl())
+        ensure_runtime_indexes_sync(conn)
         conn.execute("PRAGMA user_version = 36")
         conn.execute(
             "INSERT INTO sessions(native_id, origin, content_hash) VALUES ('session', 'chatgpt-export', ?)",
