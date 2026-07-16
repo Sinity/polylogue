@@ -312,7 +312,7 @@ describe("background backfill coordinator", () => {
         provider_session_id: "one",
         turns: [{ role: "assistant", text: "complete output" }],
         attachments: [{
-          name: "polylogue-sol-pro-launch-handoff.zip",
+          name: "assistant-output.zip",
           inline_base64: btoa("PK exact output"),
         }],
       },

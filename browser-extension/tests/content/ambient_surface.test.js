@@ -51,21 +51,9 @@ function missionFixture(overrides = {}) {
         phase: "conversation_capture",
         learned_cadence_ms: 15000,
       }],
-      launch_jobs: [{
-        job_id: "launch-1",
-        job_title: "Ambient mission control implementation",
-        status: "completed",
-        phase: "handoff_validated",
-        cadence_minutes: 5,
-        handoff_validated_at: "2026-07-16T11:59:00Z",
-        handoff_file_count: 12,
-        handoff_size_bytes: 18000,
-      }],
-      launch_owner_instance_id: "executor-this",
       ...overrides.work,
     },
     assertions: { selection_candidate_supported: true, persistence_supported: false },
-    reverse: { enabled: false, default_state: "off", receiver_gate_required: true },
     ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
     ...overrides,
   };
@@ -142,7 +130,7 @@ describe("ambient mission-control surface", () => {
     });
   });
 
-  it("renders the same conversation, receiver, event, queue, assertion, and reverse contracts as the popup", async () => {
+  it("renders the same conversation, receiver, event, queue, and assertion contracts as the popup", async () => {
     const dom = freshDom();
     const { api } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
@@ -153,54 +141,14 @@ describe("ambient mission-control surface", () => {
     expect(text).toContain("Observed; no action needed");
     expect(text).toContain("Archive was already current");
     expect(text).toContain("Queued conversation");
-    expect(text).toContain("Ambient mission control implementation");
-    expect(text).toContain("Handoff: Validated · 12 files · 18000 bytes");
-    expect(text).toContain("Off — safe default");
     expect(text).toContain("Save assertion — receiver API unavailable");
 
     const chip = api.shadow.querySelector(".chip");
     expect(chip.getAttribute("aria-label")).toContain("Safe / current");
-    expect(api.shadow.querySelector(".count").textContent).toBe("3");
+    expect(api.shadow.querySelector(".count").textContent).toBe("2");
     const assertion = [...api.shadow.querySelectorAll("button")]
       .find((button) => button.textContent.includes("Save assertion"));
     expect(assertion.disabled).toBe(true);
-  });
-
-  it("marks cached Sol Pro work as last-known while the paired receiver is offline", async () => {
-    const dom = freshDom();
-    const cachedAt = "2026-07-16T11:55:00Z";
-    const { api } = mount(dom, missionFixture({
-      state: { online: false, error: "receiver_unavailable" },
-      receiver: {
-        health: { status: "unreachable", detail: "receiver offline" },
-        pairing: {
-          state: "offline",
-          receiver_id: "rx-ambient",
-          api_schema: "polylogue-browser-capture/v1",
-          endpoint: "http://127.0.0.1:8765",
-        },
-      },
-      work: {
-        capture_queue: { entries: [] },
-        backfill_jobs: [],
-        launch_jobs: [{
-          job_id: "launch-cached",
-          job_title: "Last-known external analysis",
-          status: "submitted",
-          phase: "provider_running",
-          cadence_minutes: 5,
-        }],
-        launch_source: "cached",
-        launch_cached_at: cachedAt,
-      },
-    }));
-    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
-
-    const text = api.shadow.textContent;
-    expect(text).toContain("Receiver offline");
-    expect(text).toContain("Sol Pro state is last known from");
-    expect(text).toContain("Last-known external analysis");
-    expect(text).toContain("Receiver offline");
   });
 
   it("opens non-modally, closes on Escape, and restores focus to the chip", async () => {

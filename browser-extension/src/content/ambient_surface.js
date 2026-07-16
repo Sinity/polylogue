@@ -256,13 +256,6 @@
     selectionSection.append(selectionText, assertionButton, assertionDetail);
     panel.appendChild(selectionSection);
 
-    const reverseSection = createElement(doc, "section", "section");
-    reverseSection.appendChild(createElement(doc, "h3", "", "Reverse channel"));
-    const reverseStatus = createElement(doc, "div", "item-title", "Off — safe default");
-    const reverseDetail = createElement(doc, "p", "meta", "No page posting is enabled from this surface.");
-    reverseSection.append(reverseStatus, reverseDetail);
-    panel.appendChild(reverseSection);
-
     const actionSection = createElement(doc, "section", "section");
     const actions = createElement(doc, "div", "actions");
     const refreshButton = createElement(doc, "button", "secondary", "Refresh");
@@ -321,19 +314,16 @@
 
     function renderWork(work) {
       clearNode(workList);
-      workMeta.textContent = work?.launch_source === "cached"
-        ? `Sol Pro state is last known from ${work.launch_cached_at ? new Date(work.launch_cached_at).toLocaleString() : "an earlier receiver check"}.`
-        : "";
+      workMeta.textContent = "";
       const items = root.PolylogueOperatorStatus?.normalizeWorkItems?.({
         captureQueue: work?.capture_queue,
+        freshnessQueue: work?.freshness_queue,
         backfillJobs: work?.backfill_jobs,
-        launchJobs: work?.launch_jobs,
-        ownerInstanceId: work?.launch_owner_instance_id,
         receiverOnline: snapshot?.state?.online !== false,
       }) || [];
       count.textContent = items.length > 99 ? "99+" : String(items.length);
       if (!items.length) {
-        workList.appendChild(createElement(doc, "p", "empty", "No queued or running external work."));
+        workList.appendChild(createElement(doc, "p", "empty", "No capture work is waiting."));
         return;
       }
       for (const workItem of items.slice(0, 6)) {
@@ -346,7 +336,6 @@
         item.append(createElement(doc, "p", "meta", `${workItem.phase} · ${workItem.cadence}`));
         item.append(createElement(doc, "p", "meta", `Owner: ${workItem.owner}`));
         if (workItem.cooldown) item.append(createElement(doc, "p", "meta", `Cooldown/backoff: ${workItem.cooldown}`));
-        if (workItem.kind === "sol_pro") item.append(createElement(doc, "p", "meta", `Handoff: ${workItem.handoff}`));
         workList.appendChild(item);
       }
     }
@@ -374,11 +363,6 @@
 
       renderTimeline(nextSnapshot?.timeline);
       renderWork(nextSnapshot?.work);
-      const reverseEnabled = Boolean(nextSnapshot?.reverse?.enabled);
-      reverseStatus.textContent = reverseEnabled ? "Enabled by extension policy" : "Off — safe default";
-      reverseDetail.textContent = reverseEnabled
-        ? "The receiver still requires its independent posting guard. This ambient surface never posts or submits."
-        : "Both receiver and extension posting gates remain off unless an operator enables them elsewhere.";
 
       const assertionRouteAdvertised = Boolean(nextSnapshot?.assertions?.persistence_supported);
       assertionButton.disabled = true;
@@ -410,7 +394,6 @@
           work: {},
           timeline: [],
           assertions: { persistence_supported: false },
-          reverse: { enabled: false },
           ambient: { enabled: true, site_enabled: true },
         });
         return null;

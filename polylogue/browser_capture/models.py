@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -345,340 +344,205 @@ class BrowserCaptureErrorPayload(BaseModel):
     error: str
 
 
-BrowserPostProvider = Literal["chatgpt", "claude"]
-BrowserPostCommandStatus = Literal["pending", "dispatched", "submitted", "failed"]
-BrowserPostAckStatus = Literal["submitted", "failed"]
-
-
-class BrowserPostTarget(BaseModel):
-    """Where a post command should land.
-
-    ``conversation_id`` is the provider-native conversation id of an existing
-    thread, or the literal ``"new"`` to request a fresh thread. ``project_ref``
-    optionally pins the post to a provider project/workspace (e.g. a ChatGPT
-    ``g-p-<project>`` segment).
-    """
-
-    conversation_id: str = "new"
-    project_ref: str | None = None
-
-    @field_validator("conversation_id", mode="before")
-    @classmethod
-    def coerce_conversation_id(cls, value: object) -> str:
-        if value is None:
-            return "new"
-        text = str(value).strip()
-        return text or "new"
-
-
-class BrowserPostCommandRequest(BaseModel):
-    """Operator/agent request to enqueue an outbound post command."""
-
-    provider: BrowserPostProvider
-    target: BrowserPostTarget = Field(default_factory=BrowserPostTarget)
-    text: str
-    command_id: str | None = None
-    submit: bool = False
-
-    @field_validator("text")
-    @classmethod
-    def require_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("post command text must not be empty")
-        return value
-
-
-class BrowserPostCommand(BaseModel):
-    """A persisted outbound post command and its lifecycle state."""
-
-    polylogue_post_command_kind: Literal["browser_post_command"] = "browser_post_command"
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    provider: BrowserPostProvider
-    target: BrowserPostTarget
-    text: str
-    submit: bool = False
-    status: BrowserPostCommandStatus = "pending"
-    created_at: str
-    updated_at: str
-    dispatched_at: str | None = None
-    acked_at: str | None = None
-    detail: str | None = None
-    observed_url: str | None = None
-
-
-class BrowserPostCommandAckRequest(BaseModel):
-    """Extension-reported result for a dispatched post command."""
-
-    status: BrowserPostAckStatus
-    detail: str | None = None
-    observed_url: str | None = None
-
-
-class BrowserPostEnqueuedPayload(BaseModel):
-    """Response to ``POST /v1/post-commands``."""
-
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    provider: BrowserPostProvider
-    status: BrowserPostCommandStatus
-    submit: bool
-
-
-class BrowserPostCommandListPayload(BaseModel):
-    """Response to ``GET /v1/post-commands``."""
-
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    post_enabled: bool
-    commands: list[BrowserPostCommand] = Field(default_factory=list)
-
-
-class BrowserPostAckPayload(BaseModel):
-    """Response to ``POST /v1/post-commands/<command_id>/ack``."""
-
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    status: BrowserPostCommandStatus
-
-
-BrowserLaunchCadenceMinutes = Literal[1, 5, 15, 30, 60]
-BrowserLaunchStatus = Literal[
+BrowserActionProvider = Literal["chatgpt", "claude"]
+BrowserActionOperation = Literal["conversation.create", "conversation.reply"]
+BrowserActionSubmitPolicy = Literal["stage_only", "submit_once"]
+BrowserActionStatus = Literal[
     "queued",
     "leased",
-    "uploading",
-    "submitting",
-    "submission_unknown",
+    "preparing",
+    "submit_intent",
+    "outcome_unknown",
+    "drafted",
     "submitted",
-    "cooldown",
-    "paused",
-    "completed",
+    "blocked",
     "failed",
     "cancelled",
 ]
-BrowserLaunchControlAction = Literal[
-    "pause",
-    "resume",
-    "cancel",
-    "retry",
-    "launch_now",
-    "confirm_no_conversation",
-    "confirm_existing_conversation",
-]
-BrowserLaunchOutcome = Literal[
+BrowserActionOutcome = Literal[
     "progress",
+    "drafted",
     "submitted",
-    "submission_unknown",
-    "soft_warning",
+    "outcome_unknown",
+    "provider_warning",
     "rate_limited",
     "safety_locked",
     "auth_challenge",
     "network_error",
-    "protocol_mismatch",
+    "capability_mismatch",
+    "provider_drift",
     "failed",
 ]
 
 
-class BrowserLaunchAttachmentInput(BaseModel):
-    """One explicit local input copied into receiver-owned job storage."""
+class BrowserActionTarget(BaseModel):
+    """Provider-qualified destination for one browser action."""
 
-    name: str = Field(max_length=255)
-    mime_type: str = Field(default="application/octet-stream", max_length=255)
+    conversation_id: str = Field(default="new", min_length=1, max_length=255)
+    conversation_url: str | None = Field(default=None, max_length=2_048)
+    project_ref: str | None = Field(default=None, max_length=255)
+
+
+class BrowserActionPresentation(BaseModel):
+    """Exact provider UI selection requested at the submit boundary."""
+
+    surface: Literal["chat"] = "chat"
+    model_slug: str = Field(min_length=1, max_length=160)
+    model_label: str = Field(min_length=1, max_length=200)
+    effort_label: str = Field(min_length=1, max_length=120)
+
+
+class BrowserActionAttachmentInput(BaseModel):
+    """One caller-supplied attachment copied into receiver-owned storage."""
+
+    name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(default="application/octet-stream", min_length=1, max_length=255)
     content_base64: str
 
     @field_validator("name")
     @classmethod
     def require_safe_name(cls, value: str) -> str:
-        name = value.strip()
-        if (
-            not name
-            or name in {".", ".."}
-            or "/" in name
-            or "\\" in name
-            or any(ord(character) < 32 or ord(character) == 127 for character in name)
-        ):
-            raise ValueError("launch attachment name must be a basename")
-        return name
-
-    @field_validator("mime_type")
-    @classmethod
-    def require_safe_mime_type(cls, value: str) -> str:
-        mime_type = value.strip()
-        if not mime_type or any(ord(character) < 32 or ord(character) == 127 for character in mime_type):
-            raise ValueError("launch attachment mime type is invalid")
-        return mime_type
+        if value != Path(value).name or value in {".", ".."} or any(ord(char) < 32 for char in value):
+            raise ValueError("browser action attachment name must be a safe basename")
+        return value
 
 
-class BrowserLaunchAttachment(BaseModel):
-    """Receiver-owned immutable attachment metadata exposed to an extension."""
+class BrowserActionAttachment(BaseModel):
+    """Immutable metadata for receiver-copied action input bytes."""
 
     attachment_id: str
     name: str
     mime_type: str
-    size_bytes: int
-    sha256: str
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class BrowserLaunchJobRequest(BaseModel):
-    """Operator-authorized request for one ordinary ChatGPT Chat conversation."""
+class BrowserActionRequest(BaseModel):
+    """Provider-neutral request to draft or submit one conversational turn."""
 
-    job_title: str = Field(min_length=1, max_length=200)
-    scope_prompt: str = Field(max_length=100_000)
-    attachments: list[BrowserLaunchAttachmentInput] = Field(default_factory=list)
-    cadence_minutes: BrowserLaunchCadenceMinutes = 5
-    not_before: str | None = Field(default=None, max_length=64)
-    job_id: str | None = Field(default=None, min_length=1, max_length=160)
-    required_output: Literal["cohesive_handoff_zip"] = "cohesive_handoff_zip"
-    mode: Literal["chat"] = "chat"
-    model_slug: Literal["gpt-5-6-pro"] = "gpt-5-6-pro"
-    model_label: Literal["GPT-5.6 Sol"] = "GPT-5.6 Sol"
-    effort_label: Literal["Pro"] = "Pro"
-    thinking_effort: Literal["standard"] = "standard"
+    action_id: str | None = Field(default=None, min_length=1, max_length=160)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    provider: BrowserActionProvider
+    operation: BrowserActionOperation
+    target: BrowserActionTarget = Field(default_factory=BrowserActionTarget)
+    text: str = Field(min_length=1, max_length=200_000)
+    attachments: list[BrowserActionAttachmentInput] = Field(default_factory=list, max_length=100)
+    presentation: BrowserActionPresentation
+    submit_policy: BrowserActionSubmitPolicy = "stage_only"
 
-    @field_validator("scope_prompt")
+    @field_validator("text")
     @classmethod
-    def require_prompt(cls, value: str) -> str:
+    def require_nonempty_text(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("launch scope must not be empty")
+            raise ValueError("browser action text must not be empty")
         return value
 
-    @field_validator("job_title")
-    @classmethod
-    def require_readable_title(cls, value: str) -> str:
-        title = value.strip()
-        if not title:
-            raise ValueError("launch job title must not be empty")
-        return title
+    @model_validator(mode="after")
+    def target_matches_operation(self) -> BrowserActionRequest:
+        is_new = self.target.conversation_id == "new"
+        if self.operation == "conversation.create" and not is_new:
+            raise ValueError("conversation.create requires target conversation_id=new")
+        if self.operation == "conversation.reply" and is_new:
+            raise ValueError("conversation.reply requires an existing conversation id")
+        return self
 
 
-class BrowserLaunchEvent(BaseModel):
+class BrowserActionReceipt(BaseModel):
+    """Exact provider observation returned after draft or submit."""
+
+    action_id: str
+    receiver_id: str
+    extension_instance_id: str
+    provider_conversation_id: str | None = None
+    provider_conversation_url: str | None = None
+    provider_turn_id: str | None = None
+    observed_surface: str | None = None
+    observed_model: str | None = None
+    observed_effort: str | None = None
+    observed_project_ref: str | None = None
+    provider_evidence: dict[str, object] = Field(default_factory=dict)
+    observed_at: str
+
+
+class BrowserActionEvent(BaseModel):
     event_id: str
     at: str
     kind: str
+    phase: str
     detail: str | None = None
     owner_instance_id: str | None = None
-    phase: str | None = None
-    provider_state: Literal["accepted", "soft_warning", "hard_rate_limit", "safety_lock"] | None = None
-    provider_circuit_streak: int | None = Field(default=None, ge=0)
-    backoff_seconds: int | None = Field(default=None, ge=1)
-    backoff_source: Literal["receiver_adaptive", "provider_retry_after"] | None = None
-    cadence_minutes: BrowserLaunchCadenceMinutes | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
 
 
-class BrowserLaunchJob(BaseModel):
-    """Durable receiver-authoritative launch job and current projection."""
+class BrowserActionIntent(BaseModel):
+    """Durable receiver-authoritative browser action transport state."""
 
-    polylogue_launch_job_kind: Literal["browser_launch_job"] = "browser_launch_job"
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    job_id: str
-    handoff_filename: str = Field(default="polylogue-sol-pro-launch-handoff.zip", min_length=5, max_length=180)
-    prompt_profile: Literal[
-        "polylogue-sol-pro-worker-v1",
-        "polylogue-sol-pro-worker-v2",
-        "polylogue-sol-pro-worker-v3",
-    ] = "polylogue-sol-pro-worker-v1"
-    prompt_prefix_sha256: str
-    job_title: str = "Polylogue project work"
-    scope_prompt: str
-    prompt: str
-    attachments: list[BrowserLaunchAttachment] = Field(default_factory=list)
-    cadence_minutes: BrowserLaunchCadenceMinutes
-    required_output: Literal["cohesive_handoff_zip"] = "cohesive_handoff_zip"
-    mode: Literal["chat"] = "chat"
-    model_slug: Literal["gpt-5-6-pro"] = "gpt-5-6-pro"
-    model_label: Literal["GPT-5.6 Sol"] = "GPT-5.6 Sol"
-    effort_label: Literal["Pro"] = "Pro"
-    thinking_effort: Literal["standard"] = "standard"
-    status: BrowserLaunchStatus = "queued"
+    polylogue_browser_action_kind: Literal["browser_action_intent"] = "browser_action_intent"
+    schema_version: Literal[1] = 1
+    contract: Literal["polylogue.browser-actions/v1"] = "polylogue.browser-actions/v1"
+    capability_version: Literal[1] = 1
+    action_id: str
+    idempotency_key: str
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receiver_id: str
+    provider: BrowserActionProvider
+    operation: BrowserActionOperation
+    target: BrowserActionTarget
+    text: str
+    attachments: list[BrowserActionAttachment] = Field(default_factory=list)
+    presentation: BrowserActionPresentation
+    submit_policy: BrowserActionSubmitPolicy
+    status: BrowserActionStatus = "queued"
     phase: str = "queued"
-    queue_position: int = Field(default=0, ge=0)
     created_at: str
     updated_at: str
-    not_before: str
-    next_attempt_at: str | None = None
-    attempts: int = 0
     lease_owner: str | None = None
-    executor_instance_id: str | None = None
     lease_expires_at: str | None = None
-    cooldown_reason: str | None = None
+    submit_intent_at: str | None = None
     last_error: str | None = None
-    retry_after_seconds: int | None = None
-    manual_priority: bool = False
-    tab_id: int | None = None
-    conversation_id: str | None = None
-    conversation_url: str | None = None
-    handoff_attachment_id: str | None = None
-    handoff_artifact_ref: str | None = None
-    handoff_sha256: str | None = None
-    handoff_size_bytes: int | None = None
-    handoff_file_count: int | None = None
-    handoff_validated_at: str | None = None
-
-    @field_validator("handoff_filename")
-    @classmethod
-    def require_safe_handoff_filename(cls, value: str) -> str:
-        if value != Path(value).name or not value.lower().endswith(".zip"):
-            raise ValueError("launch handoff filename must be a safe ZIP basename")
-        return value
-
-    events: list[BrowserLaunchEvent] = Field(default_factory=list)
-
-
-class BrowserLaunchJobListPayload(BaseModel):
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    jobs: list[BrowserLaunchJob] = Field(default_factory=list)
-
-
-class BrowserLaunchJobEnqueuedPayload(BaseModel):
-    ok: Literal[True] = True
-    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    job: BrowserLaunchJob
-
-
-class BrowserLaunchJobUpdateRequest(BaseModel):
-    owner_instance_id: str = Field(min_length=1, max_length=200)
-    outcome: BrowserLaunchOutcome = "progress"
-    phase: str = Field(min_length=1, max_length=120)
-    detail: str | None = Field(default=None, max_length=2_000)
+    failure_kind: str | None = None
     retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
-    tab_id: int | None = None
-    conversation_id: str | None = Field(default=None, max_length=200)
-    conversation_url: str | None = Field(default=None, max_length=2_048)
-    handoff_attachment_id: str | None = Field(default=None, max_length=255)
+    receipt: BrowserActionReceipt | None = None
+    events: list[BrowserActionEvent] = Field(default_factory=list)
 
 
-class BrowserLaunchJobControlRequest(BaseModel):
-    action: BrowserLaunchControlAction
-    inspection_receipt: str | None = Field(default=None, min_length=1, max_length=2_000)
-    conversation_id: str | None = Field(default=None, min_length=1, max_length=200)
-    conversation_url: str | None = Field(default=None, min_length=1, max_length=2_048)
+class BrowserActionUpdateRequest(BaseModel):
+    owner_instance_id: str = Field(min_length=1, max_length=200)
+    outcome: BrowserActionOutcome = "progress"
+    phase: str = Field(min_length=1, max_length=120)
+    detail: str | None = Field(default=None, max_length=4_000)
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    receipt: BrowserActionReceipt | None = None
 
-    @model_validator(mode="after")
-    def require_inspection_receipt(self) -> BrowserLaunchJobControlRequest:
-        if self.action in {"confirm_no_conversation", "confirm_existing_conversation"} and not self.inspection_receipt:
-            raise ValueError(f"{self.action} requires an inspection receipt")
-        if self.action == "confirm_existing_conversation":
-            if not self.conversation_id or not self.conversation_url:
-                raise ValueError("confirm_existing_conversation requires a conversation id and URL")
-            parsed = urlsplit(self.conversation_url)
-            path_parts = [part for part in parsed.path.split("/") if part]
-            if (
-                parsed.scheme != "https"
-                or parsed.hostname != "chatgpt.com"
-                or len(path_parts) != 2
-                or path_parts[0] != "c"
-                or path_parts[1] != self.conversation_id
-            ):
-                raise ValueError("confirmed conversation must be an exact ChatGPT conversation URL matching its id")
-        return self
+
+class BrowserActionReconcileRequest(BaseModel):
+    """Explicitly bind a provider observation to an uncertain submit."""
+
+    resolution: Literal["submitted", "drafted"]
+    detail: str = Field(min_length=1, max_length=4_000)
+    receipt: BrowserActionReceipt
+
+
+class BrowserActionListPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    actions: list[BrowserActionIntent] = Field(default_factory=list)
+
+
+class BrowserActionPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    action: BrowserActionIntent
+
+
+class BrowserActionCapabilitiesPayload(BaseModel):
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    contract: Literal["polylogue.browser-actions/v1"] = "polylogue.browser-actions/v1"
+    providers: dict[str, object]
 
 
 def looks_like_browser_capture(payload: object) -> bool:
@@ -704,6 +568,24 @@ __all__ = [
     "BrowserBackfillCheckpointPayload",
     "BrowserBackfillCheckpointRecord",
     "BrowserBackfillCheckpointRequest",
+    "BrowserActionAttachment",
+    "BrowserActionAttachmentInput",
+    "BrowserActionCapabilitiesPayload",
+    "BrowserActionEvent",
+    "BrowserActionIntent",
+    "BrowserActionListPayload",
+    "BrowserActionOperation",
+    "BrowserActionOutcome",
+    "BrowserActionPayload",
+    "BrowserActionPresentation",
+    "BrowserActionProvider",
+    "BrowserActionReceipt",
+    "BrowserActionReconcileRequest",
+    "BrowserActionRequest",
+    "BrowserActionStatus",
+    "BrowserActionSubmitPolicy",
+    "BrowserActionTarget",
+    "BrowserActionUpdateRequest",
     "BrowserCaptureAcceptedPayload",
     "BrowserCaptureCapabilitiesPayload",
     "BrowserCaptureArchiveLifecycle",
@@ -717,28 +599,5 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
-    "BrowserLaunchAttachment",
-    "BrowserLaunchAttachmentInput",
-    "BrowserLaunchCadenceMinutes",
-    "BrowserLaunchControlAction",
-    "BrowserLaunchEvent",
-    "BrowserLaunchJob",
-    "BrowserLaunchJobControlRequest",
-    "BrowserLaunchJobEnqueuedPayload",
-    "BrowserLaunchJobListPayload",
-    "BrowserLaunchJobRequest",
-    "BrowserLaunchJobUpdateRequest",
-    "BrowserLaunchOutcome",
-    "BrowserLaunchStatus",
-    "BrowserPostAckPayload",
-    "BrowserPostAckStatus",
-    "BrowserPostCommand",
-    "BrowserPostCommandAckRequest",
-    "BrowserPostCommandListPayload",
-    "BrowserPostCommandRequest",
-    "BrowserPostCommandStatus",
-    "BrowserPostEnqueuedPayload",
-    "BrowserPostProvider",
-    "BrowserPostTarget",
     "looks_like_browser_capture",
 ]

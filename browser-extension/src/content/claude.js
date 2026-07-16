@@ -270,28 +270,4 @@
     capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
-  // Outbound posting (reverse channel). Selectors target the Claude.ai composer
-  // as of 2026-06 and need live re-verification when the UI changes: composer is
-  // the ProseMirror contenteditable div, send is the aria-labelled send button.
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "polylogue.postReply") return false;
-    window.polylogueCapture
-      .postReplyToComposer({
-        command: message.command,
-        composerSelectors: [
-          'div.ProseMirror[contenteditable="true"]',
-          'div[contenteditable="true"].ProseMirror',
-          'fieldset div[contenteditable="true"]'
-        ],
-        sendSelectors: [
-          'button[aria-label="Send message"]',
-          'button[aria-label*="Send" i]'
-        ]
-      })
-      .then(sendResponse)
-      .catch((error) =>
-        sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
-      );
-    return true;
-  });
 })();

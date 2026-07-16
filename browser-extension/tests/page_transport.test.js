@@ -132,7 +132,7 @@ describe("first-party provider page transport", () => {
               content: {
                 content_type: "text",
                 parts: [
-                  "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
+                  "[Download](sandbox:/mnt/data/assistant-output.zip)",
                   { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
                 ],
               },
@@ -162,7 +162,7 @@ describe("first-party provider page transport", () => {
       recipient: "all",
       content: {
         parts: [
-          "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
+          "[Download](sandbox:/mnt/data/assistant-output.zip)",
           { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
         ],
       },

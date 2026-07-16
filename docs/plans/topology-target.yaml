@@ -715,37 +715,29 @@ files:
     loc: 35
     target: polylogue/browser_capture/__init__.py
     owner: stable
+  - path: polylogue/browser_capture/actions.py
+    loc: 557
+    target: polylogue/browser_capture/actions.py
+    owner: stable
   - path: polylogue/browser_capture/identity.py
     loc: 33
     target: polylogue/browser_capture/identity.py
     owner: stable
-  - path: polylogue/browser_capture/launch_jobs.py
-    loc: 896
-    target: polylogue/browser_capture/launch_jobs.py
-    owner: stable
   - path: polylogue/browser_capture/models.py
-    loc: 728
+    loc: 603
     target: polylogue/browser_capture/models.py
     owner: stable
   - path: polylogue/browser_capture/receiver.py
-    loc: 983
+    loc: 825
     target: polylogue/browser_capture/receiver.py
     owner: stable
   - path: polylogue/browser_capture/route_contracts.py
-    loc: 216
+    loc: 199
     target: polylogue/browser_capture/route_contracts.py
     owner: stable
   - path: polylogue/browser_capture/server.py
-    loc: 679
+    loc: 573
     target: polylogue/browser_capture/server.py
-    owner: stable
-  - path: polylogue/browser_capture/sol_pro_prompt.py
-    loc: 60
-    target: polylogue/browser_capture/sol_pro_prompt.py
-    owner: stable
-  - path: polylogue/browser_capture/work_package.py
-    loc: 292
-    target: polylogue/browser_capture/work_package.py
     owner: stable
   - path: polylogue/cli/__init__.py
     loc: 5
@@ -1409,7 +1401,7 @@ files:
     target: polylogue/daemon/blob_integrity_alerts.py
     owner: stable
   - path: polylogue/daemon/browser_capture.py
-    loc: 321
+    loc: 247
     target: polylogue/daemon/browser_capture.py
     owner: stable
   - path: polylogue/daemon/catchup_status.py

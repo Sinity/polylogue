@@ -30,6 +30,8 @@ export default [
         File: "readonly",
         Event: "readonly",
         InputEvent: "readonly",
+        crypto: "readonly",
+        navigator: "readonly",
       },
     },
     rules: {
@@ -38,7 +40,7 @@ export default [
     },
   },
   {
-    files: ["src/background.js", "src/backfill/**/*.js", "src/launch/**/*.js"],
+    files: ["src/background.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js"],
     languageOptions: {
       sourceType: "module",
     },

@@ -17,6 +17,7 @@ The receiver listens on `127.0.0.1:8765` by default and accepts the route contra
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
+- `GET/POST /v1/browser-actions...` -> provider-neutral draft/submit intents, leases, exact receipts, and explicit uncertain-submit reconciliation
 
 `/v1/archive-state` reports archive visibility, not just receiver spool
 presence. Its `state`/`lifecycle` field is one of:
@@ -91,14 +92,18 @@ bodies, or turn arrays. Operators should export this packet when debugging
 capture behavior; it is the intended bridge between visible popup state,
 service-worker requests, receiver responses, and daemon convergence evidence.
 
-The popup refreshes status automatically on open and while it remains open.
-Manual **Check status** is only an explicit refresh. Button controls expose
-busy/success/failure states so a click has visible feedback even when archive
-convergence takes several seconds.
+The popup refreshes status and receiver health automatically on open and while
+it remains open. Capture, retry, focused-tab observation, open-conversation
+convergence, and provider-inventory freshness are background invariants, not
+operator controls. The primary surface exposes only genuine user intents such
+as copying a stable conversation reference or opening its archive view.
+Ordinary webpages and provider landing/project pages without a selected
+conversation are neutral non-conversation states: they never inherit stale
+fidelity metadata or appear as failed/unsupported conversations.
 
 The extension lives in `browser-extension/` and can be loaded unpacked in
 Chrome. It includes ChatGPT and Claude.ai provider adapters, a popup control
-panel, receiver configuration, current-page capture controls, badge state, and
+panel, receiver configuration, automatic current-page capture, badge state, and
 archive-state feedback. Provider adapters should prefer provider-native
 structured page/app payloads where available and use DOM text extraction only
 as a compatibility fallback. The shared envelope carries session, turn,
@@ -154,6 +159,36 @@ It never bypasses anti-bot checks, discovers deleted/ephemeral records absent
 from inventory, or activates an operator foreground tab.
 ChatGPT enumeration traverses all active/starred/archived flag partitions and
 deduplicates repeated native ids in the durable queue.
+
+### Automatic freshness convergence
+
+An archived identity is not treated as proof that a growing provider
+conversation is current. The extension maintains a bounded, durable freshness
+queue keyed by `(provider, native conversation id)`. Open-page transcript
+mutations, observed provider-native detail responses, ChatGPT `new-message`
+service-worker events, newly submitted provider turns, and recurring inventory
+head scans are coalesced as wake hints for that one queue. Hints never mark a
+conversation complete.
+
+The queue acquires the latest native conversation through the same owned,
+inactive first-party transport used by historical backfill, then submits the
+ordinary `BrowserCaptureEnvelope` to the canonical receiver. A user head or a
+non-terminal assistant head remains queued with adaptive polling; a terminal
+assistant head removes the item only if no newer hint arrived while the fetch
+was in flight. Leases recover MV3 worker termination, provider warnings and
+rate/auth failures use typed backoff, and queue size is bounded with an exposed
+drop count.
+
+Every 15 minutes the extension checks one overlapping ChatGPT inventory
+partition head, rotating across active/starred/archived partitions. Exact
+provider `update_time` receipts already acknowledged by the backfill revision
+ledger are skipped; changed or unknown revisions enter the same freshness
+queue at a staggered cadence. An explicit historical backfill remains
+authoritative while it is running, so the standing sweep yields instead of
+competing for provider requests. The popup projects queued identities, leases,
+due times, failures, last sweep state, and per-conversation timeline decisions.
+This safety net is what allows action-owned or user-owned conversation tabs to
+close after submission without making capture depend on those tabs.
 
 ## Dataflow and boundary
 

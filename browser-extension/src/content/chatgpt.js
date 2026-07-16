@@ -18,6 +18,8 @@
   const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
+  let freshnessHintTimer = null;
+  let lastDomFreshnessSignature = null;
 
   function rememberNativeAttempt(diagnostic) {
     nativeAttemptDiagnostics.push({
@@ -36,12 +38,52 @@
     return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
   }
 
+  function queueFreshnessHint(reason, nativeId = conversationIdFromUrl(), delayMs = 5000, providerUpdatedAt = null) {
+    if (!nativeId || !/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return;
+    if (freshnessHintTimer) clearTimeout(freshnessHintTimer);
+    freshnessHintTimer = setTimeout(() => {
+      freshnessHintTimer = null;
+      chrome.runtime.sendMessage({
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: nativeId,
+        provider_updated_at: providerUpdatedAt,
+        reason,
+        delay_ms: delayMs,
+      }).catch(() => undefined);
+    }, 750);
+  }
+
+  function nativeCaptureIdentity(capture) {
+    if (!capture?.ok || typeof capture.body !== "string") return null;
+    try {
+      const payload = JSON.parse(capture.body);
+      const nativeId = String(payload.conversation_id || payload.id || "");
+      if (!/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return null;
+      const updatedAt = typeof payload.update_time === "number"
+        ? new Date(payload.update_time < 10_000_000_000 ? payload.update_time * 1000 : payload.update_time).toISOString()
+        : typeof payload.update_time === "string" ? payload.update_time : null;
+      return { nativeId, updatedAt };
+    } catch {
+      return null;
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
     const data = event.data || {};
     if (data.type !== nativeCaptureMessage || !data.capture) return;
     nativeCaptures.push(data.capture);
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
+    const identity = nativeCaptureIdentity(data.capture);
+    if (identity) queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
+  });
+
+  navigator.serviceWorker?.addEventListener?.("message", (event) => {
+    const data = event.data || {};
+    if (data.type !== "new-message") return;
+    const nativeId = String(data.conversation_id || data.data?.conversation_id || "");
+    queueFreshnessHint("provider_push_new_message", nativeId, 2000);
   });
 
   window.addEventListener("message", (event) => {
@@ -735,6 +777,31 @@
       },
     });
   }
+  if (typeof MutationObserver !== "undefined") {
+    const domFreshnessSignature = () => [...document.querySelectorAll(MESSAGE_CONTAINER_SELECTOR)]
+      .map((node) => {
+        const text = String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+        return [
+          node.getAttribute("data-message-id") || node.getAttribute("data-testid") || "",
+          node.getAttribute("data-message-author-role") || "",
+          text.length,
+          text.slice(-80),
+        ].join(":");
+      })
+      .join("|");
+    lastDomFreshnessSignature = domFreshnessSignature();
+    const freshnessObserver = new MutationObserver(() => {
+      const signature = domFreshnessSignature();
+      if (!signature || signature === lastDomFreshnessSignature) return;
+      lastDomFreshnessSignature = signature;
+      queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+    });
+    freshnessObserver.observe(document.documentElement, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
     capture(
@@ -745,36 +812,6 @@
     )
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
-    return true;
-  });
-  // Outbound posting (reverse channel). Selectors target the ChatGPT composer
-  // as of 2026-06 and need live re-verification when the UI changes: composer is
-  // the ProseMirror contenteditable #prompt-textarea (verified live). The submit
-  // button has NO data-testid="send-button" in the current UI — it is the
-  // composer-submit slot (class composer-submit-button-color); its aria-label is
-  // "Start Voice"/dictation when empty and becomes a send label only with text,
-  // so match by the submit-slot class first, aria-label last.
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "polylogue.postReply") return false;
-    window.polylogueCapture
-      .postReplyToComposer({
-        command: message.command,
-        composerSelectors: [
-          "#prompt-textarea",
-          'div[contenteditable="true"]#prompt-textarea',
-          'form div[contenteditable="true"]'
-        ],
-        sendSelectors: [
-          "button.composer-submit-button-color",
-          'button[data-testid="composer-send-button"]',
-          'button[data-testid="send-button"]',
-          'button[aria-label*="Send" i]'
-        ]
-      })
-      .then(sendResponse)
-      .catch((error) =>
-        sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
-      );
     return true;
   });
 })();

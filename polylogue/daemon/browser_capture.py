@@ -6,37 +6,32 @@ import base64
 import mimetypes
 from pathlib import Path
 from typing import get_args
-from uuid import uuid4
 
 import click
 from pydantic import ValidationError
 
-from polylogue.browser_capture.launch_jobs import (
-    LAUNCH_ATTACHMENT_MAX_BYTES,
-    LAUNCH_JOB_MAX_ATTACHMENT_BYTES,
-    BrowserLaunchConflictError,
-    BrowserLaunchQuotaError,
-    enqueue_launch_job,
-    launch_handoff_filename,
+from polylogue.browser_capture.actions import (
+    ACTION_ATTACHMENT_MAX_BYTES,
+    ACTION_TOTAL_ATTACHMENT_MAX_BYTES,
+    BrowserActionConflictError,
+    BrowserActionQuotaError,
+    enqueue_action,
 )
 from polylogue.browser_capture.models import (
-    BrowserLaunchAttachmentInput,
-    BrowserLaunchJobRequest,
-    BrowserPostCommandRequest,
-    BrowserPostProvider,
-    BrowserPostTarget,
+    BrowserActionAttachmentInput,
+    BrowserActionPresentation,
+    BrowserActionProvider,
+    BrowserActionRequest,
+    BrowserActionTarget,
 )
 from polylogue.browser_capture.receiver import (
     BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
-    BROWSER_POST_ENABLED_ENV,
-    BrowserPostDisabledError,
-    browser_post_enabled,
-    enqueue_post_command,
+    BrowserCaptureReceiverConfig,
     load_or_mint_receiver_token,
+    receiver_identity,
     resolve_receiver_auth_token,
 )
 from polylogue.browser_capture.server import make_server
-from polylogue.browser_capture.work_package import build_sol_pro_work_package
 from polylogue.core.json import dumps
 from polylogue.daemon.status import browser_capture_status_payload
 
@@ -121,8 +116,14 @@ def token_show(rotate: bool, output_format: str | None) -> None:
     click.echo(token)
 
 
-@browser_capture_command.command("post")
-@click.option("--provider", type=click.Choice(list(get_args(BrowserPostProvider))), required=True)
+@browser_capture_command.command("action")
+@click.option("--provider", type=click.Choice(list(get_args(BrowserActionProvider))), required=True)
+@click.option(
+    "--operation",
+    type=click.Choice(["conversation.create", "conversation.reply"]),
+    default=None,
+    help='Defaults to create for conversation-id "new", otherwise reply.',
+)
 @click.option(
     "--conversation-id",
     "conversation_id",
@@ -131,197 +132,116 @@ def token_show(rotate: bool, output_format: str | None) -> None:
     help='Provider-native conversation id, or "new" to request a fresh thread.',
 )
 @click.option("--project-ref", "project_ref", default=None, help="Optional provider project/workspace ref.")
-@click.option("--text", required=True, help="Prompt text to post into the conversation.")
-@click.option("--command-id", "command_id", default=None, help="Optional explicit command id.")
-@click.option(
-    "--submit/--no-submit",
-    "submit",
-    default=False,
-    show_default=True,
-    help="Request the extension to actually click send. Default is a dry-run that fills the composer only.",
-)
-@click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def post_command(
-    provider: str,
-    conversation_id: str,
-    project_ref: str | None,
-    text: str,
-    command_id: str | None,
-    submit: bool,
-    spool_path: Path | None,
-    output_format: str | None,
-) -> None:
-    """Enqueue an outbound post command for the extension to deliver.
-
-    Safety: refused unless POLYLOGUE_BROWSER_POST_ENABLED=1 is set. The command
-    is only queued here; the running receiver serves it to the extension via
-    GET /v1/post-commands.
-    """
-    try:
-        request = BrowserPostCommandRequest(
-            provider=provider,  # type: ignore[arg-type]
-            target=BrowserPostTarget(conversation_id=conversation_id, project_ref=project_ref),
-            text=text,
-            command_id=command_id,
-            submit=submit,
-        )
-        command = enqueue_post_command(request, spool_path=spool_path)
-    except ValidationError as exc:
-        raise click.ClickException(str(exc)) from None
-    except BrowserPostDisabledError:
-        raise click.ClickException(
-            f"Outbound posting is disabled. Set {BROWSER_POST_ENABLED_ENV}=1 to enable (default OFF safety guard)."
-        ) from None
-    payload = command.model_dump(mode="json", exclude_none=True)
-    if output_format == "json":
-        click.echo(dumps(payload))
-        return
-    click.echo(f"Queued post command {command.command_id}")
-    click.echo(f"Provider: {command.provider}  target: {command.target.conversation_id}")
-    click.echo(f"Submit (click send): {command.submit}")
-    if not browser_post_enabled():  # pragma: no cover - defensive; enqueue would have raised
-        click.echo(f"WARNING: {BROWSER_POST_ENABLED_ENV} is not set")
-
-
-@browser_capture_command.command("launch")
+@click.option("--conversation-url", default=None, help="Exact first-party target URL, required for routed projects.")
+@click.option("--text", default=None, help="Message text. Mutually exclusive with --prompt-file.")
 @click.option(
     "--prompt-file",
     type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
-    required=True,
-    help="Narrow per-job scope; the versioned Sol Pro worker contract is prepended automatically.",
+    default=None,
+    help="Read message text from this file.",
 )
 @click.option(
     "--attachment",
     "attachment_paths",
     type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
     multiple=True,
-    help="Targeted project input copied into receiver-owned storage (repeatable).",
+    help="Hash-pinned input file copied into receiver storage; repeatable.",
 )
+@click.option("--model-slug", required=True, help="Exact provider model slug advertised by capabilities.")
+@click.option("--model-label", required=True, help="Exact provider model label visible at submit.")
+@click.option("--effort-label", required=True, help="Exact provider effort label visible at submit.")
+@click.option("--action-id", default=None, help="Optional stable action identity.")
+@click.option("--idempotency-key", default=None, help="Stable caller retry identity.")
 @click.option(
-    "--project-root",
-    type=click.Path(path_type=Path, exists=True, file_okay=False, readable=True),
-    default=None,
-    help="Build one deterministic targeted project pack rooted here.",
-)
-@click.option("--bead", "bead_ids", multiple=True, help="Full Beads record to include in the project pack.")
-@click.option(
-    "--source",
-    "source_paths",
-    type=click.Path(path_type=Path, exists=True, readable=True),
-    multiple=True,
-    help="File or directory to include under REPO/ in the project pack.",
-)
-@click.option(
-    "--verification",
-    "verification_paths",
-    type=click.Path(path_type=Path, exists=True, readable=True),
-    multiple=True,
-    help="Verification receipt to include in the project pack.",
-)
-@click.option(
-    "--full-worktree-fallback",
-    is_flag=True,
-    help="Explicitly include every tracked/unignored worktree file instead of only --source paths.",
-)
-@click.option(
-    "--cadence",
-    "cadence_minutes",
-    type=click.Choice(["1", "5", "15", "30", "60"]),
-    default="5",
+    "--submit/--stage-only",
+    "submit",
+    default=False,
     show_default=True,
+    help="Submit once or only stage a verified provider draft.",
 )
-@click.option("--title", "job_title", required=True, help="Readable mission title shown at the top of the chat.")
-@click.option("--not-before", default=None, help="Optional ISO-8601 earliest launch time.")
-@click.option("--job-id", default=None, help="Optional stable external job id.")
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def launch_command(
-    prompt_file: Path,
+def action_command(
+    provider: str,
+    operation: str | None,
+    conversation_id: str,
+    project_ref: str | None,
+    conversation_url: str | None,
+    text: str | None,
+    prompt_file: Path | None,
     attachment_paths: tuple[Path, ...],
-    project_root: Path | None,
-    bead_ids: tuple[str, ...],
-    source_paths: tuple[Path, ...],
-    verification_paths: tuple[Path, ...],
-    full_worktree_fallback: bool,
-    cadence_minutes: str,
-    job_title: str,
-    not_before: str | None,
-    job_id: str | None,
+    model_slug: str,
+    model_label: str,
+    effort_label: str,
+    action_id: str | None,
+    idempotency_key: str | None,
+    submit: bool,
     spool_path: Path | None,
     output_format: str | None,
 ) -> None:
-    """Queue one ordinary Chat · GPT-5.6 Sol · Pro work package.
-
-    Enqueue is the operator authorization boundary. Every supplied file is
-    copied and hash-pinned before an extension instance can lease the job.
-    """
+    """Enqueue one provider-neutral action for a replaceable extension."""
     try:
-        resolved_job_id = job_id or uuid4().hex
-        resolved_handoff_filename = launch_handoff_filename(resolved_job_id, job_title)
-        scope_prompt = prompt_file.read_text(encoding="utf-8")
-        attachments = []
-        attachment_bytes = 0
+        if (text is None) == (prompt_file is None):
+            raise ValueError("provide exactly one of --text or --prompt-file")
+        resolved_text = text if text is not None else (prompt_file or Path()).read_text(encoding="utf-8")
+        resolved_operation = operation or ("conversation.create" if conversation_id == "new" else "conversation.reply")
+        attachments: list[BrowserActionAttachmentInput] = []
+        total = 0
         for path in attachment_paths:
             size = path.stat().st_size
-            if size > LAUNCH_ATTACHMENT_MAX_BYTES:
-                raise BrowserLaunchQuotaError(
-                    f"launch attachment exceeds {LAUNCH_ATTACHMENT_MAX_BYTES} bytes: {path.name}"
+            if size > ACTION_ATTACHMENT_MAX_BYTES:
+                raise BrowserActionQuotaError(
+                    f"browser action attachment exceeds {ACTION_ATTACHMENT_MAX_BYTES} bytes: {path.name}"
                 )
-            attachment_bytes += size
-            if attachment_bytes > LAUNCH_JOB_MAX_ATTACHMENT_BYTES:
-                raise BrowserLaunchQuotaError(
-                    f"launch attachments exceed {LAUNCH_JOB_MAX_ATTACHMENT_BYTES} total bytes"
+            total += size
+            if total > ACTION_TOTAL_ATTACHMENT_MAX_BYTES:
+                raise BrowserActionQuotaError(
+                    f"browser action attachments exceed {ACTION_TOTAL_ATTACHMENT_MAX_BYTES} total bytes"
                 )
             attachments.append(
-                BrowserLaunchAttachmentInput(
+                BrowserActionAttachmentInput(
                     name=path.name,
                     mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
                     content_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
                 )
             )
-        if project_root is not None:
-            package = build_sol_pro_work_package(
-                repo_root=project_root,
-                job_title=job_title,
-                scope_prompt=scope_prompt,
-                bead_ids=bead_ids,
-                source_paths=source_paths,
-                verification_paths=verification_paths,
-                full_worktree_fallback=full_worktree_fallback,
-                launch_job_id=resolved_job_id,
-                handoff_filename=resolved_handoff_filename,
-            )
-            attachments.insert(
-                0,
-                BrowserLaunchAttachmentInput(
-                    name=package.name,
-                    mime_type="application/gzip",
-                    content_base64=base64.b64encode(package.content).decode("ascii"),
-                ),
-            )
-        elif bead_ids or source_paths or verification_paths or full_worktree_fallback:
-            raise ValueError("--bead/--source/--verification/full fallback require --project-root")
-        job = enqueue_launch_job(
-            BrowserLaunchJobRequest(
-                job_title=job_title,
-                scope_prompt=scope_prompt,
-                attachments=attachments,
-                cadence_minutes=int(cadence_minutes),  # type: ignore[arg-type]
-                not_before=not_before,
-                job_id=resolved_job_id,
+        request = BrowserActionRequest(
+            action_id=action_id,
+            idempotency_key=idempotency_key,
+            provider=provider,  # type: ignore[arg-type]
+            operation=resolved_operation,  # type: ignore[arg-type]
+            target=BrowserActionTarget(
+                conversation_id=conversation_id,
+                conversation_url=conversation_url,
+                project_ref=project_ref,
             ),
+            text=resolved_text,
+            attachments=attachments,
+            presentation=BrowserActionPresentation(
+                model_slug=model_slug,
+                model_label=model_label,
+                effort_label=effort_label,
+            ),
+            submit_policy="submit_once" if submit else "stage_only",
+        )
+        receiver_config = BrowserCaptureReceiverConfig(
+            spool_path=spool_path or BrowserCaptureReceiverConfig.default().spool_path,
+            auth_token=resolve_receiver_auth_token(None, allow_no_auth=False),
+        )
+        action = enqueue_action(
+            request,
+            receiver_id=receiver_identity(receiver_config),
             spool_path=spool_path,
         )
-    except (OSError, ValueError, ValidationError, BrowserLaunchConflictError, BrowserLaunchQuotaError) as exc:
+    except (OSError, ValueError, ValidationError, BrowserActionConflictError, BrowserActionQuotaError) as exc:
         raise click.ClickException(str(exc)) from None
-    payload = job.model_dump(mode="json", exclude_none=True)
+    payload = action.model_dump(mode="json", exclude_none=True)
     if output_format == "json":
         click.echo(dumps(payload))
         return
-    click.echo(f"Queued launch job {job.job_id}")
-    click.echo("Target: Chat · GPT-5.6 Sol · Pro")
-    click.echo(f"Cadence: {job.cadence_minutes}m  attachments: {len(job.attachments)}")
+    click.echo(f"Queued browser action {action.action_id}")
+    click.echo(f"Provider: {action.provider}  operation: {action.operation}")
+    click.echo(f"Target: {action.target.conversation_id}  policy: {action.submit_policy}")
 
 
-__all__ = ["browser_capture_command", "launch_command", "post_command", "serve_command", "status_command"]
+__all__ = ["action_command", "browser_capture_command", "serve_command", "status_command"]

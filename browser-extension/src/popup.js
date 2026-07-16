@@ -1,6 +1,5 @@
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
-const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 // `operator_status.js` is loaded immediately before this file as a classic
 // script.  Its top-level function declarations therefore occupy the shared
 // global lexical environment; binding the same names here makes the browser
@@ -9,9 +8,8 @@ const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
 let currentCaptureQueue = { entries: [], dropped_count: 0 };
+let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
 let currentBackfillJobs = [];
-let currentLaunchJobs = [];
-let currentLaunchContext = { launchEnabled: false, ownerInstanceId: null, launchSource: "live", cachedAt: null };
 let currentReceiverOnline = true;
 
 function hostMatches(hostname, domain) {
@@ -62,76 +60,6 @@ function providerLogo(provider) {
   };
   const safeProvider = provider || "unknown";
   return `<span class="provider-logo ${escapeHtml(safeProvider)}">${escapeHtml(labels[safeProvider] || "?")}</span>`;
-}
-
-function contentScriptFiles(url) {
-  try {
-    const parsed = new URL(url || "");
-    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
-      return [
-        "src/common.js",
-        "src/operator_status.js",
-        "src/content/message_layer.js",
-        "src/content/ambient_surface.js",
-        "src/content/chatgpt.js",
-      ];
-    }
-    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
-      return [
-        "src/common.js",
-        "src/operator_status.js",
-        "src/content/message_layer.js",
-        "src/content/ambient_surface.js",
-        "src/content/claude.js",
-      ];
-    }
-    if (
-      parsed.hostname === "grok.com" ||
-      parsed.hostname.endsWith(".grok.com") ||
-      parsed.hostname === "x.com" ||
-      parsed.hostname.endsWith(".x.com") ||
-      parsed.hostname === "twitter.com" ||
-      parsed.hostname.endsWith(".twitter.com")
-    ) {
-      return ["src/common.js", "src/content/grok.js"];
-    }
-  } catch {
-    return [];
-  }
-  return [];
-}
-
-async function ensureCaptureScripts(tab) {
-  const files = contentScriptFiles(tab?.url || "");
-  if (!tab?.id || !files.length) return false;
-  for (const file of files) {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [file] });
-  }
-  return true;
-}
-
-function timeoutError(label, timeoutMs) {
-  const error = new Error(`${label}_timeout_after_${timeoutMs}ms`);
-  error.name = "PolylogueTimeoutError";
-  return error;
-}
-
-function withTimeout(promise, timeoutMs, label) {
-  let timer = 0;
-  const timeout = new Promise((_resolve, reject) => {
-    timer = window.setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) window.clearTimeout(timer);
-  });
-}
-
-async function capturePageFromTab(tab) {
-  return withTimeout(
-    chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage" }),
-    CAPTURE_MESSAGE_TIMEOUT_MS,
-    "capture_message",
-  );
 }
 
 function setBadge(kind, text) {
@@ -208,8 +136,29 @@ function tabState(tab, ledger) {
 
 function activeConversationState(tab, globalState, ledger) {
   const context = tabState(tab, ledger);
-  if (!globalState?.provider || !globalState?.provider_session_id) return globalState || {};
-  if (!context.provider || !context.sessionId) return globalState || {};
+  const onlineState = {
+    online: globalState?.online ?? true,
+    receiver_pairing: globalState?.receiver_pairing || null,
+    receiver_health: globalState?.receiver_health || null,
+  };
+  if (context.provider === "unknown") return {
+    ...onlineState,
+    provider: null,
+    provider_session_id: null,
+    active_page_state: "unsupported",
+  };
+  if (!context.sessionId) return {
+    ...onlineState,
+    provider: context.provider,
+    provider_session_id: null,
+    active_page_state: "supported_no_session",
+  };
+  if (!globalState?.provider || !globalState?.provider_session_id) return {
+    ...(globalState || {}),
+    provider: context.provider,
+    provider_session_id: context.sessionId,
+    active_page_state: "conversation",
+  };
   if (
     globalState?.provider === context.provider
     && globalState?.provider_session_id === context.sessionId
@@ -217,7 +166,7 @@ function activeConversationState(tab, globalState, ledger) {
 
   const item = context.ledger;
   return {
-    online: globalState?.online ?? true,
+    ...onlineState,
     provider: context.provider,
     provider_session_id: context.sessionId,
     active_page_state: "conversation",
@@ -326,8 +275,8 @@ function renderAssetAcquisition(assetAcquisition) {
 function workKindLabel(kind) {
   return {
     capture_retry: "Capture retry",
+    freshness: "Freshness check",
     backfill: "Backfill",
-    sol_pro: "Sol Pro",
   }[kind] || "Work";
 }
 
@@ -337,29 +286,31 @@ function renderWorkQueue() {
   if (!countNode || !listNode) return;
   const items = operatorStatusApi.normalizeWorkItems({
     captureQueue: currentCaptureQueue,
+    freshnessQueue: currentFreshnessQueue,
     backfillJobs: currentBackfillJobs,
-    launchJobs: currentLaunchJobs,
-    ownerInstanceId: currentLaunchContext.ownerInstanceId,
     receiverOnline: currentReceiverOnline,
   });
   countNode.textContent = String(items.length);
   if (!items.length) {
-    listNode.innerHTML = '<div class="empty">No queued, running, or recently completed external work.</div>';
+    listNode.innerHTML = '<div class="empty">No capture work is waiting.</div>';
     return;
   }
   listNode.innerHTML = items.slice(0, 12).map((item) => {
     const meta = [item.phase, item.cadence, `Owner: ${item.owner}`].filter(Boolean).join(" · ");
     const extra = [
       item.cooldown ? `Cooldown/backoff: ${item.cooldown}` : null,
-      item.kind === "sol_pro" ? `Handoff: ${item.handoff}` : null,
-      item.kind === "sol_pro" && currentLaunchContext.launchSource === "cached"
-        ? `Last known ${relativeAge(currentLaunchContext.cachedAt)} ago`
-        : null,
     ]
       .filter(Boolean)
       .join(" · ");
     return `<div class="work-item"><div class="work-head"><div class="work-title"><span class="work-kind">${escapeHtml(workKindLabel(item.kind))}</span><br>${escapeHtml(item.title)}</div><span class="work-pill ${escapeHtml(item.status.tone)}">${escapeHtml(item.status.label)}</span></div><div class="work-meta">${escapeHtml(meta)}</div>${extra ? `<div class="work-meta">${escapeHtml(extra)}</div>` : ""}</div>`;
   }).join("");
+}
+
+function renderFreshnessQueue(queue) {
+  currentFreshnessQueue = queue && typeof queue === "object"
+    ? queue
+    : { entries: {}, dropped_count: 0 };
+  renderWorkQueue();
 }
 
 function renderQueue(queue) {
@@ -493,108 +444,6 @@ async function refreshBackfills() {
   return result;
 }
 
-let selectedLaunchJobId = null;
-let selectedLaunchJob = null;
-
-function launchEventLabel(job) {
-  const events = Array.isArray(job?.events) ? job.events : [];
-  const latest = events[events.length - 1];
-  if (!latest) return job?.last_error || "--";
-  return [latest.kind, latest.detail].filter(Boolean).join(" · ");
-}
-
-function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null, launchSource = "live", cachedAt = null } = {}) {
-  const statusNode = document.getElementById("launch-status");
-  if (!statusNode) return;
-  const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
-    const active = new Set(["leased", "uploading", "submitting", "submission_unknown", "submitted", "cooldown", "paused"]);
-    return Number(active.has(right.status)) - Number(active.has(left.status))
-      || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
-  }) : [];
-  currentLaunchJobs = list;
-  currentLaunchContext = { launchEnabled: Boolean(launchEnabled), ownerInstanceId, launchSource, cachedAt };
-  renderWorkQueue();
-  const job = list.find((candidate) => candidate.job_id === selectedLaunchJobId) || list[0] || null;
-  selectedLaunchJob = job;
-  selectedLaunchJobId = job?.job_id || null;
-  const enabled = document.getElementById("launch-enabled");
-  if (enabled) enabled.checked = Boolean(launchEnabled);
-  const selector = document.getElementById("launch-job");
-  if (selector) {
-    selector.innerHTML = list.length
-      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`#${candidate.queue_position || "?"} ${candidate.job_title || candidate.job_id} · ${candidate.status}/${candidate.phase} · ${candidate.cadence_minutes}m · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
-      : '<option value="">No jobs yet</option>';
-    if (job) selector.value = job.job_id;
-  }
-  if (!job) {
-    statusNode.textContent = launchEnabled ? "idle" : "disabled";
-    for (const id of ["launch-title", "launch-phase", "launch-cadence", "launch-owner", "launch-handoff", "launch-last"]) {
-      document.getElementById(id).textContent = "--";
-    }
-    for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-existing", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
-      document.getElementById(id).disabled = true;
-    }
-    return;
-  }
-  statusNode.textContent = launchSource === "cached"
-    ? `receiver offline · last known ${job.status}`
-    : launchEnabled ? job.status : `${job.status} · disabled`;
-  document.getElementById("launch-title").textContent = job.job_title || "GPT-5.6 Sol Pro work";
-  document.getElementById("launch-phase").textContent = job.phase || job.status;
-  const due = job.next_attempt_at ? new Date(job.next_attempt_at).toLocaleTimeString() : "now";
-  const remainingMinutes = job.next_attempt_at
-    ? Math.max(0, Math.ceil((Date.parse(job.next_attempt_at) - Date.now()) / 60_000))
-    : 0;
-  const cooldown = job.cooldown_reason
-    ? `${job.cooldown_reason} until ${due}${remainingMinutes ? ` (~${remainingMinutes}m)` : ""}`
-    : `due ${due}`;
-  document.getElementById("launch-cadence").textContent = `${job.cadence_minutes}m cadence · ${cooldown}`;
-  document.getElementById("launch-owner").textContent = job.lease_owner
-    ? (job.lease_owner === ownerInstanceId ? "this extension" : "another extension")
-    : "unclaimed";
-  const normalizedJob = operatorStatusApi.normalizeWorkItems({
-    launchJobs: [job],
-    ownerInstanceId,
-    receiverOnline: currentReceiverOnline,
-  })[0];
-  document.getElementById("launch-handoff").textContent = normalizedJob?.handoff || "Awaiting completion handoff";
-  const lastEvent = launchEventLabel(job);
-  document.getElementById("launch-last").textContent = launchSource === "cached"
-    ? `Last known ${relativeAge(cachedAt)} ago · ${lastEvent}`
-    : lastEvent;
-  const active = ["leased", "uploading", "submitting", "submitted"].includes(job.status);
-  const liveControls = launchSource === "live" && currentReceiverOnline;
-  const protectedCircuit = ["rate_limited", "safety_locked"].includes(job.cooldown_reason)
-    && (!job.next_attempt_at || Date.parse(job.next_attempt_at) > Date.now());
-  document.getElementById("launch-pause").disabled = !liveControls || active || ["completed", "cancelled"].includes(job.status);
-  document.getElementById("launch-now").disabled = !liveControls || active
-    || ["completed", "cancelled"].includes(job.status)
-    || protectedCircuit;
-  document.getElementById("launch-resume").disabled = !liveControls || protectedCircuit
-    || !["paused", "cooldown", "failed"].includes(job.status);
-  document.getElementById("launch-retry").disabled = !liveControls || protectedCircuit
-    || !["paused", "cooldown", "failed"].includes(job.status);
-  document.getElementById("launch-confirm-existing").disabled = !liveControls
-    || job.status !== "submission_unknown"
-    || (!job.tab_id && !job.conversation_url);
-  document.getElementById("launch-confirm-absent").disabled = !liveControls || job.status !== "submission_unknown";
-  document.getElementById("launch-cancel").disabled = !liveControls || ["completed", "cancelled"].includes(job.status);
-  document.getElementById("launch-inspect").disabled = !job.tab_id && !job.conversation_url;
-}
-
-async function refreshLaunches() {
-  try {
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.launch.status" });
-    if (!result?.ok) throw new Error(result?.error || "launch_status_unavailable");
-    renderLaunch(result.jobs || [], result);
-    return result;
-  } catch (error) {
-    renderLaunch([], { launchEnabled: false });
-    document.getElementById("launch-status").textContent = "unavailable";
-    throw error;
-  }
-}
-
 function ambientFallback(raw, tabUrl) {
   const settings = raw && typeof raw === "object" ? raw : {};
   const disabledSites = settings.disabled_sites && typeof settings.disabled_sites === "object"
@@ -626,18 +475,6 @@ function renderAmbient(ambient, tabUrl = "", assertions = null) {
       ? "The receiver advertises assertion persistence, but this extension build has no authenticated write handler. Save remains disabled."
       : "Text selections form a local assertion candidate only. Save stays disabled because the authenticated receiver advertises no assertion route.";
   }
-}
-
-function renderReverse(reverse) {
-  const statusNode = document.getElementById("reverse-status");
-  const detailNode = document.getElementById("reverse-detail");
-  if (!statusNode || !detailNode) return;
-  const enabled = Boolean(reverse?.enabled);
-  statusNode.textContent = enabled ? "Configured on" : "Off — safe default";
-  statusNode.className = `state-chip ${enabled ? "warn" : "neutral"}`;
-  detailNode.textContent = enabled
-    ? "Posting is configured elsewhere, but this ambient surface never posts or submits. The receiver's independent posting gate is still required."
-    : "No ambient control can post or submit. Extension and receiver posting gates remain independently required.";
 }
 
 async function loadMissionSnapshot() {
@@ -708,12 +545,12 @@ async function render() {
     polylogueCaptureLog: [],
     polylogueDebugLog: [],
     polylogueCaptureQueue: { entries: [], dropped_count: 0 },
+    polylogueCaptureFreshnessQueue: { entries: {}, dropped_count: 0 },
     polylogueState: null,
     polylogueSessionLedger: {},
     polylogueConversationTimeline: {},
     polylogueReceiverPairing: null,
     polylogueAmbientSettings: { enabled: true, disabled_sites: {} },
-    postingEnabled: false,
     receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER,
   });
@@ -739,7 +576,11 @@ async function render() {
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
 
-  const state = mission?.state || activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
+  const state = activeConversationState(
+    tab,
+    mission?.state || stored.polylogueState,
+    stored.polylogueSessionLedger || {},
+  );
   const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
   const health = mission?.receiver?.health || state?.receiver_health || (
     state?.error === "unauthorized"
@@ -787,6 +628,12 @@ async function render() {
   }
   const fidelityFlag = document.getElementById("fidelity-flag");
   if (fidelityFlag) fidelityFlag.hidden = !status.partialFidelity;
+  const isConversation = state?.active_page_state === "conversation";
+  for (const node of document.querySelectorAll(".conversation-only")) node.hidden = !isConversation;
+  for (const id of ["copy-ref", "open-polylogue"]) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = !isConversation;
+  }
 
   const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
   const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
@@ -795,22 +642,16 @@ async function render() {
 
   if (mission?.work) {
     renderQueue(mission.work.capture_queue || stored.polylogueCaptureQueue);
+    renderFreshnessQueue(mission.work.freshness_queue || stored.polylogueCaptureFreshnessQueue);
     renderBackfill(mission.work.backfill_jobs || []);
-    renderLaunch(mission.work.launch_jobs || [], {
-      launchEnabled: mission.work.launch_enabled,
-      ownerInstanceId: mission.work.launch_owner_instance_id,
-      launchSource: mission.work.launch_source || "live",
-      cachedAt: mission.work.launch_cached_at || null,
-    });
   } else {
     renderQueue(stored.polylogueCaptureQueue);
+    renderFreshnessQueue(stored.polylogueCaptureFreshnessQueue);
     await refreshBackfills().catch(() => renderBackfill([]));
-    await refreshLaunches().catch(() => undefined);
   }
 
   const ambient = mission?.ambient || ambientFallback(stored.polylogueAmbientSettings, tab?.url || "");
   renderAmbient(ambient, tab?.url || "", mission?.assertions || null);
-  renderReverse(mission?.reverse || { enabled: Boolean(stored.postingEnabled) });
 }
 
 async function refreshStatus(reason = "popup_manual") {
@@ -825,17 +666,6 @@ async function currentActiveConversationState() {
   ]);
   return activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
 }
-
-document.getElementById("check").addEventListener("click", async () => {
-  await withAction("check", () => refreshStatus("popup_manual"), { busy: "Checking" });
-});
-
-document.getElementById("sync-open-tabs").addEventListener("click", async () => {
-  await withAction("sync-open-tabs", async () => {
-    await chrome.runtime.sendMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
-    await render();
-  }, { busy: "Syncing" });
-});
 
 document.getElementById("copy-ref").addEventListener("click", async () => {
   await withAction("copy-ref", async () => {
@@ -859,27 +689,9 @@ document.getElementById("open-polylogue").addEventListener("click", async () => 
   }, { busy: "Opening" });
 });
 
-document.getElementById("check-receiver").addEventListener("click", async () => {
-  try {
-    await withAction(
-      "check-receiver",
-      async () => {
-        const health = await chrome.runtime.sendMessage({ type: "polylogue.checkReceiverHealth" });
-        renderReceiverHealth(health, health?.pairing || null, health?.endpoint || "");
-        if (health?.status === "unreachable") throw new Error(health?.detail || "unreachable");
-      },
-      { busy: "Checking", ok: "Checked", bad: "Unreachable" },
-    );
-  } catch {
-    // withAction already reflects the failure via button state + renderReceiverHealth;
-    // swallow here so a genuinely unreachable receiver doesn't surface as an
-    // unhandled rejection from this click listener.
-  }
-});
-
 document.getElementById("reset-pairing")?.addEventListener("click", async () => {
   const confirmed = typeof globalThis.confirm !== "function"
-    || globalThis.confirm("Reset the trusted receiver identity? Capture, backfill, and Sol Pro queues will be preserved.");
+    || globalThis.confirm("Reset the trusted receiver identity? Capture and backfill queues will be preserved.");
   if (!confirmed) return;
   await withAction("reset-pairing", async () => {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset" });
@@ -920,32 +732,6 @@ document.getElementById("save").addEventListener("click", async () => {
     await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
     await refreshStatus("popup_configure_receiver");
   }, { busy: "Saving", ok: "Saved" });
-});
-
-document.getElementById("capture").addEventListener("click", async () => {
-  await withAction("capture", async () => {
-    const tab = await activeTab();
-    if (!tab?.id) return;
-    let result = await capturePageFromTab(tab).catch((error) => ({
-      ok: false,
-      error: String(error.message || error)
-    }));
-    if (!result?.ok && (await ensureCaptureScripts(tab))) {
-      result = await capturePageFromTab(tab).catch((error) => ({
-        ok: false,
-        error: String(error.message || error)
-      }));
-    }
-    if (!result?.ok) {
-      await chrome.runtime.sendMessage({
-        type: "polylogue.capturePageFailed",
-        error: result?.error || "capture_page_failed",
-        tab_id: tab.id,
-        tab_url: tab.url || tab.pendingUrl || null,
-      });
-    }
-    await render();
-  }, { busy: "Capturing" });
 });
 
 document.getElementById("debug-toggle").addEventListener("click", () => {
@@ -1013,110 +799,6 @@ document.getElementById("backfill-export")?.addEventListener("click", async () =
     link.click();
     globalThis.URL.revokeObjectURL(url);
   }, { busy: "Exporting", ok: "Exported" });
-});
-
-document.getElementById("launch-enabled")?.addEventListener("change", async (event) => {
-  await chrome.runtime.sendMessage({
-    type: "polylogue.launch.configure",
-    launchEnabled: Boolean(event.target.checked),
-  });
-  await refreshLaunches();
-});
-
-document.getElementById("launch-job")?.addEventListener("change", async (event) => {
-  selectedLaunchJobId = event.target.value || null;
-  await refreshLaunches();
-});
-
-document.getElementById("launch-poll")?.addEventListener("click", async () => {
-  await withAction("launch-poll", async () => {
-    await chrome.runtime.sendMessage({ type: "polylogue.launch.poll" });
-    await refreshLaunches();
-  }, { busy: "Checking", ok: "Checked" });
-});
-
-for (const action of ["pause", "resume", "retry", "cancel"]) {
-  document.getElementById(`launch-${action}`)?.addEventListener("click", async () => {
-    if (!selectedLaunchJobId) return;
-    await withAction(`launch-${action}`, async () => {
-      await chrome.runtime.sendMessage({
-        type: "polylogue.launch.control",
-        job_id: selectedLaunchJobId,
-        action,
-      });
-      await refreshLaunches();
-    }, { busy: `${action}…`, ok: action });
-  });
-}
-
-document.getElementById("launch-now")?.addEventListener("click", async () => {
-  if (!selectedLaunchJobId) return;
-  await withAction("launch-now", async () => {
-    await chrome.runtime.sendMessage({
-      type: "polylogue.launch.control",
-      job_id: selectedLaunchJobId,
-      action: "launch_now",
-    });
-    await refreshLaunches();
-  }, { busy: "Prioritizing", ok: "Queued now" });
-});
-
-document.getElementById("launch-inspect")?.addEventListener("click", async () => {
-  if (selectedLaunchJob?.tab_id) {
-    await chrome.tabs.update(selectedLaunchJob.tab_id, { active: true });
-  } else if (selectedLaunchJob?.conversation_url) {
-    await chrome.tabs.create({ url: selectedLaunchJob.conversation_url, active: true });
-  }
-});
-
-function exactChatGptConversation(url) {
-  try {
-    const parsed = new URL(url);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parts.length !== 2 || parts[0] !== "c") {
-      return null;
-    }
-    return { conversation_id: parts[1], conversation_url: parsed.href };
-  } catch {
-    return null;
-  }
-}
-
-document.getElementById("launch-confirm-existing")?.addEventListener("click", async () => {
-  if (!selectedLaunchJobId || selectedLaunchJob?.status !== "submission_unknown") return;
-  const tab = selectedLaunchJob.tab_id ? await chrome.tabs.get(selectedLaunchJob.tab_id) : null;
-  const conversation = exactChatGptConversation(tab?.url || selectedLaunchJob.conversation_url || "");
-  if (!conversation) {
-    await withAction("launch-confirm-existing", async () => {
-      throw new Error("The inspected tab is not an exact ChatGPT conversation URL");
-    });
-    return;
-  }
-  if (!globalThis.confirm(`Confirm that this job submitted conversation ${conversation.conversation_id}.`)) return;
-  await withAction("launch-confirm-existing", async () => {
-    await chrome.runtime.sendMessage({
-      type: "polylogue.launch.control",
-      job_id: selectedLaunchJobId,
-      action: "confirm_existing_conversation",
-      inspection_receipt: "operator inspected the retained launch tab and confirmed the matching ChatGPT conversation exists",
-      ...conversation,
-    });
-    await refreshLaunches();
-  }, { busy: "Recording…", ok: "Submitted" });
-});
-
-document.getElementById("launch-confirm-absent")?.addEventListener("click", async () => {
-  if (!selectedLaunchJobId || selectedLaunchJob?.status !== "submission_unknown") return;
-  if (!globalThis.confirm("Confirm that you inspected ChatGPT and no matching conversation exists. This permits one new submission.")) return;
-  await withAction("launch-confirm-absent", async () => {
-    await chrome.runtime.sendMessage({
-      type: "polylogue.launch.control",
-      job_id: selectedLaunchJobId,
-      action: "confirm_no_conversation",
-      inspection_receipt: "operator inspected ChatGPT and confirmed that no matching conversation exists",
-    });
-    await refreshLaunches();
-  }, { busy: "Recording…", ok: "Requeued" });
 });
 
 void (async () => {
