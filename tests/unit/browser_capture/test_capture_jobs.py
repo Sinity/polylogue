@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
+from typing import Any, cast
 
 from polylogue.browser_capture.capture_jobs import canonical_digest
 from polylogue.browser_capture.server import make_server
@@ -29,7 +30,7 @@ def receiver(tmp_path: Path) -> Iterator[tuple[str, int]]:
         thread.join()
 
 
-def request(host: str, port: int, method: str, path: str, body: dict[str, object]) -> tuple[int, dict[str, object]]:
+def request(host: str, port: int, method: str, path: str, body: dict[str, object]) -> tuple[int, dict[str, Any]]:
     connection = HTTPConnection(host, port)
     connection.request(
         method,
@@ -41,7 +42,7 @@ def request(host: str, port: int, method: str, path: str, body: dict[str, object
     return response.status, json.loads(response.read())
 
 
-def create(host: str, port: int) -> dict[str, object]:
+def create(host: str, port: int) -> dict[str, Any]:
     payload = {"cutoff": "2026-01-01T00:00:00Z"}
     status, body = request(
         host,
@@ -62,12 +63,12 @@ def create(host: str, port: int) -> dict[str, object]:
         },
     )
     assert status == 201
-    return body["job"]  # type: ignore[return-value]
+    return cast(dict[str, Any], body["job"])
 
 
 def adopt(
-    host: str, port: int, job: dict[str, object], request_id: str = "adopt", session_id: str = "profile-a"
-) -> dict[str, object]:
+    host: str, port: int, job: dict[str, Any], request_id: str = "adopt", session_id: str = "profile-a"
+) -> dict[str, Any]:
     status, body = request(
         host,
         port,

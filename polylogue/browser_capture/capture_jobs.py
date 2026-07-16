@@ -15,6 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from polylogue.paths import browser_capture_spool_root
@@ -160,7 +161,7 @@ class CaptureJobRegistry:
             or not hmac.compare_digest(row["account_scope"], normalized_scope)
         ):
             raise CaptureJobError(404, "capture_job_not_found")
-        return row
+        return cast(sqlite3.Row, row)
 
     def create(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
         provider, scope = self._validate_scope(
@@ -253,6 +254,8 @@ class CaptureJobRegistry:
             )
             lease = json.loads(row["lease_json"]) if row["lease_json"] else None
             generation = lease["generation"] if lease else 0
+            if not isinstance(generation, int):
+                raise CaptureJobError(409, "invalid_stored_lease")
             if lease and lease["request_id"] == request_id and lease["session_id"] == session_id:
                 return {"job": self._summary(row), "lease": {**lease, "proof": self._proof(job_id, lease)}}
             if body.get("expected_revision") != row["revision"] or body.get("expected_lease_generation") != generation:
