@@ -8,6 +8,7 @@ comparison rather than relying on file size alone.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -1034,7 +1035,7 @@ class CursorStore:
             )
         )
 
-    def mark_failed(self, path: Path) -> None:
+    def mark_failed(self, path: Path, *, failed_stat: os.stat_result | None = None) -> None:
         """Increment failure count and set exponential backoff.
 
         Read-modify-write against ``failure_count`` happens inside one
@@ -1072,9 +1073,19 @@ class CursorStore:
             failures = record.failure_count + 1
             now = datetime.now(UTC).isoformat()
             if failures >= _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE:
+                # Successful cursors intentionally retain the last accepted
+                # observation while an updated file is merely in backoff.  At
+                # quarantine, however, bind exclusion to the exact failed
+                # observation.  Otherwise the watcher mistakes the unchanged
+                # poison file for a replacement and immediately revives it.
+                observed = failed_stat
                 return replace(
                     record,
                     updated_at=now,
+                    byte_size=observed.st_size if observed is not None else record.byte_size,
+                    st_dev=observed.st_dev if observed is not None else record.st_dev,
+                    st_ino=observed.st_ino if observed is not None else record.st_ino,
+                    mtime_ns=observed.st_mtime_ns if observed is not None else record.mtime_ns,
                     failure_count=failures,
                     next_retry_at=None,
                     excluded=True,

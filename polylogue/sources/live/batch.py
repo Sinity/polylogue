@@ -789,7 +789,7 @@ class LiveBatchProcessor:
                     st_ino=stat.st_ino,
                     mtime_ns=stat.st_mtime_ns,
                 )
-            self._cursor.mark_failed(path)
+            self._cursor.mark_failed(path, failed_stat=stat)
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
                 raise

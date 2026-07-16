@@ -535,6 +535,39 @@ def test_cursor_mark_failed_quarantines_repeated_failures(tmp_path: Path) -> Non
     assert store.list_failed_with_retry() == []
 
 
+def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    path = tmp_path / "capture.json"
+    path.write_text('{"accepted":true}', encoding="utf-8")
+    accepted = path.stat()
+    store.set(
+        path,
+        accepted.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="accepted",
+        st_dev=accepted.st_dev,
+        st_ino=accepted.st_ino,
+        mtime_ns=accepted.st_mtime_ns,
+    )
+
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"malformed":', encoding="utf-8")
+    replacement.replace(path)
+    failed = path.stat()
+    for _ in range(5):
+        store.mark_failed(path, failed_stat=failed)
+
+    record = store.get_record(path)
+    assert record is not None
+    assert record.excluded is True
+    assert (record.byte_size, record.st_dev, record.st_ino, record.mtime_ns) == (
+        failed.st_size,
+        failed.st_dev,
+        failed.st_ino,
+        failed.st_mtime_ns,
+    )
+
+
 def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
