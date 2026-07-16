@@ -1633,6 +1633,10 @@ def _write_attachments(
             ),
         )
         ref_position = _attachment_position(attachment)
+        ref_id = f"{message_id}:attachment:{ref_position}"
+        # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
+        # explicitly so identifiers from an older projection cannot survive.
+        conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
             INSERT OR REPLACE INTO attachment_refs (
@@ -1649,7 +1653,6 @@ def _write_attachments(
                 _sqlite_text(_attachment_caption(attachment)),
             ),
         )
-        ref_id = f"{message_id}:attachment:{ref_position}"
         _write_attachment_native_ids(conn, ref_id, attachment)
     affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
     if not affected_attachment_ids:
@@ -3665,6 +3668,13 @@ def _delete_all_session_message_dependents(
         params,
     )
     conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
+    conn.execute(
+        """
+        DELETE FROM attachment_native_ids
+        WHERE ref_id IN (SELECT ref_id FROM attachment_refs WHERE session_id = ?)
+        """,
+        (session_id,),
+    )
     conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM paste_spans WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
@@ -3698,6 +3708,15 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
         UPDATE session_agent_policies
         SET source_message_id = NULL
         WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        DELETE FROM attachment_native_ids
+        WHERE ref_id IN (
+            SELECT ref_id FROM attachment_refs WHERE message_id IN ({placeholders})
+        )
         """,
         params,
     )

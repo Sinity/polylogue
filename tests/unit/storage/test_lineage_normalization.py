@@ -18,6 +18,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import (
+    ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
@@ -750,9 +751,18 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
                 payload={"summary": "prefix event"},
             ),
         ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="prefix-attachment",
+                message_provider_id="c1",
+                name="prefix.txt",
+                path="prefix.txt",
+            )
+        ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
 
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("BEGIN IMMEDIATE")
@@ -786,6 +796,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
         (child_id,),
     ).fetchall()
     assert [row[0] for row in stored_positions] == [2, 3]
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
     event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
@@ -833,8 +844,17 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
             _msg("c0", Role.USER, "hello", 0),
             _msg("c1", Role.ASSISTANT, "hi there", 1),
         ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="empty-tail-attachment",
+                message_provider_id="c1",
+                name="empty-tail.txt",
+                path="empty-tail.txt",
+            )
+        ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
     row = conn.execute(
         """
         SELECT m.message_id, b.block_id
@@ -871,6 +891,7 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
 
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
     assert (
         conn.execute("SELECT COUNT(*) FROM web_content_constructs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     )
