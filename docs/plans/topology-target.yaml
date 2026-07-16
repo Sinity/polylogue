@@ -2681,6 +2681,10 @@ files:
     loc: 238
     target: polylogue/schemas/privacy_config.py
     owner: stable
+  - path: polylogue/schemas/promotion_audit.py
+    loc: 251
+    target: polylogue/schemas/promotion_audit.py
+    owner: stable
   - path: polylogue/schemas/redaction_report.py
     loc: 235
     target: polylogue/schemas/redaction_report.py
