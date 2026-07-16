@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import sqlite3
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
@@ -52,6 +53,19 @@ def _mix(conn: sqlite3.Connection, table: str, column: str) -> JSONDocument:
         return {}
     rows = conn.execute(f'SELECT "{column}", COUNT(*) FROM "{table}" GROUP BY "{column}" ORDER BY "{column}"')
     return {"<null>" if row[0] is None else str(row[0]): int(row[1]) for row in rows}
+
+
+def _mixes(conn: sqlite3.Connection, table: str, columns: Sequence[str]) -> JSONDocument:
+    available = _columns(conn, table)
+    selected = [column for column in columns if column in available]
+    if not selected:
+        return {}
+    counters = {column: Counter[str]() for column in selected}
+    query = "SELECT " + ", ".join(f'"{column}"' for column in selected) + f' FROM "{table}"'
+    for row in conn.execute(query):
+        for index, column in enumerate(selected):
+            counters[column]["<null>" if row[index] is None else str(row[index])] += 1
+    return {column: dict(sorted(counts.items(), key=lambda item: item[0])) for column, counts in counters.items()}
 
 
 def _sketch_rows(rows: Iterable[Sequence[object]], index: int = 0) -> JSONDocument:
@@ -102,11 +116,23 @@ def _length_distributions(
 ) -> JSONDocument:
     available = _columns(conn, table)
     selected = [column for column in columns if column in available]
+    if not selected:
+        return {}
+    sketches = {column: DistributionSketch() for column in selected}
+    null_counts = dict.fromkeys(selected, 0)
+    expressions = ", ".join(f'length(CAST("{column}" AS BLOB))' for column in selected)
+    for row in conn.execute(f'SELECT {expressions} FROM "{table}"'):
+        for index, column in enumerate(selected):
+            value = row[index]
+            if value is None:
+                null_counts[column] += 1
+            elif isinstance(value, int | float) and not isinstance(value, bool):
+                sketches[column].observe(value)
     payload: JSONDocument = {}
     for column in selected:
-        payload[f"{column}_bytes"] = _sketch_rows(
-            conn.execute(f'SELECT length(CAST("{column}" AS BLOB)) FROM "{table}"')
-        )
+        distribution = sketches[column].to_payload()
+        distribution["null_count"] = null_counts[column]
+        payload[f"{column}_bytes"] = distribution
     return payload
 
 
@@ -119,11 +145,16 @@ def _anonymous_cardinality_profile(
 ) -> JSONDocument:
     if column not in _columns(conn, table):
         return {}
-    non_null = _scalar(conn, f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL')
-    distinct = _scalar(conn, f'SELECT COUNT(DISTINCT "{column}") FROM "{table}" WHERE "{column}" IS NOT NULL')
-    distribution = _sketch_rows(
-        conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL GROUP BY "{column}"')
-    )
+    sketch = DistributionSketch()
+    non_null = 0
+    distinct = 0
+    for row in conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL GROUP BY "{column}"'):
+        count = int(row[0])
+        non_null += count
+        distinct += 1
+        sketch.observe(count)
+    distribution = sketch.to_payload()
+    distribution["null_count"] = 0
     return {
         "non_null_observations": non_null,
         "distinct_values": distinct,
@@ -132,15 +163,33 @@ def _anonymous_cardinality_profile(
     }
 
 
-def _per_session_block_distribution(conn: sqlite3.Connection, block_type: str) -> JSONDocument:
+def _per_session_tool_distributions(conn: sqlite3.Connection) -> tuple[JSONDocument, JSONDocument]:
     if not _table_exists(conn, "blocks"):
-        return {}
-    return _sketch_rows(
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE block_type = ? GROUP BY session_id",
-            (block_type,),
-        )
+        return {}, {}
+    uses = DistributionSketch()
+    results = DistributionSketch()
+    rows = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END)
+        FROM blocks
+        WHERE block_type IN ('tool_use', 'tool_result')
+        GROUP BY session_id
+        """
     )
+    for row in rows:
+        use_count = int(row[0] or 0)
+        result_count = int(row[1] or 0)
+        if use_count:
+            uses.observe(use_count)
+        if result_count:
+            results.observe(result_count)
+    use_payload = uses.to_payload()
+    use_payload["null_count"] = 0
+    result_payload = results.to_payload()
+    result_payload["null_count"] = 0
+    return use_payload, result_payload
 
 
 def _tool_pairing_profile(conn: sqlite3.Connection) -> JSONDocument:
@@ -156,32 +205,23 @@ def _tool_pairing_profile(conn: sqlite3.Connection) -> JSONDocument:
         "unknown_identity_uses": 0,
         "unknown_identity_results": 0,
     }
-    unknown_row = conn.execute(
-        """
-        SELECT
-            SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END)
-        FROM blocks
-        WHERE (tool_id IS NULL OR tool_id = '')
-          AND block_type IN ('tool_use', 'tool_result')
-        """
-    ).fetchone()
-    if unknown_row is not None:
-        totals["unknown_identity_uses"] = int(unknown_row[0] or 0)
-        totals["unknown_identity_results"] = int(unknown_row[1] or 0)
     query = """
         SELECT
+            tool_id,
             SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END) AS uses,
             SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END) AS results
         FROM blocks
-        WHERE tool_id IS NOT NULL AND tool_id != ''
-          AND block_type IN ('tool_use', 'tool_result')
+        WHERE block_type IN ('tool_use', 'tool_result')
         GROUP BY session_id, tool_id
     """
     group_size = DistributionSketch()
     for row in conn.execute(query):
-        uses = int(row[0] or 0)
-        results = int(row[1] or 0)
+        uses = int(row[1] or 0)
+        results = int(row[2] or 0)
+        if row[0] is None or row[0] == "":
+            totals["unknown_identity_uses"] += uses
+            totals["unknown_identity_results"] += results
+            continue
         totals["paired"] += min(uses, results)
         totals["missing_results"] += max(0, uses - results)
         totals["orphan_results"] += max(0, results - uses)
@@ -219,17 +259,21 @@ def _index_profile(conn: sqlite3.Connection) -> JSONDocument:
     session_count = _scalar(conn, "SELECT COUNT(*) FROM sessions")
     message_count = _scalar(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0
     block_count = _scalar(conn, "SELECT COUNT(*) FROM blocks") if _table_exists(conn, "blocks") else 0
+    session_mixes = _mixes(conn, "sessions", ("origin", "session_kind", "branch_type", "title_source"))
+    message_mixes = _mixes(conn, "messages", ("role", "message_type", "material_origin"))
+    block_mixes = _mixes(conn, "blocks", ("block_type",))
+    tool_use_distribution, tool_result_distribution = _per_session_tool_distributions(conn)
     profile: JSONDocument = {
         "row_counts": {"sessions": session_count, "messages": message_count, "blocks": block_count},
         "closed_vocabulary_mix": {
-            "origin": _mix(conn, "sessions", "origin"),
-            "session_kind": _mix(conn, "sessions", "session_kind"),
-            "branch_type": _mix(conn, "sessions", "branch_type"),
-            "title_source": _mix(conn, "sessions", "title_source"),
-            "message_role": _mix(conn, "messages", "role"),
-            "message_type": _mix(conn, "messages", "message_type"),
-            "material_origin": _mix(conn, "messages", "material_origin"),
-            "block_type": _mix(conn, "blocks", "block_type"),
+            "origin": session_mixes.get("origin", {}),
+            "session_kind": session_mixes.get("session_kind", {}),
+            "branch_type": session_mixes.get("branch_type", {}),
+            "title_source": session_mixes.get("title_source", {}),
+            "message_role": message_mixes.get("role", {}),
+            "message_type": message_mixes.get("message_type", {}),
+            "material_origin": message_mixes.get("material_origin", {}),
+            "block_type": block_mixes.get("block_type", {}),
         },
         "session_shapes": _column_distributions(
             conn,
@@ -275,8 +319,8 @@ def _index_profile(conn: sqlite3.Connection) -> JSONDocument:
             "blocks": _length_distributions(conn, "blocks", ("text", "tool_input")),
         },
         "action_shapes": {
-            "tool_uses_per_session": _per_session_block_distribution(conn, "tool_use"),
-            "tool_results_per_session": _per_session_block_distribution(conn, "tool_result"),
+            "tool_uses_per_session": tool_use_distribution,
+            "tool_results_per_session": tool_result_distribution,
             "tool_pairing": _tool_pairing_profile(conn),
         },
         "predicate_selectivity": {
