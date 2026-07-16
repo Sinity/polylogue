@@ -15,6 +15,7 @@ from polylogue.schemas.generation.observation_journal import (
     ObservationJournal,
     recover_stale_journals,
 )
+from polylogue.schemas.generation.replay import MembershipSessionIds
 from polylogue.schemas.observation import SchemaUnit
 
 
@@ -144,6 +145,7 @@ def test_metadata_membership_passes_do_not_decode_sample_payloads(
         assert len(metadata) == 1
         assert metadata[0].unit.schema_samples == []
         assert memberships.sample_count == 2
+        assert list(MembershipSessionIds(memberships)) == ["session-1", "session-1"]
         with pytest.raises(AssertionError, match="decoded a schema sample"):
             list(memberships)
 

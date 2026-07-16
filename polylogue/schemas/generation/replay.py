@@ -59,6 +59,9 @@ class MembershipSessionIds(Collection[str | None]):
     memberships: Sequence[_UnitMembership]
 
     def __iter__(self) -> Iterator[str | None]:
+        if isinstance(self.memberships, JournalMemberships):
+            yield from self.memberships.iter_session_ids()
+            return
         for membership in self.memberships:
             yield from (membership.unit.session_id for _sample in membership.unit.schema_samples)
 
