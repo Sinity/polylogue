@@ -20,6 +20,7 @@ from typing import TypeAlias
 import pytest
 
 from polylogue.archive.viewport.viewports import ContentType
+from polylogue.core.enums import Origin
 from polylogue.sources.providers.chatgpt import (
     ChatGPTAuthor,
     ChatGPTContent,
@@ -311,7 +312,7 @@ class TestClaudeCodeRecordToMeta2:
         meta = record.to_meta()
         assert meta.id == "msg-1"
         assert meta.role == "user"
-        assert meta.provider == "claude-code"
+        assert meta.origin is Origin.CLAUDE_CODE_SESSION
         assert meta.tokens is None
         assert meta.cost is None
 
@@ -392,7 +393,7 @@ class TestClaudeCodeToolUseConversion:
         assert tc.name == "Read"
         assert tc.id == "toolu_123"
         assert tc.input == {"file_path": "/tmp/test.py"}
-        assert tc.provider == "claude-code"
+        assert tc.origin is Origin.CLAUDE_CODE_SESSION
         assert tc.category is not None
 
     def test_to_tool_call_empty_input(self) -> None:
@@ -409,7 +410,7 @@ class TestClaudeCodeThinkingBlockConversion:
         block = ClaudeCodeThinkingBlock(thinking="Let me think about this problem step by step.")
         trace = block.to_reasoning_trace()
         assert trace.text == "Let me think about this problem step by step."
-        assert trace.provider == "claude-code"
+        assert trace.origin is Origin.CLAUDE_CODE_SESSION
         assert trace.raw is not None
 
     def test_to_reasoning_trace_empty(self) -> None:
@@ -580,7 +581,7 @@ class TestGeminiToMetaExtra:
         msg = GeminiMessage(text="hello", role="user")
         meta = msg.to_meta()
         assert meta.role == "user"
-        assert meta.provider == "gemini"
+        assert meta.origin is Origin.AISTUDIO_DRIVE
         assert meta.tokens is None
 
     @pytest.mark.parametrize(
@@ -627,7 +628,7 @@ class TestGeminiExtractReasoningTracesExtra:
         assert len(traces) == 1
         assert traces[0].text == "Thinking..."
         assert traces[0].token_count == 1000
-        assert traces[0].provider == "gemini"
+        assert traces[0].origin is Origin.AISTUDIO_DRIVE
 
     def test_extract_reasoning_traces_thought_without_text(self) -> None:
         """Regression: isThought=True but no text should not create trace."""
@@ -823,7 +824,7 @@ class TestClaudeAIChatMessageToMeta:
         msg = ClaudeAIChatMessage(uuid=uuid_, text="hi", sender=sender, created_at=created_at)
         meta = msg.to_meta()
         assert meta.id == uuid_
-        assert meta.provider == "claude-ai"
+        assert meta.origin is Origin.CLAUDE_AI_EXPORT
         if sender == "human":
             assert meta.role == "user"
         else:

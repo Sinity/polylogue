@@ -162,7 +162,7 @@ Commands:
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.
-    continue  Print or execute the harness command that resumes a session.
+    continue  Resume a session or compile successor context as JSON.
     Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
     command.
 
@@ -476,10 +476,11 @@ Commands:
 ```text
 Usage: polylogue continue [OPTIONS]
 
-  Print or explicitly execute a verified harness-resume command.
+  Print or execute a resume command, or emit successor context as JSON.
 
   Examples:
       polylogue find id:abc then continue
+      polylogue find id:abc then continue --format json
       polylogue find id:abc then continue --exec
       polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
@@ -500,8 +501,8 @@ Options:
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
   --json                          Shortcut for --format json.
-  -f, --format [json]             Reserved for compatibility; continue emits a
-                                  shell command only.
+  -f, --format [json]             Emit the successor ContextImage as JSON
+                                  instead of a resume command.
   --help                          Show this message and exit.
 ```
 

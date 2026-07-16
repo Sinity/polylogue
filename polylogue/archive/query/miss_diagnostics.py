@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Literal, cast
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument
-from polylogue.core.sources import provider_from_origin
 from polylogue.readiness import VerifyStatus, get_readiness
 
 logger = logging.getLogger(__name__)
@@ -111,38 +110,32 @@ def _int_value(value: object) -> int | None:
     return None
 
 
-def _providers(stats: object | None) -> dict[str, int]:
+def _origins(stats: object | None) -> dict[str, int]:
     value = getattr(stats, "origins", None)
     if not isinstance(value, Mapping):
         value = getattr(stats, "providers", None)
     if not isinstance(value, Mapping):
         return {}
-    providers: dict[str, int] = {}
+    origins: dict[str, int] = {}
     for key, count in value.items():
         parsed = _int_value(count)
         if parsed is not None:
-            providers[str(key)] = parsed
-    return providers
+            origins[str(key)] = parsed
+    return origins
 
 
-def _selected_provider(selection: SessionQuerySpec) -> str | None:
-    # These internal joins remain keyed by provider token; project the single
-    # selected origin back to its canonical provider.
+def _selected_origin(selection: SessionQuerySpec) -> str | None:
     if len(selection.origins) != 1 or selection.excluded_origins:
         return None
-    return provider_from_origin(Origin.from_string(selection.origins[0])).value
+    return Origin.from_string(selection.origins[0]).value
 
 
 def _archive_count_for_selection(stats: object | None, selection: SessionQuerySpec) -> int | None:
     if len(selection.origins) == 1 and not selection.excluded_origins:
-        providers = _providers(stats)
-        if providers:
+        origins = _origins(stats)
+        if origins:
             origin = selection.origins[0]
-            if origin in providers:
-                return providers.get(origin, 0)
-            provider = _selected_provider(selection)
-            if provider is not None:
-                return providers.get(provider, 0)
+            return origins.get(origin, 0)
     return _int_value(getattr(stats, "total_sessions", None))
 
 
@@ -237,7 +230,7 @@ async def diagnose_query_miss(
     raw_count_result = await _call_optional(
         repository,
         "get_raw_session_count",
-        provider=_selected_provider(selection),
+        origin=_selected_origin(selection),
     )
     raw_count = _int_value(raw_count_result)
 

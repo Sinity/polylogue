@@ -567,7 +567,7 @@ class TestCheckCommand:
         assert result_verbose.exit_code == 0
 
         # Verbose output should contain provider names for breakdowns
-        # (provider_distribution check always has breakdown)
+        # (origin_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
     def test_check_detects_empty_sessions(self, db_path: Path, cli_runner: CliRunner) -> None:

@@ -18,7 +18,7 @@ class AggregateMessageStats(TypedDict):
     distinct_attachments: int
     min_sort_key: float | None
     max_sort_key: float | None
-    providers: dict[str, int]
+    origins: dict[str, int]
 
 
 class _MessageAggregate(TypedDict):
@@ -29,13 +29,13 @@ class _MessageAggregate(TypedDict):
     words_approx: int
 
 
-class ProviderSessionCountRow(TypedDict):
-    source_name: str
+class OriginSessionCountRow(TypedDict):
+    origin: str
     session_count: int
 
 
-class ProviderMetricsRow(TypedDict):
-    source_name: str
+class OriginMetricsRow(TypedDict):
+    origin: str
     session_count: int
     message_count: int
     user_message_count: int
@@ -52,13 +52,13 @@ class ProviderMetricsRow(TypedDict):
 
 __all__ = [
     "AggregateMessageStats",
-    "ProviderSessionCountRow",
-    "ProviderMetricsRow",
+    "OriginSessionCountRow",
+    "OriginMetricsRow",
     "aggregate_message_stats",
     "upsert_session_stats",
     "get_stats_by",
-    "get_provider_session_counts",
-    "get_provider_metrics_rows",
+    "get_origin_session_counts",
+    "get_origin_metrics_rows",
 ]
 
 
@@ -125,7 +125,7 @@ async def aggregate_message_stats(
                 "distinct_attachments": 0,
                 "min_sort_key": None,
                 "max_sort_key": None,
-                "providers": {},
+                "origins": {},
             }
         placeholders = ",".join("?" * len(session_ids))
         cid_params = tuple(session_ids)
@@ -140,15 +140,15 @@ async def aggregate_message_stats(
             )
         ).fetchone()
 
-        prov_rows = await (
+        origin_rows = await (
             await conn.execute(
-                f"SELECT origin AS source_name, COUNT(*) as cnt FROM sessions "
+                f"SELECT origin, COUNT(*) as cnt FROM sessions "
                 f"WHERE session_id IN ({placeholders}) "
                 "GROUP BY origin ORDER BY cnt DESC",
                 cid_params,
             )
         ).fetchall()
-        providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
+        origins = {str(r["origin"]): _row_int(r, "cnt") for r in origin_rows}
 
         att_row = await (
             await conn.execute(
@@ -165,7 +165,7 @@ async def aggregate_message_stats(
             "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
             "min_sort_key": _row_float(date_row, "min_sk"),
             "max_sort_key": _row_float(date_row, "max_sk"),
-            "providers": providers,
+            "origins": origins,
         }
 
     stats_row = await (
@@ -206,12 +206,10 @@ async def aggregate_message_stats(
         )
     ).fetchone()
 
-    prov_rows = await (
-        await conn.execute(
-            "SELECT origin AS source_name, COUNT(*) as cnt FROM sessions GROUP BY origin ORDER BY cnt DESC"
-        )
+    origin_rows = await (
+        await conn.execute("SELECT origin, COUNT(*) as cnt FROM sessions GROUP BY origin ORDER BY cnt DESC")
     ).fetchall()
-    providers = {str(r["source_name"]): _row_int(r, "cnt") for r in prov_rows}
+    origins = {str(r["origin"]): _row_int(r, "cnt") for r in origin_rows}
 
     att_row = await (
         await conn.execute("""
@@ -228,7 +226,7 @@ async def aggregate_message_stats(
         "distinct_attachments": _row_int(att_row, "distinct_attachment_count"),
         "min_sort_key": _row_float(date_row, "min_sk"),
         "max_sort_key": _row_float(date_row, "max_sk"),
-        "providers": providers,
+        "origins": origins,
     }
 
 
@@ -350,13 +348,13 @@ async def get_stats_by(conn: aiosqlite.Connection, group_by: str = "origin") -> 
     return {row["period"]: row["count"] for row in rows}
 
 
-async def get_provider_session_counts(
+async def get_origin_session_counts(
     conn: aiosqlite.Connection,
-) -> list[ProviderSessionCountRow]:
-    """Return session counts per provider — fast, sessions-table-only query."""
+) -> list[OriginSessionCountRow]:
+    """Return session counts per origin — fast, sessions-table-only query."""
     cursor = await conn.execute(
         """
-        SELECT origin AS source_name, COUNT(*) AS session_count
+        SELECT origin, COUNT(*) AS session_count
         FROM sessions
         GROUP BY origin
         ORDER BY session_count DESC
@@ -365,20 +363,20 @@ async def get_provider_session_counts(
     rows = await cursor.fetchall()
     return [
         {
-            "source_name": str(row["source_name"] or "unknown"),
+            "origin": str(row["origin"] or "unknown-export"),
             "session_count": int(row["session_count"] or 0),
         }
         for row in rows
     ]
 
 
-async def get_provider_metrics_rows(
+async def get_origin_metrics_rows(
     conn: aiosqlite.Connection,
-) -> list[ProviderMetricsRow]:
+) -> list[OriginMetricsRow]:
     """Return raw origin aggregation rows for analytics reporting."""
     stats_sql = """
         SELECT
-            origin AS source_name,
+            origin,
             COUNT(*) AS session_count,
             COALESCE(SUM(message_count), 0) AS message_count,
             COALESCE(SUM(tool_use_count), 0) AS tool_use_count,
@@ -397,9 +395,9 @@ async def get_provider_metrics_rows(
     stats_cursor = await conn.execute(stats_sql)
     stats_rows = await stats_cursor.fetchall()
 
-    merged: list[ProviderMetricsRow] = []
+    merged: list[OriginMetricsRow] = []
     for row in stats_rows:
-        provider = str(row["source_name"] or "unknown")
+        origin = str(row["origin"] or "unknown-export")
         role_split = {
             "user_message_count": int(row["user_message_count"] or 0),
             "authored_user_message_count": int(row["authored_user_message_count"] or 0),
@@ -410,7 +408,7 @@ async def get_provider_metrics_rows(
         }
         merged.append(
             {
-                "source_name": provider,
+                "origin": origin,
                 "session_count": int(row["session_count"] or 0),
                 "message_count": int(row["message_count"] or 0),
                 "user_message_count": role_split["user_message_count"],

@@ -116,7 +116,7 @@ from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.insights.readiness import (
-    InsightProviderCoverage,
+    InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
@@ -238,7 +238,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
-from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
+from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_from_row,
     context_snapshot_relation_sql,
@@ -311,7 +311,6 @@ class ArchiveSessionSummary:
     session_id: str
     native_id: str
     origin: str
-    provider: Provider
     title: str | None
     created_at: str | None
     updated_at: str | None
@@ -356,7 +355,6 @@ class ArchiveSessionSearchHit:
     block_id: str
     message_id: str
     origin: str
-    provider: Provider
     title: str | None
     snippet: str
 
@@ -2495,6 +2493,8 @@ class ArchiveStore:
         parsed_by_raw_id: dict[str, ParsedSession],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "revision_replay",
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state."""
         if not plan.accepted_raw_ids:
@@ -2540,17 +2540,21 @@ class ArchiveStore:
             else:
                 accepted_frontier = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     parsed_by_raw_id[raw_id],
                     raw_id=raw_id,
                     source_index=0 if position == 0 else -1,
-                    stage_timings_s=None,
-                    stage_timing_prefix="revision_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_ids.add(result.session_id)
             if len(session_ids) != 1:
                 raise RuntimeError("one logical revision chain produced multiple session ids")
@@ -2632,6 +2636,8 @@ class ArchiveStore:
         projections_by_raw_id: dict[str, SessionRevisionProjection],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "membership_replay",
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision."""
         conn = self._ensure_source_conn()
@@ -2687,17 +2693,21 @@ class ArchiveStore:
                         "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                         (logical_source_key,),
                     )
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     accepted_session,
                     raw_id=accepted_raw_id,
                     source_index=0,
-                    stage_timings_s=None,
-                    stage_timing_prefix="membership_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments,
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_id = result.session_id
                 repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
                 assert_session_fts_exact_sync(self._conn, session_id)
@@ -3139,9 +3149,7 @@ class ArchiveStore:
         return [
             {
                 "raw_id": str(row["raw_id"]),
-                "source_name": provider_from_origin(
-                    Origin.from_string(str(row["origin"])), family_hint=row["capture_mode"]
-                ).value,
+                "origin": str(row["origin"]),
                 "source_path": str(row["source_path"]),
                 "blob_size": int(row["blob_size"] or 0),
                 "acquired_at": _iso_from_ms(row["acquired_at_ms"]),
@@ -3619,7 +3627,7 @@ class ArchiveStore:
         materialized_at = datetime.now(UTC).isoformat()
         for row in [*rows, *no_usage_rows]:
             source_origin = str(row["source_name"] or "unknown")
-            source_name = _provider_for_origin(source_origin).value
+            source_name = source_origin
             model_name = str(row["model_name"]) if row["model_name"] is not None else None
             normalized_model = _normalize_model(model_name) if model_name is not None else None
             if model is not None and model not in {model_name, normalized_model}:
@@ -3699,7 +3707,7 @@ class ArchiveStore:
         for entry in grouped.values():
             rollups.append(
                 CostRollupInsight(
-                    source_name=entry.source_name,
+                    origin=entry.source_name,
                     model_name=entry.model_name,
                     normalized_model=entry.normalized_model,
                     session_count=entry.session_count,
@@ -3940,7 +3948,7 @@ class ArchiveStore:
                 UsageTimelineInsight(
                     group_by=group_by,
                     bucket=item.bucket,
-                    source_name=item.source_name,
+                    origin=item.source_name,
                     model_name=timeline_model_name,
                     normalized_model=_normalize_model(timeline_model_name) if timeline_model_name else None,
                     session_count=max(cost_session_count, item.event_session_count),
@@ -3958,7 +3966,7 @@ class ArchiveStore:
                     ),
                 )
             )
-        rows.sort(key=lambda insight: (insight.bucket, insight.source_name or "", insight.normalized_model or ""))
+        rows.sort(key=lambda insight: (insight.bucket, insight.origin or "", insight.normalized_model or ""))
         if offset:
             rows = rows[offset:]
         if limit is not None:
@@ -4611,7 +4619,7 @@ class ArchiveStore:
         builder_request = _tool_usage_builder_query(request)
         insight = build_tool_usage_insight(
             rows=self._tool_usage_rows(request),
-            coverage_rows=self._tool_usage_provider_coverage_rows(),
+            coverage_rows=self._tool_usage_origin_coverage_rows(),
             query=builder_request,
             materialized_at=datetime.now(UTC).isoformat(),
         )
@@ -4668,7 +4676,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4752,7 +4759,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "unknown"),
@@ -4860,10 +4866,10 @@ class ArchiveStore:
 
         rows = fetch_rows()
 
-        buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
-        sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
+        buckets: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        sessions: dict[tuple[str, str, str, str], set[str]] = {}
         for row in rows:
-            source_name = str(row["origin"] or "unknown-export")
+            origin = str(row["origin"] or "unknown-export")
             public_row = {
                 "tool_name": str(row["tool_name"] or ""),
                 "match_detail": str(row["match_detail"] or ""),
@@ -4880,8 +4886,7 @@ class ArchiveStore:
                 detail_patterns=cleaned_details,
             )
             key = (
-                source_name,
-                str(row["origin"] or "unknown-export"),
+                origin,
                 normalized_tool_name,
                 str(row["action_kind"] or "tool_use"),
                 evidence_kind,
@@ -4889,8 +4894,7 @@ class ArchiveStore:
             bucket = buckets.setdefault(
                 key,
                 {
-                    "source_name": source_name,
-                    "origin": str(row["origin"] or "unknown-export"),
+                    "origin": origin,
                     "normalized_tool_name": normalized_tool_name,
                     "action_kind": str(row["action_kind"] or "tool_use"),
                     "evidence_kind": evidence_kind,
@@ -4980,7 +4984,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"] or "unknown-export"),
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": f"{family}/command-detail",
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -5055,7 +5058,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"] or "unknown-export"),
+                "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
                 "call_count": int(row["call_count"] or 0),
@@ -5068,7 +5071,7 @@ class ArchiveStore:
             for row in rows
         ]
 
-    def _tool_usage_provider_coverage_rows(self) -> list[ToolUsageProviderCoverageRow]:
+    def _tool_usage_origin_coverage_rows(self) -> list[ToolUsageOriginCoverageRow]:
         rows = self._conn.execute(
             """
             SELECT
@@ -5088,7 +5091,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": str(row["origin"] or "unknown-export"),
+                "origin": str(row["origin"] or "unknown-export"),
                 "session_count": int(row["session_count"] or 0),
                 "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -6092,7 +6095,7 @@ class ArchiveStore:
         since_ms = _epoch_ms_from_iso(request.since)
         until_ms = _epoch_ms_from_iso(request.until)
         total_sessions = self.count_sessions(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
-        coverage = self._archive_session_provider_coverage(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
+        coverage = self._archive_session_origin_coverage(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
         entries = tuple(
             entry
             for name in selected
@@ -6101,7 +6104,7 @@ class ArchiveStore:
                     name,
                     status=status,
                     total_sessions=total_sessions,
-                    provider_coverage=coverage,
+                    origin_coverage=coverage,
                     origin=origin_filter,
                     since_ms=since_ms,
                     until_ms=until_ms,
@@ -6144,9 +6147,9 @@ class ArchiveStore:
             return list(self.list_session_tag_rollup_insights(limit=limit))
         return []
 
-    def _archive_session_provider_coverage(
+    def _archive_session_origin_coverage(
         self, *, origin: str | None, since_ms: int | None, until_ms: int | None
-    ) -> tuple[InsightProviderCoverage, ...]:
+    ) -> tuple[InsightOriginCoverage, ...]:
         """Per-provider session distribution for insight readiness coverage."""
         where: list[str] = []
         params: list[object] = []
@@ -6166,8 +6169,8 @@ class ArchiveStore:
             tuple(params),
         ).fetchall()
         return tuple(
-            InsightProviderCoverage(
-                source_name=_provider_for_origin(str(row["origin"])).value,
+            InsightOriginCoverage(
+                origin=str(row["origin"]),
                 row_count=int(row["n"]),
                 min_time=_iso_from_ms(row["lo"]),
                 max_time=_iso_from_ms(row["hi"]),
@@ -6303,7 +6306,7 @@ class ArchiveStore:
         *,
         status: SessionInsightStatusSnapshot,
         total_sessions: int,
-        provider_coverage: tuple[InsightProviderCoverage, ...] = (),
+        origin_coverage: tuple[InsightOriginCoverage, ...] = (),
         origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -6450,7 +6453,7 @@ class ArchiveStore:
             fallback_reason_counts=fallback_reason_counts,
             storage_artifacts=artifacts,
             ready_flags=ready_flags,
-            provider_coverage=provider_coverage,
+            origin_coverage=origin_coverage,
             version_coverage=version_coverage,
             evidence=_archive_insight_readiness_evidence(
                 row_count=row_count,
@@ -6708,7 +6711,6 @@ class ArchiveStore:
                 block_id=str(row["block_id"]),
                 message_id=str(row["message_id"]),
                 origin=str(row["origin"]),
-                provider=_provider_for_origin(str(row["origin"])),
                 title=str(row["title"]) if row["title"] is not None else None,
                 snippet=_highlight_search_snippet(
                     str(row["snippet"] or ""),
@@ -7039,7 +7041,6 @@ class ArchiveStore:
                     block_id=str(row["block_id"] or message_id),
                     message_id=message_id,
                     origin=str(row["origin"]),
-                    provider=_provider_for_origin(str(row["origin"])),
                     title=str(row["title"]) if row["title"] is not None else None,
                     snippet=text[:160],
                 )
@@ -8534,7 +8535,6 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         session_id=str(row["session_id"]),
         native_id=str(row["native_id"]),
         origin=origin,
-        provider=_provider_for_origin(origin),
         title=str(row["title"]) if row["title"] is not None else None,
         session_kind=str(row["session_kind"] or "standard"),
         created_at=_iso_from_ms(row["created_at_ms"]),
@@ -8907,7 +8907,7 @@ def _work_event_insight_from_archive_row(
     return SessionWorkEventInsight(
         event_id=event.event_id,
         session_id=event.session_id,
-        source_name=_provider_for_origin(origin).value,
+        origin=origin,
         event_index=event.position,
         provenance=_archive_provenance(materialization),
         inference_provenance=_archive_inference_provenance(materialization),
@@ -8934,7 +8934,7 @@ def _phase_insight_from_archive_row(
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
         session_id=phase.session_id,
-        source_name=_provider_for_origin(origin).value,
+        origin=origin,
         phase_index=phase.position,
         provenance=_archive_provenance(materialization),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
@@ -9066,7 +9066,7 @@ def _session_profile_insight_from_archive_row(
         semantic_tier=tier,
         session_id=session_id,
         logical_session_id=str(row["root_session_id"] or session_id),
-        source_name=_provider_for_origin(str(row["origin"])).value,
+        origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         evidence=evidence,
@@ -9098,7 +9098,7 @@ def _session_profile_record_from_archive_row(
     inference = components.inference
     enrichment = components.enrichment if components.enrichment is not None else SessionEnrichmentPayload()
     logical_session_id = str(row["root_session_id"] or session_id)
-    source_name = _provider_for_origin(str(row["origin"])).value
+    source_name = str(row["origin"])
     title = str(row["title"]) if row["title"] is not None else None
     workflow_shape = str(row["workflow_shape"] or "unknown")
     materialized_at = _iso_from_ms(materialization.materialized_at_ms) or "1970-01-01T00:00:00Z"
@@ -9167,7 +9167,7 @@ def _session_profile_record_from_archive_row(
 
 def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite3.Row) -> SessionCostInsight:
     session_id = str(row["session_id"])
-    source_name = _provider_for_origin(str(row["origin"])).value
+    source_name = str(row["origin"])
     total_usd = float(row["cost_usd"] or 0.0)
     cost_provenance = str(row["cost_provenance"] or "")
     try:
@@ -9200,12 +9200,12 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     return SessionCostInsight(
         session_id=session_id,
-        source_name=source_name,
+        origin=source_name,
         title=str(row["title"]) if row["title"] is not None else None,
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),
         estimate=CostEstimatePayload(
-            source_name=source_name,
+            origin=source_name,
             session_id=session_id,
             model_name=model_name,
             normalized_model=normalized_model,
@@ -10849,7 +10849,7 @@ def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsigh
     return ArchiveCoverageInsight(
         group_by="origin",
         bucket=origin,
-        source_name=origin,
+        origin=origin,
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,
@@ -11110,7 +11110,7 @@ def _session_latency_profile_from_archive_row(
     materialization = _read_archive_materialization(conn, "latency", session_id)
     return SessionLatencyProfileInsight(
         session_id=session_id,
-        source_name=_provider_for_origin(str(row["origin"])).value,
+        origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         latency=SessionLatencyProfilePayload(
@@ -11402,21 +11402,6 @@ def _month_bucket_end_ms(bucket: str) -> int:
     month = int(month_text)
     end = datetime(year + 1, 1, 1, tzinfo=UTC) if month == 12 else datetime(year, month + 1, 1, tzinfo=UTC)
     return int(end.timestamp() * 1000)
-
-
-def _provider_for_origin(origin: str) -> Provider:
-    """Return the canonical provider-wire ``Provider`` for an origin token.
-
-    Delegates to the already-imported :func:`provider_from_origin` (the
-    single source of truth in ``core/sources.py``) instead of a hand-copied
-    dict -- this module, ``archive/query/archive_execution.py``, and
-    ``storage/sqlite/queries/tool_usage.py`` used to each hand-roll the same
-    table independently and had already silently drifted (all three were
-    missing a ``grok-export`` entry). See ``archive_execution.py``'s
-    ``_provider_for_origin`` docstring for the full rationale
-    (polylogue-9e5.8).
-    """
-    return provider_from_origin(Origin.from_string(origin))
 
 
 __all__ = ["ArchiveFileQueryRow", "ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]

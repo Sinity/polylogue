@@ -19,14 +19,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.sources.live.convergence_debt_retry import (
     convergence_debt_retry_at,
     retry_is_future,
     same_pending_convergence_debt,
 )
 from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
-from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt as add_archive_convergence_debt,
@@ -226,7 +226,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         parser_fingerprint=_optional_str(row[6]),
         content_fingerprint=_optional_str(row[7]),
         tail_hash=_optional_str(row[8]),
-        source_name=_provider_for_origin(origin).value if origin else None,
+        source_name=provider_from_origin(Origin.from_string(origin)).value if origin else None,
         st_dev=_optional_int(row[9]),
         st_ino=_optional_int(row[10]),
         mtime_ns=_optional_int(row[11]),

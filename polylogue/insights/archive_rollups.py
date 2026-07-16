@@ -14,7 +14,6 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.archive.session.repo_identity import normalize_repo_names
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.archive import (
     ArchiveInsightProvenance,
     CostRollupInsight,
@@ -234,7 +233,7 @@ def aggregate_cost_rollup_insights(
 
     grouped: dict[tuple[str, str | None], list[SessionCostInsight]] = {}
     for insight in session_costs:
-        key = (insight.source_name, insight.estimate.normalized_model or insight.estimate.model_name)
+        key = (insight.origin, insight.estimate.normalized_model or insight.estimate.model_name)
         grouped.setdefault(key, []).append(insight)
 
     rollups: list[CostRollupInsight] = []
@@ -283,7 +282,7 @@ def aggregate_cost_rollup_insights(
         per_model_breakdown = tuple(sorted(per_model_acc.values(), key=lambda entry: entry.total_usd, reverse=True))
         rollups.append(
             CostRollupInsight(
-                source_name=source_name,
+                origin=source_name,
                 model_name=model_names.most_common(1)[0][0] if model_names else None,
                 normalized_model=normalized_model,
                 session_count=len(insights),
@@ -340,7 +339,7 @@ def aggregate_session_profiles_by_dimension(
         elif group_by == "terminal_state":
             key = (profile.inference.terminal_state if profile.inference else None) or "unknown"
         elif group_by == "origin":
-            key = source_name_to_origin(profile.source_name)
+            key = profile.origin
         else:
             raise ValueError(f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.")
         buckets[key] = buckets.get(key, 0) + 1
@@ -366,7 +365,7 @@ def workflow_shape_distribution_buckets(
         shape = inference.workflow_shape if inference is not None else "unknown"
         keys: tuple[str, ...]
         if group_by == "origin":
-            keys = (source_name_to_origin(profile.source_name),)
+            keys = (profile.origin,)
         elif group_by == "project":
             paths = evidence.cwd_paths if evidence is not None else ()
             keys = tuple(paths) or ("unattributed",)
@@ -407,7 +406,7 @@ def abandoned_session_items(
         items.append(
             {
                 "session_id": profile.session_id,
-                "origin": source_name_to_origin(profile.source_name),
+                "origin": profile.origin,
                 "title": profile.title,
                 "terminal_state": state,
                 "terminal_state_confidence": (inference.terminal_state_confidence if inference is not None else 0.0),

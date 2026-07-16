@@ -9,7 +9,6 @@ import aiosqlite
 
 from polylogue.archive.session.documents import ThreadDocument
 from polylogue.archive.session.threads import Thread, ThreadPayload, build_session_threads
-from polylogue.core.sources import source_name_to_origin
 from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import ThreadPayload as ArchivedThreadPayload
 from polylogue.insights.temporal_source import classify_thread_hwm_source
@@ -165,9 +164,7 @@ def _thread_payload_document(record: ThreadRecord) -> ThreadDocument:
         "total_messages": payload.total_messages,
         "total_cost_usd": payload.total_cost_usd,
         "dominant_repo": payload.dominant_repo,
-        "origin_breakdown": {
-            source_name_to_origin(source_name): count for source_name, count in payload.provider_breakdown.items()
-        },
+        "origin_breakdown": dict(payload.origin_breakdown),
         "work_event_breakdown": dict(payload.work_event_breakdown),
         "confidence": payload.confidence,
         "support_level": payload.support_level,

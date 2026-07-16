@@ -534,7 +534,6 @@ async def _tools(
 
     def row_payload(row: dict[str, object]) -> ToolCountRowPayload:
         return ToolCountRowPayload(
-            source_name=str(row["source_name"]),
             origin=str(row["origin"]),
             normalized_tool_name=str(row["normalized_tool_name"]),
             action_kind=str(row["action_kind"]),

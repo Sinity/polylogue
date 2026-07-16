@@ -587,7 +587,8 @@ def _provider_counts(sessions: list[SessionFacts]) -> dict[str, int]:
 
 def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenario, ...]:
     rows = conn.execute("SELECT origin, native_id FROM sessions ORDER BY session_id").fetchall()
-    from polylogue.api.archive import _provider_for_archive_origin
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
 
     scenarios: list[ArchiveScenario] = []
     for row in rows:
@@ -595,7 +596,7 @@ def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenari
         # so the rebuilt scenario re-derives the same archive session id.
         native_id = str(row["native_id"])
         raw_id = native_id[len("ext-") :] if native_id.startswith("ext-") else native_id
-        provider = str(_provider_for_archive_origin(str(row["origin"])))
+        provider = str(provider_from_origin(Origin.from_string(str(row["origin"]))))
         scenarios.append(ArchiveScenario(name=raw_id, provider=provider))
     return tuple(scenarios)
 

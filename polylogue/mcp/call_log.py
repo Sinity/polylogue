@@ -227,14 +227,17 @@ class _McpCallLogDispatcher:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            wake_root: Path | None = None
             try:
-                self._queue.get(timeout=_SCAN_INTERVAL_S)
+                wake_root = self._queue.get(timeout=_SCAN_INTERVAL_S)
             except queue.Empty:
                 pass
             else:
                 self._queue.task_done()
             with self._state_lock:
-                roots = tuple(self._roots.items())
+                roots = list(self._roots.items())
+            if wake_root is not None:
+                roots.sort(key=lambda item: item[0] != wake_root)
             for root, config in roots:
                 with self._state_lock:
                     retry_not_before, _retry_delay = self._retry_state.get(
@@ -249,6 +252,17 @@ class _McpCallLogDispatcher:
                     with self._state_lock:
                         self._delivery_failures += 1
                     logger.exception("MCP call-log outbox scan failed for %s", root)
+                self._forget_idle_root(root, config)
+
+    def _forget_idle_root(self, root: Path, config: PolylogueConfig) -> None:
+        """Release drained roots without racing a concurrent submission."""
+        with self._state_lock:
+            if self._roots.get(root) is not config:
+                return
+            if root.is_dir() and next(root.glob("*.json"), None) is not None:
+                return
+            self._roots.pop(root, None)
+            self._retry_state.pop(root, None)
 
     def _drain_root_once(self, root: Path, config: PolylogueConfig) -> None:
         paths = sorted(root.glob("*.json"))[:_DRAIN_BATCH_SIZE] if root.is_dir() else ()

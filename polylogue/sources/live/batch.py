@@ -820,7 +820,11 @@ class LiveBatchProcessor:
             )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
-        byte_size = stat.st_size if raw_byte_size is None else raw_byte_size
+        # SQLite-backed sources are identified by an acquisition revision,
+        # not by the snapshot file's byte length. Record the live database
+        # observation so a stable source does not look perpetually grown when
+        # the consistent snapshot used a different page count.
+        byte_size = stat.st_size if source_revision is not None or raw_byte_size is None else raw_byte_size
         prefix_proof = self._full_capture_still_matches(
             path,
             stat=stat,
@@ -1716,7 +1720,14 @@ class LiveBatchProcessor:
                                 source_raw_id,
                                 sessions,
                                 acquired_at_ms=acquired_at_ms,
-                                allow_current_complete_raw=is_browser_capture_snapshot,
+                                stage_timings_s=record_timings,
+                                # Once this logical source is governed by a
+                                # membership census, the freshly classified
+                                # complete single-session snapshot must join
+                                # that same candidate set. Admitting only
+                                # browser captures strands ordinary
+                                # bundle→single transitions in quarantine.
+                                allow_current_complete_raw=True,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -1737,6 +1748,8 @@ class LiveBatchProcessor:
                                 plan,
                                 parsed_by_raw_id,
                                 acquired_at_ms=acquired_at_ms,
+                                stage_timings_s=record_timings,
+                                stage_timing_prefix="full",
                             )
                             record_session_ids.append(session_id)
                             record_session_count = 1
@@ -1760,6 +1773,7 @@ class LiveBatchProcessor:
                             source_raw_id,
                             sessions,
                             acquired_at_ms=acquired_at_ms,
+                            stage_timings_s=record_timings,
                             # This raw passed artifact taxonomy and produced a complete
                             # multi-session census; admit only this caller-owned candidate.
                             allow_current_complete_raw=True,
@@ -1824,6 +1838,7 @@ class LiveBatchProcessor:
         sessions: list[Any],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
         allow_current_complete_raw: bool = False,
     ) -> tuple[list[str], int, int, bool]:
         session_ids: list[str] = []
@@ -1914,6 +1929,8 @@ class LiveBatchProcessor:
                 member_sessions,
                 projections,
                 acquired_at_ms=acquired_at_ms,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix="full",
             )
             if membership_session_id is not None:
                 session_ids.append(membership_session_id)

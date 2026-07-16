@@ -154,8 +154,9 @@ def test_query_field_catalog_covers_mcp_query_request_fields() -> None:
     from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
     mcp_fields = {field.name for field in fields(MCPSessionQueryRequest)}
+    response_controls = {"include_affordances"}
 
-    assert mcp_fields - mcp_query_field_names() == set()
+    assert mcp_fields - mcp_query_field_names() == response_controls
 
 
 def test_query_field_catalog_marks_storage_stats_join_fields() -> None:

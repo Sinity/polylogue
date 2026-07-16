@@ -239,7 +239,7 @@ class TestProvenancePayload:
         assert result["raw_id"] == raw_id
         assert result["content_hash"]
         assert result["blob_size_bytes"] == len(payload_bytes)
-        assert result["source_name"] == "claude-code-session"
+        assert result["origin"] == "claude-code-session"
         assert result["raw_preview_included"] is False
         assert "raw_preview" not in result
         assert result["raw_preview_cap_bytes"] == RAW_PREVIEW_MAX_BYTES
@@ -263,7 +263,7 @@ class TestProvenancePayload:
         assert result["session_id"] == "codex-session:v1"
         assert result["origin"] == "codex-session"
         assert result["raw_id"] == "raw-v1"
-        assert result["source_name"] == "codex-session"
+        assert result["origin"] == "codex-session"
         assert result["blob_size_bytes"] == len(payload_bytes)
         assert result["validation_status"] == "passed"
         assert result["quarantined"] is False
@@ -290,7 +290,7 @@ class TestProvenancePayload:
         assert result["session_id"] == "codex-session:missing-source"
         assert result["origin"] == "codex-session"
         assert result["raw_id"] == "raw-missing"
-        assert result["source_name"] == "codex-session"
+        assert result["origin"] == "codex-session"
         assert result["source_path_display"] is None
         assert result["blob_size_bytes"] is None
         assert result["quarantined"] is False

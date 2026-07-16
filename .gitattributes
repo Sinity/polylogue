@@ -50,5 +50,9 @@ docs/topology-status.md linguist-generated -diff
 **/representatives/*.json linguist-vendored
 tests/data/** linguist-vendored
 
+# Syrupy indents blank lines inside triple-quoted snapshot values. Those
+# serializer-required spaces are not ordinary trailing-whitespace defects.
+tests/**/__snapshots__/*.ambr whitespace=-blank-at-eol
+
 # Merge strategies
 flake.lock merge=ours

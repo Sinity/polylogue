@@ -1362,7 +1362,7 @@ def read_verb(
     "output_format",
     type=click.Choice(["json"]),
     default=None,
-    help="Reserved for compatibility; continue emits a shell command only.",
+    help="Emit the successor ContextImage as JSON instead of a resume command.",
 )
 @click.pass_context
 def continue_verb(
@@ -1377,11 +1377,12 @@ def continue_verb(
     output_format: str | None,
     execute: bool,
 ) -> None:
-    """Print or explicitly execute a verified harness-resume command.
+    """Print or execute a resume command, or emit successor context as JSON.
 
     \b
     Examples:
         polylogue find id:abc then continue
+        polylogue find id:abc then continue --format json
         polylogue find id:abc then continue --exec
         polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
     """
@@ -1423,6 +1424,32 @@ def continue_verb(
     session = run_coroutine_sync(env.polylogue.get_session(session_id))
     if session is None:
         raise click.UsageError(f"Session not found: {session_id}")
+    if _wants_json(request, output_format=output_format):
+        if execute:
+            raise click.UsageError("continue --exec cannot be combined with --format json.")
+        if destination not in ("terminal", "stdout", "file"):
+            raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
+        if destination == "file" and not out_path:
+            raise click.UsageError("continue --format json --to file requires --out.")
+        from polylogue.context.compiler import ContextSpec
+
+        image = run_coroutine_sync(
+            env.polylogue.compile_context(
+                ContextSpec(
+                    purpose="continue",
+                    seed_refs=(f"session:{session_id}",),
+                    read_views=("messages",),
+                    unit_queries=_successor_context_unit_queries(session_id),
+                )
+            )
+        )
+        _deliver_content(
+            env,
+            serialize_surface_payload(image, exclude_none=True) + "\n",
+            destination=destination,
+            out_path=out_path,
+        )
+        return
     from polylogue.archive.resume_routing import route_resume
 
     route = route_resume(session)
@@ -1433,8 +1460,6 @@ def continue_verb(
         return
     if destination not in ("terminal", "stdout") or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
-    if output_format is not None or request.params.get("output_format") is not None:
-        raise click.UsageError("continue emits a shell command; --format/--json are not supported.")
     click.echo(route.command)
 
 

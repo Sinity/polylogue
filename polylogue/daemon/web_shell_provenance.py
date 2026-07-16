@@ -54,7 +54,7 @@ function renderProvenancePanel(data) {
   html += '<div style="margin-top:6px"><span class="chip ' + quarantineClass + '">' + esc(quarantineLabel) + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Content hash</span><span class="value">' + esc((data.content_hash || '-').substring(0, 16) + (data.content_hash && data.content_hash.length > 16 ? '\u2026' : '')) + '</span></div>';
   html += '<div class="inspector-field"><span class="label">Raw id</span><span class="value">' + esc((data.raw_id || '-').substring(0, 16) + (data.raw_id && data.raw_id.length > 16 ? '\u2026' : '')) + '</span></div>';
-  html += '<div class="inspector-field"><span class="label">Source</span><span class="value">' + esc(data.source_path_display || data.source_name || '-') + '</span></div>';
+  html += '<div class="inspector-field"><span class="label">Source</span><span class="value">' + esc(data.source_path_display || data.origin || '-') + '</span></div>';
   if (data.source_path_contains_home) {
     html += '<div class="inspector-field"><span class="label">Path</span><span class="value">home prefix sanitized</span></div>';
   }

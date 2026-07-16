@@ -7,7 +7,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -285,7 +285,7 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
         "after_readiness": after_readiness,
         "after_triggers": after_triggers,
         "after_fts_rows": after_rows,
-        "search_hits": search_hits,
+        "search_hits": [asdict(hit) for hit in search_hits],
     }
 
 

@@ -153,7 +153,7 @@ def _aggregate_day_summaries(
             total_words=bucket.total_words,
             work_event_breakdown=dict(bucket.work_event_breakdown),
             repos_active=tuple(sorted(bucket.repos_active)),
-            providers=dict(bucket.origins),
+            origins=dict(bucket.origins),
         )
         summaries.append((day, summary, bucket.rows))
     return summaries

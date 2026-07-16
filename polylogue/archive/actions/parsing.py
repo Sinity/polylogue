@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument, json_document
 
 #: Structural pass/fail verdict for a tool_result, or "unknown" when the
@@ -119,7 +119,7 @@ def tool_result_block_outcome(block: Mapping[str, object]) -> ToolResultOutcome:
 
 def build_tool_calls_from_content_blocks(
     *,
-    provider: Provider | str | None,
+    origin: Origin | str | None,
     content_blocks: Sequence[Mapping[str, object]],
 ) -> tuple[ToolCall, ...]:
     """Normalize canonical ToolCall viewports from content blocks."""
@@ -143,8 +143,8 @@ def build_tool_calls_from_content_blocks(
     if not tool_use_blocks:
         return ()
 
-    normalized_provider = (
-        provider if isinstance(provider, Provider) else Provider.from_string(provider) if provider is not None else None
+    normalized_origin = (
+        origin if isinstance(origin, Origin) else Origin.from_string(origin) if origin is not None else None
     )
     calls: list[ToolCall] = []
     for block in tool_use_blocks:
@@ -184,7 +184,7 @@ def build_tool_calls_from_content_blocks(
                 output=tool_result_outputs.get(tool_id) if isinstance(tool_id, str) else None,
                 success=success,
                 category=category,
-                provider=normalized_provider,
+                origin=normalized_origin,
                 raw=raw,
             )
         )

@@ -266,10 +266,20 @@ class WritePathStateMachine(RuleBasedStateMachine):
         assert parent_id is not None
         parent_messages = read_archive_session_envelope(self._conn, parent_id).messages
         branch_point = parent_messages[child.prefix_length - 1].message_id
+        parent_message_positions = {message.message_id: index for index, message in enumerate(parent_messages)}
         self._conn.execute("DELETE FROM messages WHERE message_id = ?", (branch_point,))
         self._conn.commit()
         self._deletion_done = True
-        self._models[parent_id].own_texts.pop(child.prefix_length - 1)
+        deleted_position = child.prefix_length - 1
+        self._models[parent_id].own_texts.pop(deleted_position)
+        for candidate_id, candidate in self._models.items():
+            link = self._conn.execute(
+                "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            linked_position = parent_message_positions.get(link[0]) if link is not None else None
+            if linked_position is not None and linked_position > deleted_position:
+                candidate.prefix_length -= 1
         self._models[parent_id].can_be_parent = False
         for candidate_id, candidate in self._models.items():
             if self._has_ancestor(candidate_id, parent_id):

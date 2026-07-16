@@ -30,7 +30,7 @@ from polylogue.insights.archive_models import (
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.queries.tool_usage import (
-        ToolUsageProviderCoverageRow,
+        ToolUsageOriginCoverageRow,
         ToolUsageRow,
     )
 
@@ -62,7 +62,7 @@ def extract_mcp_server(tool_name: str) -> str | None:
 class ToolUsageEntry(ArchiveInsightModel):
     """One per-(origin, tool, action_kind) rollup row."""
 
-    source_name: str
+    origin: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -77,7 +77,7 @@ class ToolUsageEntry(ArchiveInsightModel):
 class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-origin tool-data coverage signal."""
 
-    source_name: str
+    origin: str
     session_count: int
     action_count: int
     distinct_tool_count: int
@@ -117,7 +117,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
 
     ``origin`` and ``tool`` narrow the returned aggregation entries but
     never the coverage map — coverage gaps are always reported across all
-    providers so a narrowed query never hides them.
+    origins so a narrowed query never hides them.
     """
 
     origin: str | None = None
@@ -131,7 +131,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
 def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     tool_name = row["normalized_tool_name"]
     return ToolUsageEntry(
-        source_name=row["source_name"],
+        origin=row["origin"],
         normalized_tool_name=tool_name,
         action_kind=row["action_kind"],
         call_count=row["call_count"],
@@ -144,10 +144,10 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     )
 
 
-def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverageEntry:
+def _tool_usage_coverage(row: ToolUsageOriginCoverageRow) -> ToolUsageCoverageEntry:
     action_count = row["action_count"]
     return ToolUsageCoverageEntry(
-        source_name=row["source_name"],
+        origin=row["origin"],
         session_count=row["session_count"],
         action_count=action_count,
         distinct_tool_count=row["distinct_tool_count"],
@@ -162,7 +162,7 @@ def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverage
 def build_tool_usage_insight(
     *,
     rows: Sequence[ToolUsageRow],
-    coverage_rows: Sequence[ToolUsageProviderCoverageRow],
+    coverage_rows: Sequence[ToolUsageOriginCoverageRow],
     query: ToolUsageInsightQuery,
     materialized_at: str,
 ) -> ToolUsageInsight:
@@ -177,14 +177,14 @@ def build_tool_usage_insight(
 
     entries = [_tool_usage_entry(row) for row in rows]
     if query.origin:
-        entries = [entry for entry in entries if entry.source_name == query.origin]
+        entries = [entry for entry in entries if entry.origin == query.origin]
     if query.tool:
         entries = [entry for entry in entries if entry.normalized_tool_name == query.tool]
     if query.mcp_server:
         entries = [entry for entry in entries if entry.mcp_server == query.mcp_server]
     if query.action_kind:
         entries = [entry for entry in entries if entry.action_kind == query.action_kind]
-    entries.sort(key=lambda entry: (-entry.call_count, entry.source_name, entry.normalized_tool_name))
+    entries.sort(key=lambda entry: (-entry.call_count, entry.origin, entry.normalized_tool_name))
     if query.offset:
         entries = entries[query.offset :]
     if query.limit is not None:
@@ -194,7 +194,7 @@ def build_tool_usage_insight(
     origins_with_data = sum(1 for entry in coverage if entry.data_available)
     origins_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
     total_calls = sum(entry.call_count for entry in entries)
-    distinct_tools = len({(entry.source_name, entry.normalized_tool_name) for entry in entries})
+    distinct_tools = len({(entry.origin, entry.normalized_tool_name) for entry in entries})
     return ToolUsageInsight(
         entries=tuple(entries),
         origin_coverage=coverage,

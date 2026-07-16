@@ -457,7 +457,6 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
 class ToolCountRowPayload(SurfacePayloadModel):
     """One grouped tool count row from a declared archive projection basis."""
 
-    source_name: str
     origin: str
     normalized_tool_name: str
     action_kind: str

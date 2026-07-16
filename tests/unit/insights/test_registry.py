@@ -29,111 +29,13 @@ from polylogue.insights.registry import (
     _list_preview,
     _nested,
     _nested_ms_as_seconds,
-    _source_name_origin,
     _stringify,
     get_insight_type,
     insight_items_payload,
     list_insight_types,
-    project_origin_payload,
     register,
     render_insight_items,
 )
-
-
-class TestProjectOriginPayload:
-    """Test project_origin_payload() — origin vocabulary projection."""
-
-    def test_scalar_passthrough(self) -> None:
-        """Non-dict/list/tuple scalars pass through unchanged."""
-        assert project_origin_payload(42) == 42
-        assert project_origin_payload("test") == "test"
-        assert project_origin_payload(None) is None
-        assert project_origin_payload(3.14) == 3.14
-
-    def test_list_recursion(self) -> None:
-        """Lists are recursed element-wise."""
-        result_list = project_origin_payload([{"source_name": "claude-code-session"}, 123])
-        assert isinstance(result_list, list)
-        assert len(result_list) == 2
-        assert result_list[0] == {"origin": "claude-code-session"}
-        assert result_list[1] == 123
-
-    def test_tuple_becomes_list(self) -> None:
-        """Tuples become lists after recursion."""
-        result = project_origin_payload(({"provider": "CLAUDE"}, "scalar"))
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_source_name_to_origin(self) -> None:
-        """Dict with source_name key → origin key."""
-        result = project_origin_payload({"source_name": "claude-code-session", "x": 1})
-        assert result == {"origin": "claude-code-session", "x": 1}
-
-    def test_provider_to_origin(self) -> None:
-        """Dict with provider key → origin key."""
-        result = project_origin_payload({"provider": "CLAUDE", "count": 5})
-        assert result == {"origin": "claude-ai-export", "count": 5}
-
-    def test_provider_coverage_projects(self) -> None:
-        """Dict with provider_coverage → origin_coverage, recursed."""
-        result = project_origin_payload({"provider_coverage": {"provider": "CLAUDE", "count": 3}})
-        assert result == {"origin_coverage": {"origin": "claude-ai-export", "count": 3}}
-
-    def test_provider_breakdown_dict_projects(self) -> None:
-        """provider_breakdown dict keys are origin-projected."""
-        result = project_origin_payload({"provider_breakdown": {"CLAUDE": 10, "CHATGPT": 5}})
-        result_dict = cast(dict[str, object], result)
-        breakdown = cast(dict[str, object], result_dict["origin_breakdown"])
-        assert isinstance(breakdown, dict)
-        assert breakdown["claude-ai-export"] == 10
-        assert breakdown["chatgpt-export"] == 5
-
-    def test_origin_breakdown_dict_passes_through(self) -> None:
-        """origin_breakdown keeps canonical origin tokens."""
-        result = project_origin_payload({"origin_breakdown": {"claude-code-session": 10}})
-        assert result == {"origin_breakdown": {"claude-code-session": 10}}
-
-    def test_providers_with_data_to_origins_with_data(self) -> None:
-        """providers_with_data → origins_with_data."""
-        result = project_origin_payload({"providers_with_data": ["CLAUDE", "CHATGPT"]})
-        assert result == {"origins_with_data": ["CLAUDE", "CHATGPT"]}
-
-    def test_providers_without_data_to_origins_without_data(self) -> None:
-        """providers_without_data → origins_without_data."""
-        result = project_origin_payload({"providers_without_data": ["GEMINI"]})
-        assert result == {"origins_without_data": ["GEMINI"]}
-
-    def test_group_by_provider_to_origin(self) -> None:
-        """group_by == 'provider' becomes 'origin'."""
-        result = project_origin_payload({"group_by": "provider", "other": "data"})
-        result_dict = cast(dict[str, object], result)
-        assert result_dict["group_by"] == "origin"
-        assert result_dict["other"] == "data"
-
-    def test_group_by_provider_also_projects_bucket(self) -> None:
-        """When group_by was 'provider', bucket key is also origin-projected."""
-        result = project_origin_payload({"group_by": "provider", "bucket": "CLAUDE"})
-        result_dict = cast(dict[str, object], result)
-        assert result_dict["group_by"] == "origin"
-        assert result_dict["bucket"] == "claude-ai-export"
-
-    def test_group_by_other_values_unchanged(self) -> None:
-        """group_by values other than 'provider' pass through."""
-        result = project_origin_payload({"group_by": "day"})
-        result_dict = cast(dict[str, object], result)
-        assert result_dict["group_by"] == "day"
-
-    def test_nested_recursion(self) -> None:
-        """Nested structures are recursed."""
-        result = project_origin_payload(
-            {
-                "data": [{"provider": "CLAUDE"}],
-                "meta": {"source_name": "codex-session"},
-            }
-        )
-        result_dict = cast(dict[str, object], result)
-        assert result_dict["data"] == [{"origin": "claude-ai-export"}]
-        assert result_dict["meta"] == {"origin": "codex-session"}
 
 
 class TestInsightItemsPayload:
@@ -166,7 +68,7 @@ class TestInsightItemsPayload:
         insight = SessionProfileInsight(
             session_id="sess-123",
             logical_session_id="logical-456",
-            source_name="claude-code-session",
+            origin="claude-code-session",
             title="Test Session",
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,
@@ -353,22 +255,8 @@ class TestFieldAccessors:
     def test_id_with_origin_canonical(self) -> None:
         """_id_with_origin() formats 'id [origin]' with canonical origin."""
         accessor = _id_with_origin("session_id")
-        item = self._make_item(session_id="sess-123", source_name="claude-code-session")
+        item = self._make_item(session_id="sess-123", origin="claude-code-session")
         assert accessor(item) == "sess-123 [claude-code-session]"  # type: ignore[arg-type]
-
-    def test_id_with_origin_projected(self) -> None:
-        """_id_with_origin() projects provider to origin."""
-        accessor = _id_with_origin("event_id")
-        item = self._make_item(event_id="ev-456", source_name="CLAUDE")
-        result = accessor(item)  # type: ignore[arg-type]
-        assert "ev-456" in result
-        assert "claude-ai-export" in result
-
-    def test_id_with_origin_unknown_source(self) -> None:
-        """_id_with_origin() uses 'unknown-export' when source_name is unmapped."""
-        accessor = _id_with_origin("id")
-        item = self._make_item(id="test-id", source_name="nonexistent")
-        assert accessor(item) == "test-id [unknown-export]"  # type: ignore[arg-type]
 
     def test_list_preview_basic(self) -> None:
         """_list_preview() shows first N items joined by ', '."""
@@ -472,38 +360,6 @@ class TestStringify:
         assert _stringify(3.14) == "3.14"
 
 
-class TestSourceNameOrigin:
-    """Test _source_name_origin() helper."""
-
-    def test_canonical_origin_values_pass_through(self) -> None:
-        """Canonical Origin enum values pass through unchanged."""
-        assert _source_name_origin("claude-code-session") == "claude-code-session"
-        assert _source_name_origin("chatgpt-export") == "chatgpt-export"
-
-    def test_provider_enum_mapped(self) -> None:
-        """Provider enum values are mapped to origins."""
-        result = _source_name_origin("CLAUDE")
-        assert result == "claude-ai-export"
-
-    def test_empty_string_returns_unknown(self) -> None:
-        """_source_name_origin('') returns 'unknown'."""
-        assert _source_name_origin("") == "unknown"
-
-    def test_none_returns_unknown(self) -> None:
-        """_source_name_origin(None) returns 'unknown'."""
-        assert _source_name_origin(None) == "unknown"
-
-    def test_unmapped_value_returns_unknown_export(self) -> None:
-        """Unmappable values canonicalize to Provider.UNKNOWN → Origin.UNKNOWN_EXPORT."""
-        assert _source_name_origin("totally-invalid-provider") == "unknown-export"
-
-    def test_provider_string_case_insensitive(self) -> None:
-        """Provider strings are normalized (case-insensitive, alias-aware)."""
-        # "Claude" normalizes to "claude" → aliased to "claude-ai" → Origin.CLAUDE_AI_EXPORT
-        result = _source_name_origin("Claude")
-        assert result == "claude-ai-export"
-
-
 class TestRenderInsightItems:
     """Test render_insight_items() output."""
 
@@ -529,7 +385,7 @@ class TestRenderInsightItems:
         insight = SessionProfileInsight(
             session_id="sess-001",
             logical_session_id="logical-001",
-            source_name="claude-code-session",
+            origin="claude-code-session",
             title="Test Session",
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,
@@ -549,7 +405,7 @@ class TestRenderInsightItems:
 
     def test_plain_cost_rollup_marks_unpriced_confidence_uncovered(self, capsys: Any) -> None:
         insight = CostRollupInsight(
-            source_name="claude-code",
+            origin="claude-code",
             status_counts={"unavailable": 1},
             usage=CostUsagePayload(),
             provenance=ArchiveInsightProvenance(

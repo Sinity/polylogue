@@ -14,7 +14,7 @@ from tests.unit.mcp.test_tool_contracts import _provenance
 def _latency_profile() -> SessionLatencyProfileInsight:
     return SessionLatencyProfileInsight(
         session_id="conv-1",
-        source_name="claude-code",
+        origin="claude-code",
         title="Profiled Session",
         provenance=_provenance(),
         latency=SessionLatencyProfilePayload(

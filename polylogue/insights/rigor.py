@@ -171,7 +171,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         consumer_fields=(
             "session_id",
-            "source_name",
+            "origin",
             "title",
             "semantic_tier",
             "evidence",
@@ -294,7 +294,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=(
             "event_id",
             "session_id",
-            "source_name",
+            "origin",
             "event_index",
             "evidence",
             "inference",
@@ -362,7 +362,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=(
             "phase_id",
             "session_id",
-            "source_name",
+            "origin",
             "phase_index",
             "evidence",
         ),
@@ -479,13 +479,13 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "field: its keys are the heuristic ``work_event_type`` labels the session_work_events "
             "materializer assigns (see that contract's fallback_inference marker), so it is an "
             "aggregation over inferred labels, not raw evidence. ``provenance`` is only populated "
-            "for day/week grouping (never for the default provider grouping), so consumers must "
+            "for day/week grouping (never for the default origin grouping), so consumers must "
             "not assume a materialization timestamp/version is always present."
         ),
         consumer_fields=(
             "bucket",
             "group_by",
-            "source_name",
+            "origin",
             "session_count",
             "message_count",
             "total_cost_usd",
@@ -633,14 +633,14 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         confidence_field=("estimate", "confidence"),
         readiness_semantics=(
-            "session_id/source_name/title/timestamps are direct archive facts. The nested "
+            "session_id/origin/title/timestamps are direct archive facts. The nested "
             "``estimate`` payload carries the pricing outcome: ``estimate.status`` is one of "
             "exact/priced/partial/unavailable, ``estimate.confidence`` quantifies trust in a "
             "non-exact price (1.0 exact, 0.9 priced, 0.7 priced-and-flagged-estimated, 0.0 "
             "unavailable), and a non-empty ``estimate.missing_reasons`` or a set "
             "``estimate.unavailable_reason`` flags a fallback/unpriced row."
         ),
-        consumer_fields=("session_id", "source_name", "title", "created_at", "updated_at", "estimate", "provenance"),
+        consumer_fields=("session_id", "origin", "title", "created_at", "updated_at", "estimate", "provenance"),
         version_fields=(
             RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
         ),
@@ -719,7 +719,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "rests on exact vs. estimated pricing."
         ),
         consumer_fields=(
-            "source_name",
+            "origin",
             "model_name",
             "normalized_model",
             "session_count",
@@ -831,7 +831,7 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         consumer_fields=(
             "bucket",
             "group_by",
-            "source_name",
+            "origin",
             "model_name",
             "normalized_model",
             "session_count",

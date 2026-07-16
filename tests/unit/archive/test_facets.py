@@ -51,7 +51,7 @@ class TestComputeFacets:
                 _summary("c", provider=Provider.CHATGPT, message_count=6, tags=("draft",)),
             ]
         )
-        assert buckets.providers == {"chatgpt-export": 2, "claude-ai-export": 1}
+        assert buckets.origins == {"chatgpt-export": 2, "claude-ai-export": 1}
         assert buckets.tags == {"ml": 2, "draft": 2}
         assert buckets.total_sessions == 3
         assert buckets.total_messages == 12
@@ -80,7 +80,7 @@ class TestComputeIdf:
     def test_rare_value_has_higher_idf_than_common_value(self) -> None:
         # 10 sessions: "rare" appears in 1, "common" appears in 9
         buckets = FacetBuckets(
-            providers={"rare": 1, "common": 9},
+            origins={"rare": 1, "common": 9},
             total_sessions=10,
         )
         idf = compute_idf(buckets)
@@ -93,7 +93,7 @@ class TestComputeIdf:
 
     def test_idf_is_zero_for_value_in_every_session(self) -> None:
         buckets = FacetBuckets(
-            providers={"x": 5},
+            origins={"x": 5},
             total_sessions=5,
         )
         idf = compute_idf(buckets)
@@ -155,8 +155,8 @@ class TestFacetsResponseEnvelope:
 class TestFacetSet:
     def test_holds_both_views(self) -> None:
         fs = FacetSet(
-            scoped=FacetBuckets(providers={"chatgpt-export": 1}, total_sessions=1),
-            global_=FacetBuckets(providers={"chatgpt-export": 2}, total_sessions=2),
+            scoped=FacetBuckets(origins={"chatgpt-export": 1}, total_sessions=1),
+            global_=FacetBuckets(origins={"chatgpt-export": 2}, total_sessions=2),
             scoped_to_query=True,
         )
         assert fs.scoped.total_sessions == 1

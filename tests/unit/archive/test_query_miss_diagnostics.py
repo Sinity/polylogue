@@ -37,7 +37,7 @@ async def test_diagnose_query_miss_reports_empty_archive_scope() -> None:
     assert _codes(diagnostics) == ["archive_empty"]
     assert diagnostics.archive_session_count == 0
     assert diagnostics.raw_session_count == 0
-    repo.get_raw_session_count.assert_awaited_once_with(provider=None)
+    repo.get_raw_session_count.assert_awaited_once_with(origin=None)
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_diagnose_query_miss_reports_raw_backlog_for_selected_origin() -> 
     assert _codes(diagnostics) == ["archive_empty", "raw_ingest_backlog"]
     assert diagnostics.archive_session_count == 0
     assert diagnostics.raw_session_count == 2
-    repo.get_raw_session_count.assert_awaited_once_with(provider="claude-ai")
+    repo.get_raw_session_count.assert_awaited_once_with(origin="claude-ai-export")
 
 
 @pytest.mark.asyncio

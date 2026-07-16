@@ -57,45 +57,54 @@ browser install step is normally unnecessary after `npm ci`.
 seed command records `.cache/testmon/testmondata` plus
 `.cache/testmon/seed.json`; those files are local generated state and are not
 committed. If the seed is missing, the default command fails with setup
-guidance instead of silently running the whole suite.
+guidance instead of silently running the whole suite. Every seed writes
+`.cache/testmon/seed-attempt.json` before work begins. An interrupted attempt
+recovers its node ledger from the immutable run artifact when the outer process
+could not finalize the receipt, then resumes only its unseen, failed, or changed
+tests. Corrective code commits do not invalidate that attempt: pytest-testmon
+owns dependency-change selection, while the Python and marker-policy identity
+still prevents resuming against a different test corpus. `.cache/testmon/seed.json`
+is published only after every originally selected node has a failure-free row
+in the dependency database.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
-the affected-test selector and runs the selected default lane with a bounded
-worker pool (`-n 4` by default, override with `POLYLOGUE_PYTEST_WORKERS`) so
+the affected-test selector and runs the selected default lane with an adaptive
+worker pool (up to 12, override with `POLYLOGUE_PYTEST_WORKERS`) so
 a stale or genuinely broad affected set cannot spend the full timeout in one
 multi-GiB Python process. Because the default gate also applies marker filters
 for scale tiers, it passes `--testmon-forceselect` so pytest-testmon still
 selects affected tests instead of letting pytest marker selection expand the
-run. Full diagnostic and seed runs use the same worker override and also
-default to `-n 4` so database-heavy workers do not multiply memory and I/O
-pressure beyond the explicit broad-run lane.
+run. Full diagnostic and seed runs use the same policy, which budgets roughly
+768 MiB per worker, reserves host and tmpfs headroom, and reduces concurrency
+when memory pressure is elevated.
 
-Every collected test has a 300-second `pytest-timeout` budget. A test that
+Every collected test has a 120-second `pytest-timeout` budget. A test that
 genuinely needs longer must declare the exception at the test site with
 `@pytest.mark.timeout(<seconds>)`; a missing marker can never silently turn into
 an unbounded wait. The signal method is the repository default so timeout
 failures retain the responsible node and Python stacks in ordinary pytest
 output.
 
-Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
-full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
-RAM. On btrfs scratch volumes, the harness best-effort marks that root with
-`chattr +C` so new per-run SQLite files avoid CoW amplification. Use
-`POLYLOGUE_PYTEST_TMPFS=1` only for explicit performance lanes that can afford
-tmpfs pressure. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` overrides both. Per-run
+Managed pytest temp databases default to a unique `/dev/shm/pytest-polylogue-*`
+run root because measured SQLite fsync traffic made the disk-backed lane more
+than 20 times slower. One shared adaptive budget is enforced across all xdist
+workers (512 MiB to 2 GiB). `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` is an explicit
+operator override. Per-run
 `pytest-polylogue-*` basetemps are removed at normal pytest shutdown, and
 pytest startup sweeps stale per-run dirs from both the configured root and
 legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept because
 they are small and reused.
 
-`devtools verify --seed-testmon` and the parallel full diagnostic may set
-`POLYLOGUE_PYTEST_TMPFS=1` automatically when the host has at least 10 GiB
-available memory and `/dev/shm` has at least 8 GiB free. This is deliberately
-limited to broad lanes: seed/full runs and default affected runs caused by
-harness/config changes are write-heavy enough that disk-backed basetemps can
-dominate runtime, while focused and ordinary affected runs stay on the normal
-scratch root unless the operator opts in.
+Managed verification refuses to start below 1 GiB available memory instead of
+falling back to the pathological disk lane. Passing-test roots are reclaimed at
+teardown; the external supervisor and parent runner independently remove the
+whole run root on completion or termination, with startup stale-root cleanup as
+recovery after an uncatchable process kill or reboot.
+
+An affected run that selects zero tests is accepted only when no executable,
+test, dependency, or harness path changed. A zero selection after such a change
+fails loudly with the changed paths instead of granting an empty green check.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon for affected-test selection.

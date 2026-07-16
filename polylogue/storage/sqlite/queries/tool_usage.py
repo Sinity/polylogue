@@ -13,14 +13,13 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
-from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import provider_from_origin
+from polylogue.core.enums import Origin
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 __all__ = [
-    "ToolUsageProviderCoverageRow",
+    "ToolUsageOriginCoverageRow",
     "ToolUsageRow",
-    "get_tool_usage_provider_coverage_rows",
+    "get_tool_usage_origin_coverage_rows",
     "get_tool_usage_rows",
 ]
 
@@ -28,7 +27,7 @@ __all__ = [
 class ToolUsageRow(TypedDict):
     """One row per (origin, normalized_tool_name)."""
 
-    source_name: str
+    origin: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -39,10 +38,10 @@ class ToolUsageRow(TypedDict):
     output_text_calls: int
 
 
-class ToolUsageProviderCoverageRow(TypedDict):
+class ToolUsageOriginCoverageRow(TypedDict):
     """Per-origin coverage signal — does the substrate carry tool data?"""
 
-    source_name: str
+    origin: str
     session_count: int
     action_count: int
     distinct_tool_count: int
@@ -122,7 +121,7 @@ async def get_tool_usage_rows(
     rows = await cursor.fetchall()
     return [
         {
-            "source_name": str(row["origin"] or "unknown-export"),
+            "origin": str(row["origin"] or "unknown-export"),
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
@@ -136,9 +135,9 @@ async def get_tool_usage_rows(
     ]
 
 
-async def get_tool_usage_provider_coverage_rows(
+async def get_tool_usage_origin_coverage_rows(
     conn: aiosqlite.Connection,
-) -> list[ToolUsageProviderCoverageRow]:
+) -> list[ToolUsageOriginCoverageRow]:
     """Report tool-data coverage signals for every origin in the archive.
 
     Returns one row per origin that has at least one session. ``action_count``
@@ -148,7 +147,7 @@ async def get_tool_usage_provider_coverage_rows(
     cursor = await conn.execute(
         """
         SELECT
-            s.origin AS source_name,
+            s.origin AS origin,
             COUNT(DISTINCT s.session_id) AS session_count,
             COALESCE(COUNT(a.tool_use_block_id), 0) AS action_count,
             COUNT(DISTINCT COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')) AS distinct_tool_count,
@@ -165,7 +164,7 @@ async def get_tool_usage_provider_coverage_rows(
     rows = await cursor.fetchall()
     return [
         {
-            "source_name": str(row["source_name"] or "unknown"),
+            "origin": str(row["origin"] or "unknown-export"),
             "session_count": int(row["session_count"] or 0),
             "action_count": int(row["action_count"] or 0),
             "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -182,15 +181,3 @@ def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
     if origin is None:
         return None
     return Origin.from_string(origin).value
-
-
-def _provider_for_origin(origin: str) -> Provider:
-    """Return the canonical origin-wire ``Provider`` for an origin token.
-
-    Delegates to the single source of truth in ``core/sources.py`` instead
-    of a hand-copied dict -- see ``archive/query/archive_execution.py``'s
-    ``_provider_for_origin`` docstring for the full rationale
-    (polylogue-9e5.8): three independent hand-copies of this table had
-    already silently drifted (all missing a ``grok-export`` entry).
-    """
-    return provider_from_origin(Origin.from_string(origin))

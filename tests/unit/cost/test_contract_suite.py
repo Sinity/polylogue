@@ -108,7 +108,7 @@ def _basis_to_dict(basis: CostBasisPayload) -> dict[str, float]:
 
 def _exact_estimate() -> CostEstimatePayload:
     return CostEstimatePayload(
-        source_name="claude-code",
+        origin="claude-code-session",
         session_id="conv-exact",
         model_name="claude-sonnet-4-5",
         normalized_model="claude-sonnet-4-5",
@@ -413,24 +413,24 @@ def test_session_costs_aggregation_excludes_unpriced() -> None:
     insights = [
         SessionCostInsight(
             session_id="c1",
-            source_name="claude-code",
+            origin="claude-code",
             created_at="2026-05-01T10:00:00+00:00",
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
             session_id="c2",
-            source_name="claude-code",
+            origin="claude-code",
             created_at=None,  # excluded: no timestamp
             estimate=_priced_estimate(),
             provenance=_provenance(),
         ),
         SessionCostInsight(
             session_id="c3",
-            source_name="claude-code",
+            origin="claude-code",
             created_at="2026-05-02T10:00:00+00:00",
             estimate=CostEstimatePayload(
-                source_name="claude-code",
+                origin="claude-code-session",
                 session_id="c3",
                 status="unavailable",
                 total_usd=0.0,

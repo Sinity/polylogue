@@ -69,6 +69,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
         "envelope",
         frozenset({"rows", "groups", "selected_annotation_count", "joined_count"}),
     ),
+    "named_source_freshness": "single_object",
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "action_affordances": "single_object",

@@ -181,10 +181,10 @@ class TestCostOutlookAggregator:
         def _insight(conv: str, ts: str | None, total_usd: float) -> SessionCostInsight:
             return SessionCostInsight(
                 session_id=conv,
-                source_name="claude",
+                origin="claude",
                 created_at=ts,
                 estimate=CostEstimatePayload(
-                    source_name="claude",
+                    origin="claude-code-session",
                     session_id=conv,
                     status="exact" if total_usd > 0 else "unavailable",
                     total_usd=total_usd,

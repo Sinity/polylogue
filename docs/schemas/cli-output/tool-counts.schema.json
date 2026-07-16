@@ -193,10 +193,6 @@
           "default": null,
           "title": "Session Count"
         },
-        "source_name": {
-          "title": "Source Name",
-          "type": "string"
-        },
         "status": {
           "anyOf": [
             {
@@ -211,7 +207,6 @@
         }
       },
       "required": [
-        "source_name",
         "origin",
         "normalized_tool_name",
         "action_kind"

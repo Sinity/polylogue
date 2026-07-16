@@ -61,7 +61,7 @@ def _profile(
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
-        source_name=source_name,
+        origin=source_name,
         title=f"Session {session_id}",
         provenance=_provenance(),
         semantic_tier="merged",
@@ -87,7 +87,7 @@ def _latency_profile(
 ) -> SessionLatencyProfileInsight:
     return SessionLatencyProfileInsight(
         session_id=session_id,
-        source_name="claude-code",
+        origin="claude-code",
         title=f"Session {session_id}",
         provenance=_provenance(),
         latency=SessionLatencyProfilePayload(

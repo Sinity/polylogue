@@ -11,11 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.semantic.facts import message_model_name, message_tokens
 from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
+from polylogue.core.sources import source_name_to_origin
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Message, Session
@@ -140,7 +141,7 @@ class CostModelBreakdown(PricingModel):
 
 
 class CostEstimatePayload(PricingModel):
-    source_name: str
+    origin: str
     session_id: str | None = None
     message_id: str | None = None
     model_name: str | None = None
@@ -160,6 +161,11 @@ class CostEstimatePayload(PricingModel):
     missing_reasons: tuple[str, ...] = ()
     unavailable_reason: CostUnavailableReason | None = None
     provenance: tuple[str, ...] = ()
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def _normalize_origin(cls, value: object) -> str:
+        return source_name_to_origin(value)
 
     @property
     def priced(self) -> bool:
@@ -316,10 +322,6 @@ def _coerce_int(value: object) -> int:
 def _record(value: object) -> Mapping[str, object]:
     document = json_document(value)
     return document or {}
-
-
-def _provider_text(value: object) -> str:
-    return str(value) if value is not None else "unknown"
 
 
 def _normalize_model(model: str) -> str:
@@ -625,7 +627,7 @@ def estimate_cost(
 
 def _exact_estimate(
     *,
-    source_name: str,
+    origin: str,
     total_usd: float,
     session_id: str | None = None,
     message_id: str | None = None,
@@ -647,7 +649,7 @@ def _exact_estimate(
         catalog_priced_usd=catalog_usd,
     )
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=message_id,
         model_name=model_name,
@@ -664,7 +666,7 @@ def _exact_estimate(
 
 def _estimate_from_usage(
     *,
-    source_name: str,
+    origin: str,
     model_name: str | None,
     usage: CostUsagePayload,
     session_id: str | None = None,
@@ -673,7 +675,7 @@ def _estimate_from_usage(
 ) -> CostEstimatePayload:
     if model_name is None or not model_name.strip():
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             status="unavailable",
@@ -685,7 +687,7 @@ def _estimate_from_usage(
         )
     if usage.billable_tokens <= 0:
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             model_name=model_name,
@@ -701,7 +703,7 @@ def _estimate_from_usage(
     pricing = PRICING.get(normalized_model)
     if pricing is None:
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             model_name=model_name,
@@ -730,7 +732,7 @@ def _estimate_from_usage(
             unpriced.append("missing_cache_write_price")
         missing_reasons = tuple(unpriced)
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=message_id,
         model_name=model_name,
@@ -753,7 +755,7 @@ def _estimate_from_usage(
 def estimate_message_cost(
     message: Message,
     *,
-    source_name: str,
+    origin: str,
     session_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:
@@ -779,7 +781,7 @@ def estimate_message_cost(
             cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
         )
     return _estimate_from_usage(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=str(message.id),
         model_name=model_name,
@@ -806,7 +808,7 @@ def _dominant_model(estimates: Iterable[CostEstimatePayload]) -> tuple[str | Non
 def estimate_session_cost(session: Session) -> CostEstimatePayload:
     """Estimate cost for a session/session with confidence metadata."""
 
-    source_name = _provider_text(session.origin)
+    origin = session.origin.value
     session_estimate = _session_level_estimate(session)
     if session_estimate is not None and session_estimate.status == "exact":
         return session_estimate
@@ -814,7 +816,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
     message_estimates = [
         estimate_message_cost(
             message,
-            source_name=source_name,
+            origin=origin,
             session_id=str(session.id),
             fallback_model=session_estimate.model_name if session_estimate else None,
         )
@@ -829,7 +831,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
         missing = ("missing_token_usage",) if message_estimates else ("no_messages",)
         unavailable: CostUnavailableReason = "no_tokens" if message_estimates else "no_messages"
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=str(session.id),
             status="unavailable",
             confidence=0.0,
@@ -894,7 +896,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
         # per-message fallbacks from providers that report only session totals.
         return session_estimate
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=str(session.id),
         model_name=model_name,
         normalized_model=normalized_model,

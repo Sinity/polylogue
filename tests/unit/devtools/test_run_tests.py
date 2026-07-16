@@ -117,13 +117,14 @@ def test_managed_env_sets_repo_roots() -> None:
     assert Path(env["POLYLOGUE_ROOT"]).is_dir()
 
 
-def test_managed_env_replaces_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_managed_env_replaces_cloud_basetemp_with_local_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise devtools test's child environment, not conftest in isolation."""
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/tmp/polylogue-pytest")
 
     env = run_tests._managed_env()
 
-    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/realm/tmp/polylogue-pytest"
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in env
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
 
 
 def test_managed_env_preserves_explicit_custom_basetemp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -42,7 +42,6 @@ from polylogue.insights.registry import (
     InsightQueryError,
     InsightType,
     fetch_insights,
-    project_origin_payload,
     render_insight_items,
 )
 from polylogue.insights.timeline_renderer import (
@@ -212,12 +211,7 @@ def _status_wants_json(ctx: click.Context, *, output_format: str | None) -> bool
 
 def _render_status_plain(report: InsightReadinessReport) -> None:
     def origin_label(value: str | None) -> str:
-        if not value:
-            return "-"
-        projected = project_origin_payload({"origin": value})
-        if isinstance(projected, dict):
-            return str(projected.get("origin") or "-")
-        return "-"
+        return value or "-"
 
     click.echo(f"Insight Readiness: {report.aggregate_verdict}")
     click.echo(f"Total sessions: {report.total_sessions}")
@@ -238,9 +232,9 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
         if insight.ready_flags:
             flags = ", ".join(f"{key}={value}" for key, value in sorted(insight.ready_flags.items()))
             click.echo(f"  flags: {flags}")
-        if insight.provider_coverage:
+        if insight.origin_coverage:
             origins = ", ".join(
-                f"{origin_label(coverage.source_name)}={coverage.row_count}" for coverage in insight.provider_coverage
+                f"{origin_label(coverage.origin)}={coverage.row_count}" for coverage in insight.origin_coverage
             )
             click.echo(f"  origins: {origins}")
         if insight.version_coverage:
@@ -304,7 +298,7 @@ def insights_status_command(
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(cast(dict[str, object], project_origin_payload(report.model_dump(mode="json"))))
+        emit_success(cast(dict[str, object], report.model_dump(mode="json")))
         return
     _render_status_plain(report)
 
@@ -363,7 +357,7 @@ def insights_export_command(
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(cast(dict[str, object], project_origin_payload(result.model_dump(mode="json"))))
+        emit_success(cast(dict[str, object], result.model_dump(mode="json")))
         return
     _render_export_plain(result)
 

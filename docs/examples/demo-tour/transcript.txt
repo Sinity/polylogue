@@ -1,12 +1,12 @@
 # prepare deterministic proof archive
-Seeded 15 sessions, 62 messages, and 5 user-state assertions in 0.411s. Fixture audit: 37/37 declared constructs satisfied.
+Seeded 15 sessions, 62 messages, and 5 user-state assertions in 3.901s. Fixture audit: 37/37 declared constructs satisfied.
 
 # verify evidence before presenting it
-Verification passed in 0.012s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
+Verification passed in 0.021s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
 
 $ polylogue demo receipts
 Start with a falsifiable disagreement: assistant prose claims the tests pass, while the provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only 'error' control demonstrates why keyword matching is not the oracle.
-exit=0 duration=1.649s bytes=1399
+exit=0 duration=1.661s bytes=1399
 Polylogue evidence receipt
 archive: <demo-archive>
 verdict: contradicted_at_claim_time_then_repaired
@@ -38,7 +38,7 @@ source material:
   blob_sha256: 9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7
 
 completion-claim experiment:
-  sample manifest: aac34f78b956719cea7448d85da2d2157a4a56b6dd50002879ef8222bc740f7d
+  sample manifest: 238eeeabdcb413a36ff031f62c5bff95a02160db2488e432fdd106014947d783
   denominator: 2
 unsupported by structural evidence: 0 (0.0%)
 neutral prior outcome: 0 (0.0%)
@@ -47,14 +47,14 @@ contradicted without recorded repair: 1 (50.0%)
 
 $ polylogue 'actions where is_error:true | group by tool | count'
 Now aggregate the same structural field across providers. This query counts normalized failed actions; it does not search prose for the word 'error'.
-exit=0 duration=1.925s bytes=62
+exit=0 duration=1.938s bytes=62
 tool=Bash count=4
 tool=exec_command count=2
 tool=Edit count=1
 
 $ polylogue --id codex-session:demo-lineage-fork read --view chronicle
 Read a fork as one logical chronicle: inherited parent messages remain attributable to their origin while the fork contributes only its divergent tail.
-exit=0 duration=1.884s bytes=936
+exit=0 duration=1.985s bytes=936
 # Session Chronicle
 
 - Sessions: 1
@@ -101,7 +101,7 @@ _No distinct matching prose in the last edge._
 
 $ polylogue analyze --facets
 Only after inspecting evidence, zoom out to the archive across five origins, with deferred families labeled rather than silently guessed.
-exit=0 duration=1.797s bytes=1426
+exit=0 duration=1.909s bytes=1426
 Facets (global) — matched result set:
   sessions: 15  messages: 62
   Family states:

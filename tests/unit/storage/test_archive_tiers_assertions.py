@@ -75,6 +75,18 @@ def _sqlite_objects(conn: sqlite3.Connection, object_type: str) -> set[str]:
     }
 
 
+def test_user_tier_initialization_is_idempotent(tmp_path: Path) -> None:
+    db_path = tmp_path / "user.db"
+    with sqlite3.connect(db_path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.USER)
+        initialize_archive_tier(conn, ArchiveTier.USER)
+
+        triggers = _sqlite_objects(conn, "trigger")
+
+    assert "retained_query_runs_result_set_query_match_insert" in triggers
+    assert "watched_query_baselines_result_set_query_match_update" in triggers
+
+
 def _insert_index_session(conn: sqlite3.Connection, native_id: str) -> str:
     conn.execute(
         "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
@@ -156,13 +168,22 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
             "corrections",
             "suppressions",
         }
-        assert tables == {
+        required_tables = {
             "annotation_batches",
             "annotation_schemas",
             "assertions",
             "context_deliveries",
+            "queries",
+            "query_edges",
+            "query_evaluation_receipts",
+            "query_names",
+            "result_set_members",
+            "result_sets",
+            "retained_query_runs",
             "user_settings",
+            "watched_query_baselines",
         }
+        assert required_tables <= tables
         assert tables.isdisjoint(obsolete_overlay_tables)
     finally:
         conn.close()
@@ -704,6 +725,7 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
             AssertionKind.TRANSFORM_CANDIDATE,
             AssertionKind.PATHOLOGY,
             AssertionKind.FINDING,
+            AssertionKind.COMPARATIVE_JUDGMENT,
         }
 
         rows: list[tuple[str, str, AssertionKind, str, str, dict[str, object] | None, int]] = [

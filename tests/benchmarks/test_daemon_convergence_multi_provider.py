@@ -12,120 +12,16 @@ Run with:
 
 from __future__ import annotations
 
-import json
 import time
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, cast
 
 import pytest
 
+from polylogue.scenarios import CorpusSpec
+from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
-
-# ── Synthetic data generation per provider ────────────────────────────
-
-JsonRecordList: TypeAlias = list[dict[str, object]]
-JsonRecord: TypeAlias = dict[str, object]
-JsonlGenerator: TypeAlias = Callable[[str, int], JsonRecordList]
-JsonGenerator: TypeAlias = Callable[[str, int], JsonRecord]
-ProviderGenerator: TypeAlias = tuple[Literal["jsonl"], JsonlGenerator] | tuple[Literal["json"], JsonGenerator]
-
-
-def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        for rec in records:
-            f.write(json.dumps(rec) + "\n")
-
-
-def _write_json(path: Path, records: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(records, f)
-
-
-def _make_claude_code_session(uuid: str, n_messages: int, *, include_tools: bool = True) -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
-    tool_names = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Task"]
-    for i in range(n_messages):
-        is_user = i % 2 == 0
-        record: dict[str, object] = {
-            "parentUuid": None if i == 0 else f"msg-{i - 1:04d}",
-            "sessionId": uuid,
-            "type": "user" if is_user else "assistant",
-            "message": {
-                "role": "user" if is_user else "assistant",
-                "content": f"Synthetic message {i} in session {uuid}. "
-                f"{'The quick brown fox jumps over the lazy dog. ' * 15}",
-            },
-            "uuid": f"msg-{i:04d}",
-            "timestamp": f"2026-05-05T00:{i // 60:02d}:{i % 60:02d}.000Z",
-            "cwd": "/realm/project/polylogue",
-            "version": "1.0.6",
-            "isSidechain": False,
-            "userType": "external",
-        }
-        if not is_user and include_tools and i % 4 == 1:
-            tool = tool_names[i % len(tool_names)]
-            record["message"]["content"] = [  # type: ignore[index]
-                {
-                    "type": "tool_use",
-                    "name": tool,
-                    "id": f"tool-{i:04d}",
-                    "input": {"command": f"echo 'hello {i}'"},
-                }
-            ]
-            record["type"] = "assistant"
-        records.append(record)
-    return records
-
-
-def _make_codex_session(uuid: str, n_messages: int) -> list[dict[str, object]]:
-    """Generate a Codex-shaped session JSONL."""
-    records: list[dict[str, object]] = []
-    for i in range(n_messages):
-        is_user = i % 2 == 0
-        record: dict[str, object] = {
-            "sessionId": uuid,
-            "id": f"{uuid}-msg-{i:04d}",
-            "role": "user" if is_user else "assistant",
-            "content": [{"type": "text", "text": f"Codex message {i}. {'Lorem ipsum dolor sit amet. ' * 15}"}],
-            "timestamp": f"2026-05-05T00:{i // 60:02d}:{i % 60:02d}.000Z",
-            "cwd": "/realm/project/demo",
-        }
-        records.append(record)
-    return records
-
-
-def _make_chatgpt_session(conv_id: str, n_messages: int) -> dict[str, object]:
-    """Generate a ChatGPT-shaped session JSON."""
-    messages: list[dict[str, object]] = []
-    for i in range(n_messages):
-        role = "user" if i % 2 == 0 else "assistant"
-        messages.append(
-            {
-                "id": f"{conv_id}-msg-{i:04d}",
-                "role": role,
-                "content": f"ChatGPT message {i}. {'Lorem ipsum dolor sit amet. ' * 15}",
-                "create_time": 1700000000 + i,
-            }
-        )
-    return {
-        "id": conv_id,
-        "title": f"ChatGPT Session {conv_id}",
-        "create_time": 1700000000,
-        "update_time": 1700000000 + n_messages,
-        "messages": messages,
-    }
-
-
-# mypy note: generator functions have different signatures but all return list[dict].
-_PROVIDER_GENERATORS: dict[str, ProviderGenerator] = {
-    "claude-code": ("jsonl", _make_claude_code_session),
-    "codex": ("jsonl", _make_codex_session),
-    "chatgpt": ("json", _make_chatgpt_session),
-}
 
 _SCALE_TIERS = {
     "xs-tiny": {"files": 5, "msgs_per_file": 10},
@@ -134,37 +30,19 @@ _SCALE_TIERS = {
 }
 
 
-def _jsonl_generator(provider: str) -> JsonlGenerator:
-    fmt, generator = _PROVIDER_GENERATORS[provider]
-    if fmt != "jsonl":
-        raise AssertionError(f"provider {provider} is not JSONL-backed")
-    return cast(JsonlGenerator, generator)
-
-
-def _json_generator(provider: str) -> JsonGenerator:
-    fmt, generator = _PROVIDER_GENERATORS[provider]
-    if fmt != "json":
-        raise AssertionError(f"provider {provider} is not JSON-backed")
-    return cast(JsonGenerator, generator)
-
-
 def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
     spec = _SCALE_TIERS[tier]
     root = tmp_path / "corpus" / f"{provider}-project"
-
-    for i in range(spec["files"]):
-        if provider == "chatgpt":
-            conv_id = f"chatgpt-conv-{i:04d}"
-            conv_data = _json_generator(provider)(conv_id, spec["msgs_per_file"])
-            # chats/ subdir with individual JSON files
-            chat_dir = root / "chats"
-            chat_dir.mkdir(parents=True, exist_ok=True)
-            with open(chat_dir / f"{conv_id}.json", "w") as f:
-                json.dump(conv_data, f)
-        else:
-            uuid = f"deadbeef-0000-0000-0000-{i:012x}"
-            records = _jsonl_generator(provider)(uuid, spec["msgs_per_file"])
-            _write_jsonl(root / f"{uuid}.jsonl", records)
+    workload = CorpusSpec.for_provider(
+        provider,
+        count=spec["files"],
+        messages_min=spec["msgs_per_file"],
+        messages_max=spec["msgs_per_file"],
+        seed=42,
+        origin="generated.schema-convergence-benchmark",
+        tags=("synthetic", "schema", "benchmark", "convergence"),
+    )
+    SyntheticCorpus.write_spec_artifacts(workload, root, prefix=provider, index_width=4)
     return root.parent
 
 
@@ -288,9 +166,16 @@ def test_convergence_single_file_per_provider(
 ) -> None:
     """Per-provider throughput on a single 500-message file."""
     root = tmp_path / "corpus" / "test"
-    uuid = f"single-{provider}-test"
-    records = _jsonl_generator(provider)(uuid, 500)
-    _write_jsonl(root / f"{uuid}.jsonl", records)
+    workload = CorpusSpec.for_provider(
+        provider,
+        count=1,
+        messages_min=500,
+        messages_max=500,
+        seed=43,
+        origin="generated.schema-convergence-benchmark",
+        tags=("synthetic", "schema", "benchmark", "convergence"),
+    )
+    SyntheticCorpus.write_spec_artifacts(workload, root, prefix=f"single-{provider}")
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))

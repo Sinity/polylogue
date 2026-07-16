@@ -191,17 +191,17 @@ class ArchiveFacts:
     def from_db_connection(cls, conn: sqlite3.Connection) -> ArchiveFacts:
         """Aggregate archive facts from a ``index.db``.
 
-        Reads archive `sessions` / ``messages``. The provider is recovered
-        from the session ``origin`` so the per-provider counts agree with the
-        domain ``Session.provider`` projection used by the facade surface.
+        Reads archive `sessions` / ``messages``. Legacy scenario accounting
+        uses the provider-wire token recovered from the canonical origin.
         """
-        from polylogue.api.archive import _provider_for_archive_origin
+        from polylogue.core.enums import Origin
+        from polylogue.core.sources import provider_from_origin
 
         total_convs = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         provider_rows = conn.execute("SELECT origin, COUNT(*) as cnt FROM sessions GROUP BY origin").fetchall()
         provider_counts: dict[str, int] = {}
         for row in provider_rows:
-            provider = str(_provider_for_archive_origin(str(row["origin"])))
+            provider = str(provider_from_origin(Origin.from_string(str(row["origin"]))))
             provider_counts[provider] = provider_counts.get(provider, 0) + int(row["cnt"])
         total_msgs = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
         session_ids = tuple(

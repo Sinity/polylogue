@@ -723,7 +723,6 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         session_id="claude-ai-export:conv-alpha",
         native_id="conv-alpha",
         origin="claude-ai-export",
-        provider=Provider.CLAUDE_AI,
         title="Alpha",
         created_at=None,
         updated_at=None,
@@ -740,7 +739,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
 
     assert result.total_sessions == 1
     assert result.total_messages == 2
-    assert result.providers == {"claude-ai-export": 1}
+    assert result.origins == {"claude-ai-export": 1}
     assert result.tags == {"work": 1}
 
 
@@ -1807,7 +1806,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
     assert messages[0].text == "Alpha\n\nOmega"
 
 
-async def test_message_hydration_preserves_origin_provider_and_structural_tool_outcome(tmp_path: Path) -> None:
+async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tmp_path: Path) -> None:
     """Semantic readers receive the evidence fields required by shared cards."""
 
     archive = _archive(tmp_path)
@@ -1847,7 +1846,7 @@ async def test_message_hydration_preserves_origin_provider_and_structural_tool_o
         await archive.close()
 
     assert total == 1
-    assert messages[0].provider is Provider.CODEX
+    assert messages[0].origin is Origin.CODEX_SESSION
     assert len(messages[0].blocks) == 2
     result = messages[0].blocks[1]
     assert result["id"]
@@ -3036,7 +3035,11 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
         assert attempt["dispatch_turn_model"] == "claude-opus-4-8"
         assert payload.payload["instruction"] == "audit the thing"
         assert payload.payload["instruction_truncated"] is False
-        assert payload.object_refs == (f"session:{parent_session_id}", f"session:{child_session_id}")
+        assert payload.object_refs == (
+            f"session:{parent_session_id}",
+            f"session:{child_session_id}",
+            f"run:{child_session_id}",
+        )
         assert f"block:{instruction_block_id}" in payload.evidence_refs
         assert payload.caveats == ()
     finally:
@@ -3222,22 +3225,33 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "facade-run-child")
+            .provider("codex")
+            .parent_session("ext-facade-run-v1")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .git_branch("feature/query-runs")
+            .title("Facade run query subagent")
+            .add_message("m-child", role="assistant", text="Mapped the facade run query wiring.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
         envelope = await archive.query_units(
-            "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:Explore"
+            "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:subagent"
         )
 
         assert envelope.unit == "run"
         [item] = envelope.items
         assert isinstance(item, RunQueryRowPayload)
-        assert item.session_id == "codex-session:ext-facade-run-v1"
+        assert item.session_id == "codex-session:ext-facade-run-child"
         assert item.role == "subagent"
         assert item.status == "completed"
-        assert item.agent_ref == "agent:codex/Explore"
+        assert item.agent_ref == "agent:codex/subagent"
         assert item.parent_run_ref == "run:codex-session:ext-facade-run-v1"
-        assert item.run_ref == "run:codex-session:ext-facade-run-v1:subagent:0:tool-run"
+        assert item.run_ref == "run:codex-session:ext-facade-run-child"
     finally:
         await archive.close()
 
@@ -3282,12 +3296,23 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "facade-otel-child")
+            .provider("codex")
+            .parent_session("ext-facade-otel-v1")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .git_branch("feature/otel")
+            .title("Facade OTel projection subagent")
+            .add_message("m-child", role="assistant", text="Mapped the OTel projection wiring.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
         payload = await archive.export_otel(
             source_ref="session:codex-session:ext-facade-otel-v1",
-            expressions=("runs where session.repo:polylogue AND role:subagent AND agent:Explore",),
+            expressions=("runs where session.repo:polylogue AND role:subagent AND agent:subagent",),
         )
 
         assert isinstance(payload, OtelProjectionPayload)
@@ -3295,12 +3320,10 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
         assert payload.trace_count == 1
         assert payload.span_count == 1
         assert "session:codex-session:ext-facade-otel-v1" in payload.refs
-        assert "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run" in payload.refs
-        assert any(ref.startswith("codex-session:ext-facade-otel-v1::") for ref in payload.refs)
-        assert "context-snapshot:codex-session:ext-facade-otel-v1:subagent:0:tool-run:subagent_start" in payload.refs
+        assert "run:codex-session:ext-facade-otel-child" in payload.refs
+        assert "context-snapshot:codex-session:ext-facade-otel-child:subagent_start" in payload.refs
         [span] = payload.spans
-        assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run"
-        assert span.attributes["polylogue.run.cwd.redacted"] is True
+        assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-child"
     finally:
         await archive.close()
 
@@ -3819,7 +3842,6 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
         assert rollup.explicit_count == 1
         assert rollup.auto_count == 1
         assert rollup.origin_breakdown == {Origin.CODEX_SESSION.value: 2}
-        assert rollup.provider_breakdown == {Origin.CODEX_SESSION.value: 2}
         assert rollup.repo_breakdown == {"https://example.test/polylogue.git": 2}
         assert rollup.provenance.source_updated_at == "2026-02-02T02:41:00Z"
     finally:
@@ -3917,7 +3939,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
 
         assert len(provider_rows) == 1
         provider = provider_rows[0]
-        assert provider.source_name == Origin.CODEX_SESSION.value
+        assert provider.origin == Origin.CODEX_SESSION.value
         assert provider.session_count == 1
         assert provider.message_count == 2
         assert provider.user_message_count == 1
@@ -3941,7 +3963,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert day.work_event_breakdown == {"implementation": 1}
         assert day.repos_active == ("polylogue",)
         assert day.origin_breakdown == {Origin.CODEX_SESSION.value: 1}
-        assert day.provider_breakdown == {Origin.CODEX_SESSION.value: 1}
         assert day.provenance is not None
         assert day.provenance.source_updated_at == "2026-02-02T02:40:00Z"
 
@@ -3949,7 +3970,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert week_rows[0].group_by == "week"
         assert week_rows[0].session_count == 1
         assert week_rows[0].origin_breakdown == {Origin.CODEX_SESSION.value: 1}
-        assert week_rows[0].provider_breakdown == {Origin.CODEX_SESSION.value: 1}
     finally:
         await archive.close()
 
@@ -4016,7 +4036,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert insight.has_coverage_gaps is True
         assert len(insight.entries) == 1
         entry = insight.entries[0]
-        assert entry.source_name == Origin.CODEX_SESSION.value
+        assert entry.origin == Origin.CODEX_SESSION.value
         assert entry.normalized_tool_name == "read"
         assert entry.action_kind == "file_read"
         assert entry.call_count == 1
@@ -4025,7 +4045,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.distinct_tool_ids == 1
         assert entry.affected_path_calls == 1
         assert entry.output_text_calls == 1
-        coverage = {item.source_name: item for item in insight.origin_coverage}
+        coverage = {item.origin: item for item in insight.origin_coverage}
         assert coverage[Origin.CODEX_SESSION.value].data_available is True
         assert coverage[Origin.CODEX_SESSION.value].action_count == 1
         assert coverage[Origin.CHATGPT_EXPORT.value].data_available is False
@@ -4117,7 +4137,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
         assert total == 1
         assert len(artifacts) == 1
         assert artifacts[0]["raw_id"] == raw_id
-        assert artifacts[0]["source_name"] == Provider.DRIVE.value
+        assert artifacts[0]["origin"] == Origin.AISTUDIO_DRIVE.value
         assert artifacts[0]["source_path"] == "/tmp/raw-artifact-drive-v1.json"
         assert artifacts[0]["blob_size"] == len(payload)
         assert artifacts[0]["acquired_at"] == "2026-02-02T02:40:00Z"
@@ -4225,14 +4245,14 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         assert len(events) == 1
         assert events == filtered_events
         assert events[0].session_id == session_id
-        assert events[0].source_name == Provider.CODEX.value
+        assert events[0].origin == Origin.CODEX_SESSION.value
         assert events[0].provenance.materializer_version == 7
         assert events[0].inference.heuristic_label == "implementation"
         assert events[0].evidence.file_paths == ("polylogue/api/insights.py",)
         assert len(phases) == 1
         assert phases == filtered_phases
         assert phases[0].session_id == session_id
-        assert phases[0].source_name == Provider.CODEX.value
+        assert phases[0].origin == Origin.CODEX_SESSION.value
         assert phases[0].provenance.materializer_version == 8
         assert phases[0].evidence.tool_counts == {"apply_patch": 1}
         assert phases[0].semantic_tier == "evidence"
@@ -4432,7 +4452,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert thread.thread.branch_count == 1
         assert thread.thread.total_messages == 3
         assert thread.thread.origin_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
-        assert thread.thread.provider_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
         assert thread.thread.member_evidence[1].parent_id == parent_id
         assert thread.thread.member_evidence[1].role == "parent_continuation"
         assert "parent_session_id" in thread.thread.member_evidence[1].support_signals
@@ -4521,7 +4540,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
 
         assert len(costs) == 1
         assert costs[0].session_id == priced_id
-        assert costs[0].source_name == Provider.CODEX.value
+        assert costs[0].origin == Origin.CODEX_SESSION.value
         assert costs[0].title == "Priced archive cost"
         assert costs[0].estimate.status == "priced"
         assert costs[0].estimate.total_usd == 1.25
@@ -4537,7 +4556,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert unavailable[0].estimate.missing_reasons == ("missing_token_usage",)
         assert model_filtered == []
         assert len(rollups) == 1
-        assert rollups[0].source_name == Provider.CODEX.value
+        assert rollups[0].origin == Origin.CODEX_SESSION.value
         assert rollups[0].session_count == 1
         assert rollups[0].priced_session_count == 1
         assert rollups[0].unavailable_session_count == 0
@@ -4545,8 +4564,11 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert rollups[0].total_usd == 1.25
         assert rollups[0].basis.catalog_priced_usd == 1.25
         assert rollups[0].confidence == 0.9
-        assert {rollup.source_name for rollup in all_rollups} == {Provider.CODEX.value, Provider.CHATGPT.value}
-        unavailable_rollup = next(rollup for rollup in all_rollups if rollup.source_name == Provider.CHATGPT.value)
+        assert {rollup.origin for rollup in all_rollups} == {
+            Origin.CODEX_SESSION.value,
+            Origin.CHATGPT_EXPORT.value,
+        }
+        unavailable_rollup = next(rollup for rollup in all_rollups if rollup.origin == Origin.CHATGPT_EXPORT.value)
         assert unavailable_rollup.unavailable_session_count == 1
         assert unavailable_rollup.unavailable_reason_counts == {"no_tokens": 1}
         assert model_rollups == []
@@ -4636,7 +4658,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert only_stuck == []
         assert stuck == []
         assert profile.session_id == session_id
-        assert profile.source_name == Provider.CODEX.value
+        assert profile.origin == Origin.CODEX_SESSION.value
         assert profile.title == "Latency v1"
         assert profile.provenance.materializer_version == 12
         assert profile.latency.median_agent_response_ms == 90000
@@ -4798,7 +4820,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged is not None
         assert listed == [merged]
         assert merged.session_id == session_id
-        assert merged.source_name == Provider.CODEX.value
+        assert merged.origin == Origin.CODEX_SESSION.value
         assert merged.title == "Native profile"
         assert merged.provenance.materializer_version == 10
         assert merged.evidence is not None

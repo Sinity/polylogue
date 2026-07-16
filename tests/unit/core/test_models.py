@@ -275,7 +275,7 @@ class TestPinnedSemanticRegressions:
             id="m-tool",
             role=Role.ASSISTANT,
             text="I will inspect the file",
-            provider=Provider.CLAUDE_CODE,
+            origin=Origin.CLAUDE_CODE_SESSION,
             blocks=[
                 {"type": "text", "text": "I will inspect the file"},
                 {
@@ -293,7 +293,7 @@ class TestPinnedSemanticRegressions:
             id="m-think",
             role=Role.ASSISTANT,
             text="",
-            provider=Provider.CLAUDE_CODE,
+            origin=Origin.CLAUDE_CODE_SESSION,
             blocks=[{"type": "thinking", "text": "step by step"}],
         )
         assert msg.is_thinking is True

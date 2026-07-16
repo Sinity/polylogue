@@ -45,7 +45,7 @@ def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
 def _node_from_record(record: SessionRecord, *, depth: int, is_root: bool) -> TopologyNode:
     return TopologyNode(
         session_id=SessionId(str(record.session_id)),
-        source_name=record.origin.value,
+        origin=record.origin.value,
         title=record.title,
         depth=depth,
         is_root=is_root,

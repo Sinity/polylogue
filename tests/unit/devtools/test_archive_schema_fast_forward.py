@@ -29,7 +29,7 @@ from devtools.archive_schema_fast_forward import (
 )
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -51,10 +51,40 @@ def _create_v35_index(path: Path, *, wal_mode: bool = False) -> None:
         if wal_mode:
             conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(legacy_ddl)
+        conn.executescript(
+            """
+            CREATE TABLE session_runs (
+                run_ref TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE
+            ) STRICT;
+            CREATE TABLE session_observed_events (
+                event_ref TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                run_ref TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE session_context_snapshots (
+                snapshot_ref TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                run_ref TEXT NOT NULL
+            ) STRICT;
+            """
+        )
         conn.execute("PRAGMA user_version = 35")
         conn.execute(
             "INSERT INTO sessions(native_id, origin, content_hash) VALUES (?, ?, ?)",
             ("parent", "chatgpt-export", b"p" * 32),
+        )
+        conn.execute(
+            "INSERT INTO session_runs(run_ref, session_id) VALUES (?, ?)",
+            ("run:parent", "chatgpt-export:parent"),
+        )
+        conn.execute(
+            "INSERT INTO session_observed_events(event_ref, session_id, run_ref) VALUES (?, ?, ?)",
+            ("event:parent", "chatgpt-export:parent", "run:parent"),
+        )
+        conn.execute(
+            "INSERT INTO session_context_snapshots(snapshot_ref, session_id, run_ref) VALUES (?, ?, ?)",
+            ("snapshot:parent", "chatgpt-export:parent", "run:parent"),
         )
         conn.execute(
             "INSERT INTO sessions(native_id, origin, parent_session_id, content_hash) VALUES (?, ?, ?, ?)",
@@ -124,10 +154,18 @@ def test_index_clone_copy_forward_preserves_fk_graph_ddl_and_rows(tmp_path: Path
     result = fast_forward_index_clone(source, clone)
 
     assert result.source.user_version == 35
-    assert result.clone.user_version == 36
-    assert result.source.table_counts == result.clone.table_counts
+    assert result.clone.user_version == INDEX_SCHEMA_VERSION
+    assert {
+        name: count
+        for name, count in result.source.table_counts.items()
+        if name not in {"session_runs", "session_observed_events", "session_context_snapshots"}
+    } == result.clone.table_counts
     assert not any(Path(f"{clone}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
-    assert _fk_declarations(clone) == before_fk
+    assert _fk_declarations(clone) == {
+        name: declarations
+        for name, declarations in before_fk.items()
+        if name not in {"session_runs", "session_observed_events", "session_context_snapshots"}
+    }
     with sqlite3.connect(clone) as conn:
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
@@ -137,6 +175,13 @@ def test_index_clone_copy_forward_preserves_fk_graph_ddl_and_rows(tmp_path: Path
         links_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_links'"
         ).fetchone()[0]
+        assert {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('session_runs', 'session_observed_events', 'session_context_snapshots')"
+            )
+        } == set()
     assert "beads-issue" in sessions_sql
     assert "beads-issue" in links_sql
 
@@ -582,7 +627,7 @@ def test_write_index_clone_checkpoint_records_a_self_checking_receipt(tmp_path: 
     assert on_disk == checkpoint
     assert checkpoint["schema"] == INDEX_CLONE_CHECKPOINT_SCHEMA
     assert on_disk["source"]["user_version"] == 35
-    assert on_disk["clone"]["user_version"] == 36
+    assert on_disk["clone"]["user_version"] == INDEX_SCHEMA_VERSION
     assert checkpoint["quick_check"] == ["ok"]
     assert checkpoint["foreign_key_check"] == []
     assert checkpoint["foreign_key_declarations_preserved"] is True

@@ -39,18 +39,18 @@ class TestSqlPushdownParams:
         params = f._sql_pushdown_params()
         assert params == {}
 
-    def test_single_provider_pushdown(self) -> None:
-        """Single provider uses 'provider' key (not 'providers')."""
+    def test_single_origin_pushdown(self) -> None:
+        """A single origin uses the singular public storage key."""
         f = _make_filter().origin("claude-ai-export")
         params = f._sql_pushdown_params()
-        assert params == {"provider": "claude-ai"}
+        assert params == {"origin": "claude-ai-export"}
 
-    def test_multi_provider_pushdown(self) -> None:
-        """Multiple providers use 'providers' key as a list."""
+    def test_multi_origin_pushdown(self) -> None:
+        """Multiple origins use the plural public storage key."""
         f = _make_filter().origin("claude-ai-export", "chatgpt-export")
         params = f._sql_pushdown_params()
-        assert "providers" in params
-        assert params["providers"] == ["claude-ai", "chatgpt"]
+        assert "origins" in params
+        assert params["origins"] == ["claude-ai-export", "chatgpt-export"]
 
     def test_date_pushdown_since(self) -> None:
         """since date is pushed down as ISO string."""
@@ -80,7 +80,7 @@ class TestSqlPushdownParams:
         dt_until = datetime(2024, 12, 31, tzinfo=timezone.utc)
         f = _make_filter().origin("claude-ai-export").since(dt_since).until(dt_until).title("test")
         params = f._sql_pushdown_params()
-        assert params["provider"] == "claude-ai"
+        assert params["origin"] == "claude-ai-export"
         assert params["since"] == dt_since.isoformat()
         assert params["until"] == dt_until.isoformat()
         assert params["title_contains"] == "test"

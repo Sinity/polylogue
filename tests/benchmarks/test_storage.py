@@ -39,12 +39,12 @@ def test_bench_list_sessions_no_filter(benchmark: BenchmarkFixture, bench_db_5k:
 
 
 @pytest.mark.benchmark
-def test_bench_list_sessions_provider_filter(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
-    """list with provider=chatgpt — tests simple WHERE on indexed column."""
+def test_bench_list_sessions_origin_filter(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
+    """List with a ChatGPT origin through the indexed equality path."""
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.backend.queries.list_sessions(SessionRecordQuery(origin="chatgpt", limit=50)),
+        lambda store: store.backend.queries.list_sessions(SessionRecordQuery(origin="chatgpt-export", limit=50)),
     )
 
 

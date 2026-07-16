@@ -1,8 +1,4 @@
-"""Archive coverage diagnostics.
-
-Analyzes the completeness and consistency of the session archive,
-identifying provider date ranges, gaps, and truncated sessions.
-"""
+"""Archive coverage diagnostics by canonical source origin."""
 
 from __future__ import annotations
 
@@ -12,17 +8,15 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from polylogue.core.sources import provider_from_origin
-
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import SessionSummary
 
 
 @dataclass(frozen=True)
-class ProviderRange:
-    """Date range covered by a single provider."""
+class OriginRange:
+    """Date range covered by a single source origin."""
 
-    provider: str
+    origin: str
     first_date: date
     last_date: date
     count: int
@@ -41,8 +35,8 @@ class CoverageGap:
 class ArchiveCoverage:
     """Completeness diagnostics for the session archive."""
 
-    provider_ranges: tuple[ProviderRange, ...]
-    provider_counts: dict[str, int]
+    origin_ranges: tuple[OriginRange, ...]
+    origin_counts: dict[str, int]
     gaps: tuple[CoverageGap, ...]
     truncated_sessions: int
     total_sessions: int
@@ -54,8 +48,8 @@ def analyze_coverage(summaries: Sequence[SessionSummary]) -> ArchiveCoverage:
     """Analyze archive coverage from session summaries."""
     if not summaries:
         return ArchiveCoverage(
-            provider_ranges=(),
-            provider_counts={},
+            origin_ranges=(),
+            origin_counts={},
             gaps=(),
             truncated_sessions=0,
             total_sessions=0,
@@ -63,34 +57,33 @@ def analyze_coverage(summaries: Sequence[SessionSummary]) -> ArchiveCoverage:
             date_range=(None, None),
         )
 
-    provider_dates: dict[str, list[date]] = defaultdict(list)
-    provider_counts: dict[str, int] = defaultdict(int)
+    origin_dates: dict[str, list[date]] = defaultdict(list)
+    origin_counts: dict[str, int] = defaultdict(int)
     all_dates: set[date] = set()
     total_messages = 0
     truncated = 0
 
     for summary in summaries:
-        provider = provider_from_origin(summary.origin).value
-        provider_counts[provider] += 1
+        origin = summary.origin.value
+        origin_counts[origin] += 1
         total_messages += summary.message_count or 0
 
         dt = summary.updated_at or summary.created_at
         if dt:
             d = dt.date()
-            provider_dates[provider].append(d)
+            origin_dates[origin].append(d)
             all_dates.add(d)
 
         # Heuristic for truncated: very few messages suggest incomplete export
         if (summary.message_count or 0) <= 2:
             truncated += 1
 
-    # Build provider ranges
-    ranges: list[ProviderRange] = []
-    for provider, dates in sorted(provider_dates.items()):
+    ranges: list[OriginRange] = []
+    for origin, dates in sorted(origin_dates.items()):
         if dates:
             ranges.append(
-                ProviderRange(
-                    provider=provider,
+                OriginRange(
+                    origin=origin,
                     first_date=min(dates),
                     last_date=max(dates),
                     count=len(dates),
@@ -117,8 +110,8 @@ def analyze_coverage(summaries: Sequence[SessionSummary]) -> ArchiveCoverage:
         date_range = (min(all_dates), max(all_dates))
 
     return ArchiveCoverage(
-        provider_ranges=tuple(ranges),
-        provider_counts=dict(provider_counts),
+        origin_ranges=tuple(ranges),
+        origin_counts=dict(origin_counts),
         gaps=tuple(gaps),
         truncated_sessions=truncated,
         total_sessions=len(summaries),

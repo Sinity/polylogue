@@ -21,7 +21,7 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
-from polylogue.core.enums import Provider, TitleSource
+from polylogue.core.enums import Origin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
@@ -2701,11 +2701,11 @@ def test_claude_code_helper_conversion_contracts() -> None:
     assert tool_call.name == "bash"
     assert tool_call.id == "tool-1"
     assert tool_call.input == {"command": "git status"}
-    assert tool_call.provider == "claude-code"
+    assert tool_call.origin is Origin.CLAUDE_CODE_SESSION
     assert tool_call.raw == tool.model_dump()
 
     assert reasoning.text == "chain of thought"
-    assert reasoning.provider == "claude-code"
+    assert reasoning.origin is Origin.CLAUDE_CODE_SESSION
     assert reasoning.raw == trace.model_dump()
 
     assert token_usage.input_tokens == 12

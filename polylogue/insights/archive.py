@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
@@ -16,6 +16,7 @@ from polylogue.archive.semantic.pricing import (
 )
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.errors import PolylogueError
+from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,
@@ -238,7 +239,7 @@ class SessionProfileInsight(ArchiveInsightModel):
     semantic_tier: str = "merged"
     session_id: str
     logical_session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
     evidence: SessionEvidencePayload | None = None
@@ -276,7 +277,7 @@ class SessionProfileInsight(ArchiveInsightModel):
             semantic_tier=tier,
             session_id=str(record.session_id),
             logical_session_id=str(record.logical_session_id),
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             title=record.title,
             provenance=_record_provenance(record),
             evidence=(record.evidence_payload if include_evidence else None),
@@ -291,7 +292,7 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_latency_profile"
     session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
     latency: SessionLatencyProfilePayload
@@ -319,7 +320,7 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
         )
         return cls(
             session_id=str(record.session_id),
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             title=record.title,
             provenance=_record_provenance(record),
             latency=payload,
@@ -332,7 +333,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
     semantic_tier: str = "inference"
     event_id: str
     session_id: str
-    source_name: str
+    origin: str
     event_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance
@@ -344,7 +345,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
         return cls(
             event_id=record.event_id,
             session_id=record.session_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             event_index=record.event_index,
             provenance=_record_provenance(record),
             inference_provenance=_record_inference_provenance(record),
@@ -359,7 +360,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
     semantic_tier: str = "evidence"
     phase_id: str
     session_id: str
-    source_name: str
+    origin: str
     phase_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance | None = None
@@ -371,7 +372,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
         return cls(
             phase_id=record.phase_id,
             session_id=record.session_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             phase_index=record.phase_index,
             provenance=_record_provenance(record),
             evidence=record.evidence_payload,
@@ -418,19 +419,6 @@ class SessionTagRollupInsight(ArchiveInsightModel):
     repo_breakdown: dict[str, int]
     provenance: ArchiveInsightProvenance
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
-            updated = dict(data)
-            updated["origin_breakdown"] = updated["provider_breakdown"]
-            return updated
-        return data
-
-    @property
-    def provider_breakdown(self) -> dict[str, int]:
-        return self.origin_breakdown
-
 
 class DaySessionSummaryInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
@@ -453,7 +441,7 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     insight_kind: str = "archive_coverage"
     group_by: str = "origin"
     bucket: str = ""
-    source_name: str | None = None
+    origin: str | None = None
     session_count: int
     logical_session_count: int = 0
     message_count: int = 0
@@ -483,26 +471,13 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     origin_breakdown: dict[str, int] = Field(default_factory=dict)
     provenance: ArchiveInsightProvenance | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
-            updated = dict(data)
-            updated["origin_breakdown"] = updated["provider_breakdown"]
-            return updated
-        return data
-
-    @property
-    def provider_breakdown(self) -> dict[str, int]:
-        return self.origin_breakdown
-
 
 class SessionCostInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_cost"
     semantic_tier: str = "estimate"
     session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -514,7 +489,7 @@ class CostRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "cost_rollup"
     semantic_tier: str = "estimate"
-    source_name: str
+    origin: str
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0
@@ -541,7 +516,7 @@ class UsageTimelineInsight(ArchiveInsightModel):
     semantic_tier: str = "evidence"
     group_by: str = "month-origin-model"
     bucket: str
-    source_name: str | None = None
+    origin: str | None = None
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0

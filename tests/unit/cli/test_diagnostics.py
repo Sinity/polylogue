@@ -129,7 +129,7 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
     diagnostics._render_usage_report(env, report)
 
     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
-    assert "stored/provider-priced cost: $12.50" in rendered
+    assert "stored/origin-priced cost: $12.50" in rendered
     assert "catalog API-equivalent cost: $18.75" in rendered
     assert "catalog API-equivalent cost (logical_session_model_high_water): $14.25" in rendered
     assert "pricing lane origin_reported" in rendered
@@ -401,7 +401,6 @@ async def test_tools_json_declares_tool_use_basis(
     assert payload["filters"]["basis"] == "tool-use-blocks"
     assert payload["items"] == [
         {
-            "source_name": "codex",
             "origin": "codex-session",
             "normalized_tool_name": "exec_command",
             "action_kind": "shell",
@@ -451,7 +450,6 @@ async def test_tools_json_declares_observed_event_basis(
     assert payload["filters"]["mcp_server"] == "serena"
     assert payload["items"] == [
         {
-            "source_name": "claude-code",
             "origin": "claude-code-session",
             "normalized_tool_name": "mcp__serena__find_symbol",
             "action_kind": "mcp",
@@ -507,7 +505,6 @@ async def test_tools_json_declares_action_evidence_basis(
     assert payload["filters"]["days"] == 30
     assert payload["items"] == [
         {
-            "source_name": "codex",
             "origin": "codex-session",
             "normalized_tool_name": "codebase-memory/command-detail",
             "action_kind": "tool_use",

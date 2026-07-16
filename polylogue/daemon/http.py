@@ -30,7 +30,6 @@ from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
-from polylogue.core.sources import source_name_to_origin
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -699,7 +698,7 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
     estimate = insight.estimate
     return {
         "session_id": insight.session_id,
-        "origin": source_name_to_origin(insight.source_name),
+        "origin": insight.origin,
         "model_name": estimate.model_name,
         "normalized_model": estimate.normalized_model,
         "status": estimate.status,
@@ -886,7 +885,7 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
                 "event_id": ev.event_id,
                 "event_index": int(ev.event_index),
                 "session_id": ev.session_id,
-                "origin": source_name_to_origin(ev.source_name),
+                "origin": ev.origin,
                 "evidence": ev.evidence.model_dump(mode="json"),
                 "inference": ev.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ev.provenance),
@@ -908,7 +907,7 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
                 "phase_id": ph.phase_id,
                 "phase_index": int(ph.phase_index),
                 "session_id": ph.session_id,
-                "origin": source_name_to_origin(ph.source_name),
+                "origin": ph.origin,
                 "evidence": ph.evidence.model_dump(mode="json"),
                 "inference": _optional_model_dump(ph.inference),
                 "provenance": _provenance_dict(ph.provenance),
@@ -2982,10 +2981,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         classification path, two output backends.
         """
 
-        from polylogue.api.archive import _archive_message_to_domain, _provider_for_archive_origin
+        from polylogue.api.archive import _archive_message_to_domain
+        from polylogue.core.enums import Origin
 
-        provider = _provider_for_archive_origin(envelope.origin)
-        messages = [_archive_message_to_domain(message, provider=provider) for message in envelope.messages]
+        origin = Origin.from_string(envelope.origin)
+        messages = [_archive_message_to_domain(message, origin=origin) for message in envelope.messages]
         return semantic_card_placement_for_messages(
             messages, session_id=envelope.session_id, provider_family=envelope.origin
         )
@@ -4559,7 +4559,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
         # unbounded) and unchanged from today's plain-thread behavior.
         self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
-        owned_write_runtime = self._owned_write_runtime
+        owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         self._owned_write_runtime = None
         if owned_write_runtime is not None:
             owned_write_runtime.close()

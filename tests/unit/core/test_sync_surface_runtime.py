@@ -137,7 +137,7 @@ def test_sync_session_queries_forward_through_sync_bridge() -> None:
             {
                 "session_id": "conv-1",
                 "query": None,
-                "provider": None,
+                "origin": None,
                 "limit": 4,
                 "window_hours": 24,
             },

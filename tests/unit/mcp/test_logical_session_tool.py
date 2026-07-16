@@ -16,8 +16,8 @@ def test_logical_session_tool_returns_compact_envelope(mcp_server: MCPServerUnde
                 session_id=SessionId("fork"),
                 root_id=SessionId("root"),
                 thread=(
-                    SessionRef(session_id=SessionId("root"), source_name="claude-code", depth=0),
-                    SessionRef(session_id=SessionId("fork"), source_name="claude-code", depth=1),
+                    SessionRef(session_id=SessionId("root"), origin="claude-code", depth=0),
+                    SessionRef(session_id=SessionId("fork"), origin="claude-code", depth=1),
                 ),
                 siblings=(),
                 descendants=(),

@@ -45,7 +45,6 @@ They are not a proof ledger or end-user archive workflow.
 
 | Command | Role |
 | --- | --- |
-| `devtools lab census provider-vocabulary` | Enumerate function/method parameters, dataclass/Pydantic/TypedDict fields, dict/set string-literal keys, and CLI-flag/HTTP-route literals literally named provider/providers outside sources/schemas/pipeline/browser_capture, replacing the manual rg census that two adversarial falsification rounds proved misses the identifier-vocabulary leak axis. --check only fails on allowlist rot (stale entries or a vacuous zero-site scan), not on the large expected backlog of unallowlisted retirement candidates -- rerun after each later step in the plan to watch that backlog trend toward zero. |
 | `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
 | `devtools lab policy backlog-hygiene` | Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 15 checks over the Beads export catching dangling dependency refs, blocks-cycles, missing horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance criteria, unlabeled non-epic beads, epics with no members or description, stale 'adopted' decisions left open, duplicate titles, and bead ids named but never created -- catches backlog structure drift before it needs an archaeology sweep to recover, instead of only a manually-invoked script. |
@@ -127,7 +126,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools lab census provider-vocabulary` | AST-level census of provider/origin vocabulary leak sites (polylogue-9e5.8 Step 0). |
 | `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
 | `devtools lab lanes` | Run named validation lanes. |
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |

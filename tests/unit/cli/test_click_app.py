@@ -447,7 +447,13 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
         ),
         (
             ["continue"],
-            {"action": "continue", "candidates": False, "destination": "terminal", "format": "json"},
+            {
+                "action": "continue",
+                "candidates": False,
+                "destination": "terminal",
+                "execute": False,
+                "format": "json",
+            },
         ),
         (
             ["delete", "--dry-run"],

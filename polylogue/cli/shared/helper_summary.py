@@ -103,7 +103,7 @@ def print_summary_impl(
         if verbose:
             metrics = run_coroutine_sync(list_archive_coverage_insights_fn(services=env.services))
             counts: list[tuple[str, int]] = [
-                (metric.source_name or metric.bucket, metric.session_count) for metric in metrics
+                (metric.origin or metric.bucket, metric.session_count) for metric in metrics
             ]
         else:
             counts = run_coroutine_sync(get_origin_counts_fn(services=env.services))
@@ -145,7 +145,7 @@ def print_summary_impl(
                 ui.console.print()
                 ui.console.print("[bold]Deep Dive:[/bold]")
                 for metric in metrics:
-                    ui.console.print(f"[bold]{metric.source_name}[/bold]")
+                    ui.console.print(f"[bold]{metric.origin}[/bold]")
                     avg_msgs = (
                         "n/a" if metric.avg_messages_per_session is None else f"{metric.avg_messages_per_session:.1f}"
                     )

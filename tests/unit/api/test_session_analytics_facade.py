@@ -46,7 +46,7 @@ def _profile(session_id: str, *, message_count: int = 10, word_count: int = 100)
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
-        source_name="claude-code",
+        origin="claude-code",
         title=session_id,
         provenance=_provenance(),
         semantic_tier="merged",
@@ -71,7 +71,7 @@ async def test_aggregate_sessions_fetches_full_scope_not_a_page_limit(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_aggregate_sessions_maps_provider_filter_through(tmp_path: Path) -> None:
+async def test_aggregate_sessions_normalizes_origin_filter(tmp_path: Path) -> None:
     poly = _archive(tmp_path)
     fetch_mock = AsyncMock(return_value=[])
     poly.list_session_profile_insights = fetch_mock  # type: ignore[method-assign]
@@ -80,7 +80,7 @@ async def test_aggregate_sessions_maps_provider_filter_through(tmp_path: Path) -
 
     assert fetch_mock.await_args is not None
     query = fetch_mock.await_args.args[0]
-    assert query.origin == "claude-code"
+    assert query.origin == "claude-code-session"
 
 
 @pytest.mark.asyncio

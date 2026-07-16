@@ -131,6 +131,20 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         )
         .save()
     )
+    (
+        SessionBuilder(index_db, "run-hit-subagent")
+        .provider("codex")
+        .parent_session("ext-run-hit")
+        .branch_type("subagent")
+        .git_repository_url("polylogue")
+        .git_branch("feature/query-runs")
+        .working_directories(["/realm/project/polylogue"])
+        .title("Run query rendering subagent")
+        .created_at((now - timedelta(minutes=29)).isoformat())
+        .updated_at((now - timedelta(minutes=29)).isoformat())
+        .add_message("m9", role="assistant", text="Run query unit rendered.")
+        .save()
+    )
 
     with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -451,7 +465,6 @@ def test_async_execute_query_archive_lists_archive(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -523,7 +536,6 @@ def test_async_execute_query_archive_projects_fields(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Projected",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -581,7 +593,6 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Structured",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -985,7 +996,6 @@ def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Fallback",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -1162,7 +1172,6 @@ def test_async_execute_query_archive_delivers_to_output_path(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Delivered",
                     created_at=None,
                     updated_at=None,
@@ -1592,7 +1601,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     snippet="[needle]",
                 )
@@ -1604,7 +1612,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Copied",
                 created_at=None,
                 updated_at=None,
@@ -1738,7 +1745,6 @@ def test_async_execute_query_archive_searches_within_session_id(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     snippet="[needle]",
                 )
@@ -1750,7 +1756,6 @@ def test_async_execute_query_archive_searches_within_session_id(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Copied",
                 created_at=None,
                 updated_at=None,
@@ -1843,7 +1848,6 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
             session_id=f"codex-session:{native_id}",
             native_id=native_id,
             origin="codex-session",
-            provider=Provider.CODEX,
             title=native_id,
             created_at=None,
             updated_at=None,
@@ -1971,7 +1975,6 @@ def test_async_execute_query_archive_open_uses_first_list_result(
                     session_id="codex-session:first",
                     native_id="first",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="First",
                     created_at=None,
                     updated_at=None,
@@ -2242,7 +2245,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 ),
@@ -2252,7 +2254,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                     block_id="codex-session:native-2:m1:0",
                     message_id="codex-session:native-2:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic 2",
                     snippet="semantic hit 2",
                 ),
@@ -2264,7 +2265,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                 session_id=session_id,
                 native_id=native_id,
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title=f"Semantic {native_id[-1]}",
                 created_at=None,
                 updated_at=None,
@@ -2338,7 +2338,6 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 )
@@ -2350,7 +2349,6 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Semantic",
                 created_at=None,
                 updated_at=None,
@@ -2429,7 +2427,6 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 )
@@ -2441,7 +2438,6 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Semantic",
                 created_at=None,
                 updated_at=None,
@@ -3342,13 +3338,13 @@ class TestSearchQueryContracts:
                 "AND",
                 "role:subagent",
                 "AND",
-                "agent:Explore",
+                "agent:subagent",
             ],
         )
 
         assert result.exit_code == 0, result.output
-        assert "run:codex-session:ext-run-hit:subagent:0:tool-run [subagent/completed]" in result.output
-        assert "agent:codex/Explore" in result.output
+        assert "run:codex-session:ext-run-hit-subagent [subagent/completed]" in result.output
+        assert "agent:codex/subagent" in result.output
 
     def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
         """Context snapshot expressions stay on terminal query-unit routing, not stats."""

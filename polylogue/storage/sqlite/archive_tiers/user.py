@@ -138,39 +138,39 @@ CREATE TABLE IF NOT EXISTS watched_query_baselines (
     updated_at_ms   INTEGER NOT NULL CHECK(updated_at_ms >= 0)
 ) STRICT;
 
-CREATE TRIGGER retained_query_runs_result_set_query_match_insert
+CREATE TRIGGER IF NOT EXISTS retained_query_runs_result_set_query_match_insert
 BEFORE INSERT ON retained_query_runs
 WHEN (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN
     SELECT RAISE(ABORT, 'retained query run result set must belong to the same query');
 END;
-CREATE TRIGGER retained_query_runs_result_set_query_match_update
+CREATE TRIGGER IF NOT EXISTS retained_query_runs_result_set_query_match_update
 BEFORE UPDATE OF query_hash, result_set_id ON retained_query_runs
 WHEN (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN
     SELECT RAISE(ABORT, 'retained query run result set must belong to the same query');
 END;
-CREATE TRIGGER query_evaluation_receipts_result_set_query_match_insert
+CREATE TRIGGER IF NOT EXISTS query_evaluation_receipts_result_set_query_match_insert
 BEFORE INSERT ON query_evaluation_receipts
 WHEN NEW.result_set_id IS NOT NULL
  AND (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN
     SELECT RAISE(ABORT, 'evaluation receipt result set must belong to the same query');
 END;
-CREATE TRIGGER query_evaluation_receipts_result_set_query_match_update
+CREATE TRIGGER IF NOT EXISTS query_evaluation_receipts_result_set_query_match_update
 BEFORE UPDATE OF query_hash, result_set_id ON query_evaluation_receipts
 WHEN NEW.result_set_id IS NOT NULL
  AND (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN
     SELECT RAISE(ABORT, 'evaluation receipt result set must belong to the same query');
 END;
-CREATE TRIGGER watched_query_baselines_result_set_query_match_insert
+CREATE TRIGGER IF NOT EXISTS watched_query_baselines_result_set_query_match_insert
 BEFORE INSERT ON watched_query_baselines
 WHEN (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN
     SELECT RAISE(ABORT, 'watched query baseline result set must belong to the same query');
 END;
-CREATE TRIGGER watched_query_baselines_result_set_query_match_update
+CREATE TRIGGER IF NOT EXISTS watched_query_baselines_result_set_query_match_update
 BEFORE UPDATE OF query_hash, result_set_id ON watched_query_baselines
 WHEN (SELECT query_hash FROM result_sets WHERE result_set_id = NEW.result_set_id) IS NOT NEW.query_hash
 BEGIN

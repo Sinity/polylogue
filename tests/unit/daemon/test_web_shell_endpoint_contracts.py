@@ -278,28 +278,28 @@ def _make_topology(*, with_cycle: bool = False) -> SessionTopology:
     nodes = (
         TopologyNode(
             session_id=_cid("root"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Root",
             depth=0,
             is_root=True,
         ),
         TopologyNode(
             session_id=_cid("target"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Target",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             session_id=_cid("sibling"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Sibling",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             session_id=_cid("child"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Child",
             depth=2,
             is_root=False,

@@ -22,6 +22,7 @@ from polylogue.core.enums import Origin
 from polylogue.daemon.embedding_backlog import reconcile_embedding_orphans_once
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
+from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
@@ -31,29 +32,22 @@ from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSIO
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-_INDEX_DDL = """
-CREATE TABLE sessions (
-    session_id TEXT PRIMARY KEY,
-    origin TEXT NOT NULL
-);
-CREATE TABLE messages (
-    message_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL
-);
-"""
-
 
 def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     session_id = "codex-session:daemon-fixture"
     orphan_message_id = f"{session_id}:orphaned"
 
-    index_db = tmp_path / "index.db"
-    conn = sqlite3.connect(index_db)
-    conn.executescript(_INDEX_DDL)
-    conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
-    conn.execute("INSERT INTO sessions (session_id, origin) VALUES (?, 'codex-session')", (session_id,))
+    generation_store = IndexGenerationStore(tmp_path)
+    generation = generation_store.create(owner_id="embedding-orphan-test", source_snapshot="fixture-snapshot")
+    conn = sqlite3.connect(generation.index_path)
+    conn.execute(
+        "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, 'codex-session', zeroblob(32))",
+        ("daemon-fixture",),
+    )
     conn.commit()
     conn.close()
+    generation_store.promote(generation)
+    index_db = tmp_path / "index.db"
 
     embeddings_db = tmp_path / "embeddings.db"
     econn = sqlite3.connect(embeddings_db)

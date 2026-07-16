@@ -42,9 +42,10 @@ from devtools.pipeline_probe.staging import (
     _write_probe_sources,
 )
 from polylogue.config import Config, Source
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, is_json_document, loads, require_json_document
 from polylogue.core.metrics import PipelineMetrics
+from polylogue.core.sources import provider_from_origin
 from polylogue.demo.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.paths import active_index_db_path, blob_store_root
 from polylogue.pipeline.run_stages import execute_index_stage, execute_materialize_stage
@@ -57,7 +58,6 @@ from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
-from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -221,7 +221,7 @@ def _fetch_archive_file_set_candidates(
     records: list[RawSessionRecord] = []
     for row in rows:
         origin = str(row[1])
-        provider = _provider_for_origin(origin)
+        provider = provider_from_origin(Origin.from_string(origin))
         source_path = str(row[2])
         if provider_filter_set and provider.value not in provider_filter_set:
             continue

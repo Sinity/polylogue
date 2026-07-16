@@ -34,7 +34,7 @@ from polylogue.insights.tool_usage import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.tool_usage import (
-    ToolUsageProviderCoverageRow,
+    ToolUsageOriginCoverageRow,
     ToolUsageRow,
 )
 from tests.infra.storage_records import SessionBuilder
@@ -70,7 +70,7 @@ def _row(
     outputs: int = 0,
 ) -> ToolUsageRow:
     return {
-        "source_name": origin,
+        "origin": origin,
         "normalized_tool_name": tool,
         "action_kind": action_kind,
         "call_count": calls,
@@ -92,9 +92,9 @@ def _coverage(
     tool_ids: int = 0,
     paths: int = 0,
     outputs: int = 0,
-) -> ToolUsageProviderCoverageRow:
+) -> ToolUsageOriginCoverageRow:
     return {
-        "source_name": origin,
+        "origin": origin,
         "session_count": sessions,
         "action_count": events,
         "distinct_tool_count": tools,
@@ -151,9 +151,9 @@ class TestBuildToolUsageInsight:
             query=ToolUsageInsightQuery(origin="claude-code-session"),
             materialized_at="2026-05-17T00:00:00+00:00",
         )
-        assert [entry.source_name for entry in insight.entries] == ["claude-code-session"]
+        assert [entry.origin for entry in insight.entries] == ["claude-code-session"]
         # Coverage is exhaustive even though entries are narrowed.
-        assert {entry.source_name for entry in insight.origin_coverage} == {
+        assert {entry.origin for entry in insight.origin_coverage} == {
             "claude-code-session",
             "codex-session",
             "chatgpt-export",
@@ -161,7 +161,7 @@ class TestBuildToolUsageInsight:
         assert insight.origins_with_data == 2
         assert insight.origins_without_data == 1
         assert insight.has_coverage_gaps is True
-        chatgpt = next(entry for entry in insight.origin_coverage if entry.source_name == "chatgpt-export")
+        chatgpt = next(entry for entry in insight.origin_coverage if entry.origin == "chatgpt-export")
         assert chatgpt.data_available is False
         assert chatgpt.action_count == 0
 
@@ -293,7 +293,7 @@ class TestListToolUsageInsightsEndToEnd:
         read = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code-session" and entry.normalized_tool_name == "read"
+            if entry.origin == "claude-code-session" and entry.normalized_tool_name == "read"
         )
         assert read.call_count == 2
         assert read.session_count == 1
@@ -302,12 +302,12 @@ class TestListToolUsageInsightsEndToEnd:
         bash = next(
             entry
             for entry in insight.entries
-            if entry.source_name == "claude-code-session" and entry.normalized_tool_name == "bash"
+            if entry.origin == "claude-code-session" and entry.normalized_tool_name == "bash"
         )
         assert bash.output_text_calls == 1
         assert bash.affected_path_calls == 0
         # Coverage covers both origins.
-        origins = {entry.source_name for entry in insight.origin_coverage}
+        origins = {entry.origin for entry in insight.origin_coverage}
         assert origins == {"claude-code-session", "codex-session"}
 
     async def test_empty_origin_selects_unknown_export_in_tool_and_coverage_routes(self, tmp_path: Path) -> None:
@@ -340,7 +340,7 @@ class TestListToolUsageInsightsEndToEnd:
         [tool_usage] = await archive.list_tool_usage_insights(ToolUsageInsightQuery(origin=""))
         coverage = await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(origin=""))
 
-        assert [(entry.source_name, entry.normalized_tool_name) for entry in tool_usage.entries] == [
+        assert [(entry.origin, entry.normalized_tool_name) for entry in tool_usage.entries] == [
             ("unknown-export", "inspect")
         ]
         assert [(entry.bucket, entry.session_count) for entry in coverage] == [("unknown-export", 1)]
@@ -372,11 +372,11 @@ class TestListToolUsageInsightsEndToEnd:
 
         result = await archive.list_tool_usage_insights(ToolUsageInsightQuery())
         insight = result[0]
-        chatgpt = next(entry for entry in insight.origin_coverage if entry.source_name == "chatgpt-export")
+        chatgpt = next(entry for entry in insight.origin_coverage if entry.origin == "chatgpt-export")
         assert chatgpt.session_count == 1
         assert chatgpt.action_count == 0
         assert chatgpt.data_available is False
-        cc = next(entry for entry in insight.origin_coverage if entry.source_name == "claude-code-session")
+        cc = next(entry for entry in insight.origin_coverage if entry.origin == "claude-code-session")
         assert cc.data_available is True
         assert insight.has_coverage_gaps is True
         assert insight.origins_without_data == 1
@@ -427,9 +427,9 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert [entry.normalized_tool_name for entry in insight.entries] == ["mcp__serena__find_symbol"]
         assert insight.entries[0].call_count == 2
-        assert insight.entries[0].source_name == "claude-code-session"
+        assert insight.entries[0].origin == "claude-code-session"
         assert insight.entries[0].mcp_server == "serena"
-        assert {entry.source_name for entry in insight.origin_coverage} == {
+        assert {entry.origin for entry in insight.origin_coverage} == {
             "claude-code-session",
             "codex-session",
             "chatgpt-export",
@@ -509,7 +509,6 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -517,7 +516,6 @@ class TestListToolUsageInsightsEndToEnd:
                 "event_count": 1,
             },
             {
-                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -603,10 +601,9 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "codex-session",
                 "origin": "codex-session",
                 "normalized_tool_name": "codebase-memory/command-detail",
-                "action_kind": "tool_use",
+                "action_kind": "shell",
                 "evidence_kind": "command_detail",
                 "matched_by": "detail",
                 "call_count": 1,
@@ -668,10 +665,9 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert rows == [
             {
-                "source_name": "codex-session",
                 "origin": "codex-session",
                 "normalized_tool_name": "codebase-memory/command-detail",
-                "action_kind": "tool_use",
+                "action_kind": "shell",
                 "evidence_kind": "command_detail",
                 "matched_by": "detail",
                 "call_count": 1,
@@ -735,7 +731,6 @@ class TestListToolUsageInsightsEndToEnd:
 
         assert call_rows == [
             {
-                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "tool_use",
@@ -744,7 +739,6 @@ class TestListToolUsageInsightsEndToEnd:
         ]
         assert event_rows == [
             {
-                "source_name": "claude-code-session",
                 "origin": "claude-code-session",
                 "normalized_tool_name": "mcp__serena__find_symbol",
                 "action_kind": "mcp",
@@ -779,7 +773,7 @@ def test_envelope_serializes_to_jsonable_dict() -> None:
     assert payload["insight_kind"] == "tool_usage"
     assert payload["materializer_version"] == TOOL_USAGE_INSIGHT_VERSION
     assert payload["has_coverage_gaps"] is True
-    assert {entry["source_name"] for entry in payload["origin_coverage"]} == {
+    assert {entry["origin"] for entry in payload["origin_coverage"]} == {
         "claude-code-session",
         "chatgpt-export",
     }

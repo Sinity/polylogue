@@ -30,7 +30,37 @@ CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
+DEFAULT_TMPFS_SIZE_SAMPLE_INTERVAL_S = 2.0
 BASETEMP_SIZE_SAMPLE_INTERVAL_ENV = "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S"
+PYTEST_TMPFS_MAX_MB_ENV = "POLYLOGUE_PYTEST_TMPFS_MAX_MB"
+DEFAULT_PYTEST_TMPFS_MAX_MB = 512
+MAX_PYTEST_TMPFS_MAX_MB = 2048
+MIN_PYTEST_AVAILABLE_KB = 1024 * 1024
+PYTEST_WORKER_MEMORY_KB = 768 * 1024
+PYTEST_HOST_RESERVE_KB = 512 * 1024
+MAX_ADAPTIVE_PYTEST_WORKERS = 12
+
+
+class PytestResourceError(RuntimeError):
+    """Raised when the host cannot safely start a managed pytest run."""
+
+
+@dataclass(frozen=True)
+class PytestRuntimePolicy:
+    """One start-time resource decision for a managed pytest run."""
+
+    available_kb: int
+    tmpfs_budget_mb: int
+    workers: int
+    memory_full_avg10: float
+
+    def to_dict(self) -> dict[str, int | float]:
+        return {
+            "available_mb": round(self.available_kb / 1024),
+            "tmpfs_budget_mb": self.tmpfs_budget_mb,
+            "workers": self.workers,
+            "memory_full_avg10": self.memory_full_avg10,
+        }
 
 
 def utc_now() -> str:
@@ -404,17 +434,100 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     """Keep cloud pytest defaults from escaping a workstation scratch volume.
 
     ``.claude/settings.json`` supplies ``/tmp/polylogue-pytest`` for cloud
-    sandboxes.  Agent subprocesses can inherit that setting while running in a
-    local linked worktree, where it would fill the host tmpfs instead of the
-    mounted ``/realm/tmp`` scratch volume.  Preserve explicit custom roots and
-    retain the cloud setting when the workstation scratch mount is absent.
+    sandboxes. Agent subprocesses can inherit that setting on the workstation;
+    remove only that known cloud default so the managed adaptive tmpfs policy
+    can apply. Preserve other custom roots and retain the cloud setting when
+    the workstation scratch mount is absent.
     """
 
     normalized = dict(env)
     configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
-        normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(DEFAULT_PYTEST_BASETEMP_ROOT)
+        normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
     return normalized
+
+
+def adaptive_pytest_runtime_policy(
+    *,
+    available_kb: int | None = None,
+    memory_full_avg10: float | None = None,
+    cpu_count: int | None = None,
+    shm_free_kb: int | None = None,
+) -> PytestRuntimePolicy:
+    """Size tmpfs and xdist from current headroom without a disk fallback."""
+    if available_kb is None:
+        available_kb = _meminfo().get("MemAvailable")
+    if available_kb is None:
+        raise PytestResourceError("cannot read MemAvailable; refusing an unbudgeted pytest run")
+    if available_kb < MIN_PYTEST_AVAILABLE_KB:
+        raise PytestResourceError(
+            f"only {available_kb / (1024 * 1024):.2f} GiB memory available; managed pytest requires at least 1.00 GiB"
+        )
+
+    if memory_full_avg10 is None:
+        memory_full_avg10 = _pressure("memory").get("full_avg10", 0.0)
+    if shm_free_kb is None:
+        shm = _fs_usage(Path("/dev/shm"))
+        shm_free_kb = shm.get("free_kb") if shm is not None else None
+    if shm_free_kb is None:
+        raise PytestResourceError("/dev/shm is unavailable; refusing to fall back to disk-backed pytest")
+
+    adaptive_budget_mb = max(
+        DEFAULT_PYTEST_TMPFS_MAX_MB,
+        min(MAX_PYTEST_TMPFS_MAX_MB, int(available_kb / 1024 * 0.10)),
+    )
+    safe_shm_budget_mb = int((shm_free_kb / 1024) * 0.80)
+    tmpfs_budget_mb = min(adaptive_budget_mb, safe_shm_budget_mb)
+    if tmpfs_budget_mb < 64:
+        raise PytestResourceError(f"only {shm_free_kb / 1024:.0f} MiB free in /dev/shm; refusing disk-backed pytest")
+
+    logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    cpu_cap = max(1, logical_cpus // 2)
+    worker_pool_kb = max(0, available_kb - tmpfs_budget_mb * 1024 - PYTEST_HOST_RESERVE_KB)
+    workers = max(
+        1,
+        min(
+            MAX_ADAPTIVE_PYTEST_WORKERS,
+            cpu_cap,
+            max(1, worker_pool_kb // PYTEST_WORKER_MEMORY_KB),
+        ),
+    )
+    if memory_full_avg10 >= 2.0:
+        workers = max(1, workers // 4)
+    elif memory_full_avg10 >= 0.5:
+        workers = max(1, workers // 2)
+
+    return PytestRuntimePolicy(
+        available_kb=available_kb,
+        tmpfs_budget_mb=tmpfs_budget_mb,
+        workers=workers,
+        memory_full_avg10=memory_full_avg10,
+    )
+
+
+def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
+    """Enable bounded tmpfs by default; preserve explicit storage choices."""
+    normalized = normalize_pytest_basetemp_env(env)
+    if normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT"):
+        return normalized, None
+    if normalized.get("POLYLOGUE_PYTEST_TMPFS") == "0":
+        return normalized, None
+
+    policy = adaptive_pytest_runtime_policy()
+    normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
+    normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
+    return normalized, policy
+
+
+def adaptive_pytest_worker_count(env: Mapping[str, str]) -> int:
+    """Return an explicit worker override or the current adaptive count."""
+    configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
+    if configured:
+        try:
+            return max(0, int(configured))
+        except ValueError as exc:
+            raise PytestResourceError(f"invalid POLYLOGUE_PYTEST_WORKERS={configured!r}") from exc
+    return adaptive_pytest_runtime_policy().workers
 
 
 def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path:
@@ -426,6 +539,18 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
     else:
         scratch_root = DEFAULT_PYTEST_BASETEMP_ROOT
     return scratch_root / f"pytest-polylogue-{checkout_hash(root)}-{run_id}"
+
+
+def pytest_tmpfs_budget_kb(env: Mapping[str, str]) -> int | None:
+    """Return the bounded per-run tmpfs budget shared by all pytest workers."""
+    if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT"):
+        return None
+    raw = env.get(PYTEST_TMPFS_MAX_MB_ENV, str(DEFAULT_PYTEST_TMPFS_MAX_MB))
+    with contextlib.suppress(ValueError):
+        requested_mb = int(raw)
+        bounded_mb = max(64, min(requested_mb, MAX_PYTEST_TMPFS_MAX_MB))
+        return bounded_mb * 1024
+    return DEFAULT_PYTEST_TMPFS_MAX_MB * 1024
 
 
 def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, str]) -> Path | None:
@@ -554,6 +679,8 @@ class ResourceSampler:
 def _basetemp_size_sample_interval_s(env: dict[str, str]) -> float:
     raw = env.get(BASETEMP_SIZE_SAMPLE_INTERVAL_ENV)
     if raw is None or raw.strip() == "":
+        if pytest_tmpfs_budget_kb(env) is not None:
+            return DEFAULT_TMPFS_SIZE_SAMPLE_INTERVAL_S
         return DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S
     with contextlib.suppress(ValueError):
         return max(0.0, float(raw))

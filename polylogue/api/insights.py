@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.api.archive import _active_archive_root, _provider_for_archive_origin
+from polylogue.api.archive import _active_archive_root
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.types import SessionId
@@ -265,7 +265,7 @@ def _archive_session_topology(archive: object, session_id: str) -> SessionTopolo
     nodes = tuple(
         TopologyNode(
             session_id=SessionId(envelope.session_id),
-            source_name=_provider_for_archive_origin(envelope.origin).value,
+            origin=envelope.origin,
             title=envelope.title,
             depth=depths.get(envelope.session_id, 0),
             is_root=envelope.session_id == root_id,
@@ -731,7 +731,7 @@ class PolylogueInsightsMixin:
         if ref_profile is None:
             return None
         candidates = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(origin=ref_profile.source_name, limit=candidate_pool_limit)
+            SessionProfileInsightQuery(origin=ref_profile.origin, limit=candidate_pool_limit)
         )
         scored = compute_metadata_similarity_candidates(ref_profile, candidates, exclude_session_id=session_id)
         return {

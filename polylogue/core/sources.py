@@ -405,14 +405,14 @@ def source_name_to_origin(source_name: object) -> str:
     so surface modules (daemon HTTP, MCP) project insight rows to origin
     without importing the provider-wire ``Provider`` enum themselves.
 
-    Returns ``"unknown"`` for empty input. A token that is already a
+    Returns ``Origin.UNKNOWN_EXPORT`` for empty or unrecognized input. A token that is already a
     canonical origin passes through unchanged; otherwise it is interpreted
     as a provider-wire token and mapped via :func:`origin_from_provider`.
     """
 
     value = str(source_name or "")
     if not value:
-        return "unknown"
+        return Origin.UNKNOWN_EXPORT.value
     if value in _CANONICAL_ORIGIN_VALUES:
         return value
     # Source-family tokens (e.g. ``gemini-export``, ``drive-takeout``) are
@@ -426,7 +426,7 @@ def source_name_to_origin(source_name: object) -> str:
     try:
         return origin_from_provider(Provider.from_string(value)).value
     except ValueError:
-        return "unknown"
+        return Origin.UNKNOWN_EXPORT.value
 
 
 # User-facing origin tokens for CLI/MCP/completion choices. Derived from the

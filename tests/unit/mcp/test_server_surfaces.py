@@ -16,7 +16,7 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, BranchType, Provider
 from polylogue.core.refs import EvidenceRef
 from polylogue.core.types import SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -57,6 +57,8 @@ def _write_archive_session(
     text: str = "archive message",
     working_directories: list[str] | None = None,
     blocks: list[dict[str, Any]] | None = None,
+    parent_session_provider_id: str | None = None,
+    branch_type: BranchType | None = None,
 ) -> str:
     parsed_blocks = (
         [ParsedContentBlock.model_validate(block) for block in blocks]
@@ -69,6 +71,8 @@ def _write_archive_session(
             provider_session_id=native_id,
             title=title,
             working_directories=working_directories or [],
+            parent_session_provider_id=parent_session_provider_id,
+            branch_type=branch_type,
             messages=[
                 ParsedMessage(
                     provider_message_id=f"{native_id}-m1",
@@ -750,7 +754,7 @@ class TestArchiveGenericToolSurfaces:
     ) -> None:
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
-            session_id = _write_archive_session(
+            parent_id = _write_archive_session(
                 archive,
                 native_id="tool-query-units-run",
                 title="Tool query units run",
@@ -775,6 +779,15 @@ class TestArchiveGenericToolSurfaces:
                     },
                 ],
             )
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-run-child",
+                title="Explore subagent run",
+                text="Subagent run terminal row",
+                parent_session_provider_id="tool-query-units-run",
+                branch_type=BranchType.SUBAGENT,
+            )
+            assert parent_id != session_id
         _materialize_run_projection(archive_root / "index.db")
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -787,7 +800,7 @@ class TestArchiveGenericToolSurfaces:
             mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
             result = await invoke_surface_async(
                 mcp_server._tool_manager._tools["query_units"].fn,
-                expression="runs where role:subagent AND status:completed AND agent:Explore",
+                expression="runs where role:subagent AND status:completed AND agent:codex",
             )
 
         payload = json.loads(result)
@@ -798,7 +811,7 @@ class TestArchiveGenericToolSurfaces:
         assert item["session_id"] == session_id
         assert item["role"] == "subagent"
         assert item["status"] == "completed"
-        assert item["agent_ref"] == "agent:codex/Explore"
+        assert item["agent_ref"] == "agent:codex/subagent"
 
     @pytest.mark.asyncio
     async def test_query_units_tool_returns_observed_event_rows_without_archive_operations(

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall, classify_tool
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.core.sources import origin_from_provider
 
 ClaudeCodeBlockRecord: TypeAlias = dict[str, object]
 ClaudeCodeContentBlocks: TypeAlias = list[ClaudeCodeBlockRecord]
@@ -132,7 +133,7 @@ class ClaudeCodeToolUse(BaseModel):
             id=self.id,
             input=self.input,
             category=classify_tool(self.name, json_document(self.input)),
-            provider=Provider.CLAUDE_CODE,
+            origin=origin_from_provider(Provider.CLAUDE_CODE),
             raw=self.model_dump(),
         )
 
@@ -168,7 +169,7 @@ class ClaudeCodeThinkingBlock(BaseModel):
     def to_reasoning_trace(self) -> ReasoningTrace:
         return ReasoningTrace(
             text=self.thinking,
-            provider=Provider.CLAUDE_CODE,
+            origin=origin_from_provider(Provider.CLAUDE_CODE),
             raw=self.model_dump(),
         )
 

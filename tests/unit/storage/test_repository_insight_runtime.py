@@ -328,17 +328,17 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
     )
     mock_mtimes.assert_awaited_once_with(conn)
     mock_cursors.assert_awaited_once_with(conn)
-    mock_reset_parse.assert_awaited_once_with(conn, provider="chatgpt", source_names=["inbox"], transaction_depth=7)
+    mock_reset_parse.assert_awaited_once_with(conn, origin="chatgpt", source_names=["inbox"], transaction_depth=7)
     mock_reset_validation.assert_awaited_once_with(
         conn,
-        provider="chatgpt",
+        origin="chatgpt",
         source_names=["inbox"],
         transaction_depth=7,
     )
     mock_batch.assert_awaited_once_with(conn, ["raw-1"])
     mock_blob_sizes.assert_awaited_once_with(conn, ["raw-1"])
     mock_states.assert_awaited_once_with(conn, ["raw-1"])
-    mock_count.assert_awaited_once_with(conn, provider="chatgpt")
+    mock_count.assert_awaited_once_with(conn, origin="chatgpt")
 
 
 @pytest.mark.asyncio
@@ -376,7 +376,7 @@ async def test_repository_raw_streams_iterators() -> None:
 
     assert sessions == ["raw-a", "raw-b"]
     assert headers == [("raw-a", 1), ("raw-b", 2)]
-    mock_iter_raw.assert_called_once_with(conn, provider="chatgpt", limit=2)
+    mock_iter_raw.assert_called_once_with(conn, origin="chatgpt", limit=2)
     mock_iter_headers.assert_called_once_with(
         conn,
         source_paths=["inbox"],

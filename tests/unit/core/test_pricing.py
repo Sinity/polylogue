@@ -61,7 +61,7 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
         output_tokens=500,
     )
 
-    estimate = estimate_message_cost(message, source_name="chatgpt")
+    estimate = estimate_message_cost(message, origin="chatgpt-export")
 
     assert estimate.status == "priced"
     assert estimate.normalized_model == "gpt-4o"
@@ -154,7 +154,7 @@ def test_missing_price_is_unavailable_not_zero_precision() -> None:
         output_tokens=50,
     )
 
-    estimate = estimate_message_cost(message, source_name="chatgpt")
+    estimate = estimate_message_cost(message, origin="chatgpt-export")
 
     assert estimate.status == "unavailable"
     assert estimate.total_usd == 0.0
@@ -230,7 +230,7 @@ def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
         input_tokens=10,
         output_tokens=5,
     )
-    estimate = estimate_message_cost(message, source_name="chatgpt")
+    estimate = estimate_message_cost(message, origin="chatgpt-export")
     assert estimate.status == "unavailable"
     assert estimate.unavailable_reason == "no_price"
     assert estimate.total_usd == 0.0
@@ -271,7 +271,7 @@ def test_paid_model_missing_cache_rate_is_flagged_not_silently_zero(monkeypatch:
     monkeypatch.setitem(pricing_mod.PRICING, "test-paid-nocache", paid_no_cache)
 
     estimate = _estimate_from_usage(
-        source_name="test",
+        origin="unknown-export",
         model_name="test-paid-nocache",
         usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000),
         provenance=("message_token_usage",),
@@ -292,7 +292,7 @@ def test_free_model_with_cache_tokens_is_not_flagged(monkeypatch: pytest.MonkeyP
     monkeypatch.setitem(pricing_mod.PRICING, "test-free-model", free_model)
 
     estimate = _estimate_from_usage(
-        source_name="test",
+        origin="unknown-export",
         model_name="test-free-model",
         usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000),
         provenance=("message_token_usage",),
@@ -316,7 +316,7 @@ def test_paid_model_with_cache_rate_is_not_flagged(monkeypatch: pytest.MonkeyPat
     monkeypatch.setitem(pricing_mod.PRICING, "test-paid-cache", paid_with_cache)
 
     estimate = _estimate_from_usage(
-        source_name="test",
+        origin="unknown-export",
         model_name="test-paid-cache",
         usage=CostUsagePayload(input_tokens=100, output_tokens=10, cache_read_tokens=1000, cache_write_tokens=50),
         provenance=("message_token_usage",),
@@ -428,14 +428,14 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     # Price the values that survived parser -> archive writer, not a second
     # hand-built representation of the corrected usage.
     disjoint = _estimate_from_usage(
-        source_name="test",
+        origin="unknown-export",
         model_name="test-codex-like",
         usage=CostUsagePayload(**dict(message_usage)),
         provenance=("message_token_usage",),
     )
     # Pre-fix parser output: input stored inclusive of cache (the bug).
     naive = _estimate_from_usage(
-        source_name="test",
+        origin="unknown-export",
         model_name="test-codex-like",
         usage=CostUsagePayload(input_tokens=2500, output_tokens=50, cache_read_tokens=2400),
         provenance=("message_token_usage",),

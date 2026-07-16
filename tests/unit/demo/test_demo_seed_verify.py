@@ -167,7 +167,8 @@ async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
 
     assert verify.ok is False
     assert "expected demo overlays" in "\n".join(verify.problems)
-    assert all(row.ok for row in verify.construct_coverage)
+    failed_constructs = [row.to_payload() for row in verify.construct_coverage if not row.ok]
+    assert not failed_constructs, failed_constructs
 
 
 @pytest.mark.asyncio

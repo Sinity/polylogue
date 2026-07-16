@@ -787,10 +787,19 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         register_source_freshness_mcp_tool,
     )
 
-    register_source_freshness_mcp_tool(
-        mcp,
-        make_source_freshness_mcp_handler(lambda: mcp_archive_root(hooks.get_config())),
-    )
+    source_freshness_handler = make_source_freshness_mcp_handler(lambda: mcp_archive_root(hooks.get_config()))
+
+    async def named_source_freshness(source_path: str) -> str:
+        """Return bounded freshness evidence for one configured source path."""
+
+        async def run() -> str:
+            return hooks.json_payload(
+                MCPRootPayload[dict[str, object]](root=await source_freshness_handler(source_path))
+            )
+
+        return await hooks.async_safe_call("named_source_freshness", run)
+
+    register_source_freshness_mcp_tool(mcp, named_source_freshness)
 
     compact_coordination_cache = _CompactCoordinationCache()
 

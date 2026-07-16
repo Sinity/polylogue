@@ -384,7 +384,7 @@ class TestPolylogueReadSurfaces:
         missing_artifacts, missing_total = await archive.get_raw_artifacts_for_session("missing")
 
         assert total == 1
-        assert artifacts[0]["source_name"] == "codex"
+        assert artifacts[0]["origin"] == "codex-session"
         assert artifacts[0]["blob_size"] == len(payload)
         assert missing_artifacts == []
         assert missing_total == 0

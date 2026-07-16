@@ -22,9 +22,7 @@ from typing import Any, TypeAlias, cast
 
 import click
 
-from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import PolylogueError
-from polylogue.core.sources import origin_from_provider
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
@@ -104,54 +102,7 @@ class InsightType:
 def _model_payload(item: ArchiveInsightModel) -> dict[str, object]:
     """Convert an insight item to a JSON-serializable payload."""
 
-    return cast(dict[str, object], project_origin_payload(item.model_dump(mode="json")))
-
-
-_CANONICAL_ORIGIN_VALUES = frozenset(origin.value for origin in Origin)
-
-
-def _source_name_origin(source_name: object) -> str:
-    value = str(source_name or "")
-    if not value:
-        return "unknown"
-    if value in _CANONICAL_ORIGIN_VALUES:
-        return value
-    try:
-        return origin_from_provider(Provider.from_string(value)).value
-    except ValueError:
-        return "unknown"
-
-
-def project_origin_payload(value: object) -> object:
-    """Project source-origin fields to public origin vocabulary."""
-
-    if isinstance(value, list):
-        return [project_origin_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return [project_origin_payload(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-
-    group_by_provider = value.get("group_by") == "provider"
-    projected: dict[str, object] = {}
-    for key, item in value.items():
-        if key in {"source_name", "provider"}:
-            projected["origin"] = _source_name_origin(item)
-        elif key == "provider_coverage":
-            projected["origin_coverage"] = project_origin_payload(item)
-        elif key == "provider_breakdown" and isinstance(item, dict):
-            projected["origin_breakdown"] = {_source_name_origin(origin): count for origin, count in item.items()}
-        elif key == "providers_with_data":
-            projected["origins_with_data"] = item
-        elif key == "providers_without_data":
-            projected["origins_without_data"] = item
-        elif key == "group_by" and item == "provider":
-            projected[key] = "origin"
-        else:
-            projected[key] = project_origin_payload(item)
-    if group_by_provider and "bucket" in projected:
-        projected["bucket"] = _source_name_origin(projected["bucket"])
-    return projected
+    return cast(dict[str, object], item.model_dump(mode="json"))
 
 
 def insight_items_payload(
@@ -256,7 +207,7 @@ def _id_with_origin(identifier_attr: str) -> InsightAccessor:
 
     def accessor(item: ArchiveInsightModel) -> str:
         identifier = _stringify(getattr(item, identifier_attr, None))
-        origin = _source_name_origin(getattr(item, "source_name", None))
+        origin = _stringify(getattr(item, "origin", None))
         return f"{identifier} [{origin}]"
 
     return accessor
@@ -553,14 +504,14 @@ register(
                 show_default=True,
                 help="Bucket coverage by origin, day, or ISO week",
             ),
-            CliOption("provider", ("--origin", "-o"), help="Only this origin"),
+            CliOption("origin", ("--origin", "-o"), help="Only this origin"),
             CliOption("since", ("--since",), help="Only buckets at/after this timestamp or date"),
             CliOption("until", ("--until",), help="Only buckets at/before this timestamp or date"),
         ),
         fields=(
             InsightField("", _attr("bucket"), group=0),
             InsightField("group", _attr("group_by"), group=0),
-            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("origin", _attr("origin"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("messages", _attr("message_count", "0"), group=1),
             InsightField("words", _attr("total_words", "0"), group=1),
@@ -646,7 +597,7 @@ register(
         readiness_exempt=True,
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
         fields=(
-            InsightField("", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("", _attr("origin"), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=0),
             InsightField("priced", _attr("priced_session_count", "0"), group=1),
@@ -686,7 +637,7 @@ register(
         ),
         fields=(
             InsightField("", _attr("bucket"), group=0),
-            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("origin", _attr("origin"), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("events", _attr("event_count", "0"), group=1),
@@ -797,7 +748,6 @@ __all__ = [
     "get_insight_type",
     "list_insight_types",
     "insight_items_payload",
-    "project_origin_payload",
     "register",
     "render_insight_items",
 ]

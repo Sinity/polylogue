@@ -56,7 +56,7 @@ class ProvenanceRow:
     raw_id: str | None
     raw_blob_id: str | None
     source_path: str | None
-    source_name: str | None
+    origin: str | None
     blob_size: int | None
     acquired_at: str | None
     file_mtime: str | None
@@ -116,7 +116,7 @@ def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> Provenan
                 """
                 SELECT
                     s.session_id              AS session_id,
-                    s.origin                  AS source_name,
+                    s.origin                  AS origin,
                     lower(hex(s.content_hash)) AS content_hash,
                     s.raw_id                  AS raw_id,
                     r.source_path             AS source_path,
@@ -140,7 +140,7 @@ def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> Provenan
                 """
             SELECT
                 s.session_id              AS session_id,
-                s.origin                  AS source_name,
+                s.origin                  AS origin,
                 lower(hex(s.content_hash)) AS content_hash,
                 s.raw_id                  AS raw_id,
                 NULL                      AS source_path,
@@ -173,7 +173,7 @@ def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> Provenan
     raw_blob_id = bytes(blob_hash).hex() if blob_hash is not None else None
     return ProvenanceRow(
         session_id=str(row["session_id"]),
-        source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
+        origin=(str(row["origin"]) if row["origin"] is not None else None),
         content_hash=str(row["content_hash"] or ""),
         raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
         raw_blob_id=raw_blob_id,
@@ -213,11 +213,11 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
             """
             SELECT
                 c.session_id   AS session_id,
-                c.source_name     AS source_name,
+                c.source_name     AS origin,
                 c.content_hash      AS content_hash,
                 c.raw_id            AS raw_id,
                 r.source_path       AS source_path,
-                r.source_name       AS source_name,
+                r.source_name       AS raw_source_name,
                 r.blob_size         AS blob_size,
                 r.acquired_at       AS acquired_at,
                 r.file_mtime        AS file_mtime,
@@ -239,7 +239,7 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
         return None
     return ProvenanceRow(
         session_id=str(row["session_id"]),
-        source_name=(str(row["source_name"]) if row["source_name"] is not None else None),
+        origin=(str(row["origin"]) if row["origin"] is not None else None),
         content_hash=str(row["content_hash"] or ""),
         raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
         raw_blob_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
@@ -365,11 +365,10 @@ def build_provenance_payload(
 
     payload: dict[str, object] = {
         "session_id": row.session_id,
-        "origin": row.source_name or None,
+        "origin": row.origin or None,
         "content_hash": row.content_hash or None,
         "raw_id": row.raw_id,
         "source_path_display": sanitized_path,
-        "source_name": row.source_name,
         "source_path_is_absolute": is_absolute,
         "source_path_contains_home": contains_home,
         "acquired_at": row.acquired_at,

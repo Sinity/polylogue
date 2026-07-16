@@ -28,7 +28,7 @@
     "result": "pass",
     "triggered": false
   },
-  "first_result_s": 2.072,
+  "first_result_s": 5.583,
   "non_claims": [
     "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
     "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
@@ -234,21 +234,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 16,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 49,
+        "observed": 37,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 16,
+        "observed": 15,
         "ok": true
       },
       {
@@ -359,7 +359,7 @@
         "demo",
         "receipts"
       ],
-      "duration_s": 1.649,
+      "duration_s": 1.661,
       "exit_code": 0,
       "name": "claim versus receipt",
       "output_path": "command-output/01-claim-versus-receipt.txt"
@@ -370,7 +370,7 @@
         "polylogue",
         "actions where is_error:true | group by tool | count"
       ],
-      "duration_s": 1.925,
+      "duration_s": 1.938,
       "exit_code": 0,
       "name": "failed actions aggregate",
       "output_path": "command-output/02-failed-actions-aggregate.txt"
@@ -385,7 +385,7 @@
         "--view",
         "chronicle"
       ],
-      "duration_s": 1.884,
+      "duration_s": 1.985,
       "exit_code": 0,
       "name": "composed lineage",
       "output_path": "command-output/03-composed-lineage.txt"
@@ -397,13 +397,13 @@
         "analyze",
         "--facets"
       ],
-      "duration_s": 1.797,
+      "duration_s": 1.909,
       "exit_code": 0,
       "name": "archive facets",
       "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 7.678,
+  "total_duration_s": 11.414,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],
@@ -574,21 +574,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 16,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 49,
+        "observed": 37,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 16,
+        "observed": 15,
         "ok": true
       },
       {

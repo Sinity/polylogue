@@ -14,7 +14,6 @@ import math
 from collections.abc import Sequence
 from datetime import date
 
-from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.archive import SessionProfileInsight
 
 # Numeric session-profile metrics that ``pearson_session_correlation`` can
@@ -156,7 +155,7 @@ def build_session_comparison_row(profile: SessionProfileInsight) -> dict[str, ob
     inference = profile.inference
     return {
         "id": profile.session_id,
-        "origin": source_name_to_origin(profile.source_name),
+        "origin": profile.origin,
         "title": profile.title,
         "workflow_shape": inference.workflow_shape if inference else "unknown",
         "terminal_state": inference.terminal_state if inference else "unknown",
@@ -198,8 +197,7 @@ def compute_metadata_similarity_candidates(
     ref_evidence = ref_profile.evidence
     ref_inference = ref_profile.inference
     ref_shape = ref_inference.workflow_shape if ref_inference else None
-    ref_source = ref_profile.source_name
-    ref_origin = source_name_to_origin(ref_source)
+    ref_origin = ref_profile.origin
     ref_date = ref_evidence.canonical_session_date if ref_evidence else None
     ref_tags = set(ref_evidence.tags) if ref_evidence else set()
 
@@ -217,8 +215,8 @@ def compute_metadata_similarity_candidates(
             score += 3
             reasons.append(f"same workflow_shape: {ref_shape}")
 
-        cand_source = profile.source_name
-        if ref_source and cand_source == ref_source:
+        cand_origin = profile.origin
+        if ref_origin and cand_origin == ref_origin:
             score += 1
             reasons.append(f"same origin: {ref_origin}")
 
@@ -250,7 +248,7 @@ def compute_metadata_similarity_candidates(
                     {
                         "session_id": profile.session_id,
                         "title": profile.title,
-                        "origin": source_name_to_origin(profile.source_name),
+                        "origin": profile.origin,
                         "workflow_shape": cand_shape or "unknown",
                         "terminal_state": inference.terminal_state if inference else "unknown",
                         "canonical_session_date": cand_date,

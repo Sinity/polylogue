@@ -32,7 +32,12 @@ def _iso_to_epoch(iso_str: str) -> float:
 def _origin_value(value: str) -> str:
     if value == "":
         return Origin.UNKNOWN_EXPORT.value
-    return Origin(value).value
+    try:
+        return Origin(value).value
+    except ValueError:
+        # Public library callers can supply arbitrary filter text. Keep it a
+        # bound no-match value rather than turning validation into an exception.
+        return value
 
 
 def _build_session_filters(

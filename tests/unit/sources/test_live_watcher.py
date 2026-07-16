@@ -874,6 +874,11 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(f.read_bytes()).hexdigest(),
+            sha256(f.read_bytes()).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -896,6 +901,11 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         byte_offset=stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(f.read_bytes()).hexdigest(),
+            sha256(f.read_bytes()).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino + 1,
         mtime_ns=stat.st_mtime_ns,
@@ -995,7 +1005,9 @@ def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     bytes_read = watcher._batch_processor._record_full_cursor(f, raw_fingerprint="raw-sha256")
     record = watcher._cursor.get_record(f)
 
-    assert bytes_read == f.stat().st_size
+    # The cursor stores both a bounded tail and a complete accepted-prefix
+    # hash; this one-record fixture makes both reads span the whole file.
+    assert bytes_read == 2 * f.stat().st_size
     assert record is not None
     assert record.content_fingerprint == "raw-sha256"
 
@@ -1066,7 +1078,7 @@ def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path
     assert bytes_read == 0
     assert record is not None
     assert record.byte_size == state_db.stat().st_size
-    assert record.content_fingerprint == "snapshot-hash"
+    assert record.content_fingerprint == "acquisition-revision"
     assert record.tail_hash == "acquisition-revision"
 
 
@@ -1121,6 +1133,11 @@ def test_large_incomplete_jsonl_append_still_needs_work(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -1765,6 +1782,11 @@ def test_incomplete_append_event_defers_without_ingest_until_newline(tmp_path: P
         last_complete_newline=len(complete),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(complete).hexdigest(),
+            sha256(complete).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -1872,7 +1894,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["source_group_count"] == 1
     assert payload["input_bytes"] == f.stat().st_size
     assert payload["source_payload_read_bytes"] == f.stat().st_size
-    assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["cursor_fingerprint_read_bytes"] == 2 * f.stat().st_size
     assert payload["read_amplification"] == 1.0
     assert payload["files_per_second"] >= 0
     assert payload["source_mb_per_second"] >= 0
@@ -2146,14 +2168,9 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
 
     async def _drive() -> None:
         run_task = asyncio.create_task(watcher.run())
-        # Wait for catch_up to finish ingesting the pre-existing file.
-        for _ in range(50):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
+        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=5.0)
         baseline = parse_sources.await_count
-        await asyncio.sleep(0.2)  # ensure awatch is up after catch-up bookkeeping
-        # Append more content; expect a second ingest after debounce.
+        # Append immediately at the old catch-up/watch handoff boundary.
         with open(f, "a") as fh:
             fh.write('{"b":2}\n')
         for _ in range(60):

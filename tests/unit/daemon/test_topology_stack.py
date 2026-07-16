@@ -113,7 +113,7 @@ def _make_topology(
     node_tuple = tuple(
         TopologyNode(
             session_id=SessionId(cid),
-            source_name="claude-code",
+            origin="claude-code",
             title=cid.title(),
             depth=depth,
             is_root=is_root,

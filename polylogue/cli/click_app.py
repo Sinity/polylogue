@@ -528,7 +528,7 @@ register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
     "analyze": "Analyze matched sessions and named facet families.",
-    "continue": "Print or execute the harness command that resumes a session.",
+    "continue": "Resume a session or compile successor context as JSON.",
     "delete": "Delete matched sessions.",
     "mark": "Mark selected sessions; review candidates under mark candidates.",
     "read": "Read matched sessions (route to view/destination).",

@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -202,6 +202,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item,
+    call: pytest.CallInfo[None],
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """Retain the call outcome so passing test temp trees can be reclaimed."""
+    report = yield
+    setattr(item, f"rep_{report.when}", report)
+    return report
+
+
+@pytest.fixture(autouse=True)
+def _reclaim_passing_test_tmp_path(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+) -> Iterator[None]:
+    """Bound broad-run temp growth while preserving failed-test evidence."""
+    yield
+    report: pytest.TestReport | None = getattr(request.node, "rep_call", None)
+    if report is not None and report.passed:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
@@ -260,7 +283,10 @@ _TESTS_ROOT = str(Path(__file__).resolve().parent)
 
 
 @pytest.fixture(autouse=True)
-def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _close_test_opened_sqlite_connections(
+    monkeypatch: pytest.MonkeyPatch,
+    _reclaim_passing_test_tmp_path: None,
+) -> Iterator[None]:
     """Close sync ``sqlite3`` connections that *test code* opened but never closed.
 
     Many tests use ``with sqlite3.connect(...) as conn:`` which commits on exit
@@ -378,7 +404,11 @@ def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> It
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _clear_polylogue_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _reclaim_passing_test_tmp_path: None,
+) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.sqlite.connection import _clear_connection_cache
@@ -475,7 +505,11 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
 
 @pytest.fixture
-def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def workspace_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_archive_template: Path,
+) -> dict[str, Path]:
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
@@ -487,10 +521,7 @@ def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore(archive_root):
-        pass
+    _clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -534,7 +565,11 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
 
 
 @pytest.fixture
-def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def cli_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_archive_template: Path,
+) -> dict[str, Path]:
     """
     Isolated CLI workspace with archive roots and database.
 
@@ -568,10 +603,7 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore(archive_root):
-        pass
+    _clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -581,6 +613,55 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "render_root": render_root,
         "db_path": db_path,
     }
+
+
+def _clone_archive_template(source: Path, destination: Path) -> None:
+    """Clone one immutable empty archive into a test-private workspace."""
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["cp", "-a", "--reflink=auto", f"{source}/.", str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+@pytest.fixture(scope="session")
+def empty_archive_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+) -> Path:
+    """Build the empty five-tier archive once per pytest run, shared read-only."""
+    import fcntl
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    worker_base = tmp_path_factory.getbasetemp()
+    run_root = worker_base.parent if worker_id != "master" else worker_base
+    template = run_root / ".empty-archive-template"
+    ready = run_root / ".empty-archive-template.ready"
+    lock_path = run_root / ".empty-archive-template.lock"
+
+    with lock_path.open("a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        if ready.exists() and template.is_dir():
+            return template
+
+        building = run_root / f".empty-archive-template.building-{os.getpid()}"
+        shutil.rmtree(building, ignore_errors=True)
+        try:
+            with ArchiveStore(building):
+                pass
+            building.replace(template)
+            ready.touch()
+        finally:
+            shutil.rmtree(building, ignore_errors=True)
+
+    return template
 
 
 @pytest.fixture

@@ -29,11 +29,10 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
 from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
-from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
@@ -385,13 +384,6 @@ def _archive_index_available(config: Config) -> bool:
 
 def _active_archive_root(config: Config) -> Path:
     return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-
-
-def _provider_for_archive_origin(origin: str) -> Provider:
-    try:
-        return provider_from_origin(Origin(origin))
-    except ValueError:
-        return Provider.UNKNOWN
 
 
 def _archive_context_message_window(
@@ -746,7 +738,7 @@ def _archive_facet_buckets(
         }
     )
     return FacetBuckets(
-        providers=origins,
+        origins=origins,
         tags=tags,
         repos=sql_buckets["repos"],
         role_counts=sql_buckets["role_counts"],
@@ -1458,7 +1450,7 @@ def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachmen
     )
 
 
-def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Message:
+def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
     text = "\n\n".join(block.text for block in message.blocks if block.text) or None
     content_blocks: list[dict[str, object]] = [
         {
@@ -1484,7 +1476,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         role=Role.normalize(message.role),
         text=text,
         timestamp=parse_archive_datetime(message.occurred_at),
-        provider=provider,
+        origin=origin,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         material_origin=MaterialOrigin.normalize(message.material_origin),
@@ -1500,8 +1492,8 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
 
 
 def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
-    provider = _provider_for_archive_origin(session.origin)
-    messages = [_archive_message_to_domain(message, provider=provider) for message in session.messages]
+    origin = Origin.from_string(session.origin)
+    messages = [_archive_message_to_domain(message, origin=origin) for message in session.messages]
     timestamps = [message.timestamp for message in messages if message.timestamp is not None]
     # Prefer the stored session timestamps (sessions.created_at_ms/updated_at_ms);
     # fall back to the message-timestamp envelope only when the session row has
@@ -1511,7 +1503,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     stored_updated = parse_archive_datetime(session.updated_at)
     return Session(
         id=SessionId(session.session_id),
-        origin=origin_from_provider(provider),
+        origin=origin,
         title=session.title,
         messages=MessageCollection(messages=messages),
         created_at=stored_created or (min(timestamps) if timestamps else None),
@@ -1529,7 +1521,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
 def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
@@ -1545,7 +1537,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
 def _archive_search_hit_to_domain(hit: ArchiveSessionSearchHit) -> SearchHit:
     return SearchHit(
         session_id=hit.session_id,
-        source_name=hit.provider.value,
+        source_name=hit.origin,
         message_id=hit.message_id,
         title=hit.title,
         timestamp=None,
@@ -1786,7 +1778,7 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     events: builtins.list[Action] = []
     for message in session.messages:
         calls = build_tool_calls_from_content_blocks(
-            provider=provider_from_origin(session.origin),
+            origin=session.origin,
             content_blocks=message.blocks,
         )
         events.extend(build_actions(message, calls))
@@ -4249,7 +4241,7 @@ class PolylogueArchiveMixin:
 
         def _payload(b: _FacetBuckets) -> FacetBucketsPayload:
             return FacetBucketsPayload(
-                origins=dict(b.providers),
+                origins=dict(b.origins),
                 tags=dict(b.tags),
                 repos=dict(b.repos),
                 role_counts=dict(b.role_counts),
@@ -4301,7 +4293,7 @@ class PolylogueArchiveMixin:
                         for family, reason in deferred_families.items()
                     },
                 },
-                "origins": dict(active.providers),
+                "origins": dict(active.origins),
                 "tags": dict(active.tags),
                 "repos": dict(active.repos),
                 "role_counts": dict(active.role_counts),

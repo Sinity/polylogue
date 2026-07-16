@@ -65,7 +65,7 @@ class SimilarHit:
     score: float
     confidence: str
     title: str | None
-    source_name: str | None
+    origin: str | None
     matched_message_count: int
 
 
@@ -397,7 +397,7 @@ def _build_archive_similar_payload(
         for session_id, agg in ranked:
             distance = float(agg["best_distance"])
             score = _l2_to_cosine_similarity(distance)
-            title, source_name = metadata.get(session_id, (None, None))
+            title, origin = metadata.get(session_id, (None, None))
             hits.append(
                 {
                     "session_id": session_id,
@@ -405,7 +405,7 @@ def _build_archive_similar_payload(
                     "distance": round(distance, 4),
                     "confidence": _confidence_for_score(score),
                     "title": title,
-                    "source_name": source_name,
+                    "origin": origin,
                     "matched_message_count": int(agg["matched_messages"]),
                 }
             )
@@ -529,7 +529,7 @@ def build_similar_payload(
         for conv_id, agg in ranked:
             distance = float(agg["best_distance"])
             score = _l2_to_cosine_similarity(distance)
-            title, source_name = metadata.get(conv_id, (None, None))
+            title, origin = metadata.get(conv_id, (None, None))
             hits.append(
                 {
                     "session_id": conv_id,
@@ -537,7 +537,7 @@ def build_similar_payload(
                     "distance": round(distance, 4),
                     "confidence": _confidence_for_score(score),
                     "title": title,
-                    "source_name": source_name,
+                    "origin": origin,
                     "matched_message_count": int(agg["matched_messages"]),
                 }
             )
