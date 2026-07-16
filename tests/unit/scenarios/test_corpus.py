@@ -123,7 +123,6 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
             observed_artifact_count=21,
             observed_confidence=0.75,
             bundle_scope_count=4,
-            representative_paths=("/tmp/example.json",),
             first_seen="2026-04-01T00:00:00Z",
             last_seen="2026-04-02T00:00:00Z",
         ),
@@ -147,7 +146,6 @@ def test_corpus_spec_payload_round_trip_preserves_inference_fields() -> None:
         "observed_artifact_count": 21,
         "observed_confidence": 0.75,
         "bundle_scope_count": 4,
-        "representative_paths": ["/tmp/example.json"],
         "first_seen": "2026-04-01T00:00:00Z",
         "last_seen": "2026-04-02T00:00:00Z",
     }
@@ -457,7 +455,6 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
                 bundle_scope_count=7,
                 sample_count=18,
                 profile_family_ids=["pkg-family"],
-                representative_paths=["/tmp/package.json"],
                 elements=[
                     SchemaElementManifest(
                         element_kind="session_document",
@@ -467,7 +464,6 @@ def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
                         bundle_scope_count=7,
                         profile_family_ids=["pkg-family"],
                         profile_tokens=["session", "tool-use"],
-                        representative_paths=["/tmp/package.json"],
                         observed_artifact_count=16,
                         first_seen="2026-03-01T00:00:00Z",
                         last_seen="2026-04-03T00:00:00Z",

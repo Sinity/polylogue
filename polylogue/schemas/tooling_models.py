@@ -193,6 +193,7 @@ class SchemaCluster:
     def to_dict(self) -> JSONDocument:
         data = asdict(self)
         data["provider"] = str(self.provider)
+        data.pop("representative_paths", None)
         return json_document(data)
 
 

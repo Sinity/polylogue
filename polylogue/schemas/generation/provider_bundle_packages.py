@@ -39,6 +39,7 @@ from polylogue.schemas.generation.schema_builder import (
 )
 from polylogue.schemas.generation.workload_profiles import build_package_workload_profile
 from polylogue.schemas.observation import ProviderConfig
+from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -118,16 +119,22 @@ def _membership_profile_family_ids(memberships: Sequence[_UnitMembership]) -> li
     return sorted({membership.profile_family_id for membership in memberships})
 
 
-def _membership_bundle_scopes(memberships: Sequence[_UnitMembership]) -> list[str]:
+def _membership_bundle_scope_identities(memberships: Sequence[_UnitMembership]) -> list[str]:
     if isinstance(memberships, JournalMemberships):
-        return list(memberships.iter_distinct_values("bundle_scope"))
-    return sorted({membership.unit.bundle_scope for membership in memberships if membership.unit.bundle_scope})
+        scopes = memberships.iter_distinct_values("bundle_scope")
+    else:
+        scopes = iter(
+            sorted({membership.unit.bundle_scope for membership in memberships if membership.unit.bundle_scope})
+        )
+    return [bundle_scope_identity(scope) for scope in scopes]
 
 
-def _package_scope_keys(package: _PackageAccumulator) -> list[str]:
+def _package_scope_identities(package: _PackageAccumulator) -> list[str]:
     if isinstance(package.memberships, JournalMemberships):
-        return list(package.memberships.iter_scope_keys())
-    return sorted(package.bundle_scopes)
+        scopes = package.memberships.iter_scope_keys()
+    else:
+        scopes = iter(sorted(package.bundle_scopes))
+    return [bundle_scope_identity(scope) for scope in scopes]
 
 
 def build_provider_catalog_artifacts(
@@ -177,7 +184,7 @@ def build_provider_catalog_artifacts(
             representative_paths: list[str] = []
             exact_structure_ids = _membership_exact_structure_ids(kind_metadata)
             profile_family_ids = _membership_profile_family_ids(kind_metadata)
-            element_bundle_scopes = _membership_bundle_scopes(kind_metadata)
+            element_bundle_scope_identities = _membership_bundle_scope_identities(kind_metadata)
             element_first_seen, element_last_seen = _membership_observed_window(kind_metadata)
             for membership in kind_metadata:
                 if membership.unit.source_path:
@@ -210,7 +217,7 @@ def build_provider_catalog_artifacts(
                 schema["x-polylogue-element-first-seen"] = element_first_seen
             if element_last_seen:
                 schema["x-polylogue-element-last-seen"] = element_last_seen
-            schema["x-polylogue-element-bundle-scope-count"] = len(element_bundle_scopes)
+            schema["x-polylogue-element-bundle-scope-count"] = len(element_bundle_scope_identities)
             schema["x-polylogue-anchor-profile-family-id"] = package_acc.anchor_family_id
             schema["x-polylogue-package-profile-family-ids"] = package_profile_family_ids_json
             package_schemas[version][element_kind] = schema
@@ -223,12 +230,11 @@ def build_provider_catalog_artifacts(
                     artifact_count=len(kind_metadata),
                     first_seen=element_first_seen or "",
                     last_seen=element_last_seen or "",
-                    bundle_scope_count=len(element_bundle_scopes),
-                    bundle_scopes=element_bundle_scopes,
+                    bundle_scope_count=len(element_bundle_scope_identities),
+                    bundle_scope_identities=element_bundle_scope_identities,
                     exact_structure_ids=exact_structure_ids,
                     profile_family_ids=profile_family_ids,
                     profile_tokens=_element_profile_tokens(kind_metadata),
-                    representative_paths=representative_paths,
                     observed_artifact_count=len(kind_metadata),
                 )
             )
@@ -243,9 +249,8 @@ def build_provider_catalog_artifacts(
             bundle_scope_count=_package_bundle_scope_count(package_acc),
             sample_count=total_package_samples,
             anchor_profile_family_id=package_acc.anchor_family_id,
-            bundle_scopes=_package_scope_keys(package_acc),
+            bundle_scope_identities=_package_scope_identities(package_acc),
             profile_family_ids=package_profile_family_ids,
-            representative_paths=package_acc.representative_paths,
             elements=elements,
             workload_profile_file="workload-profile.json.gz",
         )

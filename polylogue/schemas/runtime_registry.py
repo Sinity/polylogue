@@ -133,7 +133,6 @@ class _SchemaEvidence:
     element_bundle_scope_count: int
     exact_structure_ids: list[str]
     profile_tokens: list[str]
-    representative_paths: list[str]
 
 
 @dataclass(frozen=True)
@@ -193,7 +192,6 @@ def _schema_evidence(schema: SchemaInputDocument) -> _SchemaEvidence:
         element_bundle_scope_count=_int_value(schema.get("x-polylogue-element-bundle-scope-count", 0)),
         exact_structure_ids=_string_list(schema.get("x-polylogue-exact-structure-ids", [])),
         profile_tokens=_string_list(schema.get("x-polylogue-profile-tokens", [])),
-        representative_paths=_string_list(schema.get("x-polylogue-representative-paths", [])),
     )
 
 
@@ -575,7 +573,6 @@ class SchemaRegistry:
                     exact_structure_ids=evidence.exact_structure_ids,
                     profile_family_ids=evidence.element_profile_family_ids,
                     profile_tokens=evidence.profile_tokens,
-                    representative_paths=evidence.representative_paths,
                     observed_artifact_count=evidence.observed_artifact_count,
                 )
             ],
@@ -675,8 +672,8 @@ class SchemaRegistry:
                         observation_index=observation_index,
                     )
                 )
-            if observation.bundle_scope and observation.bundle_scope in package.element_bundle_scopes(
-                element.element_kind
+            if observation.bundle_scope and package.matches_bundle_scope(
+                observation.bundle_scope, element.element_kind
             ):
                 candidates.append(
                     _ResolutionCandidate(

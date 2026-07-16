@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
     SchemaRegistry,
@@ -38,14 +39,14 @@ def _package(
         bundle_scope_count=1,
         sample_count=1,
         workload_profile_file=workload_profile_file,
-        bundle_scopes=bundle_scopes or [],
+        bundle_scope_identities=[bundle_scope_identity(scope) for scope in bundle_scopes or []],
         elements=[
             SchemaElementManifest(
                 element_kind=default_element_kind,
                 schema_file=schema_file,
                 sample_count=1,
                 artifact_count=1,
-                bundle_scopes=bundle_scopes or [],
+                bundle_scope_identities=[bundle_scope_identity(scope) for scope in bundle_scopes or []],
                 exact_structure_ids=exact_structure_ids or [],
                 profile_tokens=profile_tokens or [],
             ),
