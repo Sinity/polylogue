@@ -19,8 +19,9 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
 )
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
@@ -39,6 +40,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
@@ -3329,6 +3331,94 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         assert conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
         ).fetchone() == (accepted_raw_id,)
+
+
+def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_head(tmp_path: Path) -> None:
+    """A current parse of the accepted raw is authority, even after parser drift.
+
+    This reproduces the July 16 live failure: an older browser snapshot was
+    accepted under an earlier parser, then byte-equivalent current snapshots
+    reparsed both the accepted raw and the new raw to the same new projection.
+    The accepted index head remains the CAS witness; its old content hash must
+    not be mistaken for an unrelated raw head.
+    """
+    root = tmp_path / "inbox"
+    root.mkdir()
+    snapshot = root / "snapshot.json"
+    payload: list[dict[str, object]] = [
+        {
+            "id": "parser-drift",
+            "title": "current title",
+            "current_node": "node",
+            "mapping": {
+                "node": {
+                    "id": "node",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "message",
+                        "author": {"role": "user"},
+                        "create_time": 1_780_000_000.0,
+                        "content": {"content_type": "text", "parts": ["retained evidence"]},
+                        "metadata": {},
+                    },
+                }
+            },
+        }
+    ]
+    snapshot.write_text(json.dumps(payload), encoding="utf-8")
+    current_session = parse_payload(Provider.CHATGPT, payload, "snapshot")[0]
+    legacy_session = current_session.model_copy(update={"title": "legacy parser title"})
+    legacy_projection = session_revision_projection(legacy_session)
+    current_projection = session_revision_projection(current_session)
+    assert legacy_projection.session_hash != current_projection.session_hash
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        legacy_raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=snapshot.read_bytes(),
+            source_path=str(snapshot),
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            legacy_raw_id,
+            [legacy_session],
+            parser_fingerprint="legacy-parser",
+            censused_at_ms=1,
+        )
+        archive.apply_raw_membership_classification(
+            "chatgpt:parser-drift",
+            MembershipClassification((legacy_raw_id,), (), ()),
+            {legacy_raw_id: legacy_session},
+            {legacy_raw_id: legacy_projection},
+            acquired_at_ms=1,
+        )
+
+    # Byte-level formatting changes create a new retained raw while preserving
+    # the provider session. The live route reparses the accepted raw too.
+    snapshot.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="current-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([snapshot], source_name="inbox")
+
+    assert result.succeeded == [snapshot]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        stored = conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = 'chatgpt-export:parser-drift'"
+        ).fetchone()
+        assert stored is not None
+        assert stored != (legacy_projection.session_hash,)
+        head = conn.execute(
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:parser-drift'"
+        ).fetchone()
+        assert head == stored
 
 
 def test_single_session_full_terminally_supersedes_older_membership_prefix(
