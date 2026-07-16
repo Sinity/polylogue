@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -261,7 +261,7 @@ def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Pa
         )
         assert status == 409 and held["error"]["code"] == "lease_held"
 
-        monkeypatch.setattr(capture_jobs, "_now", lambda: datetime.now(UTC) + timedelta(seconds=2))
+        monkeypatch.setattr(capture_jobs, "_now", lambda: datetime(2099, 1, 1, tzinfo=UTC))
         status, replacement = request(
             host,
             port,
