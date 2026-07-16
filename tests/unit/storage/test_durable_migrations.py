@@ -555,6 +555,7 @@ def test_source_publication_backfill_requires_verified_backup(
     with sqlite3.connect(db_path) as conn:
         conn.execute("DROP TABLE raw_authority_parser_census")
         conn.execute("DROP TABLE raw_authority_blockers")
+        conn.execute("DROP TABLE raw_authority_census_post_plans")
         conn.execute("DROP TABLE raw_authority_census_plans")
         conn.execute("DROP TABLE raw_authority_plans")
         conn.execute("DROP TABLE raw_authority_censuses")
@@ -588,6 +589,7 @@ def test_source_publication_backfill_requires_verified_backup(
             "raw_authority_parser_census",
             "raw_authority_plans",
             "raw_authority_census_plans",
+            "raw_authority_census_post_plans",
             "raw_authority_blockers",
         } <= tables
 

@@ -242,7 +242,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 census_row = conn.execute(
                     """
                     SELECT census_id, sequence_no, inventory_digest, residual_digest,
-                           plan_count, executable_plan_count, residual_plan_count,
+                           plan_count, post_inventory_digest, post_residual_digest,
+                           post_plan_count, executable_plan_count, residual_plan_count,
                            predecessor_census_id, mode, lifecycle_status, quiescent,
                            fixed_point, completed_at_ms
                     FROM source.raw_authority_censuses
@@ -257,6 +258,9 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                         "inventory_digest": str(census_row["inventory_digest"]),
                         "residual_digest": str(census_row["residual_digest"]),
                         "plan_count": int(census_row["plan_count"]),
+                        "post_inventory_digest": str(census_row["post_inventory_digest"]),
+                        "post_residual_digest": str(census_row["post_residual_digest"]),
+                        "post_plan_count": int(census_row["post_plan_count"]),
                         "executable_plan_count": int(census_row["executable_plan_count"]),
                         "residual_plan_count": int(census_row["residual_plan_count"]),
                         "predecessor_census_id": census_row["predecessor_census_id"],

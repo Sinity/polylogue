@@ -347,11 +347,13 @@ polylogue ops maintenance raw-authority-census \
   --output-format json
 ```
 
-The response includes the census digests, complete witnesses and outcome for
-the current page, any linked stale-plan blockers, and `next_query_handle` when
-more rows remain. `--limit` is bounded to 1–500; `--offset` can override the
-offset encoded in the URI. MCP clients resolve the URI directly through the
-matching resource template.
+The response includes both the before-plan inventory and the durable
+postflight plan inventory/digests, complete witnesses and outcome for the
+current page, and only the blockers created by that census page.
+`next_query_handle` advances across the larger inventory without emitting
+unbounded blocker history. `--limit` is bounded to 1–500; `--offset` can
+override the offset encoded in the URI. MCP clients resolve the URI directly
+through the matching resource template.
 
 Every receipt identifies its `mode` (`census`, `dry_run`, or `apply`), whether
 the parser census was `quiescent`, and its lifecycle. Apply receipts remain
@@ -359,7 +361,14 @@ the parser census was `quiescent`, and its lifecycle. Apply receipts remain
 then validates exact source, application/membership, accepted-head, and session
 postconditions before marking an interrupted pass `executed`. Readiness never
 reports a `planned` row as the latest completed census and exposes its pending
-count separately.
+count separately. Finalization also proves that every retryable or
+carried-forward plan has the identical immutable ID in the postflight census;
+a partially applied component cannot be mislabeled as unchanged work.
+
+Raw-authority preview is the narrow exception to the generic read-only preview
+rule above: it may durably record source-tier parser/census observations so a
+moved-path component has one crash-safe identity across preview and apply. It
+never selects or applies an index replay plan.
 
 A stale precondition or incomplete application receipt creates a durable,
 fail-closed blocker. After inspecting the census URI and current evidence,

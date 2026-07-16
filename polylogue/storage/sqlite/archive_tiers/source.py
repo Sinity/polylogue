@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     inventory_digest        TEXT NOT NULL CHECK(length(inventory_digest) = 64),
     residual_digest         TEXT NOT NULL CHECK(length(residual_digest) = 64),
     plan_count              INTEGER NOT NULL CHECK(plan_count >= 0),
+    post_inventory_digest   TEXT CHECK(post_inventory_digest IS NULL OR length(post_inventory_digest) = 64),
+    post_residual_json      TEXT CHECK(post_residual_json IS NULL OR json_valid(post_residual_json)),
+    post_residual_digest    TEXT CHECK(post_residual_digest IS NULL OR length(post_residual_digest) = 64),
+    post_plan_count         INTEGER CHECK(post_plan_count IS NULL OR post_plan_count >= 0),
+    postflight_at_ms        INTEGER CHECK(postflight_at_ms IS NULL OR postflight_at_ms >= created_at_ms),
     executable_plan_count   INTEGER NOT NULL CHECK(executable_plan_count >= 0),
     residual_plan_count     INTEGER NOT NULL CHECK(residual_plan_count >= 0),
     predecessor_census_id   TEXT REFERENCES raw_authority_censuses(census_id),
@@ -136,6 +141,15 @@ CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     CHECK(
         (lifecycle_status = 'planned' AND completed_at_ms IS NULL)
         OR (lifecycle_status IN ('completed', 'interrupted') AND completed_at_ms IS NOT NULL)
+    ),
+    CHECK(
+        (lifecycle_status = 'planned' AND post_inventory_digest IS NULL
+            AND post_residual_json IS NULL AND post_residual_digest IS NULL
+            AND post_plan_count IS NULL AND postflight_at_ms IS NULL)
+        OR (lifecycle_status IN ('completed', 'interrupted')
+            AND post_inventory_digest IS NOT NULL AND post_residual_json IS NOT NULL
+            AND post_residual_digest IS NOT NULL AND post_plan_count IS NOT NULL
+            AND postflight_at_ms IS NOT NULL)
     )
 ) STRICT;
 
@@ -174,6 +188,14 @@ ON raw_authority_census_plans(census_id, outcome_status, ordinal);
 CREATE INDEX IF NOT EXISTS idx_raw_authority_census_plans_attempts
 ON raw_authority_census_plans(plan_id, recorded_at_ms DESC)
 WHERE selected = 1;
+
+CREATE TABLE IF NOT EXISTS raw_authority_census_post_plans (
+    census_id          TEXT NOT NULL REFERENCES raw_authority_censuses(census_id) ON DELETE CASCADE,
+    plan_id            TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
+    ordinal            INTEGER NOT NULL CHECK(ordinal >= 0),
+    PRIMARY KEY(census_id, plan_id),
+    UNIQUE(census_id, ordinal)
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_authority_blockers (
     blocker_id          TEXT PRIMARY KEY,

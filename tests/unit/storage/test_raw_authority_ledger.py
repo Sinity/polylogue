@@ -101,6 +101,9 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
     assert result.census_receipt.plan_count == 2
     assert result.census_receipt.executable_plan_count == 2
     assert result.census_receipt.residual_plan_count == 0
+    assert result.census_receipt.post_plan_count == 1
+    assert result.census_receipt.post_inventory_digest is not None
+    assert result.census_receipt.post_inventory_digest != result.census_receipt.inventory_digest
     assert result.census_receipt.lifecycle_status == "completed"
     assert result.metrics["raw_materialization_plan_outcome_count"] == 2.0
     assert result.metrics["raw_materialization_plan_carried_forward_count"] == 1.0
@@ -156,6 +159,8 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
         cast(dict[str, object], item)["outcome_status"]
         for item in (*cast(list[object], first_page["plans"]), *cast(list[object], second_page["plans"]))
     } == {"executed", "carried_forward"}
+    assert cast(dict[str, object], first_page["census"])["post_plan_count"] == 1
+    assert len(cast(list[object], first_page["post_plans"])) == 1
 
 
 def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path: Path) -> None:
@@ -284,7 +289,13 @@ def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_
                 "retry",
             ),
         )
-    finalized = finalize_raw_authority_census(tmp_path, receipt.census_id, interrupted=True)
+    finalized = finalize_raw_authority_census(
+        tmp_path,
+        receipt.census_id,
+        post_plans=plans,
+        post_residual={},
+        interrupted=True,
+    )
     assert finalized.lifecycle_status == "interrupted"
 
 
@@ -370,6 +381,50 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
         )
 
 
+def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _write_codex_raw(
+        tmp_path,
+        native_id="partial-component",
+        source_path="partial-old.jsonl",
+        acquired_at_ms=1,
+        text="old",
+    )
+    second = _write_codex_raw(
+        tmp_path,
+        native_id="partial-component",
+        source_path="partial-new.jsonl",
+        acquired_at_ms=2,
+        text="new",
+    )
+
+    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            repair_raw_materialization(_config(tmp_path))
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (second,))
+        conn.commit()
+
+    recovered = repair_raw_materialization(_config(tmp_path))
+
+    assert recovered.success is False
+    assert recovered.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        row = conn.execute(
+            """
+            SELECT cp.outcome_status
+            FROM raw_authority_census_plans AS cp
+            JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
+            WHERE c.lifecycle_status = 'interrupted' AND cp.selected = 1
+            """
+        ).fetchone()
+        assert row == ("rejected_stale",)
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 1
+        )
+
+
 def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="resume", source_path="resume.jsonl", acquired_at_ms=1)
@@ -401,6 +456,54 @@ def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path:
         assert (
             conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 0
         )
+
+
+def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="repeat", source_path="repeat.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = 'repeat-moved.jsonl' WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+    valid, observed = validate_raw_replay_plan(tmp_path, plan)
+    assert valid is False
+
+    first_census = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "repeat-1"},
+        residual={},
+    )
+    first = reject_stale_raw_replay_plan(tmp_path, first_census.census_id, plan, observed)
+    first_blocker = cast(str, cast(dict[str, object], first.application_receipt)["blocker_id"])
+    resolve_raw_authority_blocker(tmp_path, first_blocker, resolution="acknowledge first occurrence")
+
+    second_census = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "repeat-2"},
+        residual={},
+    )
+    second = reject_stale_raw_replay_plan(tmp_path, second_census.census_id, plan, observed)
+    second_blocker = cast(str, cast(dict[str, object], second.application_receipt)["blocker_id"])
+
+    assert second_blocker != first_blocker
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 1
+        )
+    page = read_raw_authority_census(tmp_path, second_census.query_handle)
+    blockers = cast(list[object], page["blockers"])
+    assert len(blockers) == 1
+    assert cast(dict[str, object], blockers[0])["blocker_id"] == second_blocker
 
 
 def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path: Path) -> None:
