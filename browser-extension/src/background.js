@@ -1549,7 +1549,7 @@ async function captureProviderConversation(
   provider,
   providerSessionId,
   reason,
-  { deferReceiver = false, nativePayload = null } = {},
+  { deferReceiver = false, nativePayload = null, generationObservations = [] } = {},
 ) {
   if (provider !== "chatgpt") throw new Error(`exact_provider_capture_unsupported:${provider}`);
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
@@ -1565,6 +1565,7 @@ async function captureProviderConversation(
         providerSessionId,
         deferReceiver,
         nativePayload,
+        generationObservations,
       }),
       CAPTURE_MESSAGE_TIMEOUT_MS,
       "capture_message",
@@ -1592,6 +1593,7 @@ async function scheduleCaptureFreshness({
   reason,
   delayMs = 0,
   providerUpdatedAt = null,
+  generationObservations = [],
 }) {
   if (provider !== "chatgpt" || !/^[A-Za-z0-9_-]{1,256}$/.test(String(nativeId || ""))) {
     return { scheduled: false, reason: "unsupported_or_invalid_identity" };
@@ -1605,6 +1607,7 @@ async function scheduleCaptureFreshness({
       nowMs: Date.now(),
       delayMs,
       providerUpdatedAt,
+      generationObservations,
     }));
   });
   const entry = queue.entries[`${provider}:${nativeId}`];
@@ -1652,6 +1655,7 @@ async function processCaptureFreshnessQueueOnce() {
       claim.provider,
       claim.native_id,
       "freshness_convergence",
+      { generationObservations: claim.generation_observations || [] },
     );
     needsFollowUp = chatGptCaptureNeedsFollowUp(result.envelope);
     retryDelayMs = needsFollowUp ? runningPollDelayMs(claim.running_poll_count || 0) : 0;
@@ -2650,8 +2654,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           provider,
           nativeId,
           reason: message.reason || "provider_page_hint",
-          delayMs: Math.max(0, Math.min(5 * 60_000, Number(message.delay_ms) || 5_000)),
+          delayMs: Math.max(
+            0,
+            Math.min(5 * 60_000, Number.isFinite(Number(message.delay_ms)) ? Number(message.delay_ms) : 5_000),
+          ),
           providerUpdatedAt: message.provider_updated_at || null,
+          generationObservations: Array.isArray(message.generation_observations)
+            ? message.generation_observations
+            : [],
         })),
       });
       return;

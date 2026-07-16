@@ -271,6 +271,115 @@ def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() ->
     )
 
 
+def test_browser_capture_preserves_live_and_native_generation_measurements() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_meta"] = {
+        "generation_observations": [
+            {
+                "observation_id": "conv-123:a1:started:1",
+                "state": "started",
+                "observed_at": "2026-07-16T00:00:00Z",
+                "evidence_source": "dom_control",
+                "fidelity": "observed",
+                "duration_semantics": "dom_observed_wall",
+                "turn_provider_id": "native-a1",
+                "wall_elapsed_ms": 0,
+                "trigger": "initial_scan",
+            },
+            {
+                "observation_id": "conv-123:a1:completed:worked-for",
+                "state": "completed",
+                "observed_at": "2026-07-16T01:26:30Z",
+                "evidence_source": "dom_duration_control",
+                "fidelity": "observed",
+                "duration_semantics": "provider_ui_elapsed",
+                "turn_provider_id": "native-a1",
+                "displayed_elapsed_ms": 5_190_000,
+                "raw_label": "Worked for 86m 30s",
+                "trigger": "dom_mutation",
+            },
+        ]
+    }
+    payload["raw_provider_payload"] = {
+        "conversation_id": "conv-123",
+        "title": "Native ChatGPT title",
+        "current_node": "assistant-node",
+        "mapping": {
+            "user-node": {
+                "id": "user-node",
+                "parent": None,
+                "children": ["assistant-node"],
+                "message": {
+                    "id": "native-u1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Do the work"]},
+                    "metadata": {},
+                },
+            },
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "reasoning_recap", "parts": ["Done"]},
+                    "metadata": {
+                        "reasoning_start_time": 1784164541.690012,
+                        "reasoning_end_time": 1784169732.588194,
+                        "finished_duration_sec": 5190,
+                    },
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+    lifecycle = [event for event in parsed.session_events if event.event_type == "generation_lifecycle"]
+
+    assert [event.payload["evidence_source"] for event in lifecycle] == [
+        "provider_native",
+        "dom_control",
+        "dom_duration_control",
+    ]
+    assert lifecycle[0].payload["elapsed_duration_ms"] == 5_190_000
+    assert lifecycle[1].payload["wall_elapsed_ms"] == 0
+    assert lifecycle[2].payload["displayed_elapsed_ms"] == 5_190_000
+    assert parsed.reported_duration_ms == 5_190_000
+
+
+def test_browser_capture_rejects_malformed_or_duplicate_generation_observations() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    valid = {
+        "observation_id": "conv-123:a1:started:1",
+        "state": "started",
+        "observed_at": "2026-07-16T00:00:00Z",
+        "evidence_source": "dom_control",
+        "fidelity": "observed",
+        "duration_semantics": "dom_observed_wall",
+        "wall_elapsed_ms": 0,
+    }
+    session_payload["provider_meta"] = {
+        "generation_observations": [
+            valid,
+            valid,
+            {**valid, "observation_id": "negative", "wall_elapsed_ms": -1},
+            {**valid, "observation_id": "bad-time", "observed_at": "not-a-timestamp"},
+            {**valid, "observation_id": "bad-state", "state": "thinking-ish"},
+        ]
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+    lifecycle = [event for event in parsed.session_events if event.event_type == "generation_lifecycle"]
+
+    assert len(lifecycle) == 1
+    assert lifecycle[0].payload["observation_id"] == valid["observation_id"]
+
+
 def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> None:
     payload = _capture_payload()
     payload["raw_provider_payload"] = {

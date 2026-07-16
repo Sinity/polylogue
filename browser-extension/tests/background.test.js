@@ -1016,6 +1016,34 @@ describe("background receiver diagnostics", () => {
     expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 101_000 });
   });
 
+  it("persists terminal lifecycle evidence with an immediate freshness deadline", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const observation = {
+      observation_id: "terminal:turn-2",
+      state: "completed",
+      observed_at: "2026-07-16T01:26:30Z",
+      displayed_elapsed_ms: 5_190_000,
+    };
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "terminal-conversation",
+      reason: "generation_completed",
+      delay_ms: 0,
+      generation_observations: [observation],
+    });
+
+    expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:terminal-conversation"])
+      .toMatchObject({
+        next_attempt_at_ms: 100_000,
+        generation_observations: [observation],
+      });
+    const freshnessAlarms = globalThis.chrome.alarms.create.mock.calls
+      .filter(([name]) => name === "polylogueCaptureFreshnessWake");
+    expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 101_000 });
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;

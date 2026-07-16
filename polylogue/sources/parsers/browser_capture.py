@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 from collections.abc import Mapping
 from typing import TypeGuard
 
@@ -20,6 +21,7 @@ from polylogue.browser_capture.models import (
     looks_like_browser_capture,
 )
 from polylogue.core.enums import Provider, SessionKind
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
     ParsedMessage,
@@ -231,8 +233,113 @@ def _capture_interruption_session_events(envelope: BrowserCaptureEnvelope) -> li
     ]
 
 
+def _non_negative_milliseconds(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    return round(numeric)
+
+
+def _bounded_string(value: object, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_length:
+        return None
+    return normalized
+
+
+def _capture_generation_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
+    """Project typed, bounded live lifecycle observations from the extension.
+
+    These observations describe what the browser actually exposed while a
+    generation was running. They intentionally remain distinct from the
+    provider-native terminal event emitted by the ChatGPT parser: DOM wall
+    time and the provider's reported reasoning duration are different
+    measurements, and retaining both makes their provenance queryable.
+    """
+
+    raw_observations: list[object] = []
+    for provider_meta in (envelope.provider_meta, envelope.session.provider_meta):
+        candidate = provider_meta.get("generation_observations")
+        if isinstance(candidate, list):
+            raw_observations.extend(candidate)
+
+    events: list[ParsedSessionEvent] = []
+    seen_observation_ids: set[str] = set()
+    for raw_observation in raw_observations:
+        if not isinstance(raw_observation, Mapping):
+            continue
+        observation_id = _bounded_string(raw_observation.get("observation_id"), max_length=512)
+        state = _bounded_string(raw_observation.get("state"), max_length=32)
+        observed_at = _bounded_string(raw_observation.get("observed_at"), max_length=80)
+        evidence_source = _bounded_string(raw_observation.get("evidence_source"), max_length=80)
+        fidelity = _bounded_string(raw_observation.get("fidelity"), max_length=32)
+        duration_semantics = _bounded_string(raw_observation.get("duration_semantics"), max_length=80)
+        if (
+            observation_id is None
+            or observation_id in seen_observation_ids
+            or state not in {"started", "in_progress", "completed"}
+            or observed_at is None
+            or parse_timestamp(observed_at) is None
+            or evidence_source is None
+            or fidelity not in {"observed", "inferred"}
+            or duration_semantics is None
+        ):
+            continue
+
+        payload: dict[str, object] = {
+            "observation_id": observation_id,
+            "state": state,
+            "evidence_source": evidence_source,
+            "fidelity": fidelity,
+            "duration_semantics": duration_semantics,
+        }
+        malformed_duration = False
+        for key in ("displayed_elapsed_ms", "wall_elapsed_ms"):
+            raw_duration = raw_observation.get(key)
+            if raw_duration is None:
+                continue
+            duration = _non_negative_milliseconds(raw_duration)
+            if duration is None:
+                malformed_duration = True
+                break
+            payload[key] = duration
+        if malformed_duration:
+            continue
+        for key, max_length in (("raw_label", 512), ("trigger", 80)):
+            raw_value = raw_observation.get(key)
+            if raw_value is None:
+                continue
+            value = _bounded_string(raw_value, max_length=max_length)
+            if value is None:
+                continue
+            payload[key] = value
+
+        turn_provider_id = _bounded_string(raw_observation.get("turn_provider_id"), max_length=256)
+        events.append(
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp=observed_at,
+                source_message_provider_id=turn_provider_id,
+                payload=payload,
+            )
+        )
+        seen_observation_ids.add(observation_id)
+    return events
+
+
+def _capture_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
+    return [
+        *_capture_interruption_session_events(envelope),
+        *_capture_generation_session_events(envelope),
+    ]
+
+
 def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
-    events = _capture_interruption_session_events(envelope)
+    events = _capture_session_events(envelope)
     if not events:
         return parsed
     return parsed.model_copy(update={"session_events": [*parsed.session_events, *events]})
@@ -326,7 +433,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=_capture_interruption_session_events(envelope),
+        session_events=_capture_session_events(envelope),
         ingest_flags=[
             *dict.fromkeys(
                 [

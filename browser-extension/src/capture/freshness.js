@@ -28,17 +28,24 @@ export function scheduleFreshnessHint(queueValue, {
   nowMs,
   delayMs = 0,
   providerUpdatedAt = null,
+  generationObservations = [],
 }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const key = entryKey(provider, nativeId);
   const previous = queue.entries[key] || null;
   const requestedAt = nowMs + Math.max(0, delayMs);
+  const observationsById = new Map(
+    [...(previous?.generation_observations || []), ...generationObservations]
+      .filter((observation) => observation?.observation_id)
+      .map((observation) => [observation.observation_id, observation]),
+  );
   const entry = {
     key,
     provider,
     native_id: nativeId,
     reasons: [...new Set([...(previous?.reasons || []), reason].filter(Boolean))].slice(-8),
     provider_updated_at: providerUpdatedAt || previous?.provider_updated_at || null,
+    generation_observations: [...observationsById.values()].slice(-64),
     generation: (previous?.generation || 0) + 1,
     hinted_at: new Date(nowMs).toISOString(),
     first_hinted_at: previous?.first_hinted_at || new Date(nowMs).toISOString(),
