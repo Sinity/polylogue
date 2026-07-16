@@ -24,37 +24,45 @@ one mission repeated. About half the manifests use a different schema
 — their actual mission is still unidentified; see `raw/` + `SHA256SUMS` and
 open the zip's `MANIFEST.json`/`README.md` directly to identify those.
 
-## Why these aren't backups — a real capture gap (corrected)
+## Why these aren't backups — root cause is identified and already fixed upstream, not yet deployed
 
-Checked the live archive directly (not just message text): polylogue captured
-all 28 source ChatGPT sessions in this window, and captured 29 attachments —
-but every single one is a `polylogue-sol-pro-context-*.tar.gz`, the *input*
-bundle the operator uploaded to seed each session. **Zero** attachments named
-`*launch-handoff*` exist anywhere in `attachments`/`attachment_refs`.
+Checked the live archive directly: polylogue captured all 28 source ChatGPT
+sessions and 29 *input* attachments (`polylogue-sol-pro-context-*.tar.gz`,
+the bundles uploaded to seed each session), but **zero** `*launch-handoff*`
+output attachments anywhere in `attachments`/`attachment_refs`.
 
-**Correction**: this is *not* a missing capability. Reading
-`codex 019f66fa-3db2-7bc2-b36e-b9f7569b808f` directly (a live-debugging
-session from the same night) found a real result-ZIP-capture mechanism
-already implemented (`polylogue/browser_capture/launch_jobs.py` +
-`work_package.py` + `browser-extension/src/launch/chatgpt_launch.js`, PR
-#2913) — the actual defects were (1) completion capture preferring a stale
-cached payload over the fresh completed response, and (2) an undocumented
-dependency on the launch tab staying open, which the operator (unaware)
-violated by closing tabs. PRs #2918/#2919 appear to address both, already on
-master. Re-verified the live archive *after* those merges — still zero
-captures for these 28, meaning the fix (if effective) didn't retroactively
-backfill what was already lost. Full trail: `polylogue-s2x7`.
+This is tracked in full by **`polylogue-3v1`** ("Capture extension
+reliability + status UX"), which already had a much deeper, evidence-rich
+incident writeup than what I filed independently before finding it (filed
+`polylogue-s2x7`, then closed as a duplicate once `3v1` turned up). `3v1`'s
+own 2026-07-16 incident note: *"audited all 27 Sol Pro campaign
+conversations. Current extension files parse to 2,551 messages while the
+index exposed 205; 24/27 session projections mismatched, 22/27 ingest
+cursors were permanently excluded after five transient failures... Branch
+`feature/fix/browser-capture-replacement-reingest` now revives only changed
+excluded observations and orders compatible browser snapshots by fidelity,
+provider timestamp, stable message/attachment identities, and acquisition
+time for attachment-only enrichment."*
+
+**The fix is merged** — `d2573d438` `fix(capture): recover replaced browser
+snapshots (#2930)`, 18 commits ahead of the branch this was being worked
+from (hadn't fetched/rebased when the earlier, narrower diagnosis was made).
+**It is not yet deployed against the live archive** — `3v1`'s own notes:
+*"Live archive replay/deployed parity remains required before claiming
+closure."* Confirmed independently: `polylogued.service` is currently
+FAILED (SIGKILLed ~11:32, same day) — nothing is being reprocessed right
+now.
 
 **Operator caveat (2026-07-16)**: the whole GPT-Pro handoff/launch system is
-being actively rewritten on this branch — the mechanism described above may
-already be superseded. Don't treat this as current-behavior fact without
-re-checking live source.
+being actively rewritten on this branch — re-check live source/bead state
+before trusting this as current fact.
 
-**Regardless of root cause, this directory is — right now — the only copy of
-this category of Sol/Pro output.** Whether that's permanent (unrecoverable
-via the extension) or fixable (a live reconciliation pass on the 28
-historical conversation ids, if ChatGPT still offers the generated file) is
-unresolved — see `polylogue-s2x7`'s remaining-scope notes.
+**Bottom line, unchanged**: this directory is — right now — the only copy of
+this category of Sol/Pro output. Whether the merged fix, once deployed and
+replayed, recovers these 28 from the underlying raw captures (plausible,
+given the fix targets exactly this scenario) or they stay permanently lost
+is what `polylogue-3v1`'s "live archive replay" step will determine — follow
+that bead, not this one.
 
 ## Status: NOT adjudicated — do not apply patches wholesale
 
