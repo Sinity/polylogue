@@ -842,6 +842,32 @@ class TestNoArchiveStatus:
         assert readiness["caveats"] == []
         assert readiness["repair_hint"] == "polylogue ops embed backfill --yes --max-sessions 10"
 
+    def test_direct_status_json_reports_failed_component_as_unknown(self, tmp_path: Path) -> None:
+        """A component whose readiness computation raises must appear as an
+        explicit unknown entry, never silently vanish from the payload
+        (polylogue-feqr). Reverting the except-pass fix makes the 'embeddings'
+        key absent and this test fail."""
+        env = _make_app_env()
+        db_anchor = tmp_path / "index.db"
+        initialize_archive_database(db_anchor, ArchiveTier.INDEX)
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.storage.embeddings.status_payload.embedding_status_payload",
+                side_effect=RuntimeError("embedding tier unreadable"),
+            ),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        readiness = payload["component_readiness"]["embeddings"]
+        assert readiness["component"] == "embeddings"
+        assert readiness["state"] == "unknown"
+        assert "RuntimeError" in readiness["summary"]
+        assert "embedding tier unreadable" in readiness["summary"]
+
     def test_direct_status_json_maps_archive_surface_component_readiness(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
