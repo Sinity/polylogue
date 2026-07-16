@@ -280,9 +280,11 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert all(spec.origin == "generated.demo-fixture-world" for spec in specs)
     assert all(spec.tags == ("synthetic", "demo", "release-gate") for spec in specs)
     assert specs[0].messages_per_session == range(2, 4)
+    assert specs[0].session_native_ids == (DEMO_CHATGPT_SESSION_ID.removeprefix("chatgpt-export:"),)
     assert specs[1].messages_per_session == range(6, 11)
     assert specs[2].messages_per_session == range(6, 11)
     assert specs[3].messages_per_session == range(3, 5)
+    assert CorpusSpec.from_payload(specs[0].to_payload()) == specs[0]
     assert CorpusSpec.from_payload(specs[3].to_payload()) == specs[3]
 
 
@@ -317,6 +319,7 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
         for session in iter_source_sessions(Source(name="demo", path=path))
     )
     assert tuple(str(session.source_name) for session in parsed) == ("chatgpt", "claude-code", "codex", "gemini")
+    assert parsed[0].provider_session_id == DEMO_CHATGPT_SESSION_ID.removeprefix("chatgpt-export:")
     assert all(session.provider_session_id for session in parsed)
     assert all(session.messages for session in parsed)
 
@@ -347,6 +350,31 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
     )
     assert len(inline_attachments) == 1
     assert inline_attachments[0].mime_type == "text/plain"
+
+
+@pytest.mark.parametrize("provider", ("chatgpt", "claude-ai", "claude-code", "codex", "gemini"))
+def test_synthetic_session_native_ids_reach_provider_parsers(provider: str, tmp_path: Path) -> None:
+    from polylogue.config import Source
+    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.sources import iter_source_sessions
+
+    native_id = "pinned-synthetic-session"
+    spec = CorpusSpec.for_provider(
+        provider,
+        count=1,
+        messages_min=2,
+        messages_max=2,
+        seed=42,
+        session_native_ids=(native_id,),
+    )
+    written = SyntheticCorpus.write_spec_artifacts(spec, tmp_path, prefix="pinned")
+
+    parsed = tuple(
+        session for path in written.files for session in iter_source_sessions(Source(name=provider, path=path))
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0].provider_session_id == native_id
 
 
 def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> None:

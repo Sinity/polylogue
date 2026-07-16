@@ -86,12 +86,15 @@ def generate_batch(
     messages_per_session: range = range(3, 15),
     seed: int | None = None,
     style: str = "default",
+    session_native_ids: tuple[str, ...] = (),
 ) -> SyntheticGenerationBatch:
     resolved_style = _resolve_style(style)
+    if session_native_ids and len(session_native_ids) != count:
+        raise ValueError("session_native_ids must contain exactly one id per generated session")
 
     rng = random.Random(seed)
     artifacts: list[SyntheticArtifact] = []
-    for _ in range(count):
+    for index in range(count):
         self._relation_solver = RelationConstraintSolver(self.schema)
         self._semantic_gen = None
         n_messages = rng.choice(messages_per_session)
@@ -105,6 +108,8 @@ def generate_batch(
             )
         if resolved_style == "demo-attachments":
             data = _add_demo_attachment_blocks(self.provider, data)
+        if session_native_ids:
+            data = _pin_session_native_id(self.provider, data, session_native_ids[index])
         artifacts.append(
             SyntheticArtifact(
                 raw_bytes=self._serialize(data),
@@ -124,6 +129,37 @@ def generate_batch(
         seed=seed,
     )
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
+
+
+def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JSONValue:
+    """Apply an authored fixture identity after stochastic schema generation.
+
+    Scenario identity is a workload contract, not an emergent consequence of
+    random-call order. Provider-specific wire shaping keeps the override on the
+    same production field each parser treats as authoritative.
+    """
+    if not native_id:
+        raise ValueError("session native ids must not be empty")
+    if provider == "chatgpt" and isinstance(data, dict):
+        data["id"] = native_id
+        if "conversation_id" in data:
+            data["conversation_id"] = native_id
+        return data
+    if provider == "claude-ai" and isinstance(data, dict):
+        data["uuid"] = native_id
+        return data
+    if provider == "gemini" and isinstance(data, dict):
+        data["id"] = native_id
+        return data
+    if provider == "claude-code" and isinstance(data, list):
+        for record in data:
+            if isinstance(record, dict):
+                record["sessionId"] = native_id
+        return data
+    if provider == "codex" and isinstance(data, list):
+        data.insert(0, {"type": "session_meta", "payload": {"id": native_id}})
+        return data
+    raise ValueError(f"Provider {provider!r} does not support pinned synthetic session identities")
 
 
 def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = False) -> list[JSONValue]:

@@ -99,6 +99,7 @@ class SyntheticCorpus:
             messages_per_session=spec.messages_per_session,
             seed=spec.seed,
             style=spec.style,
+            session_native_ids=spec.session_native_ids,
         )
 
     @classmethod
@@ -159,6 +160,7 @@ class SyntheticCorpus:
         messages_per_session: range = range(3, 15),
         seed: int | None = None,
         style: str = "default",
+        session_native_ids: tuple[str, ...] = (),
     ) -> SyntheticGenerationBatch:
         return synthetic_builders.generate_batch(
             self,
@@ -166,6 +168,7 @@ class SyntheticCorpus:
             messages_per_session=messages_per_session,
             seed=seed,
             style=style,
+            session_native_ids=session_native_ids,
         )
 
     def generate(
@@ -174,12 +177,14 @@ class SyntheticCorpus:
         messages_per_session: range = range(3, 15),
         seed: int | None = None,
         style: str = "default",
+        session_native_ids: tuple[str, ...] = (),
     ) -> list[bytes]:
         return self.generate_batch(
             count=count,
             messages_per_session=messages_per_session,
             seed=seed,
             style=style,
+            session_native_ids=session_native_ids,
         ).raw_items
 
     @property
