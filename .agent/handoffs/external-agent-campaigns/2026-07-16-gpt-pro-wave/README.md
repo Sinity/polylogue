@@ -20,5 +20,23 @@ Do not launch the Test Diet implementation prompts until the foundation mission
 below has landed, the project-state archive has been regenerated, and the job's
 dependency state in `campaign.json` is satisfied.
 
+Launch gating and result intake are mechanical, not prose:
+
+- `./check-dispatch.py [--workload W] [--job J]` validates, per job, the
+  foundation receipt, `depends_on` satisfaction against the results ledger,
+  and testdiet context-manifest freshness. Exit 0 = dispatchable. When the
+  foundation merges, write `foundation-receipt.json`
+  (`{"merged_commit": "<sha>", "verified_at": "<iso8601>"}`) at this
+  directory's root.
+- `./triage-package.py <result.zip> --workload W --job J --snapshot <commit>
+  [--record]` validates an incoming package (identity, required members,
+  placeholder scan, `git apply --check` in a throwaway worktree) and appends
+  the attempt record to the workload's `results/index.json`. It never runs a
+  package's own test commands — that happens later in a reviewed lane.
+- `testdiet/owning-beads.json` maps each testdiet job to the Beads records
+  owning its durable product contracts (persisted by PR #2947); paste the
+  job's line into the dispatch chat with the prompt. `check-dispatch.py`
+  flags stale/closed/in-progress owners at launch time.
+
 The active local test-harness agent should receive
 [`test-harness-agent-foundation-mission.md`](test-harness-agent-foundation-mission.md).
