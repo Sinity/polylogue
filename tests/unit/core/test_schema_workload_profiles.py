@@ -84,6 +84,17 @@ def test_categorical_sketch_retains_every_observation_without_values() -> None:
     assert "private-value" not in json.dumps(payload)
 
 
+def test_categorical_sketch_keeps_unobserved_hll_registers_sparse() -> None:
+    sketch = CategoricalSketch()
+    assert sketch.registers == {}
+
+    for value in ("alpha", "beta", "alpha"):
+        sketch.observe(value)
+
+    assert 0 < len(sketch.registers) <= 2
+    assert sketch.estimated_distinct == 2
+
+
 def test_field_collection_retains_full_counts_while_bounding_legacy_evidence() -> None:
     samples = [
         {

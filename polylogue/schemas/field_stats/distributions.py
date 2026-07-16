@@ -150,7 +150,7 @@ class CategoricalSketch:
 
     count: int = 0
     buckets: Counter[int] = field(default_factory=Counter)
-    registers: list[int] = field(default_factory=lambda: [0] * (1 << _HLL_PRECISION))
+    registers: dict[int, int] = field(default_factory=dict)
 
     def observe(self, value: str, *, count: int = 1) -> None:
         if count <= 0:
@@ -164,21 +164,21 @@ class CategoricalSketch:
         remaining = hashed >> _HLL_PRECISION
         width = 64 - _HLL_PRECISION
         rank = width - remaining.bit_length() + 1 if remaining else width + 1
-        self.registers[bucket] = max(self.registers[bucket], rank)
+        self.registers[bucket] = max(self.registers.get(bucket, 0), rank)
 
     def merge(self, other: CategoricalSketch) -> None:
         self.count += other.count
         self.buckets.update(other.buckets)
-        if len(self.registers) != len(other.registers):
-            raise ValueError("categorical sketches use different register counts")
-        self.registers = [max(left, right) for left, right in zip(self.registers, other.registers, strict=True)]
+        for bucket, rank in other.registers.items():
+            self.registers[bucket] = max(self.registers.get(bucket, 0), rank)
 
     @property
     def estimated_distinct(self) -> int:
-        register_count = len(self.registers)
+        register_count = 1 << _HLL_PRECISION
         alpha = 0.7213 / (1.0 + 1.079 / register_count)
-        raw = alpha * register_count * register_count / sum(2.0**-register for register in self.registers)
-        zero_count = self.registers.count(0)
+        zero_count = register_count - len(self.registers)
+        harmonic_sum = zero_count + sum(2.0**-register for register in self.registers.values())
+        raw = alpha * register_count * register_count / harmonic_sum
         if raw <= 2.5 * register_count and zero_count:
             raw = register_count * math.log(register_count / zero_count)
         return max(0, round(raw))
