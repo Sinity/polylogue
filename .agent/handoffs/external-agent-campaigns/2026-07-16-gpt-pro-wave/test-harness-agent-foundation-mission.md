@@ -9,14 +9,18 @@ Your verified end state is a merged, current-master foundation on which 16
 browser-hosted GPT Pro workers can independently draft subsystem survivor laws
 without inventing shared fixtures, identities, receipts, or architecture.
 
-The former unresolved-architecture pass has now produced the recommended
-decision set in `.agent/scratch/testsuite_diet/architecture/00-index.md`
-through `09-capture-delivery-and-deployed-status.md` in your active worktree.
-Treat those decisions as the default product contract and implementation
-input. Validate them against live source and complete Bead notes, which remain
-authoritative if they contain newer contradictory evidence. Do not reopen
-rejected alternatives merely because the implementation seam is difficult;
-report only concrete source conflicts or missing dependencies.
+The former unresolved-architecture pass is no longer scratch-only input. Its
+selected contracts were persisted into their owning Beads on current master
+by PR #2947 (`809a4d9a5`): raw authority, logical archive lineage, concurrent
+publication, reservation release, mutation authorization and receipts,
+query-input identity, receiver pairing, configuration authority, and installed
+runtime proof. Read the complete current records and later notes for every
+Bead you touch; those durable records are the product contract. The original
+`.agent/scratch/testsuite_diet/architecture/00-index.md` through
+`09-capture-delivery-and-deployed-status.md` remain useful rationale in your
+active worktree, but they do not override newer Bead notes or live source.
+Do not reopen rejected alternatives merely because the implementation seam is
+difficult; report only concrete source conflicts or missing dependencies.
 
 ## Scope
 
@@ -40,8 +44,9 @@ report only concrete source conflicts or missing dependencies.
    exact stable production/test entry points external agents should reuse, and
    any residual source conflicts, dependencies, or shared write hotspots. The
    coordination lane already owns the durable campaign copy of the complete
-   Test Suite Diet corpus; report any architecture/corpus changes made after
-   that snapshot so coordination can synchronize them.
+   Test Suite Diet corpus and its 16 prompts on current master. Do not relocate
+   that corpus. Report any architecture/corpus changes made after its snapshot
+   so coordination can synchronize them.
 4. Harden only the existing thin Diet runner prerequisites needed for later
    local integration: validate the reconciliation receipt against the current
    head and use the attested launcher/job-control path for timeout/interruption.
@@ -55,8 +60,10 @@ report only concrete source conflicts or missing dependencies.
   genuine contradiction between a recommended architecture decision and live
   source/Bead authority with exact evidence.
 - Commit every verified logical chunk. Keep the current feature work backed up;
-  rebase/branch only when required by the repository workflow, never by
-  discarding committed work.
+  before publication, reconcile the branch with current `origin/master`, which
+  contains the campaign layout and durable architecture decisions. Rebase only
+  after checkpointing all work, never by discarding committed or uncommitted
+  implementation.
 - You own real local verification: focused production-route tests, anti-vacuity
   reasoning, `devtools verify --quick`, and the broader harness/dependency gate
   warranted by the foundation. Browser GPT Pro workers will not be allowed to
