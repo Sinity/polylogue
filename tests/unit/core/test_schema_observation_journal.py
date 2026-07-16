@@ -53,7 +53,14 @@ def _journal_bytes(root: Path) -> int:
     return sum(path.stat().st_size for path in journal_root.glob("run-*.sqlite3*") if path.is_file())
 
 
-def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScaleTier) -> _InferenceProbeResult:
+def _run_inference_probe(
+    tmp_path: Path,
+    *,
+    count: int,
+    scale_tier: WorkloadScaleTier,
+    provider: str = "chatgpt",
+    record_count: int | None = None,
+) -> _InferenceProbeResult:
     run_root = tmp_path / scale_tier.value
     archive_root = run_root / "archive"
     process = subprocess.Popen(
@@ -65,6 +72,9 @@ def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScal
             str(archive_root),
             "--count",
             str(count),
+            "--provider",
+            provider,
+            *([] if record_count is None else ["--record-count", str(record_count)]),
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -98,8 +108,8 @@ def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScal
             version=1,
             inputs=(
                 WorkloadInputRef(
-                    input_id=f"synthetic-chatgpt:{scale_tier.value}:{count}",
-                    corpus_id=f"archive:test:schema-inference:{scale_tier.value}",
+                    input_id=f"synthetic-{provider}:{scale_tier.value}:{record_count or count}",
+                    corpus_id=f"archive:test:schema-inference:{provider}:{scale_tier.value}",
                     profile_id="workload-profile:schema-inference-memory",
                     scale_tier=scale_tier.value,
                     seed=0,
@@ -114,8 +124,8 @@ def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScal
             status=WorkloadRunStatus.SUCCEEDED,
             build_id="git:test",
             runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}",
-            archive_id=f"archive:test:schema-inference:{scale_tier.value}",
-            generation_id=f"synthetic:chatgpt:{count}",
+            archive_id=f"archive:test:schema-inference:{provider}:{scale_tier.value}",
+            generation_id=f"synthetic:{provider}:{record_count or count}",
             frame_id=None,
             phases=(
                 WorkloadPhaseObservation(
@@ -125,7 +135,7 @@ def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScal
                     peak_rss_bytes=peak_rss_bytes,
                     temp_storage_bytes=peak_journal_bytes,
                     progress_completed=int(payload["sample_count"]),
-                    progress_total=count,
+                    progress_total=record_count or count,
                 ),
                 WorkloadPhaseObservation(
                     name="quiescent",
@@ -359,5 +369,29 @@ def test_full_generation_10x_scales_counts_without_10x_python_memory(tmp_path: P
     assert ten_x.peak_rss_bytes <= one_x.peak_rss_bytes + 96 * 1024 * 1024
     assert one_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_1X.value
     assert ten_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_10X.value
+    assert one_x.receipt.cleanup_complete is True
+    assert ten_x.receipt.cleanup_complete is True
+
+
+def test_single_jsonl_10x_replays_all_records_without_10x_python_memory(tmp_path: Path) -> None:
+    one_x = _run_inference_probe(
+        tmp_path,
+        count=1,
+        record_count=1_024,
+        provider="codex",
+        scale_tier=WorkloadScaleTier.ARCHIVE_1X,
+    )
+    ten_x = _run_inference_probe(
+        tmp_path,
+        count=1,
+        record_count=10_240,
+        provider="codex",
+        scale_tier=WorkloadScaleTier.ARCHIVE_10X,
+    )
+
+    assert ten_x.sample_count == one_x.sample_count * 10
+    assert ten_x.peak_rss_bytes <= one_x.peak_rss_bytes + 96 * 1024 * 1024
+    assert one_x.peak_journal_bytes > 0
+    assert ten_x.peak_journal_bytes > 0
     assert one_x.receipt.cleanup_complete is True
     assert ten_x.receipt.cleanup_complete is True

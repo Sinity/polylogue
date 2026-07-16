@@ -184,6 +184,7 @@ def _iter_record_stream_units(
         observed_at=row.observed_at,
         config=config,
         max_samples=max_samples,
+        full_corpus=full_corpus,
     )
 
 

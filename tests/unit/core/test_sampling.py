@@ -14,7 +14,9 @@ from typing import cast
 
 import pytest
 
+from polylogue.archive.raw_payload import ReplayableRecordSamples
 from polylogue.core.enums import Provider
+from polylogue.schemas.generation.workflow import generate_provider_schema
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
 from polylogue.schemas.observation_runtime import _document_profile_tokens
 from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
@@ -255,6 +257,45 @@ class TestLoadSamplesFromDb:
         text = first_block.get("text")
         assert isinstance(text, str)
         assert len(text) == 1024
+
+    def test_full_corpus_record_sampling_replays_every_record_without_materializing(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        db = _archive_index_db(tmp_path)
+        record_count = 1_024
+        raw_content = "\n".join(
+            json.dumps(
+                {"type": "session_meta", "id": "sess-1"}
+                if index == 0
+                else {
+                    "type": "message",
+                    "role": "user" if index % 2 else "assistant",
+                    "content": [{"type": "input_text", "text": f"message-{index}"}],
+                }
+            )
+            for index in range(record_count)
+        ).encode("utf-8")
+        _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/large-session.jsonl",
+            raw_content=raw_content,
+        )
+
+        units = list(iter_schema_units("codex", db_path=db, full_corpus=True))
+
+        assert len(units) == 1
+        samples = units[0].schema_samples
+        assert isinstance(samples, ReplayableRecordSamples)
+        assert len(samples) == record_count
+        assert samples[0]["type"] == "session_meta"
+        assert samples[-1]["type"] == "message"
+
+        generation = generate_provider_schema("codex", db_path=db, full_corpus=True)
+
+        assert generation.success, generation.error
+        assert generation.sample_count == record_count
 
     def test_document_provider_streams_compacted_values_into_envelope(
         self,
