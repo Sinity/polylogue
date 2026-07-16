@@ -27,6 +27,7 @@ function installDom() {
       <span id="open-tab-count"></span>
       <span id="state"></span>
       <span id="receiver-request"></span>
+      <span id="extension-build"></span>
       <span id="updated"></span>
       <span id="receiver"></span>
       <span id="page"></span>
@@ -59,9 +60,11 @@ function installDom() {
       <input id="launch-enabled" type="checkbox" />
       <select id="launch-job"></select>
       <span id="launch-status"></span>
+      <span id="launch-title"></span>
       <span id="launch-phase"></span>
       <span id="launch-cadence"></span>
       <span id="launch-owner"></span>
+      <span id="launch-handoff"></span>
       <span id="launch-last"></span>
       <button id="launch-poll"><span class="button-status"></span></button>
       <button id="launch-now"><span class="button-status"></span></button>
@@ -79,6 +82,12 @@ function installDom() {
       <span id="assets"></span>
       <div id="asset-failures"></div>
       <span id="receiver-health"></span>
+      <span id="receiver-pairing-status"></span>
+      <span id="receiver-pairing-detail"></span>
+      <button id="reset-pairing"><span class="button-status"></span></button>
+      <button id="retry-captures"><span class="button-status"></span></button>
+      <span id="work-count"></span>
+      <div id="work-queue"></div>
       <span id="queue-count"></span>
       <div id="queue-log"></div>
       <span id="log-count"></span>
@@ -86,6 +95,12 @@ function installDom() {
       <div id="log"></div>
       <div id="timeline"></div>
       <div id="open-tabs"></div>
+      <input id="ambient-enabled" type="checkbox" />
+      <input id="ambient-site-enabled" type="checkbox" />
+      <span id="ambient-site"></span>
+      <span id="assertion-status"></span>
+      <span id="reverse-status"></span>
+      <span id="reverse-detail"></span>
       <div id="debug-panel" hidden><div id="debug-log"></div></div>
     </body>`);
   globalThis.window = dom.window;
@@ -181,18 +196,19 @@ describe("popup capture", () => {
     globalThis.document.getElementById("capture").click();
 
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(2));
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledTimes(3);
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(1, {
-      target: { tabId: CHATGPT_TAB.id },
-      files: ["src/common.js"],
-    });
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(2, {
-      target: { tabId: CHATGPT_TAB.id },
-      files: ["src/content/message_layer.js"],
-    });
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(3, {
-      target: { tabId: CHATGPT_TAB.id },
-      files: ["src/content/chatgpt.js"],
+    const expectedFiles = [
+      "src/common.js",
+      "src/operator_status.js",
+      "src/content/message_layer.js",
+      "src/content/ambient_surface.js",
+      "src/content/chatgpt.js",
+    ];
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledTimes(expectedFiles.length);
+    expectedFiles.forEach((file, index) => {
+      expect(globalThis.chrome.scripting.executeScript).toHaveBeenNthCalledWith(index + 1, {
+        target: { tabId: CHATGPT_TAB.id },
+        files: [file],
+      });
     });
     expect(globalThis.chrome.storage.local.set).not.toHaveBeenCalledWith(
       expect.objectContaining({
@@ -220,10 +236,10 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("badge").textContent).toBe("stale");
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Stale");
+    expect(globalThis.document.getElementById("badge").textContent).toBe("catching up");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Catching up");
     expect(globalThis.document.getElementById("operator-state").textContent).toBe("Catching up");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("daemon has not caught up");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("catching up");
   });
 
   it("renders an unauthorized receiver as a pairing prompt, not a generic offline state", async () => {
@@ -236,7 +252,7 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Unauthorized");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("browser-capture token show");
   });
 
@@ -250,8 +266,8 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("badge").textContent).toBe("dom");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("provider-native app data");
+    expect(globalThis.document.getElementById("badge").textContent).toBe("partial fidelity");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("provider-native data");
   });
 
   it("renders missing archive state as a capture prompt, not a receiver failure", async () => {
@@ -265,9 +281,9 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("badge").textContent).toBe("missing");
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Not archived");
-    expect(globalThis.document.getElementById("state").textContent).toContain("not been saved");
+    expect(globalThis.document.getElementById("badge").textContent).toBe("needs attention");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
+    expect(globalThis.document.getElementById("state").textContent).toContain("not saved yet");
   });
 
   it("names receiver, recovery, and bridge-size holds as actionable backfill states", async () => {
@@ -451,11 +467,99 @@ describe("popup capture", () => {
       },
     });
 
-    expect(document.getElementById("operator-state").textContent).toBe("Not saved");
+    expect(document.getElementById("operator-state").textContent).toBe("Needs attention");
     expect(document.getElementById("open-tab-count").textContent).toBe("1");
-    expect(document.getElementById("open-tabs").textContent).toContain("Not saved");
+    expect(document.getElementById("open-tabs").textContent).toContain("Needs attention");
     expect(document.getElementById("timeline").textContent).toContain("Held");
     expect(document.getElementById("timeline").textContent).toContain("background_capture_throttled");
+  });
+
+  it("labels cached offline Sol Pro state as last-known and disables mutating controls", async () => {
+    const cachedAt = new Date(Date.now() - 60_000).toISOString();
+    const job = {
+      job_id: "launch-last-known",
+      job_title: "Review receiver pairing handoff",
+      status: "cooldown",
+      phase: "cadence_wait",
+      cadence_minutes: 15,
+      cooldown_reason: "soft_warning",
+      next_attempt_at: new Date(Date.now() + 60_000).toISOString(),
+      lease_owner: "another-instance",
+      conversation_url: "https://chatgpt.com/c/launch-last-known",
+      events: [{ kind: "soft_warning", detail: "provider asked to slow down" }],
+    };
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.missionControl.status") return {
+        ok: true,
+        extension: {
+          contract_epoch: "canonical-capture-mission-control-v1",
+          manifest_version: "0.1.0",
+          extension_id: "test-extension",
+          instance_id: "test-instance",
+        },
+        state: {
+          online: false,
+          error: "receiver_unavailable",
+          provider: "chatgpt",
+          provider_session_id: "test-conversation",
+          archive_state: { state: "archived" },
+        },
+        receiver: {
+          configured_url: "http://127.0.0.1:8765",
+          health: { status: "unreachable", detail: "receiver offline" },
+          pairing: {
+            state: "offline",
+            receiver_id: "rx-last-known",
+            api_schema: "polylogue-browser-capture/v1",
+          },
+        },
+        timeline: [{ at: cachedAt, event: "observed_no_action", detail: "already_safe" }],
+        work: {
+          capture_queue: { entries: [], dropped_count: 0 },
+          backfill_jobs: [],
+          launch_jobs: [job],
+          launch_enabled: true,
+          launch_owner_instance_id: "this-instance",
+          launch_source: "cached",
+          launch_cached_at: cachedAt,
+        },
+        ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
+        reverse: { enabled: false },
+        assertions: { persistence_supported: false },
+      };
+      return { ok: false, error: "receiver offline" };
+    });
+
+    await vi.waitFor(() => expect(document.getElementById("launch-status").textContent)
+      .toBe("receiver offline · last known cooldown"));
+    expect(document.getElementById("extension-build").textContent)
+      .toBe("canonical-capture-mission-control-v1 · 0.1.0");
+    expect(document.getElementById("launch-last").textContent).toContain("Last known");
+    expect(document.getElementById("work-queue").textContent).toContain("Last known");
+    expect(document.getElementById("work-queue").textContent).toContain("Receiver offline");
+    for (const id of ["launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-existing", "launch-confirm-absent", "launch-cancel"]) {
+      expect(document.getElementById(id).disabled).toBe(true);
+    }
+    expect(document.getElementById("launch-inspect").disabled).toBe(false);
+  });
+
+  it("keeps assertion persistence disabled when only the receiver seam is advertised", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.missionControl.status") return {
+        ok: true,
+        state: { online: true, archive_state: { state: "archived" } },
+        receiver: { health: { status: "ok" }, pairing: null, configured_url: "http://127.0.0.1:8765" },
+        work: { capture_queue: { entries: [] }, backfill_jobs: [], launch_jobs: [] },
+        timeline: [],
+        ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
+        reverse: { enabled: false },
+        assertions: { persistence_supported: true },
+      };
+      return { ok: true };
+    });
+
+    expect(document.getElementById("assertion-status").textContent).toContain("no authenticated write handler");
+    expect(document.getElementById("assertion-status").textContent).toContain("Save remains disabled");
   });
 
   it("binds the active card and timeline to the current tab instead of stale global state", async () => {
@@ -485,7 +589,7 @@ describe("popup capture", () => {
     });
 
     expect(document.getElementById("operator-state").textContent).toBe("Catching up");
-    expect(document.getElementById("archive").textContent).toBe("Spooled");
+    expect(document.getElementById("archive").textContent).toBe("Catching up");
     expect(document.getElementById("timeline").textContent).toContain("active pending");
     expect(document.getElementById("timeline").textContent).not.toContain("old capture");
     expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
@@ -530,7 +634,7 @@ describe("popup capture", () => {
       },
     });
 
-    expect(document.getElementById("operator-state").textContent).toBe("Safe");
+    expect(document.getElementById("operator-state").textContent).toBe("Safe / current");
     expect(document.getElementById("fidelity-flag").hidden).toBe(false);
   });
 
@@ -538,14 +642,14 @@ describe("popup capture", () => {
     await loadPopup();
 
     const { operatorStatusForState } = globalThis.PolylogueOperatorStatus;
-    expect(operatorStatusForState({ online: true, archive_state: { state: "missing" } }).label).toBe("Not saved");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "missing" } }).label).toBe("Needs attention");
     expect(operatorStatusForState({ online: true, archive_state: { state: "spooled_only" } }).label).toBe("Catching up");
     expect(operatorStatusForState({ online: true, archive_state: { state: "ingest_pending" } }).label).toBe("Catching up");
     expect(operatorStatusForState({ online: true, archive_state: { state: "stale" } }).label).toBe("Catching up");
-    expect(operatorStatusForState({ online: true, archive_state: { state: "archived" } }).label).toBe("Safe");
+    expect(operatorStatusForState({ online: true, archive_state: { state: "archived" } }).label).toBe("Safe / current");
     expect(operatorStatusForState({ online: true, archive_state: { state: "failed" } }).label).toBe("Failed");
     expect(operatorStatusForState({ online: true, captured: true, archive_state: { state: "spooled_only" } }).label).toBe("Catching up");
-    expect(operatorStatusForState({ online: true, captured: true, archive_state: { state: "missing" } }).label).toBe("Not saved");
+    expect(operatorStatusForState({ online: true, captured: true, archive_state: { state: "missing" } }).label).toBe("Needs attention");
     expect(operatorStatusForState({ online: true }).label).toBe("Needs attention");
     expect(operatorStatusForState({ online: true, capture_mode: "dom_degraded" }).partialFidelity).toBe(true);
   });
@@ -561,7 +665,7 @@ describe("popup capture", () => {
     });
 
     expect(document.getElementById("operator-state").textContent).toBe("Catching up");
-    expect(document.getElementById("archive").textContent).toBe("Ingest pending");
+    expect(document.getElementById("archive").textContent).toBe("Catching up");
   });
 
   it("labels envelope turns as captured and indexed messages as visible", async () => {
@@ -602,9 +706,9 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("badge").textContent).toBe("ready");
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Ready");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("does not read page content");
+    expect(globalThis.document.getElementById("badge").textContent).toBe("needs attention");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("Open or select a conversation");
   });
 
   it("renders unsupported pages with a concrete next action", async () => {
@@ -617,8 +721,8 @@ describe("popup capture", () => {
       },
     });
 
-    expect(globalThis.document.getElementById("badge").textContent).toBe("idle");
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Unsupported");
+    expect(globalThis.document.getElementById("badge").textContent).toBe("needs attention");
+    expect(globalThis.document.getElementById("archive").textContent).toBe("Unsupported page");
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("ChatGPT, Claude.ai, or Grok/X");
   });
 
@@ -761,7 +865,7 @@ describe("popup capture", () => {
     globalThis.document.getElementById("check-receiver").click();
 
     await vi.waitFor(() =>
-      expect(globalThis.document.getElementById("receiver-health").textContent).toBe("Unauthorized"),
+      expect(globalThis.document.getElementById("receiver-health").textContent).toBe("Token required"),
     );
     expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: "polylogue.checkReceiverHealth" });
   });
@@ -778,7 +882,7 @@ describe("popup capture", () => {
     globalThis.document.getElementById("check-receiver").click();
 
     await vi.waitFor(() =>
-      expect(globalThis.document.getElementById("receiver-health").textContent).toBe("Unreachable"),
+      expect(globalThis.document.getElementById("receiver-health").textContent).toBe("Receiver offline"),
     );
     await vi.waitFor(() =>
       expect(globalThis.document.getElementById("check-receiver").dataset.state).toBe("bad"),

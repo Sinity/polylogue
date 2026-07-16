@@ -10,6 +10,13 @@ import {
 } from "./launch/chatgpt_launch.js";
 
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
+const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
+const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
+const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
+const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
+const RECEIVER_TRUST_CACHE_MS = 10000;
+const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
+const LAST_LAUNCH_SNAPSHOT_KEY = "polylogueLastLaunchSnapshot";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
@@ -22,10 +29,11 @@ const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const POST_POLL_INTERVAL_MS = 5000;
 const LAUNCH_ALARM = "polylogueLaunchWake";
 const LAUNCH_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
-const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
+const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
 const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
+const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 // command_id -> true once dispatched to a content script this SW lifetime, so a
@@ -36,9 +44,12 @@ let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
 let launchExecutorIdPromise = null;
+const providerTransportPromises = new Map();
+const providerTransportOperations = new Map();
 let launchPollPromise = null;
 let storageMutationQueue = Promise.resolve();
 let captureQueueMutationQueue = Promise.resolve();
+let trustedReceiverHealthCache = null;
 
 function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
@@ -164,6 +175,17 @@ async function backfillCoordinator() {
           await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
         },
+        captureOverride: async ({ provider, nativeId, response }) => {
+          if (provider !== "chatgpt") return null;
+          const nativePayload = await response.json();
+          const captured = await captureProviderConversation(
+            provider,
+            nativeId,
+            "backfill_exact_capture",
+            { deferReceiver: true, nativePayload },
+          );
+          return captured.envelope;
+        },
         alarms: chrome.alarms,
         instanceId,
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
@@ -219,13 +241,29 @@ function injectionPlanForUrl(url) {
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
         { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"] },
+        {
+          files: [
+            "src/common.js",
+            "src/operator_status.js",
+            "src/content/message_layer.js",
+            "src/content/ambient_surface.js",
+            "src/content/chatgpt.js",
+          ],
+        },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
         { files: ["src/content/claude_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/message_layer.js", "src/content/claude.js"] },
+        {
+          files: [
+            "src/common.js",
+            "src/operator_status.js",
+            "src/content/message_layer.js",
+            "src/content/ambient_surface.js",
+            "src/content/claude.js",
+          ],
+        },
       ];
     }
     if (
@@ -256,11 +294,149 @@ async function receiverSettings() {
 }
 
 async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
+  trustedReceiverHealthCache = null;
   await chrome.storage.local.set({
     receiverAuthToken: String(receiverAuthToken || ""),
     receiverBaseUrl: String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER,
   });
   return receiverSettings();
+}
+
+async function storedReceiverPairing() {
+  const stored = await chrome.storage.local.get({ [RECEIVER_PAIRING_KEY]: null });
+  const pairing = stored[RECEIVER_PAIRING_KEY];
+  return pairing && typeof pairing === "object" ? pairing : null;
+}
+
+async function persistReceiverPairing(pairing) {
+  await chrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: pairing });
+  return pairing;
+}
+
+async function markReceiverPairingUnavailable(detail) {
+  trustedReceiverHealthCache = null;
+  const pairing = await storedReceiverPairing();
+  if (!pairing) return null;
+  return persistReceiverPairing({
+    ...pairing,
+    state: "offline",
+    last_error: String(detail || "receiver_unavailable"),
+    checked_at: new Date().toISOString(),
+  });
+}
+
+async function observeReceiverIdentity(status, endpoint) {
+  const now = new Date().toISOString();
+  const prior = await storedReceiverPairing();
+  const receiverId = typeof status?.receiver_id === "string" ? status.receiver_id : null;
+  const apiSchema = typeof status?.api_schema === "string" ? status.api_schema : null;
+
+  if (!receiverId || !apiSchema) {
+    if (prior?.receiver_id) {
+      trustedReceiverHealthCache = null;
+      return persistReceiverPairing({
+        ...prior,
+        state: "mismatch",
+        observed_endpoint: endpoint,
+        observed_receiver_id: receiverId,
+        observed_api_schema: apiSchema || "legacy",
+        checked_at: now,
+        last_error: "receiver_pairing_metadata_missing",
+      });
+    }
+    return persistReceiverPairing({
+      state: "legacy",
+      endpoint,
+      last_seen_at: now,
+      checked_at: now,
+      last_error: null,
+    });
+  }
+
+  if (apiSchema !== RECEIVER_API_SCHEMA) {
+    trustedReceiverHealthCache = null;
+    return persistReceiverPairing({
+      ...(prior || {}),
+      state: "mismatch",
+      endpoint: prior?.endpoint || endpoint,
+      observed_endpoint: endpoint,
+      observed_receiver_id: receiverId,
+      observed_api_schema: apiSchema,
+      checked_at: now,
+      last_error: "receiver_api_schema_mismatch",
+    });
+  }
+
+  if (prior?.receiver_id && prior.receiver_id !== receiverId) {
+    trustedReceiverHealthCache = null;
+    return persistReceiverPairing({
+      ...prior,
+      state: "mismatch",
+      observed_endpoint: endpoint,
+      observed_receiver_id: receiverId,
+      observed_api_schema: apiSchema,
+      checked_at: now,
+      last_error: "receiver_identity_mismatch",
+    });
+  }
+
+  return persistReceiverPairing({
+    receiver_id: receiverId,
+    api_schema: apiSchema,
+    endpoint,
+    paired_at: prior?.paired_at || now,
+    last_seen_at: now,
+    checked_at: now,
+    state: "online",
+    last_error: null,
+  });
+}
+
+async function clearReceiverPairing() {
+  trustedReceiverHealthCache = null;
+  await chrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
+  // Test doubles and older browser shims may not expose remove(). Setting null
+  // is equivalent for all readers and keeps reset bounded to this one key.
+  if (!chrome.storage.local.remove) await chrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
+}
+
+function hostnameForUrl(url) {
+  try {
+    return new URL(url || "").hostname;
+  } catch {
+    return "";
+  }
+}
+
+async function ambientSettings(hostname = "") {
+  const stored = await chrome.storage.local.get({
+    [AMBIENT_SETTINGS_KEY]: { enabled: true, disabled_sites: {} },
+  });
+  const raw = stored[AMBIENT_SETTINGS_KEY] && typeof stored[AMBIENT_SETTINGS_KEY] === "object"
+    ? stored[AMBIENT_SETTINGS_KEY]
+    : {};
+  const disabledSites = raw.disabled_sites && typeof raw.disabled_sites === "object" ? raw.disabled_sites : {};
+  return {
+    enabled: raw.enabled !== false,
+    disabled_sites: disabledSites,
+    site: hostname || null,
+    site_enabled: hostname ? disabledSites[hostname] !== true : true,
+  };
+}
+
+async function saveAmbientSettings({ enabled = null, hostname = "", siteEnabled = null } = {}) {
+  const current = await ambientSettings(hostname);
+  const disabledSites = { ...current.disabled_sites };
+  if (hostname && siteEnabled !== null) {
+    if (siteEnabled) delete disabledSites[hostname];
+    else disabledSites[hostname] = true;
+  }
+  const next = {
+    enabled: enabled === null ? current.enabled : Boolean(enabled),
+    disabled_sites: disabledSites,
+  };
+  await chrome.storage.local.set({ [AMBIENT_SETTINGS_KEY]: next });
+  return ambientSettings(hostname);
 }
 
 function sessionKey(provider, providerSessionId) {
@@ -510,29 +686,165 @@ async function loadCaptureQueueIntoCache() {
   return queue;
 }
 
-async function checkReceiverHealth() {
-  const settings = await receiverSettings();
+async function probeReceiverStatus(baseUrl, authToken = "") {
   const requestId = buildReceiverRequestId();
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort("receiver_health_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
+  await appendDebugLog({ stage: "receiver_request", method: "GET", path: "/v1/status", endpoint: baseUrl, request_id: requestId });
   try {
-    const response = await fetch(`${settings.baseUrl}/v1/status`, {
-      headers: await requestHeaders({ requestId }),
-    });
+    const headers = { "X-Request-ID": requestId };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${baseUrl}/v1/status`, { headers, signal: controller.signal });
     const body = await response.json().catch(() => null);
-    if (!body || typeof body !== "object") {
-      return { ok: false, status: "unreachable", detail: "non_json_response" };
-    }
-    if (body.error === "unauthorized") {
-      return { ok: true, status: "unauthorized", detail: body.error };
-    }
-    if (body.ok === true) {
-      return { ok: true, status: "ok", detail: null };
-    }
-    // Any other well-formed JSON body still proves the receiver answered —
-    // report it as reachable with whatever error detail it supplied.
-    return { ok: true, status: "error", detail: body.error || `http_${response.status}` };
+    const receiverRequestId = response.headers?.get?.("X-Request-ID") || requestId;
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "GET",
+      path: "/v1/status",
+      endpoint: baseUrl,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      receiver_id: body?.receiver_id || null,
+      api_schema: body?.api_schema || null,
+    });
+    return { response, body, receiverRequestId };
   } catch (error) {
-    return { ok: false, status: "unreachable", detail: String(error.message || error) };
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "GET",
+      path: "/v1/status",
+      endpoint: baseUrl,
+      request_id: requestId,
+      error: String(error.message || error),
+    });
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
+}
+
+async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
+  const settings = await receiverSettings();
+  const pairingBefore = await storedReceiverPairing();
+
+  async function classifyProbe(endpoint, probe, recoveredFrom = null) {
+    const body = probe.body;
+    if (!body || typeof body !== "object") {
+      return {
+        ok: false,
+        status: "unreachable",
+        detail: "non_json_response",
+        endpoint,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing: pairingBefore,
+      };
+    }
+    if (body.error === "unauthorized" || probe.response?.status === 401) {
+      const pairing = pairingBefore
+        ? await persistReceiverPairing({
+          ...pairingBefore,
+          state: "unauthorized",
+          checked_at: new Date().toISOString(),
+          last_error: "unauthorized",
+        })
+        : null;
+      return {
+        ok: true,
+        status: "unauthorized",
+        detail: "unauthorized",
+        endpoint,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing,
+      };
+    }
+    if (body.ok === true && probe.response?.ok !== false) {
+      const pairing = await observeReceiverIdentity(body, endpoint);
+      if (pairing?.state === "mismatch") {
+        return {
+          ok: true,
+          status: "pairing_mismatch",
+          detail: pairing.last_error || "receiver_pairing_mismatch",
+          endpoint,
+          receiver_status: body,
+          receiver_request_id: probe.receiverRequestId || null,
+          pairing,
+        };
+      }
+      const result = {
+        ok: true,
+        status: recoveredFrom ? "recovered" : "ok",
+        detail: null,
+        endpoint,
+        recovered_from: recoveredFrom,
+        receiver_status: body,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing,
+      };
+      if (pairing?.receiver_id && pairing.state === "online") {
+        trustedReceiverHealthCache = {
+          checkedAt: Date.now(),
+          endpoint,
+          receiverId: pairing.receiver_id,
+          apiSchema: pairing.api_schema,
+          health: result,
+        };
+      }
+      return result;
+    }
+    return {
+      ok: true,
+      status: "error",
+      detail: body.error || `http_${probe.response?.status || 0}`,
+      endpoint,
+      receiver_status: body,
+      receiver_request_id: probe.receiverRequestId || null,
+      pairing: pairingBefore,
+    };
+  }
+
+  let primaryFailure = null;
+  try {
+    const primary = await probeReceiverStatus(settings.baseUrl, settings.authToken);
+    const classified = await classifyProbe(settings.baseUrl, primary);
+    if (classified.status !== "unreachable") return classified;
+    primaryFailure = classified.detail || "receiver_unavailable";
+  } catch (error) {
+    primaryFailure = String(error.message || error);
+  }
+
+  if (
+    allowCanonicalRecovery
+    && settings.baseUrl !== DEFAULT_RECEIVER
+    && pairingBefore?.receiver_id
+  ) {
+    try {
+      const canonical = await probeReceiverStatus(DEFAULT_RECEIVER, settings.authToken);
+      const body = canonical.body;
+      if (
+        body?.ok === true
+        && canonical.response?.ok !== false
+        && body.receiver_id === pairingBefore.receiver_id
+        && body.api_schema === RECEIVER_API_SCHEMA
+      ) {
+        await chrome.storage.local.set({ receiverBaseUrl: DEFAULT_RECEIVER });
+        return classifyProbe(DEFAULT_RECEIVER, canonical, settings.baseUrl);
+      }
+    } catch {
+      // Recovery is intentionally bounded to one canonical endpoint. The
+      // original failure remains the operator-facing result.
+    }
+  }
+
+  const pairing = await markReceiverPairingUnavailable(primaryFailure);
+  return {
+    ok: false,
+    status: "unreachable",
+    detail: primaryFailure,
+    endpoint: settings.baseUrl,
+    pairing,
+  };
 }
 
 async function appendCaptureLog(entry) {
@@ -602,7 +914,7 @@ async function updateSessionLedger({ provider, providerSessionId, patch }) {
   });
 }
 
-async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false }) {
+async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false, dedupeWindowMs = 0 }) {
   if (!provider || !providerSessionId) return null;
   return serializeStorageMutation(async () => {
     const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
@@ -610,7 +922,19 @@ async function appendConversationTimeline({ provider, providerSessionId, event, 
       ? stored[CONVERSATION_TIMELINE_KEY]
       : {};
     const key = sessionKey(provider, providerSessionId);
-    if (onlyIfEmpty && Array.isArray(timelines[key]) && timelines[key].length) return null;
+    const existing = Array.isArray(timelines[key]) ? timelines[key] : [];
+    if (onlyIfEmpty && existing.length) return null;
+    if (dedupeWindowMs > 0) {
+      const latest = existing[0];
+      const latestAt = Date.parse(latest?.at || "");
+      if (
+        latest?.event === event
+        && latest?.reason === reason
+        && latest?.detail === detail
+        && Number.isFinite(latestAt)
+        && Date.now() - latestAt < dedupeWindowMs
+      ) return null;
+    }
     const entry = {
       at: new Date().toISOString(),
       event,
@@ -620,7 +944,7 @@ async function appendConversationTimeline({ provider, providerSessionId, event, 
     };
     const next = {
       ...timelines,
-      [key]: [entry, ...(Array.isArray(timelines[key]) ? timelines[key] : [])].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
+      [key]: [entry, ...existing].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
     };
     const keys = Object.keys(next);
     if (keys.length > CONVERSATION_TIMELINE_CONVERSATION_LIMIT) {
@@ -689,10 +1013,42 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   if (hasBody) headers["Content-Type"] = "application/json";
   if (settings.authToken) headers.Authorization = `Bearer ${settings.authToken}`;
   if (requestId) headers["X-Request-ID"] = requestId;
+  headers["X-Polylogue-Extension-Contract"] = EXTENSION_CONTRACT_EPOCH;
   return headers;
 }
 
+async function ensureTrustedReceiver() {
+  const pairing = await storedReceiverPairing();
+  if (!pairing?.receiver_id) return null;
+  const settings = await receiverSettings();
+  const cached = trustedReceiverHealthCache;
+  if (
+    cached
+    && Date.now() - cached.checkedAt < RECEIVER_TRUST_CACHE_MS
+    && cached.endpoint === settings.baseUrl
+    && cached.receiverId === pairing.receiver_id
+    && cached.apiSchema === pairing.api_schema
+  ) return cached.health;
+
+  const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
+  if (!["ok", "recovered"].includes(health.status)) {
+    const code = health.status === "pairing_mismatch"
+      ? "receiver_pairing_mismatch"
+      : health.status === "unauthorized"
+        ? "unauthorized"
+        : "receiver_unavailable";
+    const error = new Error(code === "receiver_unavailable" ? health.detail || code : code);
+    error.code = code;
+    error.status = code === "receiver_pairing_mismatch" ? 409 : code === "unauthorized" ? 401 : 503;
+    error.receiverRequestId = health.receiver_request_id || null;
+    error.receiverHealth = health;
+    throw error;
+  }
+  return health;
+}
+
 async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
+  await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
@@ -750,6 +1106,7 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
 }
 
 async function getJson(path, timeoutMs = null) {
+  await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
@@ -812,21 +1169,23 @@ async function backfillReceiverPreflight() {
 }
 
 async function refreshReceiverState() {
-  try {
-    const status = await getJson("/v1/status");
-    await setState({
-      online: true,
-      captured: false,
-      status,
-      last_receiver_request_id: status.receiver_request_id || null,
-    });
-  } catch (error) {
-    await setState({
-      online: false,
-      captured: false,
-      error: String(error.message || error),
-    });
-  }
+  const health = await checkReceiverHealth();
+  const online = ["ok", "recovered"].includes(health.status);
+  await setState({
+    online,
+    captured: false,
+    status: health.receiver_status || null,
+    receiver_pairing: health.pairing || null,
+    receiver_health: health,
+    error: health.status === "unauthorized"
+      ? "unauthorized"
+      : health.status === "pairing_mismatch"
+        ? "receiver_pairing_mismatch"
+        : online
+          ? null
+          : health.detail || "receiver_unavailable",
+    last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
+  });
 }
 
 async function ensureCaptureScripts(tab) {
@@ -896,25 +1255,71 @@ async function waitForProviderTab(tabId, provider) {
   throw new Error("backfill_provider_tab_load_timeout");
 }
 
-async function providerTab(provider) {
-  const tabs = await chrome.tabs.query({});
-  const existing = tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider);
-  if (existing) return { tab: existing, owned: false, cleanupAlarm: null };
+function providerTransportSessionKey(provider) {
+  return `${PROVIDER_TRANSPORT_SESSION_PREFIX}:${provider}`;
+}
+
+async function forgetProviderTransport(provider, tabId = null) {
+  const key = providerTransportSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null });
+  if (tabId === null || stored[key] === tabId) await chrome.storage.session.remove(key);
+}
+
+async function acquireProviderTab(provider) {
+  const key = providerTransportSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null });
+  const storedTabId = stored[key];
+  if (Number.isInteger(storedTabId)) {
+    const existing = await chrome.tabs.get(storedTabId).catch(() => null);
+    if (
+      existing
+      && existing.active !== true
+      && providerForUrl(existing.url || existing.pendingUrl) === provider
+    ) {
+      return {
+        tab: existing,
+        owned: true,
+        cleanupAlarm: `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${storedTabId}`,
+      };
+    }
+    await forgetProviderTransport(provider, storedTabId);
+  }
   const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
   const created = await chrome.tabs.create({ url, active: false });
   if (!created?.id) throw new Error("backfill_provider_tab_create_failed");
+  await chrome.storage.session.set({ [key]: created.id });
   const cleanupAlarm = `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${created.id}`;
-  await chrome.alarms.create(cleanupAlarm, {
-    when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS,
-  });
+  await chrome.alarms.create(cleanupAlarm, { when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS });
   try {
     const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
     return { tab: ready, owned: true, cleanupAlarm };
   } catch (error) {
     await chrome.tabs.remove(created.id).catch(() => undefined);
     await chrome.alarms.clear(cleanupAlarm);
+    await forgetProviderTransport(provider, created.id);
     throw error;
   }
+}
+
+function providerTab(provider) {
+  const inFlight = providerTransportPromises.get(provider);
+  if (inFlight) return inFlight;
+  const candidate = acquireProviderTab(provider);
+  const tracked = candidate.finally(() => {
+    if (providerTransportPromises.get(provider) === tracked) providerTransportPromises.delete(provider);
+  });
+  providerTransportPromises.set(provider, tracked);
+  return tracked;
+}
+
+function withProviderTransportOperation(provider, operation) {
+  const prior = providerTransportOperations.get(provider) || Promise.resolve();
+  const result = prior.catch(() => undefined).then(operation);
+  const tracked = result.finally(() => {
+    if (providerTransportOperations.get(provider) === tracked) providerTransportOperations.delete(provider);
+  });
+  providerTransportOperations.set(provider, tracked);
+  return tracked;
 }
 
 function pageContextResponse(response) {
@@ -943,38 +1348,41 @@ async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
   request.maxResponseBytes = 32 * 1024 * 1024;
-  const transport = await providerTab(request.provider);
-  let result;
-  try {
-    const executions = await withTimeout(
-      chrome.scripting.executeScript({
-        target: { tabId: transport.tab.id },
-        world: "MAIN",
-        func: executeProviderPageRequest,
-        args: [request],
-      }),
-      BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-      "backfill_page_request",
-    );
-    result = executions?.[0]?.result;
-  } catch (error) {
-    if (transport.owned) {
-      await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
-      if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+  return withProviderTransportOperation(request.provider, async () => {
+    const transport = await providerTab(request.provider);
+    let result;
+    try {
+      const executions = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeProviderPageRequest,
+          args: [request],
+        }),
+        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+        "backfill_page_request",
+      );
+      result = executions?.[0]?.result;
+    } catch (error) {
+      if (transport.owned) {
+        await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+        if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+        await forgetProviderTransport(request.provider, transport.tab.id);
+      }
+      if (scriptingResultTooLarge(error)) {
+        throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
+      }
+      throw error;
     }
-    if (scriptingResultTooLarge(error)) {
-      throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
+    if (!result?.ok) {
+      const error = String(result?.error || "backfill_page_request_failed");
+      if (error.includes("auth_context") || error.includes("selected_organization")) {
+        return pageContextResponse({ ok: false, status: 401, contentType: "application/json", authReason: error, body: JSON.stringify({ error }) });
+      }
+      throw new Error(error);
     }
-    throw error;
-  }
-  if (!result?.ok) {
-    const error = String(result?.error || "backfill_page_request_failed");
-    if (error.includes("auth_context") || error.includes("selected_organization")) {
-      return pageContextResponse({ ok: false, status: 401, contentType: "application/json", authReason: error, body: JSON.stringify({ error }) });
-    }
-    throw new Error(error);
-  }
-  return pageContextResponse(result.response);
+    return pageContextResponse(result.response);
+  });
 }
 
 async function cleanupBackfillTransportTab(alarmName) {
@@ -988,6 +1396,7 @@ async function cleanupBackfillTransportTab(alarmName) {
   } catch {
     // The operator or browser already closed the inactive transport tab.
   }
+  await forgetProviderTransport(provider, tabId);
 }
 
 async function captureTab(tab, reason = "background", expectedConversation = null) {
@@ -1122,6 +1531,101 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
   }
 }
 
+async function captureProviderConversation(
+  provider,
+  providerSessionId,
+  reason,
+  { deferReceiver = false, nativePayload = null } = {},
+) {
+  if (provider !== "chatgpt") throw new Error(`exact_provider_capture_unsupported:${provider}`);
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
+    throw new Error("exact_provider_capture_invalid_session_id");
+  }
+  return withProviderTransportOperation(provider, async () => {
+    const transport = await providerTab(provider);
+    await ensureCaptureScripts(transport.tab);
+    const result = await withTimeout(
+      chrome.tabs.sendMessage(transport.tab.id, {
+        type: "polylogue.capturePage",
+        reason,
+        providerSessionId,
+        deferReceiver,
+        nativePayload,
+      }),
+      CAPTURE_MESSAGE_TIMEOUT_MS,
+      "capture_message",
+    );
+    if (!result?.ok) throw new Error(result?.error || "exact_provider_capture_failed");
+    const acceptedId = result.envelope?.session?.provider_session_id;
+    if (acceptedId !== providerSessionId) throw new Error("exact_provider_capture_identity_mismatch");
+    return result;
+  });
+}
+
+function chatGptProjectedText(content) {
+  if (!content || typeof content !== "object") return "";
+  if (Array.isArray(content.parts)) {
+    return content.parts.flatMap((part) => {
+      if (typeof part === "string") return [part];
+      if (part && typeof part.text === "string") return [part.text];
+      return [];
+    }).filter(Boolean).join("\n");
+  }
+  if (typeof content.text === "string") return content.text;
+  if (typeof content.result === "string") return content.result;
+  return "";
+}
+
+async function inspectChatGptConversationNative(
+  conversationId,
+  expectedHandoffName = "polylogue-sol-pro-launch-handoff.zip",
+) {
+  const response = await providerPageFetch(
+    `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(conversationId)}`,
+  );
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => null);
+    return {
+      ok: false,
+      status: response.status,
+      retry_after: response.headers.get("retry-after"),
+      provider_error_code: errorPayload?.detail?.code || errorPayload?.code || null,
+      can_retry: errorPayload?.detail?.can_retry ?? errorPayload?.can_retry ?? null,
+    };
+  }
+  const payload = await response.json();
+  const payloadId = payload.conversation_id || payload.id;
+  if (payloadId && String(payloadId) !== conversationId) {
+    throw new Error("provider_contract_drift:chatgpt_conversation_identity_mismatch");
+  }
+  const mapping = payload.mapping;
+  const currentNodeId = payload.current_node;
+  if (!mapping || typeof mapping !== "object" || typeof currentNodeId !== "string") {
+    throw new Error("provider_contract_drift:chatgpt_conversation_current_node_missing");
+  }
+  const currentMessage = mapping[currentNodeId]?.message;
+  const role = currentMessage?.author?.role || null;
+  const text = chatGptProjectedText(currentMessage?.content);
+  const complete = role === "assistant" && currentMessage?.end_turn === true;
+  const assistantTurns = Object.values(mapping).filter((node) => node?.message?.author?.role === "assistant").length;
+  return {
+    ok: true,
+    complete,
+    busy: !complete,
+    assistant_turns: assistantTurns,
+    current_node: currentNodeId,
+    current_status: currentMessage?.status || null,
+    current_role: role,
+    current_end_turn: currentMessage?.end_turn ?? null,
+    handoff_name: complete && text.includes(expectedHandoffName)
+      ? expectedHandoffName
+      : null,
+    native_payload: payload,
+    conversation_id: conversationId,
+    conversation_url: `https://chatgpt.com/c/${conversationId}`,
+  };
+}
+
 async function captureSupportedTabs(reason) {
   if (!chrome.tabs?.query) return;
   const tabs = await chrome.tabs.query({});
@@ -1144,6 +1648,51 @@ async function saveLaunchSettings(launchEnabled) {
     await chrome.alarms?.clear?.(LAUNCH_ALARM);
   }
   return launchSettings();
+}
+
+
+async function storedLaunchSnapshot() {
+  const stored = await chrome.storage.local.get({
+    [LAST_LAUNCH_SNAPSHOT_KEY]: { jobs: [], cached_at: null },
+  });
+  const snapshot = stored[LAST_LAUNCH_SNAPSHOT_KEY];
+  return snapshot && Array.isArray(snapshot.jobs)
+    ? snapshot
+    : { jobs: [], cached_at: null };
+}
+
+async function rememberLaunchSnapshot(status) {
+  const snapshot = {
+    jobs: Array.isArray(status?.jobs) ? status.jobs : [],
+    cached_at: new Date().toISOString(),
+  };
+  await chrome.storage.local.set({ [LAST_LAUNCH_SNAPSHOT_KEY]: snapshot });
+  return snapshot;
+}
+
+async function missionLaunchSnapshot(receiverOnline, offlineDetail = null) {
+  if (receiverOnline) {
+    try {
+      const status = await getJson("/v1/launch-jobs");
+      const snapshot = await rememberLaunchSnapshot(status);
+      return { ...status, jobs: snapshot.jobs, source: "live", cached_at: snapshot.cached_at, error: null };
+    } catch (error) {
+      const cached = await storedLaunchSnapshot();
+      return {
+        jobs: cached.jobs,
+        source: cached.jobs.length ? "cached" : "unavailable",
+        cached_at: cached.cached_at,
+        error: String(error.message || error),
+      };
+    }
+  }
+  const cached = await storedLaunchSnapshot();
+  return {
+    jobs: cached.jobs,
+    source: cached.jobs.length ? "cached" : "unavailable",
+    cached_at: cached.cached_at,
+    error: offlineDetail || "receiver_unavailable",
+  };
 }
 
 async function ensureLaunchAlarm() {
@@ -1208,170 +1757,83 @@ async function waitForTabComplete(tabId, timeoutMs = 30000) {
   throw new Error("protocol_chatgpt_tab_load_timeout");
 }
 
-function exactChatGptConversation(url) {
-  try {
-    const parsed = new URL(url);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    if (
-      parsed.origin !== "https://chatgpt.com" ||
-      parsed.search ||
-      parsed.hash ||
-      parts.length !== 2 ||
-      parts[0] !== "c"
-    ) {
-      return null;
-    }
-    return { conversation_id: parts[1], conversation_url: parsed.href };
-  } catch {
-    return null;
-  }
-}
-
-async function monitoringTabForLaunch(job, ownerInstanceId) {
-  const expected = exactChatGptConversation(job.conversation_url || "");
-  if (!expected || (job.conversation_id && expected.conversation_id !== job.conversation_id)) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "protocol_mismatch",
-      phase: "monitoring",
-      detail: "submitted launch has no exact recoverable ChatGPT conversation URL",
-      tab_id: job.tab_id || null,
-      conversation_id: job.conversation_id || null,
-      conversation_url: job.conversation_url || null,
-    });
-    return null;
-  }
-
-  let currentTab = null;
-  if (job.tab_id) {
-    try {
-      currentTab = await chrome.tabs.get(job.tab_id);
-    } catch {
-      currentTab = null;
-    }
-  }
-  const currentConversation = exactChatGptConversation(currentTab?.url || "");
-  if (currentTab?.id && currentConversation?.conversation_id === expected.conversation_id) {
-    return currentTab;
-  }
-
-  const existingTabs = await chrome.tabs.query({});
-  const existingTab = existingTabs.find((tab) =>
-    exactChatGptConversation(tab.url || "")?.conversation_id === expected.conversation_id
-  );
-  if (existingTab?.id) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "monitoring_recovered",
-      detail: "re-associated submitted launch with an existing background conversation tab",
-      tab_id: existingTab.id,
-      conversation_id: expected.conversation_id,
-      conversation_url: expected.conversation_url,
-    });
-    return existingTab;
-  }
-
-  // The submission boundary is already behind us. Reopen only the known
-  // conversation URL; never return to the composer or resubmit the prompt.
-  const reopenedTab = await chrome.tabs.create({ url: expected.conversation_url, active: false });
-  if (!reopenedTab?.id) throw new Error("protocol_background_tab_create_failed");
-  const loadedTab = await waitForTabComplete(reopenedTab.id);
-  await updateLaunchJob(job.job_id, ownerInstanceId, {
-    outcome: "progress",
-    phase: "monitoring_recovered",
-    detail: "reopened submitted conversation in a background tab after the original tab disappeared",
-    tab_id: loadedTab.id,
-    conversation_id: expected.conversation_id,
-    conversation_url: expected.conversation_url,
-  });
-  return loadedTab;
-}
-
 async function monitorSubmittedLaunch(job, ownerInstanceId) {
-  let monitoringTab;
-  try {
-    monitoringTab = await monitoringTabForLaunch(job, ownerInstanceId);
-  } catch (error) {
-    const classified = classifyLaunchFailure(error);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      ...classified,
-      phase: "monitoring",
-      tab_id: job.tab_id || null,
-      conversation_id: job.conversation_id || null,
-      conversation_url: job.conversation_url || null,
-    });
-    return;
-  }
-  if (!monitoringTab?.id) return;
-  job = { ...job, tab_id: monitoringTab.id };
   let inspection;
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: job.tab_id },
-      world: "MAIN",
-      func: inspectChatGptLaunchPage,
-    });
-    inspection = result;
+    if (!job.conversation_id) throw new Error("submitted_launch_missing_conversation_identity");
+    inspection = await inspectChatGptConversationNative(
+      job.conversation_id,
+      job.handoff_filename || "polylogue-sol-pro-launch-handoff.zip",
+    );
   } catch (error) {
     const classified = classifyLaunchFailure(error);
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       ...classified,
       phase: "monitoring",
-      tab_id: job.tab_id,
+      tab_id: null,
       conversation_id: job.conversation_id,
       conversation_url: job.conversation_url,
     });
     return;
   }
-  if (inspection?.soft_warning) {
-    if (job.phase !== "provider_soft_warning") {
-      await updateLaunchJob(job.job_id, ownerInstanceId, {
-        outcome: "soft_warning",
-        phase: "provider_soft_warning",
-        detail: "provider conversation-access warning visible; submitted chat may still continue",
-        tab_id: job.tab_id,
-        conversation_id: inspection.conversation_id,
-        conversation_url: inspection.conversation_url,
-      });
-    }
-  }
-  if (inspection?.rate_limited) {
+  if (!inspection.ok) {
+    const retryAfter = Number.parseInt(inspection.retry_after || "", 10) || null;
+    const inaccessible = inspection.status === 404
+      && inspection.provider_error_code === "conversation_inaccessible"
+      && inspection.can_retry === false;
+    const authChallenge = inspection.status === 401 || inspection.status === 403;
     await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "rate_limited",
-      phase: "provider_rate_limit",
-      detail: "provider rate limit visible in conversation",
-      tab_id: job.tab_id,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
+      outcome: inaccessible ? "protocol_mismatch" : authChallenge ? "auth_challenge" : "network_error",
+      phase: inaccessible
+        ? "conversation_inaccessible"
+        : authChallenge
+          ? "monitor_auth_challenge"
+          : inspection.status === 429
+            ? "monitor_read_throttled"
+            : "monitor_read_failed",
+      detail: `authenticated conversation read returned HTTP ${inspection.status}`,
+      retry_after_seconds: retryAfter,
+      tab_id: null,
+      conversation_id: job.conversation_id,
+      conversation_url: job.conversation_url,
     });
     return;
   }
-  if (inspection?.safety_lock) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "safety_locked",
-      phase: "provider_safety_lock",
-      detail: "provider safety lock visible in conversation",
-      tab_id: job.tab_id,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-    return;
-  }
-  if (!inspection?.soft_warning && (inspection?.busy || inspection?.assistant_turns) && job.phase !== "provider_running") {
+  if (inspection.busy && job.phase !== "provider_running") {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "progress",
       phase: "provider_running",
-      detail: "provider accepted the submitted chat without a visible circuit",
-      tab_id: job.tab_id,
+      detail: "authenticated provider state shows the submitted chat is still running",
+      tab_id: null,
       conversation_id: inspection.conversation_id,
       conversation_url: inspection.conversation_url,
     });
   }
-  if (inspection?.busy || !inspection?.assistant_turns) {
+  if (inspection.busy || !inspection.assistant_turns) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "progress",
       phase: "monitoring_heartbeat",
       detail: "renewed exact-conversation completion monitor",
-      tab_id: job.tab_id,
+      tab_id: null,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+    return;
+  }
+  let captured;
+  try {
+    captured = await captureProviderConversation(
+      "chatgpt",
+      inspection.conversation_id,
+      "launch_job_completion",
+      { nativePayload: inspection.native_payload },
+    );
+  } catch (error) {
+    const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      ...classified,
+      phase: "completion_capture",
+      tab_id: null,
       conversation_id: inspection.conversation_id,
       conversation_url: inspection.conversation_url,
     });
@@ -1381,8 +1843,8 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "protocol_mismatch",
       phase: "handoff_validation",
-      detail: "assistant completed without required cohesive handoff archive",
-      tab_id: job.tab_id,
+      detail: "assistant completed and was canonically captured without the required cohesive handoff archive",
+      tab_id: null,
       conversation_id: inspection.conversation_id,
       conversation_url: inspection.conversation_url,
     });
@@ -1393,27 +1855,33 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       outcome: "progress",
       phase: "handoff_visible_pending_acquisition",
       detail: "required cohesive handoff archive is visible; acquiring bytes for receiver validation",
-      tab_id: job.tab_id,
+      tab_id: null,
       conversation_id: inspection.conversation_id,
       conversation_url: inspection.conversation_url,
       handoff_attachment_id: inspection.handoff_name,
     });
-    const captured = await captureTab(monitoringTab, "launch_job_handoff");
-    const handoff = captured?.envelope?.session?.attachments?.find(
-      (attachment) => attachment.name === inspection.handoff_name && attachment.inline_base64,
-    );
+    const expectedSandboxPath = `/mnt/data/${inspection.handoff_name}`;
+    const handoff = captured?.envelope?.session?.attachments?.find((attachment) => {
+      if (!attachment.inline_base64) return false;
+      const sandboxPath = attachment.provider_meta?.sandbox_path;
+      const providerAttachmentId = attachment.provider_attachment_id;
+      return attachment.name === inspection.handoff_name
+        || sandboxPath === expectedSandboxPath
+        || (typeof providerAttachmentId === "string"
+          && providerAttachmentId.endsWith(`:${expectedSandboxPath}`));
+    });
     if (!handoff) {
       await updateLaunchJob(job.job_id, ownerInstanceId, {
         outcome: "progress",
         phase: "handoff_asset_pending",
         detail: "handoff link is visible but authenticated capture has not acquired its bytes yet",
-        tab_id: job.tab_id,
+        tab_id: null,
         conversation_id: inspection.conversation_id,
         conversation_url: inspection.conversation_url,
       });
       return;
     }
-    // captureTab already sent these exact bytes through the ordinary capture
+    // Exact provider capture already sent these bytes through the ordinary capture
     // envelope used for every user- or queue-created conversation. The
     // receiver correlates that canonical artifact to the launch job; never
     // repost or store assistant output through a launch-only side channel.
@@ -1429,7 +1897,7 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       ...classified,
       phase: "handoff_acquisition",
-      tab_id: job.tab_id,
+      tab_id: null,
       conversation_id: inspection.conversation_id,
       conversation_url: inspection.conversation_url,
     });
@@ -1451,16 +1919,18 @@ async function recoverSubmittingLaunch(job, ownerInstanceId) {
       target: { tabId: job.tab_id },
       world: "MAIN",
       func: inspectChatGptLaunchPage,
+      args: [job.handoff_filename || "polylogue-sol-pro-launch-handoff.zip"],
     });
     if (!result?.conversation_id) return;
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "submitted",
       phase: "submitted_recovered",
       detail: "recovered the conversation after an unknown submit acknowledgement outcome",
-      tab_id: job.tab_id,
+      tab_id: null,
       conversation_id: result.conversation_id,
       conversation_url: result.conversation_url,
     });
+    await chrome.tabs.remove(job.tab_id).catch(() => undefined);
   } catch (error) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "submission_unknown",
@@ -1506,11 +1976,13 @@ async function dispatchLaunchJob(job, ownerInstanceId) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "submitted",
       phase: "submitted",
-      detail: "Chat / GPT-5.6 Sol / Pro preflight passed and frontend submitted",
-      tab_id: tab.id,
+      detail: "Chat / GPT-5.6 Sol / Pro preflight passed; monitoring continues through authenticated provider capture",
+      tab_id: null,
       conversation_id: result.conversation_id,
       conversation_url: result.conversation_url,
     });
+    await chrome.tabs.remove(tab.id).catch(() => undefined);
+    tab = null;
     await appendCaptureLog({
       ok: true,
       reason: "sol_pro_launch_submitted",
@@ -1546,18 +2018,19 @@ async function pollLaunchJobsOnce() {
   if (!launchEnabled) return { enabled: false, jobs: [] };
   const ownerInstanceId = await launchExecutorId();
   const status = await getJson("/v1/launch-jobs").catch(() => ({ jobs: [] }));
+  if (Array.isArray(status.jobs)) await rememberLaunchSnapshot(status);
   for (const job of status.jobs || []) {
     if (job.status === "cancelled" && job.executor_instance_id === ownerInstanceId && job.tab_id) {
       await chrome.tabs.remove(job.tab_id).catch(() => undefined);
-    } else if (
-      job.status === "submitted" &&
-      job.lease_owner === ownerInstanceId
-    ) {
-      await monitorSubmittedLaunch(job, ownerInstanceId);
     } else if (job.status === "submitting" && job.lease_owner === ownerInstanceId) {
       await recoverSubmittingLaunch(job, ownerInstanceId);
     }
   }
+  // Monitoring is receiver-leased just like dispatch. Never sweep every
+  // submitted job owned by this extension: with many concurrent Sol chats that
+  // becomes a synchronized authenticated-read burst and triggers ChatGPT's
+  // conversation-access protection. The claim route returns at most one due
+  // conversation and applies its per-conversation backoff.
   const claim = await getJson(`/v1/launch-jobs?claim_by=${encodeURIComponent(ownerInstanceId)}`);
   const [job] = claim.jobs || [];
   if (job?.status === "submitted") {
@@ -1662,7 +2135,7 @@ function conversationIdForUrl(url) {
   return null;
 }
 
-async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
+async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowRecovery = true) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
   const providerSessionId = conversationIdForUrl(url);
@@ -1685,9 +2158,11 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         tabId: tab?.id || null,
         onlyIfEmpty: true,
       });
+      const pairing = await storedReceiverPairing();
       await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
+        receiver_pairing: pairing,
         archive_state: state,
         provider,
         provider_session_id: providerSessionId,
@@ -1730,34 +2205,71 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
             tabId: tab?.id || null,
           });
         }
+      } else {
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "observed_no_action",
+          reason,
+          detail: state.state === "archived" ? "already_safe" : "receiver_already_processing",
+          tabId: tab?.id || null,
+          dedupeWindowMs: 5 * 60 * 1000,
+        });
       }
       return;
     }
 
-    const status = await getJson("/v1/status");
+    const health = await checkReceiverHealth();
+    const online = ["ok", "recovered"].includes(health.status);
     await setStateForTab(tab?.id || null, {
-      online: true,
+      online,
       captured: false,
-      status,
+      status: health.receiver_status || null,
+      receiver_pairing: health.pairing || null,
+      receiver_health: health,
+      error: health.status === "unauthorized"
+        ? "unauthorized"
+        : health.status === "pairing_mismatch"
+          ? "receiver_pairing_mismatch"
+          : online
+            ? null
+            : health.detail || "receiver_unavailable",
       provider,
       provider_session_id: null,
       active_page_state: provider ? "supported_no_session" : "unsupported",
       active_tab_id: tab?.id || null,
       passive_reason: reason,
-      last_receiver_request_id: status.receiver_request_id || null,
+      last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
     }, url);
   } catch (error) {
+    if (allowRecovery) {
+      const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
+      if (health.status === "recovered") {
+        recentActiveTabStateChecks.delete(throttleKey);
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "receiver_recovered",
+          reason,
+          detail: `${health.recovered_from} -> ${health.endpoint}`,
+          tabId: tab?.id || null,
+        });
+        return refreshActiveTabArchiveState(tab, `${reason}_receiver_recovered`, false);
+      }
+    }
+    const pairing = await storedReceiverPairing();
     await appendConversationTimeline({
       provider,
       providerSessionId,
       event: "held_with_reason",
       reason,
-      detail: "archive_state_check_failed",
+      detail: error.code || "archive_state_check_failed",
       tabId: tab?.id || null,
     });
     await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
+      receiver_pairing: pairing,
       provider,
       provider_session_id: providerSessionId,
       active_page_state: provider ? "receiver_error" : "unsupported",
@@ -1780,6 +2292,150 @@ async function refreshCurrentActiveTab(reason = "active_tab") {
     return;
   }
   await refreshActiveTabArchiveState(tab, reason);
+}
+
+function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
+  const url = tab?.url || tab?.pendingUrl || "";
+  const provider = archiveProviderForUrl(url);
+  const providerSessionId = conversationIdForUrl(url);
+  const sameGlobalSession = globalState?.provider === provider
+    && globalState?.provider_session_id === providerSessionId;
+  const ledgerItem = provider && providerSessionId
+    ? ledger?.[sessionKey(provider, providerSessionId)] || {}
+    : {};
+  const receiverOnline = ["ok", "recovered"].includes(health?.status);
+  const receiverError = health?.status === "unauthorized"
+    ? "unauthorized"
+    : health?.status === "pairing_mismatch"
+      ? "receiver_pairing_mismatch"
+      : receiverOnline
+        ? null
+        : health?.detail || "receiver_unavailable";
+
+  if (sameGlobalSession) {
+    return {
+      ...globalState,
+      online: receiverOnline,
+      error: receiverError || (receiverOnline ? globalState?.error || null : receiverError),
+      receiver_pairing: pairing,
+      receiver_health: health,
+    };
+  }
+
+  return {
+    online: receiverOnline,
+    error: receiverError,
+    captured: ledgerItem.archive_state?.state === "archived" || Boolean(ledgerItem.receiver_request_id),
+    provider,
+    provider_session_id: providerSessionId,
+    active_page_state: providerSessionId ? "conversation" : provider ? "supported_no_session" : "unsupported",
+    archive_state: ledgerItem.archive_state || null,
+    capture_mode: ledgerItem.capture_mode || null,
+    asset_acquisition: ledgerItem.asset_acquisition || null,
+    turn_count: ledgerItem.turn_count ?? null,
+    attachment_count: ledgerItem.attachment_count ?? null,
+    last_receiver_request_id: ledgerItem.receiver_request_id || null,
+    updated_at: ledgerItem.updated_at || null,
+    receiver_pairing: pairing,
+    receiver_health: health,
+  };
+}
+
+async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
+  const resolvedTab = tab || (chrome.tabs?.query
+    ? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+    : null);
+  const tabUrl = resolvedTab?.url || resolvedTab?.pendingUrl || "";
+  const health = await checkReceiverHealth();
+  const receiverOnline = ["ok", "recovered"].includes(health.status);
+
+  // Do not touch archive or queue routes after a pairing mismatch,
+  // authorization failure, or offline result. This keeps the mission-control
+  // surface read-only and fail-closed until receiver identity is trustworthy.
+  if (refresh && resolvedTab && receiverOnline) {
+    await refreshActiveTabArchiveState(resolvedTab, "mission_control_snapshot").catch(() => undefined);
+  }
+
+  const [coordinator, ownerInstanceId, captureInstanceId] = await Promise.all([
+    backfillCoordinator().catch(() => null),
+    launchExecutorId().catch(() => null),
+    extensionInstanceId().catch(() => null),
+  ]);
+  const backfillStatusPromise = coordinator
+    ? coordinator.listStatus().catch(() => [])
+    : Promise.resolve([]);
+  const [stored, backfillJobs, launchResult, posting, ambient] = await Promise.all([
+    chrome.storage.local.get({
+      polylogueState: null,
+      polylogueSessionLedger: {},
+      [CONVERSATION_TIMELINE_KEY]: {},
+      [CAPTURE_QUEUE_KEY]: { entries: [], dropped_count: 0 },
+      launchEnabled: false,
+      postingEnabled: false,
+      [RECEIVER_PAIRING_KEY]: null,
+    }),
+    backfillStatusPromise,
+    missionLaunchSnapshot(receiverOnline, health.detail || "receiver_unavailable"),
+    postingSettings(),
+    ambientSettings(hostnameForUrl(tabUrl)),
+  ]);
+  const pairing = health.pairing || stored[RECEIVER_PAIRING_KEY] || null;
+  const state = stateSnapshotForTab(
+    resolvedTab,
+    stored.polylogueState,
+    stored.polylogueSessionLedger || {},
+    pairing,
+    health,
+  );
+  const timelineKey = sessionKey(state.provider, state.provider_session_id);
+  const timeline = state.provider && state.provider_session_id
+    ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
+    : [];
+  const settings = await receiverSettings();
+
+  return {
+    ok: true,
+    generated_at: new Date().toISOString(),
+    extension: {
+      contract_epoch: EXTENSION_CONTRACT_EPOCH,
+      manifest_version: chrome.runtime.getManifest?.().version || null,
+      extension_id: chrome.runtime.id || null,
+      instance_id: captureInstanceId,
+    },
+    tab: resolvedTab ? {
+      id: resolvedTab.id || null,
+      title: resolvedTab.title || null,
+      url: tabUrl || null,
+    } : null,
+    state,
+    timeline,
+    receiver: {
+      health,
+      pairing,
+      configured_url: settings.baseUrl,
+    },
+    work: {
+      capture_queue: stored[CAPTURE_QUEUE_KEY] || { entries: [], dropped_count: 0 },
+      backfill_jobs: backfillJobs || [],
+      launch_jobs: launchResult.jobs || [],
+      launch_enabled: Boolean(stored.launchEnabled),
+      launch_owner_instance_id: ownerInstanceId,
+      launch_error: launchResult.error || null,
+      launch_source: launchResult.source || "live",
+      launch_cached_at: launchResult.cached_at || null,
+    },
+    ambient,
+    reverse: {
+      enabled: Boolean(posting.postingEnabled),
+      default_state: "off",
+      receiver_gate_required: true,
+    },
+    assertions: {
+      selection_candidate_supported: true,
+      persistence_supported: false,
+      reason: "receiver_assertion_route_not_advertised",
+    },
+  };
 }
 
 async function ackPostCommand(commandId, result) {
@@ -1945,6 +2601,31 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === "polylogue.missionControl.status") {
+      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      return;
+    }
+    if (message.type === "polylogue.receiverPairing.status") {
+      const health = await checkReceiverHealth();
+      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+      return;
+    }
+    if (message.type === "polylogue.receiverPairing.reset") {
+      await clearReceiverPairing();
+      const health = await checkReceiverHealth({ allowCanonicalRecovery: false });
+      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+      return;
+    }
+    if (message.type === "polylogue.ambient.configure") {
+      const url = sender.tab?.url || sender.tab?.pendingUrl || message.url || "";
+      const settings = await saveAmbientSettings({
+        enabled: message.enabled ?? null,
+        hostname: message.hostname || hostnameForUrl(url),
+        siteEnabled: message.site_enabled ?? null,
+      });
+      sendResponse({ ok: true, ambient: settings });
+      return;
+    }
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
@@ -2031,7 +2712,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           providerSessionId: summary.providerSessionId,
           event: "held_with_reason",
           reason: message.reason || "content_script_capture",
-          detail: "capture_rejected",
+          detail: error.code || "capture_rejected",
           tabId: sender.tab?.id || null,
         });
         throw error;
@@ -2159,7 +2840,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.status") {
-      await refreshCurrentActiveTab(message.reason || "status");
+      const health = await checkReceiverHealth();
+      if (["ok", "recovered"].includes(health.status)) {
+        await refreshCurrentActiveTab(message.reason || "status");
+      } else {
+        const storedBefore = await chrome.storage.local.get({ polylogueState: null });
+        const previous = storedBefore.polylogueState || {};
+        await setState({
+          ...previous,
+          online: false,
+          receiver_pairing: health.pairing || previous.receiver_pairing || null,
+          receiver_health: health,
+          last_receiver_request_id: health.receiver_request_id || previous.last_receiver_request_id || null,
+          error: health.status === "unauthorized"
+            ? "unauthorized"
+            : health.status === "pairing_mismatch"
+              ? "receiver_pairing_mismatch"
+              : health.detail || "receiver_unavailable",
+        });
+      }
       const stored = await chrome.storage.local.get({ polylogueState: null });
       const state = stored.polylogueState || {};
       if (!state.online) {
@@ -2167,6 +2866,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ok: false,
           error: state.error || "receiver_unavailable",
           receiver_request_id: state.last_receiver_request_id || null,
+          receiver_pairing: state.receiver_pairing || null,
         });
         return;
       }
@@ -2219,6 +2919,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         getJson("/v1/launch-jobs"),
         launchExecutorId(),
       ]);
+      await rememberLaunchSnapshot(status);
       sendResponse({ ok: true, ...settings, ownerInstanceId, jobs: status.jobs || [] });
       return;
     }

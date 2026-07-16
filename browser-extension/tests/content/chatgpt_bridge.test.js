@@ -14,6 +14,7 @@ const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/chat
 const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
 const contentSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt.js"), "utf8");
 const bearerToken = "synthetic-bearer-must-not-cross-the-page-bridge";
+const chatGptAccountId = "synthetic-account-must-not-cross-the-page-bridge";
 const signedUrl = "https://files.example.test/download/kit.zip?signature=synthetic-signed-secret";
 const assetBytes = new TextEncoder().encode("polylogue authenticated interpreter asset\n");
 const expectedSha256 = createHash("sha256").update(assetBytes).digest("hex");
@@ -66,7 +67,7 @@ function conversationPayload() {
 
 function syntheticEndpointAdapter({
   authStatus = 200,
-  authBody = { accessToken: bearerToken },
+  authBody = { accessToken: bearerToken, account: { id: chatGptAccountId } },
   metadataStatus = 200,
   signedDownloadUrl = signedUrl,
   metadataBody = { download_url: signedDownloadUrl, file_name: "kit.zip" },
@@ -104,9 +105,9 @@ function syntheticEndpointAdapter({
   return { calls, fetch };
 }
 
-function makeDom(adapter) {
+function makeDom(adapter, url = "https://chatgpt.com/c/conversation-1") {
   const dom = new JSDOM("<!doctype html><title>ChatGPT fixture</title>", {
-    url: "https://chatgpt.com/c/conversation-1",
+    url,
     runScripts: "outside-only",
   });
   openDoms.push(dom);
@@ -175,8 +176,8 @@ function installBridge(adapter, source = bridgeSource, { bootstrapToken = null }
   return { dom, posted, requestAsset };
 }
 
-function installFullCapture(adapter) {
-  const dom = makeDom(adapter);
+function installFullCapture(adapter, { url } = {}) {
+  const dom = makeDom(adapter, url);
   const posted = [];
   const runtimeMessages = [];
   const runtimeListeners = [];
@@ -220,7 +221,13 @@ function installFullCapture(adapter) {
   new Script(bridgeSource).runInContext(context);
   new Script(commonSource).runInContext(context);
   new Script(contentSource).runInContext(context);
-  return { dom, posted, runtimeListeners, runtimeMessages };
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
+    });
+  }
+  return { dom, posted, runtimeListeners, runtimeMessages, sendRuntimeMessage };
 }
 
 afterEach(() => {
@@ -295,6 +302,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(metadataCalls).toHaveLength(2);
     expect(authorizationHeader(metadataCalls[0].options)).toBe(`Bearer ${bearerToken}`);
     expect(metadataCalls[0].options.credentials).toBe("include");
+    expect(new globalThis.Headers(metadataCalls[0].options.headers).get("ChatGPT-Account-Id")).toBe(chatGptAccountId);
     expect(metadataCalls[0].url.searchParams.get("message_id")).toBe("assistant-message-1");
     expect(metadataCalls[0].url.searchParams.get("sandbox_path")).toBe("/mnt/data/kit.zip");
     expect(signedCalls).toHaveLength(2);
@@ -305,6 +313,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(authorizationHeader(authCalls[0].options)).toBe(null);
     const disclosed = JSON.stringify(harness.posted);
     expect(disclosed).not.toContain(bearerToken);
+    expect(disclosed).not.toContain(chatGptAccountId);
     expect(disclosed).not.toContain("synthetic-signed-secret");
   });
 
@@ -373,6 +382,53 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
 });
 
 describe("ChatGPT authenticated asset capture envelope", () => {
+  it("captures an exact conversation and its output bytes from a reusable transport page", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "completion_monitor",
+      providerSessionId: "conversation-1",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      envelope: {
+        session: {
+          provider_session_id: "conversation-1",
+          attachments: [{
+            name: "kit.zip",
+            provider_meta: { content_sha256: expectedSha256 },
+          }],
+        },
+      },
+    });
+    expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({ acquired: 1 });
+    expect(harness.dom.window.location.pathname).toBe("/");
+  });
+
+  it("reuses supplied native detail without a second conversation read", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "completion_monitor",
+      providerSessionId: "conversation-1",
+      nativePayload: conversationPayload(),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      envelope: { session: { provider_session_id: "conversation-1" } },
+    });
+    expect(
+      adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
+    ).toHaveLength(0);
+    expect(result.envelope.session.attachments).toHaveLength(1);
+  });
+
   it("prefers fresh native detail over an intercepted page-load payload", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter);

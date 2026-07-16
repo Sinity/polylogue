@@ -60,7 +60,7 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, captureOverride = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
   const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, content_hash: await serializedContentHash(serialized) }));
@@ -70,6 +70,7 @@ function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPref
     receiver: durableReceiver,
     receiverPreflight,
     checkpoint,
+    captureOverride,
     alarms,
     clock: () => now,
     random: () => 0,
@@ -300,6 +301,55 @@ describe("background backfill coordinator", () => {
     await h.coordinator.wake(job.id);
 
     expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
+  });
+
+  it("submits the exact capture override through the ordinary receiver path", async () => {
+    const exactEnvelope = {
+      polylogue_capture_kind: "browser_llm_session",
+      provider_meta: { capture_fidelity: "native_full" },
+      session: {
+        provider: "chatgpt",
+        provider_session_id: "one",
+        turns: [{ role: "assistant", text: "complete output" }],
+        attachments: [{
+          name: "polylogue-sol-pro-launch-handoff.zip",
+          inline_base64: btoa("PK exact output"),
+        }],
+      },
+    };
+    const captureOverride = vi.fn(async () => exactEnvelope);
+    const h = harness({ adapter: new FixtureAdapter(["one"]), captureOverride });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect(captureOverride).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "chatgpt",
+      nativeId: "one",
+      attribution: expect.objectContaining({ job_id: job.id, instance_id: "instance-a" }),
+    }));
+    expect(h.receiver).toHaveBeenCalledWith(exactEnvelope, serializedJson(exactEnvelope));
+    expect(await h.store.listQueue(job.id)).toMatchObject([{
+      state: "complete",
+      capture_fidelity: "native_full",
+    }]);
+  });
+
+  it("retries an exact capture failure instead of accepting a compact asset-less fallback", async () => {
+    const captureOverride = vi.fn(async () => { throw new Error("exact_asset_acquisition_pending"); });
+    const adapter = new FixtureAdapter(["one"]);
+    const h = harness({ adapter, captureOverride });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+
+    expect(captureOverride).toHaveBeenCalledTimes(1);
+    expect(h.receiver).not.toHaveBeenCalled();
+    expect(await h.store.listQueue(job.id)).toMatchObject([{
+      state: "retry_wait",
+      last_response_class: "transport",
+      last_error: "exact_asset_acquisition_pending",
+    }]);
   });
 
   it("exports no credentials and restores profile-loss evidence without replaying a missing envelope", async () => {

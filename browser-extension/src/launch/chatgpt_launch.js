@@ -186,7 +186,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
   }
 }
 
-export function inspectChatGptLaunchPage() {
+export function inspectChatGptLaunchPage(expectedHandoffName = "polylogue-sol-pro-launch-handoff.zip") {
   const textOf = (node) => String(node?.innerText || node?.textContent || "");
   const text = textOf(document.body);
   const softWarning = /temporarily limited access to your conversations to protect your data/i.test(text);
@@ -195,7 +195,7 @@ export function inspectChatGptLaunchPage() {
       button.getAttribute("aria-label") || textOf(button),
     ));
   const conversationId = location.pathname.split("/").filter(Boolean)[1] || null;
-  const handoffName = "polylogue-sol-pro-launch-handoff.zip";
+  const handoffName = expectedHandoffName;
   const turns = [...document.querySelectorAll('section[data-testid^="conversation-turn-"]')];
   const assistantTurns = turns.filter((turn) => !turn.querySelector('[data-message-author-role="user"]'));
   const handoffNode = assistantTurns

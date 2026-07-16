@@ -106,6 +106,73 @@ describe("first-party provider page transport", () => {
     expect(JSON.stringify(body)).not.toContain("ignored_large_provider_metadata");
   });
 
+  it("preserves completion and asset descriptors in the bounded ChatGPT projection", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") {
+        return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      }
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        conversation_id: "conversation-1",
+        title: "Completed package",
+        current_node: "assistant-node",
+        mapping: {
+          "assistant-node": {
+            id: "assistant-node",
+            parent: null,
+            message: {
+              id: "assistant-message",
+              author: { role: "assistant" },
+              status: "finished_successfully",
+              end_turn: true,
+              recipient: "all",
+              content: {
+                content_type: "text",
+                parts: [
+                  "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
+                  { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
+                ],
+              },
+              metadata: {
+                model_slug: "gpt-5-6-pro",
+                attachments: [{ id: "file-INPUT1", name: "context.tar.gz", mime_type: "application/gzip" }],
+              },
+            },
+          },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({
+      provider: "chatgpt",
+      operation: "conversation",
+      params: { nativeId: "conversation-1" },
+      maxResponseBytes: 32 * 1024 * 1024,
+    });
+
+    const body = JSON.parse(result.response.body);
+    expect(body.current_node).toBe("assistant-node");
+    expect(body.mapping["assistant-node"].message).toMatchObject({
+      status: "finished_successfully",
+      end_turn: true,
+      recipient: "all",
+      content: {
+        parts: [
+          "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
+          { content_type: "image_asset_pointer", asset_pointer: "file-service://file-OUTPUT1" },
+        ],
+      },
+      metadata: {
+        model_slug: "gpt-5-6-pro",
+        attachments: [{ id: "file-INPUT1", name: "context.tar.gz", mime_type: "application/gzip" }],
+      },
+    });
+  });
+
   it("crosses a compact ChatGPT projection above 8 MiB within the bounded bridge", async () => {
     const token = "synthetic-bearer-secret";
     const accountId = "synthetic-account-secret";

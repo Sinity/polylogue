@@ -142,6 +142,43 @@ tab inventory, and injection mode. Set `POLYLOGUE_PROVIDER_SMOKE_HEADLESS=0` to
 repeat the same isolated-profile proof visibly, or use `--browser-live-proof`
 with a visible copied profile for operator-local live-page evidence.
 
+## Mission control, pairing, and ambient status
+
+The popup is the operator mission-control surface for all currently open
+supported conversation tabs. It uses one status vocabulary across active-page
+capture, queued capture retries, history backfill, and receiver-owned GPT-5.6
+Sol Pro work: **Safe / current**, **Catching up**, **Partial fidelity**, **Needs
+attention**, **Failed**, **Receiver offline**, **Provider warning**, plus
+**Queued**, **Running**, and **Completed** for external work. Sol Pro rows retain
+the receiver-provided title, phase, cadence, owner/lease, cooldown or backoff,
+and completion-handoff state rather than deriving a second queue model in the
+extension.
+
+A compatible receiver advertises `polylogue-browser-capture/v1` and a stable,
+non-secret `receiver_id` derived from its persisted local pairing root. Once
+observed, the extension binds endpoint, schema, and identity. A different
+identity fails closed; an unreachable noncanonical endpoint gets one bounded
+recovery attempt at `http://127.0.0.1:8765`, and only the already-paired identity
+can be adopted there. **Reset pairing** removes only that trust binding and
+preserves capture retries, backfill ledgers, Sol Pro work, and the extension
+instance identity. Token rotation intentionally appears as an identity change
+and requires operator verification plus reset/re-pair.
+
+ChatGPT and Claude pages also receive a fixed in-page status chip implemented in
+a closed Shadow DOM. It is read-only, uses bundled code and system fonts, does
+not change provider layout, follows light/dark and reduced-motion preferences,
+and can be disabled globally or per site. Selecting text inside one provider
+message creates an ephemeral assertion candidate in page memory. The Save
+control remains disabled because the current authenticated receiver contract has
+no assertion-persistence route. The reverse/posting section is visible for
+future architecture but the ambient surface never posts or submits; the
+extension and receiver posting gates remain separate and off by default.
+
+The per-conversation trail records decisions as well as actions. In particular,
+when Polylogue checks a conversation that is already current or already being
+processed, it records **Observed; no action needed** instead of making the
+absence of a duplicate capture look like inactivity.
+
 ## Supported Sites
 
 | Site | Provider | Notes |

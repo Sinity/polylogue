@@ -31,12 +31,13 @@ function mergePolicy(patch = {}) {
 }
 
 export class BackfillCoordinator {
-  constructor({ store, adapters, receiver, receiverPreflight = null, checkpoint = null, alarms, clock = () => Date.now(), random = Math.random, instanceId = "extension-instance", receiverContractEpoch = instanceId }) {
+  constructor({ store, adapters, receiver, receiverPreflight = null, checkpoint = null, captureOverride = null, alarms, clock = () => Date.now(), random = Math.random, instanceId = "extension-instance", receiverContractEpoch = instanceId }) {
     this.store = store;
     this.adapters = adapters;
     this.receiver = receiver;
     this.receiverPreflight = receiverPreflight;
     this.checkpoint = checkpoint;
+    this.captureOverride = captureOverride;
     this.alarms = alarms;
     this.clock = clock;
     this.random = random;
@@ -329,11 +330,26 @@ export class BackfillCoordinator {
     }
     let capture;
     try {
-      capture = await this.adapters[job.provider].normalizeCapture(response, item, { job_id: job.id, queue_id: item.id, instance_id: this.instanceId });
+      const attribution = { job_id: job.id, queue_id: item.id, instance_id: this.instanceId };
+      capture = this.captureOverride
+        ? await this.captureOverride({
+          provider: job.provider,
+          nativeId: item.native_id,
+          response,
+          item,
+          attribution,
+        })
+        : null;
+      if (!capture) capture = await this.adapters[job.provider].normalizeCapture(response, item, attribution);
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
     } catch (error) {
-      await this.saveQueue(job, { ...item, state: "failed", lease_owner: null, lease_expires_at_ms: null, last_response_class: "contract_drift", last_error: String(error.message || error) });
-      return job;
+      job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
+      if (providerContractDriftError(error)) {
+        await this.saveQueue(job, { ...item, state: "failed", lease_owner: null, lease_expires_at_ms: null, last_response_class: "contract_drift", last_error: String(error.message || error) });
+        return job;
+      }
+      return this.retryTransport(job, item, error, now);
     }
     const captureFidelity = capture.provider_meta?.capture_fidelity || "native_full";
     if (!capture.session?.turns?.length) {
