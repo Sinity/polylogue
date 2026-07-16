@@ -347,13 +347,27 @@ polylogue ops maintenance raw-authority-census \
   --output-format json
 ```
 
-The response includes both the before-plan inventory and the durable
-postflight plan inventory/digests, complete witnesses and outcome for the
-current page, and only the blockers created by that census page.
-`next_query_handle` advances across the larger inventory without emitting
-unbounded blocker history. `--limit` is bounded to 1–500; `--offset` can
-override the offset encoded in the URI. MCP clients resolve the URI directly
-through the matching resource template.
+The response includes bounded before/postflight plan summaries, counts,
+digests, and a `detail_query_handle` for each plan. It deliberately does not
+inline raw-ID lists, witnesses, preconditions, application receipts, or blocker
+documents: one authority component may contain thousands of each.
+`next_query_handle` advances across the plan inventory. `--limit` is bounded to
+1–500; `--offset` can override the offset encoded in the URI.
+
+Resolve a census or plan detail handle as bounded canonical-JSON text chunks:
+
+```bash
+polylogue ops maintenance raw-authority-detail \
+  'polylogue://raw-authority-detail/census:42:.../raw-replay:.../0' \
+  --chunk-chars 16384 \
+  --output-format json
+```
+
+Concatenate `chunk` values by following `next_query_handle`, then verify the
+reconstructed document against `document_sha256`. The chunk size is bounded to
+256–65,536 characters. MCP clients resolve both census and detail URIs through
+their matching resource templates, so CLI and MCP expose the same complete but
+bounded ledger.
 
 Every receipt identifies its `mode` (`census`, `dry_run`, or `apply`), whether
 the parser census was `quiescent`, and its lifecycle. Apply receipts remain
@@ -364,6 +378,12 @@ reports a `planned` row as the latest completed census and exposes its pending
 count separately. Finalization also proves that every retryable or
 carried-forward plan has the identical immutable ID in the postflight census;
 a partially applied component cannot be mislabeled as unchanged work.
+
+Parser census itself advances through a bounded number of authority components
+per pass. If uncensused components remain, the pass persists a non-quiescent
+zero-plan census receipt and returns without replay; a later daemon tick resumes
+from the per-raw current-parser receipts. Immutable plans are published only
+after the complete transitive census is quiescent.
 
 Raw-authority preview is the narrow exception to the generic read-only preview
 rule above: it may durably record source-tier parser/census observations so a

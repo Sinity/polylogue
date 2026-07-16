@@ -80,6 +80,7 @@ _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
+RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
 RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
@@ -6546,11 +6547,20 @@ def repair_raw_materialization(
     uncensused_raw_ids = set(uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids))
     census_failed_raw_ids: set[str] = set()
     census_resource_blocked_raw_ids: set[str] = set()
+    census_component_limit = (
+        raw_artifact_limit if raw_artifact_limit is not None else RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT
+    )
+    if census_component_limit < 1:
+        raise ValueError("raw_artifact_limit must be positive")
+    census_components_attempted = 0
     if uncensused_raw_ids:
         preliminary_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
         for component in preliminary_components:
             if not uncensused_raw_ids.intersection(component):
                 continue
+            if census_components_attempted >= census_component_limit:
+                break
+            census_components_attempted += 1
             seed = _raw_materialization_component_seed(candidates, component)
             try:
                 census_historical_revision_evidence(
@@ -6607,6 +6617,8 @@ def repair_raw_materialization(
                 "raw_materialization_selected_max_blob_bytes": 0.0,
                 "raw_materialization_executed_count": 0.0,
                 "raw_materialization_census_incomplete_raw_count": float(len(census_pending_raw_ids)),
+                "raw_materialization_census_component_limit": float(census_component_limit),
+                "raw_materialization_census_components_attempted": float(census_components_attempted),
                 "raw_materialization_census_sequence": float(census_receipt.sequence_no),
                 "raw_materialization_census_fixed_point": 0.0,
             }

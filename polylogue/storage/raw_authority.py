@@ -23,6 +23,8 @@ from polylogue.logging import get_logger
 
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
 RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
+RAW_AUTHORITY_DETAIL_QUERY_PREFIX = "polylogue://raw-authority-detail/"
+RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
 logger = get_logger(__name__)
 
 
@@ -129,6 +131,15 @@ def raw_authority_census_query_handle(census_id: str, *, offset: int = 0) -> str
     return f"{RAW_AUTHORITY_CENSUS_QUERY_PREFIX}{census_id}/{offset}"
 
 
+def raw_authority_detail_query_handle(census_id: str, record_id: str, *, offset: int = 0) -> str:
+    """Return a bounded-chunk URI for one complete census or plan document."""
+    if not census_id or "/" in census_id or not record_id or "/" in record_id:
+        raise ValueError("raw authority detail identifiers must be non-empty and contain no slash")
+    if offset < 0:
+        raise ValueError("raw authority detail offset must be non-negative")
+    return f"{RAW_AUTHORITY_DETAIL_QUERY_PREFIX}{census_id}/{record_id}/{offset}"
+
+
 def _raw_authority_census_ref(value: str, *, offset: int | None) -> tuple[str, int]:
     embedded_offset = 0
     if value.startswith(RAW_AUTHORITY_CENSUS_QUERY_PREFIX):
@@ -153,6 +164,173 @@ def _decode_json_field(value: object) -> object:
     if not isinstance(value, str):
         raise RuntimeError("raw authority ledger contains a non-text JSON field")
     return json.loads(value)
+
+
+def _raw_authority_detail_ref(value: str, *, offset: int | None) -> tuple[str, str, int]:
+    if not value.startswith(RAW_AUTHORITY_DETAIL_QUERY_PREFIX):
+        raise ValueError("invalid raw authority detail query handle")
+    suffix = value.removeprefix(RAW_AUTHORITY_DETAIL_QUERY_PREFIX)
+    try:
+        identifiers, encoded_offset = suffix.rsplit("/", 1)
+        census_id, record_id = identifiers.split("/", 1)
+        embedded_offset = int(encoded_offset)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("invalid raw authority detail query handle") from exc
+    resolved_offset = embedded_offset if offset is None else offset
+    if not census_id or "/" in census_id or not record_id or "/" in record_id or resolved_offset < 0:
+        raise ValueError("invalid raw authority detail query handle")
+    return census_id, record_id, resolved_offset
+
+
+def _raw_authority_detail_document(conn: sqlite3.Connection, census_id: str, record_id: str) -> JSONDocument:
+    census = conn.execute(
+        """
+        SELECT census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
+               mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
+               plan_count, post_inventory_digest, post_residual_json,
+               post_residual_digest, post_plan_count, postflight_at_ms,
+               executable_plan_count, residual_plan_count, predecessor_census_id,
+               fixed_point, created_at_ms, completed_at_ms
+        FROM raw_authority_censuses WHERE census_id = ?
+        """,
+        (census_id,),
+    ).fetchone()
+    if census is None:
+        raise KeyError(census_id)
+    if record_id == "census":
+        return json_document(
+            {
+                "record_type": "census",
+                "census_id": census_id,
+                "scope": _decode_json_field(census["scope_json"]),
+                "residual": _decode_json_field(census["residual_json"]),
+                "post_residual": (
+                    _decode_json_field(census["post_residual_json"])
+                    if census["post_residual_json"] is not None
+                    else None
+                ),
+            }
+        )
+    row = conn.execute(
+        """
+        SELECT p.plan_id, p.input_digest, p.input_raw_ids_json,
+               p.logical_keys_json, p.authority_witness_json,
+               p.source_preconditions_json, p.index_preconditions_json,
+               p.created_at_ms, cp.ordinal, cp.selected, cp.outcome_status,
+               cp.reason, cp.next_action, cp.application_receipt_json,
+               cp.outcome_recorded, cp.recorded_at_ms,
+               EXISTS(
+                   SELECT 1 FROM raw_authority_census_post_plans AS cpp
+                   WHERE cpp.census_id = ? AND cpp.plan_id = p.plan_id
+               ) AS present_postflight
+        FROM raw_authority_plans AS p
+        LEFT JOIN raw_authority_census_plans AS cp
+          ON cp.census_id = ? AND cp.plan_id = p.plan_id
+        WHERE p.plan_id = ?
+          AND (
+              cp.plan_id IS NOT NULL
+              OR EXISTS(
+                  SELECT 1 FROM raw_authority_census_post_plans AS cpp
+                  WHERE cpp.census_id = ? AND cpp.plan_id = p.plan_id
+              )
+          )
+        """,
+        (census_id, census_id, record_id, census_id),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"{census_id}/{record_id}")
+    blockers = [
+        {
+            "blocker_id": str(blocker["blocker_id"]),
+            "reason": str(blocker["reason"]),
+            "expected": _decode_json_field(blocker["expected_json"]),
+            "observed": _decode_json_field(blocker["observed_json"]),
+            "created_at_ms": int(blocker["created_at_ms"]),
+            "resolved_at_ms": blocker["resolved_at_ms"],
+            "resolution": blocker["resolution"],
+        }
+        for blocker in conn.execute(
+            """
+            SELECT blocker_id, reason, expected_json, observed_json,
+                   created_at_ms, resolved_at_ms, resolution
+            FROM raw_authority_blockers
+            WHERE census_id = ? AND plan_id = ?
+            ORDER BY created_at_ms, blocker_id
+            """,
+            (census_id, record_id),
+        )
+    ]
+    return json_document(
+        {
+            "record_type": "plan",
+            "census_id": census_id,
+            "ordinal": row["ordinal"],
+            "selected": bool(row["selected"]) if row["selected"] is not None else None,
+            "outcome_status": row["outcome_status"],
+            "reason": row["reason"],
+            "next_action": row["next_action"],
+            "application_receipt": (
+                _decode_json_field(row["application_receipt_json"])
+                if row["application_receipt_json"] is not None
+                else None
+            ),
+            "outcome_recorded": (bool(row["outcome_recorded"]) if row["outcome_recorded"] is not None else None),
+            "recorded_at_ms": row["recorded_at_ms"],
+            "present_postflight": bool(row["present_postflight"]),
+            "plan": {
+                "plan_id": str(row["plan_id"]),
+                "input_digest": str(row["input_digest"]),
+                "input_raw_ids": _decode_json_field(row["input_raw_ids_json"]),
+                "logical_keys": _decode_json_field(row["logical_keys_json"]),
+                "authority_witness": _decode_json_field(row["authority_witness_json"]),
+                "source_preconditions": _decode_json_field(row["source_preconditions_json"]),
+                "index_preconditions": _decode_json_field(row["index_preconditions_json"]),
+                "created_at_ms": int(row["created_at_ms"]),
+            },
+            "blockers": blockers,
+        }
+    )
+
+
+def read_raw_authority_detail(
+    archive_root: Path,
+    query_handle: str,
+    *,
+    chunk_chars: int = RAW_AUTHORITY_DETAIL_CHUNK_CHARS,
+    offset: int | None = None,
+) -> JSONDocument:
+    """Read one bounded text chunk of a complete census or plan document."""
+    if not 256 <= chunk_chars <= 65_536:
+        raise ValueError("raw authority detail chunk_chars must be between 256 and 65536")
+    census_id, record_id, resolved_offset = _raw_authority_detail_ref(query_handle, offset=offset)
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        raise FileNotFoundError(source_db)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        document = _raw_authority_detail_document(conn, census_id, record_id)
+    encoded = _canonical_json(document)
+    if resolved_offset > len(encoded):
+        raise ValueError("raw authority detail offset exceeds document length")
+    chunk = encoded[resolved_offset : resolved_offset + chunk_chars]
+    next_offset = resolved_offset + len(chunk)
+    return json_document(
+        {
+            "query_handle": raw_authority_detail_query_handle(census_id, record_id, offset=resolved_offset),
+            "next_query_handle": (
+                raw_authority_detail_query_handle(census_id, record_id, offset=next_offset)
+                if next_offset < len(encoded)
+                else None
+            ),
+            "encoding": "canonical-json-text-v1",
+            "document_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+            "document_char_count": len(encoded),
+            "document_byte_count": len(encoded.encode()),
+            "offset": resolved_offset,
+            "chunk_chars": chunk_chars,
+            "chunk": chunk,
+        }
+    )
 
 
 def read_raw_authority_census(
@@ -190,12 +368,17 @@ def read_raw_authority_census(
         rows = conn.execute(
             """
             SELECT cp.ordinal, cp.selected, cp.outcome_status, cp.reason,
-                   cp.next_action, cp.application_receipt_json, cp.recorded_at_ms,
+                   cp.next_action, length(cp.application_receipt_json) AS application_receipt_chars,
+                   cp.recorded_at_ms,
                    cp.outcome_recorded,
-                   p.plan_id, p.input_digest, p.input_raw_ids_json,
-                   p.logical_keys_json, p.authority_witness_json,
+                   p.plan_id, p.input_digest,
+                   json_array_length(p.input_raw_ids_json) AS input_raw_count,
+                   json_array_length(p.logical_keys_json) AS logical_key_count,
+                   p.authority_witness_json,
                    p.source_preconditions_json, p.index_preconditions_json,
-                   p.created_at_ms
+                   p.created_at_ms,
+                   (SELECT COUNT(*) FROM raw_authority_blockers AS b
+                    WHERE b.census_id = cp.census_id AND b.plan_id = cp.plan_id) AS blocker_count
             FROM raw_authority_census_plans AS cp
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE cp.census_id = ?
@@ -207,7 +390,8 @@ def read_raw_authority_census(
         post_rows = conn.execute(
             """
             SELECT cpp.ordinal, p.plan_id, p.input_digest,
-                   p.input_raw_ids_json, p.logical_keys_json
+                   json_array_length(p.input_raw_ids_json) AS input_raw_count,
+                   json_array_length(p.logical_keys_json) AS logical_key_count
             FROM raw_authority_census_post_plans AS cpp
             JOIN raw_authority_plans AS p ON p.plan_id = cpp.plan_id
             WHERE cpp.census_id = ?
@@ -216,50 +400,28 @@ def read_raw_authority_census(
             """,
             (census_id, limit, resolved_offset),
         ).fetchall()
-        plan_ids = [str(row["plan_id"]) for row in rows]
-        blockers: list[dict[str, object]] = []
-        if plan_ids:
-            marks = ",".join("?" for _ in plan_ids)
-            blockers = [
-                {
-                    "blocker_id": str(row["blocker_id"]),
-                    "plan_id": str(row["plan_id"]),
-                    "reason": str(row["reason"]),
-                    "expected": _decode_json_field(row["expected_json"]),
-                    "observed": _decode_json_field(row["observed_json"]),
-                    "created_at_ms": int(row["created_at_ms"]),
-                    "resolved_at_ms": row["resolved_at_ms"],
-                    "resolution": row["resolution"],
-                }
-                for row in conn.execute(
-                    f"""
-                    SELECT blocker_id, plan_id, reason, expected_json,
-                           observed_json, created_at_ms, resolved_at_ms, resolution
-                    FROM raw_authority_blockers
-                    WHERE census_id = ? AND plan_id IN ({marks})
-                    ORDER BY created_at_ms, blocker_id
-                    """,
-                    (census_id, *plan_ids),
-                )
-            ]
     plans = [
         {
             "ordinal": int(row["ordinal"]),
             "selected": bool(row["selected"]),
             "outcome_status": str(row["outcome_status"]),
-            "reason": str(row["reason"]),
-            "next_action": str(row["next_action"]),
-            "application_receipt": _decode_json_field(row["application_receipt_json"]),
+            "reason_sample": str(row["reason"])[:256],
+            "reason_chars": len(str(row["reason"])),
+            "next_action_sample": str(row["next_action"])[:256],
+            "next_action_chars": len(str(row["next_action"])),
+            "application_receipt_chars": int(row["application_receipt_chars"]),
             "outcome_recorded": bool(row["outcome_recorded"]),
             "recorded_at_ms": int(row["recorded_at_ms"]),
+            "blocker_count": int(row["blocker_count"]),
+            "detail_query_handle": raw_authority_detail_query_handle(census_id, str(row["plan_id"])),
             "plan": {
                 "plan_id": str(row["plan_id"]),
                 "input_digest": str(row["input_digest"]),
-                "input_raw_ids": _decode_json_field(row["input_raw_ids_json"]),
-                "logical_keys": _decode_json_field(row["logical_keys_json"]),
-                "authority_witness": _decode_json_field(row["authority_witness_json"]),
-                "source_preconditions": _decode_json_field(row["source_preconditions_json"]),
-                "index_preconditions": _decode_json_field(row["index_preconditions_json"]),
+                "input_raw_count": int(row["input_raw_count"]),
+                "logical_key_count": int(row["logical_key_count"]),
+                "authority_witness_chars": len(str(row["authority_witness_json"])),
+                "source_preconditions_chars": len(str(row["source_preconditions_json"])),
+                "index_preconditions_chars": len(str(row["index_preconditions_json"])),
                 "created_at_ms": int(row["created_at_ms"]),
             },
         }
@@ -282,8 +444,9 @@ def read_raw_authority_census(
             "census": {
                 "census_id": str(census["census_id"]),
                 "sequence_no": int(census["sequence_no"]),
-                "scope": _decode_json_field(census["scope_json"]),
-                "residual": _decode_json_field(census["residual_json"]),
+                "detail_query_handle": raw_authority_detail_query_handle(census_id, "census"),
+                "scope_chars": len(str(census["scope_json"])),
+                "residual_chars": len(str(census["residual_json"])),
                 "parser_fingerprint": str(census["parser_fingerprint"]),
                 "mode": str(census["mode"]),
                 "lifecycle_status": str(census["lifecycle_status"]),
@@ -292,10 +455,8 @@ def read_raw_authority_census(
                 "residual_digest": str(census["residual_digest"]),
                 "plan_count": total,
                 "post_inventory_digest": census["post_inventory_digest"],
-                "post_residual": (
-                    _decode_json_field(census["post_residual_json"])
-                    if census["post_residual_json"] is not None
-                    else None
+                "post_residual_chars": (
+                    len(str(census["post_residual_json"])) if census["post_residual_json"] is not None else None
                 ),
                 "post_residual_digest": census["post_residual_digest"],
                 "post_plan_count": post_total,
@@ -313,12 +474,13 @@ def read_raw_authority_census(
                     "ordinal": int(row["ordinal"]),
                     "plan_id": str(row["plan_id"]),
                     "input_digest": str(row["input_digest"]),
-                    "input_raw_ids": _decode_json_field(row["input_raw_ids_json"]),
-                    "logical_keys": _decode_json_field(row["logical_keys_json"]),
+                    "input_raw_count": int(row["input_raw_count"]),
+                    "logical_key_count": int(row["logical_key_count"]),
+                    "detail_query_handle": raw_authority_detail_query_handle(census_id, str(row["plan_id"])),
                 }
                 for row in post_rows
             ],
-            "blockers": blockers,
+            "blocker_count": sum(int(row["blocker_count"]) for row in rows),
         }
     )
 
@@ -1272,6 +1434,8 @@ def reject_invalid_raw_replay_application(
 
 __all__ = [
     "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
+    "RAW_AUTHORITY_DETAIL_CHUNK_CHARS",
+    "RAW_AUTHORITY_DETAIL_QUERY_PREFIX",
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawAuthorityCensusReceipt",
     "RawReplayPlan",
@@ -1282,9 +1446,11 @@ __all__ = [
     "finalize_raw_authority_census",
     "raw_replay_application_receipt",
     "raw_authority_census_query_handle",
+    "raw_authority_detail_query_handle",
     "raw_replay_plan_last_attempts",
     "recover_interrupted_raw_authority_censuses",
     "read_raw_authority_census",
+    "read_raw_authority_detail",
     "record_raw_authority_census",
     "record_raw_replay_outcome",
     "reject_invalid_raw_replay_application",

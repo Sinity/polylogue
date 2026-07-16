@@ -13,11 +13,12 @@ from polylogue.cli.click_app import cli
 from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_rebuild_index
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.core.json import json_document
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.raw_authority import record_raw_authority_census
+from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -67,6 +68,75 @@ def test_raw_authority_census_cli_resolves_receipt_handle(
     payload = json.loads(result.output)
     assert payload["query_handle"] == receipt.query_handle
     assert payload["census"]["census_id"] == receipt.census_id
+
+
+def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
+    plan = RawReplayPlan(
+        "raw-replay:cli-oversized",
+        "b" * 64,
+        raw_ids,
+        ("codex:oversized",),
+        json_document({"raw_ids": list(raw_ids)}),
+        json_document({"raw_ids": list(raw_ids)}),
+        json_document({"raw_ids": list(raw_ids)}),
+    )
+    receipt = record_raw_authority_census(
+        root,
+        (plan,),
+        selected_plan_ids=set(),
+        executable_plan_ids={plan.plan_id},
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "cli-oversized"},
+        residual={},
+    )
+
+    census_result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-census",
+            receipt.query_handle,
+            "--limit",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert census_result.exit_code == 0
+    assert len(census_result.output) < 8_000
+    census_payload = json.loads(census_result.output)
+    item = census_payload["plans"][0]
+    assert item["plan"]["input_raw_count"] == 2_000
+    assert "raw-01999" not in census_result.output
+
+    detail_result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-detail",
+            item["detail_query_handle"],
+            "--chunk-chars",
+            "256",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert detail_result.exit_code == 0
+    detail_payload = json.loads(detail_result.output)
+    assert len(detail_payload["chunk"]) <= 256
+    assert detail_payload["next_query_handle"] is not None
 
 
 def test_raw_authority_blocker_resolution_cli_requires_confirmation(

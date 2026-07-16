@@ -24,6 +24,21 @@ def _config(tmp_path: Path) -> Config:
     return Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "archive.db")
 
 
+def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_mod.RepairResult, list[str]]:
+    """Advance census-only passes until a quiescent preview can publish plans."""
+    incomplete_census_ids: list[str] = []
+    for _pass in range(1_000):
+        result = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
+        assert result.census_receipt is not None
+        if result.census_receipt.quiescent:
+            return result, incomplete_census_ids
+        assert result.census_receipt.plan_count == 0
+        attempted = result.metrics["raw_materialization_census_components_attempted"]
+        assert 1.0 <= attempted <= float(limit)
+        incomplete_census_ids.append(result.census_receipt.census_id)
+    raise AssertionError("bounded raw census did not quiesce")
+
+
 def _status(
     *,
     source_documents: int = 0,
@@ -1234,12 +1249,9 @@ def test_raw_materialization_dry_run_reports_limited_selection(
         conn.commit()
     config = _config(tmp_path)
 
-    result = repair_mod.repair_raw_materialization(
-        config,
-        dry_run=True,
-        raw_artifact_limit=2,
-    )
+    result, incomplete_censuses = _complete_bounded_raw_census(config, limit=2)
 
+    assert len(incomplete_censuses) == 1
     assert result.success is False
     assert result.repaired_count == 0
     assert "Would: classify and replay" in result.detail
@@ -1277,11 +1289,11 @@ def test_raw_materialization_execute_limits_authority_selection(
         conn.commit()
     config = _config(tmp_path)
 
-    result = repair_mod.repair_raw_materialization(
-        config,
-        raw_artifact_limit=2,
-    )
+    preview, incomplete_censuses = _complete_bounded_raw_census(config, limit=2)
+    result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=2)
 
+    assert len(incomplete_censuses) == 1
+    assert len(preview.plan_outcomes) == 2
     assert result.success is False
     assert result.repaired_count == 2
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
@@ -1887,6 +1899,9 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
     assert backlog["execution_blocked"] is False
     assert backlog["executable_authority_component_count"] == raw_count
 
+    preview, incomplete_censuses = _complete_bounded_raw_census(config, limit=5)
+    assert len(incomplete_censuses) == 4
+    assert len(preview.plan_outcomes) == 5
     repaired_per_pass: list[int] = []
     for _pass in range(5):
         result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=5)
@@ -2027,10 +2042,14 @@ def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: P
     assert before["candidate_count"] == 9
     assert before["authority_component_count"] == 5
 
-    preview = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_limit=3)
+    preview, incomplete_censuses = _complete_bounded_raw_census(config, limit=3)
     first = repair_mod.repair_raw_materialization(config, raw_artifact_limit=3)
     after = repair_mod.raw_materialization_replay_backlog(config)
 
+    # The first bounded attempt discovers the five-revision shared component
+    # transitively; the next pass handles the remaining independent components
+    # and publishes the complete plan inventory.
+    assert len(incomplete_censuses) == 1
     assert first.repaired_count == 3, (first.detail, first.metrics, after)
     assert first.metrics["raw_materialization_selected_component_count"] == 3.0
     assert first.metrics["raw_materialization_plan_outcome_count"] == 5.0

@@ -23,6 +23,7 @@ from polylogue.storage.raw_authority import (
     build_raw_replay_plans,
     finalize_raw_authority_census,
     read_raw_authority_census,
+    read_raw_authority_detail,
     record_raw_authority_census,
     record_raw_replay_outcome,
     reject_stale_raw_replay_plan,
@@ -36,6 +37,29 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 
 def _config(root: Path) -> Config:
     return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "archive.db")
+
+
+def _read_detail_document(root: Path, query_handle: str, *, chunk_chars: int = 256) -> dict[str, object]:
+    chunks: list[str] = []
+    handle: str | None = query_handle
+    digest: str | None = None
+    for _page in range(10_000):
+        assert handle is not None
+        page = read_raw_authority_detail(root, handle, chunk_chars=chunk_chars)
+        chunk = cast(str, page["chunk"])
+        assert len(chunk) <= chunk_chars
+        chunks.append(chunk)
+        page_digest = cast(str, page["document_sha256"])
+        digest = digest or page_digest
+        assert page_digest == digest
+        handle = cast(str | None, page["next_query_handle"])
+        if handle is None:
+            break
+    else:
+        raise AssertionError("raw authority detail pagination did not terminate")
+    document = json.loads("".join(chunks))
+    assert isinstance(document, dict)
+    return cast(dict[str, object], document)
 
 
 def _write_codex_raw(
@@ -94,6 +118,11 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
     initialize_active_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="first", source_path="first.jsonl", acquired_at_ms=1)
     _write_codex_raw(tmp_path, native_id="second", source_path="second.jsonl", acquired_at_ms=2)
+
+    incomplete = repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    assert incomplete.census_receipt is not None
+    assert incomplete.census_receipt.quiescent is False
+    assert incomplete.census_receipt.plan_count == 0
 
     result = repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
 
@@ -159,6 +188,11 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
         cast(dict[str, object], item)["outcome_status"]
         for item in (*cast(list[object], first_page["plans"]), *cast(list[object], second_page["plans"]))
     } == {"executed", "carried_forward"}
+    first_item = cast(dict[str, object], cast(list[object], first_page["plans"])[0])
+    assert "application_receipt" not in first_item
+    assert "input_raw_ids" not in cast(dict[str, object], first_item["plan"])
+    detail = _read_detail_document(tmp_path, cast(str, first_item["detail_query_handle"]))
+    assert cast(dict[str, object], detail["plan"])["input_raw_ids"]
     assert cast(dict[str, object], first_page["census"])["post_plan_count"] == 1
     assert len(cast(list[object], first_page["post_plans"])) == 1
 
@@ -322,16 +356,76 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
         acquired_at_ms=3,
     )
 
+    incomplete_receipts = []
+    for _expected_pass in range(2):
+        incomplete = repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
+        assert incomplete.census_receipt is not None
+        assert incomplete.census_receipt.quiescent is False
+        assert incomplete.census_receipt.plan_count == 0
+        assert incomplete.metrics["raw_materialization_census_component_limit"] == 1.0
+        assert incomplete.metrics["raw_materialization_census_components_attempted"] == 1.0
+        incomplete_ledger = read_raw_authority_census(tmp_path, incomplete.census_receipt.query_handle)
+        assert incomplete_ledger["plans"] == []
+        incomplete_receipts.append(incomplete.census_receipt.census_id)
+    assert len(set(incomplete_receipts)) == 2
+
     preview = repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
 
     assert preview.census_receipt is not None
     assert preview.census_receipt.quiescent is True
     ledger = read_raw_authority_census(tmp_path, preview.census_receipt.query_handle)
     raw_sets = {
-        frozenset(cast(list[str], cast(dict[str, object], cast(dict[str, object], item)["plan"])["input_raw_ids"]))
+        frozenset(
+            cast(
+                list[str],
+                cast(
+                    dict[str, object],
+                    _read_detail_document(
+                        tmp_path,
+                        cast(str, cast(dict[str, object], item)["detail_query_handle"]),
+                    )["plan"],
+                )["input_raw_ids"],
+            )
+        )
         for item in cast(list[object], ledger["plans"])
     }
     assert raw_sets == {frozenset((first, second)), frozenset((third,))}
+
+
+def test_census_page_bounds_one_oversized_plan_and_detail_chunks_reconstruct_it(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
+    plan = RawReplayPlan(
+        plan_id="raw-replay:oversized",
+        input_digest="a" * 64,
+        input_raw_ids=raw_ids,
+        logical_keys=tuple(f"codex:key-{index:05d}" for index in range(2_000)),
+        authority_witness=json_document({"rows": [{"raw_id": raw_id} for raw_id in raw_ids]}),
+        source_preconditions=json_document({"rows": [{"raw_id": raw_id} for raw_id in raw_ids]}),
+        index_preconditions=json_document({"rows": [{"raw_id": raw_id} for raw_id in raw_ids]}),
+    )
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids=set(),
+        executable_plan_ids={plan.plan_id},
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "oversized"},
+        residual={},
+    )
+
+    page = read_raw_authority_census(tmp_path, receipt.query_handle, limit=1)
+
+    assert len(json.dumps(page)) < 8_000
+    item = cast(dict[str, object], cast(list[object], page["plans"])[0])
+    summary = cast(dict[str, object], item["plan"])
+    assert summary["input_raw_count"] == 2_000
+    assert "input_raw_ids" not in summary
+    detail = _read_detail_document(tmp_path, cast(str, item["detail_query_handle"]))
+    detail_plan = cast(dict[str, object], detail["plan"])
+    assert detail_plan["input_raw_ids"] == list(raw_ids)
+    assert len(cast(list[object], cast(dict[str, object], detail_plan["authority_witness"])["rows"])) == 2_000
 
 
 def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path) -> None:
@@ -510,7 +604,10 @@ def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp
             conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 1
         )
     page = read_raw_authority_census(tmp_path, second_census.query_handle)
-    blockers = cast(list[object], page["blockers"])
+    assert page["blocker_count"] == 1
+    item = cast(dict[str, object], cast(list[object], page["plans"])[0])
+    detail = _read_detail_document(tmp_path, cast(str, item["detail_query_handle"]))
+    blockers = cast(list[object], detail["blockers"])
     assert len(blockers) == 1
     assert cast(dict[str, object], blockers[0])["blocker_id"] == second_blocker
 

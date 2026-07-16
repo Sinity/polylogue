@@ -65,6 +65,47 @@ def raw_authority_census_command(
         click.echo(f"Next: {next_handle}")
 
 
+@click.command("raw-authority-detail")
+@click.argument("query_handle")
+@click.option("--chunk-chars", type=click.IntRange(256, 65_536), default=16_384, show_default=True)
+@click.option("--offset", type=click.IntRange(min=0), default=None)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def raw_authority_detail_command(
+    env: AppEnv,
+    query_handle: str,
+    chunk_chars: int,
+    offset: int | None,
+    output_format: str,
+) -> None:
+    """Read one bounded chunk of a complete census or plan document."""
+    del env
+    from polylogue.storage.raw_authority import read_raw_authority_detail
+
+    try:
+        payload = read_raw_authority_detail(
+            archive_root(),
+            query_handle,
+            chunk_chars=chunk_chars,
+            offset=offset,
+        )
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(str(payload["chunk"]), nl=False)
+    next_handle = payload.get("next_query_handle")
+    if next_handle is not None:
+        click.echo(f"\nNext: {next_handle}")
+
+
 @click.command("raw-authority-blocker-resolve")
 @click.option("--blocker-id", required=True, help="Exact unresolved durable blocker identifier.")
 @click.option("--reason", required=True, help="Operator rationale recorded in the immutable resolution receipt.")
