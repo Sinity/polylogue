@@ -11,18 +11,11 @@ permanent storage, and these are otherwise irreplaceable (see "Why these
 aren't backups" below).
 
 **Correction to an earlier assumption**: these were first read as 28
-successive iterations of one mission (file sizes shrink 8.4MB→tens-of-KB
-across the window at an identical filename). Checking `MANIFEST.json` inside
-each zip disproved that — where a `mission` field is present, each one names a
-**distinct** bead/topic (`polylogue-yyvg.5`, `polylogue-z9gh.1`,
-`polylogue-ovme.1`, "authorize and receipt every destructive operation...",
-"expose named-source freshness...", etc.). This looks like a coordinated
-multi-mission dispatch batch (matches the `feature/browser/sol-pro-dispatch`
-branch name — dispatching several Sol/Pro missions, not iterating one), not
-one mission repeated. About half the manifests use a different schema
-(`prompt_profile`/`base_revision`/`files` keys, no readable `mission` field)
-— their actual mission is still unidentified; see `raw/` + `SHA256SUMS` and
-open the zip's `MANIFEST.json`/`README.md` directly to identify those.
+successive iterations of one mission because the browser reused one download
+filename. Manifest, transcript, patch-digest, and Bead correlation instead
+identified a coordinated multi-mission dispatch batch. All 28 are now
+identified in `INTEGRATION-LEDGER.json`, including manifests that use the
+alternate `prompt_profile`/`base_revision`/`files` schema.
 
 ## Why these aren't backups — root cause is identified and already fixed upstream, not yet deployed
 
@@ -64,17 +57,35 @@ given the fix targets exactly this scenario) or they stay permanently lost
 is what `polylogue-3v1`'s "live archive replay" step will determine — follow
 that bead, not this one.
 
-## Status: NOT adjudicated — do not apply patches wholesale
+## Status: fully adjudicated
 
-Following the precedent already set for a sibling provider in this repo
-(`/realm/inbox/handoffs/polylogue-gemini-2026-07-16/README.md`, whose own
-process-correction note reads: *"the earlier execution-oriented ZIP handoffs
-were retired after AI Studio produced speculative, duplicated, truncated, and
-artifact-generation-contaminated diffs"*) — patches inside these zips have
-**not** been reviewed. Several contain applyable `PATCHES/*.patch` series;
-none should be merged without the same review gate that caught the AI Studio
-failures (see `/realm/inbox/handoffs/polylogue-gemini-2026-07-16/rejected-attempts/`
-for what an unreviewed chat-UI deliverable looks like when it goes wrong).
+All 28 canonical ZIPs and all 325 older-corpus work units have terminal
+processing decisions. `INTEGRATION-LEDGER.json` is the machine-readable
+canonical-package ledger; `OLDER-INTEGRATION-LEDGER.json` records the older
+handoff corpora. Both deliberately separate package processing from downstream
+product delivery:
+
+- `processing_state: processed` means the package was identified, read,
+  adjudicated against current source, and routed durably.
+- `disposition` records whether it merged, was incorporated as research or a
+  pending delivery input, was subsumed/superseded, or was rejected.
+- `delivery_state`, `delivery_constraint_kind`, and
+  `next_delivery_prerequisite` explain why incorporated work that has not yet
+  merged is waiting and identify its next owner.
+
+The canonical result is 28/28 processed and zero unknown: four merged, four
+research-incorporated, twelve incorporated with an explicit downstream
+delivery prerequisite, two already subsumed, four superseded alternatives,
+and two rejected. Every one of the twelve pending-delivery packages has its
+full SHA recorded in its owning Bead. Nine await ordinary dependency delivery;
+one awaits deployment, one is a verified CaptureJob draft preserved on
+`feature/integration/capture-job-authority`, and one is an incorporated
+MutationTransaction design awaiting route-census admission. “Awaiting” here
+does not mean the handoff itself remains unprocessed.
+
+Do not apply raw patches wholesale. The ledgers are the authority for whether
+a patch was merged, preserved for reconciliation, incorporated as design
+evidence, superseded, or rejected.
 
 ## Contents
 
@@ -101,18 +112,18 @@ Zip-download timestamps cluster in three bursts (23:08; 02:44–02:46;
 03:55–03:56; 06:12–06:14; 07:02) rather than spreading evenly across the
 8-hour window — consistent with the operator batch-downloading several
 session deliverables back-to-back rather than one-per-session-as-it-finished.
-Exact zip↔session pairing was not attempted here (would need the archived
-session transcript's own reference to its `MANIFEST.json`/mission text,
-cross-checked per zip) — the mission-name extraction above is the more
-reliable correlation signal.
+Exact package↔session correlation is recorded per row in
+`INTEGRATION-LEDGER.json`; it combines transcript references with package
+mission and manifest evidence rather than relying on download order.
 
-## Next steps (not done here)
+## Remaining product delivery
 
-1. Extract and read each zip's `MANIFEST.json`/`README.md`/`SUMMARY.md` to
-   identify the ~14 zips whose mission wasn't recoverable from a single
-   manifest-field grep.
-2. Adjudicate each mission's design + patches against current master before
-   considering any merge — treat exactly like the Gemini lane's
-   analysis-before-execution discipline.
-3. Fix `polylogue-s2x7` (browser-capture output-attachment gap) so future
-   Sol/Pro runs don't require this manual-download workaround.
+Corpus processing is complete. Remaining work belongs to the Beads named by
+the ledgers, not to a second handoff-intake pass. In particular, the preserved
+CaptureJob draft must be reconciled only after provider adapters expose stable,
+non-secret account handles; the other pending packages enter their owning
+Beads when those Beads' declared dependencies or admission gates are met.
+
+Capture reliability and live replay remain product work under the current
+browser-capture Beads. Successful corpus adjudication does not itself prove
+that future assistant-produced files will be captured without manual download.
