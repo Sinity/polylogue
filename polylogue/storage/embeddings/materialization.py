@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error"]
 ARCHIVE_EMBED_MESSAGE_BATCH_SIZE = 128
+# Kept under the polylogue-ve9z heuristic purge (h01l): these match HTTP
+# status codes in the embedding provider's OWN live error responses (retry
+# policy triage), not prose inference over archived session content.
 TERMINAL_PROVIDER_ERROR_MARKERS = (
     "http 400",
     "status 400",

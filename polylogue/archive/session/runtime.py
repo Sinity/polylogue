@@ -201,7 +201,6 @@ def _workflow_shape(
 
 _TOOL_START_TYPES = {"function_call", "custom_tool_call", "web_search_call", "tool_search_call"}
 _TOOL_OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output", "web_search_output", "tool_search_output"}
-_ERROR_MARKERS = ("error", "failed", "failure", "traceback", "exception", "panic")
 
 
 def _tool_block_id(block: object) -> str | None:
@@ -284,20 +283,15 @@ def _terminal_state(
 ) -> tuple[str, float, dict[str, int | float | str | None]]:
     """Classify how a session's tool/turn activity ended.
 
-    polylogue-b0b: the action-level error signal below prefers the
-    structural, session-wide ``tool_id -> outcome`` map from
-    :func:`_session_tool_results` (sourced from the keystone
-    ``blocks.tool_result_is_error``/``tool_result_exit_code`` columns, index
-    schema v16) over prose. That structural signal is origin-gated -- absent
-    for most origins (polylogue-9e5.3 audit) -- so a ``_ERROR_MARKERS`` text
-    scan over ``action.output_text`` remains as an explicit, tagged fallback
-    only when the structural signal is absent for that action's tool_id,
-    never silently substituted for it. Every returned ``evidence_class``
-    entry in the features dict is ``"raw_evidence"`` (grounded in
-    structure/role, never guessed from prose) or ``"text_derived"`` (a
-    keyword/prose judgment) so callers can filter or caveat accordingly --
-    see ``polylogue.insights.transforms.FieldEvidenceClass`` for the sibling
-    convention this mirrors.
+    The error signal is purely structural: the session-wide
+    ``tool_id -> outcome`` map from :func:`_session_tool_results` (sourced
+    from the keystone ``blocks.tool_result_is_error``/``tool_result_exit_code``
+    columns, index schema v16) plus typed session events. The former
+    prose-keyword fallback and its ``clean_finish`` complement were deleted
+    per the polylogue-ve9z ladder decision (polylogue-9e5.9 measured them at
+    50.5% agreement with structural truth): where structural evidence is
+    absent the state is ``unknown``, never a keyword guess. Returned
+    ``evidence_class`` entries are therefore ``"raw_evidence"`` throughout.
     """
     pending_block_count = _pending_tool_blocks(session)
     if pending_block_count:
@@ -309,30 +303,27 @@ def _terminal_state(
     tool_results = _session_tool_results(session)
     latest_error_action_id: str | None = None
     latest_error_action_evidence_class: str | None = None
+    final_action_outcome_is_error = False
     for action in analysis.facts.actions:
         result = tool_results.get(action.tool_id) if action.tool_id else None
         outcome = result.outcome if result is not None else None
         if outcome == "failed":
             latest_error_action_id = action.action_id
             latest_error_action_evidence_class = "raw_evidence"
-        elif outcome in (None, "unknown"):
-            # No structural tool_result_is_error/exit_code for this origin's
-            # result (polylogue-9e5.3) -- fall back to a tagged prose scan
-            # over the session-wide tool_result text (falling back further to
-            # the per-message Action.output_text if no session-wide result
-            # text was found at all) instead of reporting a false "no error"
-            # negative.
-            fallback_text = (result.text if result is not None else None) or action.output_text or ""
-            if any(marker in fallback_text.lower() for marker in _ERROR_MARKERS):
-                latest_error_action_id = action.action_id
-                latest_error_action_evidence_class = "text_derived"
-        # outcome == "ok" is a structural negative -- do not fall through to
-        # a prose scan that could misclassify a benign mention of the word
-        # "error" (e.g. "0 errors found") as a failure.
+            final_action_outcome_is_error = True
+        elif outcome == "ok":
+            # A later structural success clears the terminal-failure flag:
+            # recovery is demonstrated by a successful action, never by prose.
+            final_action_outcome_is_error = False
+        # outcome in (None, "unknown") stays unknown and leaves the flag: the
+        # prose _ERROR_MARKERS fallback was deleted per the polylogue-ve9z
+        # ladder decision (its sibling scored 50.5% against structural truth).
+        # No structural evidence means no claim in either direction.
 
     pending: set[str] = set()
     pending_without_id = 0
     latest_error_event_id: str | None = None
+    final_event_is_error = False
     for event in sorted(session.session_events, key=lambda item: item.event_index):
         event_type = str(event.event_type).strip().lower()
         call_id_value = event.payload.get("call_id")
@@ -353,6 +344,11 @@ def _terminal_state(
             status = str(event.payload.get("status") or "").lower()
             if status in {"error", "failed", "failure"}:
                 latest_error_event_id = str(event.id)
+                final_event_is_error = True
+            else:
+                final_event_is_error = False
+        else:
+            final_event_is_error = False
     if pending or pending_without_id:
         return (
             "tool_left",
@@ -374,24 +370,31 @@ def _terminal_state(
         if latest_error_event_id is not None:
             return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
         return "unknown", 0.1, {}
-    text_lower = last.text.lower()
     if last.is_candidate_human_authored:
         return "question_left", 0.72, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
-    if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
-        if latest_error_action_id is not None:
+    if last.is_assistant:
+        if final_event_is_error and latest_error_event_id is not None:
+            # The runtime's own event stream ENDED on a typed error output:
+            # structurally terminal, regardless of what the assistant said.
+            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
+        if final_action_outcome_is_error and latest_error_action_id is not None:
+            # The session's final tool outcome (e.g. a Codex nonzero
+            # exit_code lowered into tool_result_is_error) is a structural
+            # failure with no later structural success: terminal, regardless
+            # of trailing assistant prose claiming recovery.
             return (
                 "error_left",
                 0.78,
                 {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
             )
-        if latest_error_event_id is not None:
-            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
-        return "error_left", 0.7, {"message_id": last.message_id, "evidence_class": "text_derived"}
-    if last.is_assistant:
-        # No structural "did the last turn conclude cleanly" signal exists;
-        # this is the complement of the text-marker scan above, so it is
-        # text_derived too, not a grounded positive.
-        return "clean_finish", 0.68, {"message_id": last.message_id, "evidence_class": "text_derived"}
+        # The prose _ERROR_MARKERS scan and its clean_finish complement were
+        # deleted per the polylogue-ve9z ladder decision (measured at 50.5%
+        # agreement with structural truth, a coin flip). A structural error
+        # earlier in the session does not decide how it ENDED (it may have
+        # been recovered), and without a structural terminal signal the
+        # honest state is unknown -- never clean_finish, never a keyword
+        # guess.
+        return "unknown", 0.2, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
     return "unknown", 0.2, {"message_id": last.message_id}
 
 

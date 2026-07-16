@@ -72,7 +72,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
 | Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
-| Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
+| Error terminal-state rows (`error_terminal_state_rows`) | 1 | 1 | `ok` |
 | Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
