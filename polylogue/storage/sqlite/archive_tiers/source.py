@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     completed_at_ms         INTEGER CHECK(completed_at_ms IS NULL OR completed_at_ms >= created_at_ms),
     CHECK(plan_count >= executable_plan_count),
     CHECK(plan_count >= residual_plan_count),
+    CHECK(plan_count = executable_plan_count + residual_plan_count),
     CHECK(
         (lifecycle_status = 'planned' AND completed_at_ms IS NULL)
         OR (lifecycle_status IN ('completed', 'interrupted') AND completed_at_ms IS NOT NULL)

@@ -80,6 +80,22 @@ class RawReplayPlanOutcome:
             payload["application_receipt"] = self.application_receipt
         return json_document(payload)
 
+    def to_summary_dict(self) -> JSONDocument:
+        """Return a bounded projection; the census handle owns full receipts."""
+        raw_id_sample_limit = 8
+        return json_document(
+            {
+                "plan_id": self.plan_id,
+                "input_raw_count": len(self.input_raw_ids),
+                "input_raw_id_sample": list(self.input_raw_ids[:raw_id_sample_limit]),
+                "input_raw_id_sample_truncated": len(self.input_raw_ids) > raw_id_sample_limit,
+                "status": self.status.value,
+                "reason": self.reason,
+                "next_action": self.next_action,
+                "has_application_receipt": self.application_receipt is not None,
+            }
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RawAuthorityCensusReceipt:

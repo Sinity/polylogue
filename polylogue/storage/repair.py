@@ -5153,6 +5153,27 @@ def _raw_replay_plan_outcomes(
         return tuple(_raw_replay_plan_outcome(conn, plan, remaining=remaining) for plan in plans)
 
 
+def _raw_replay_conservation_metrics(
+    plans: Sequence[RawReplayPlan],
+    selected_plan_ids: set[str],
+    outcomes: Sequence[RawReplayPlanOutcome],
+) -> tuple[int, int, int]:
+    """Return total plans, all carried inventory, and exact algebra errors."""
+    outcome_ids = [outcome.plan_id for outcome in outcomes]
+    outcome_id_set = set(outcome_ids)
+    conservation_errors = (
+        len(selected_plan_ids - outcome_id_set)
+        + len(outcome_id_set - selected_plan_ids)
+        + (len(outcome_ids) - len(outcome_id_set))
+    )
+    carried_forward = (
+        len(plans)
+        - len(selected_plan_ids)
+        + sum(outcome.status is RawReplayPlanStatus.CARRIED_FORWARD for outcome in outcomes)
+    )
+    return len(plans), carried_forward, conservation_errors
+
+
 def _raw_materialization_bucket_summary(
     candidates: RawMaterializationCandidates,
     *,
@@ -5644,7 +5665,7 @@ class RepairResult:
         if self.plan_outcomes:
             payload["plan_outcome_count"] = len(self.plan_outcomes)
             payload["plan_outcomes"] = [
-                outcome.to_dict() for outcome in self.plan_outcomes[:RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT]
+                outcome.to_summary_dict() for outcome in self.plan_outcomes[:RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT]
             ]
             payload["plan_outcomes_truncated"] = len(self.plan_outcomes) > RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT
         if self.census_receipt is not None:
@@ -6860,10 +6881,15 @@ def repair_raw_materialization(
             post_residual=stale_post_residual,
         )
         plan_outcomes = tuple(stale_outcomes + carried) + blocked_plan_outcomes
+        plan_count, carried_forward_count, conservation_error_count = _raw_replay_conservation_metrics(
+            plans,
+            selected_plan_ids,
+            plan_outcomes,
+        )
         metrics["raw_materialization_plan_rejected_stale_count"] = float(len(stale_outcomes))
-        metrics["raw_materialization_plan_carried_forward_count"] = float(len(carried))
-        metrics["raw_materialization_plan_outcome_count"] = float(len(plan_outcomes))
-        metrics["raw_materialization_plan_conservation_error_count"] = float(len(stale_outcomes))
+        metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
+        metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
+        metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
@@ -7022,13 +7048,14 @@ def repair_raw_materialization(
         metrics[f"raw_materialization_plan_{status.value}_count"] = float(
             sum(outcome.status is status for outcome in plan_outcomes)
         )
-    carried_forward_count = len(plans) - len(selected_components)
-    metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
-    metrics["raw_materialization_plan_outcome_count"] = float(len(plans))
-    metrics["raw_materialization_plan_conservation_error_count"] = float(
-        sum(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
-        + abs(len(selected_components) - len(plan_outcomes))
+    plan_count, carried_forward_count, conservation_error_count = _raw_replay_conservation_metrics(
+        plans,
+        selected_plan_ids,
+        plan_outcomes,
     )
+    metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
+    metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
+    metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
     success = (
         not remaining.raw_ids
         and remaining.missing_blobs == 0

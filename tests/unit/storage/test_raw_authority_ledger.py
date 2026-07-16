@@ -352,13 +352,20 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(
             """
-            SELECT c.lifecycle_status, cp.outcome_status
+            SELECT c.lifecycle_status, cp.outcome_status, cp.application_receipt_json
             FROM raw_authority_censuses AS c
             JOIN raw_authority_census_plans AS cp ON cp.census_id = c.census_id
             WHERE c.lifecycle_status = 'interrupted'
             """
         ).fetchone()
-    assert row == ("interrupted", "executed")
+    assert row is not None
+    assert row[:2] == ("interrupted", "executed")
+    recovered_receipt = json.loads(row[2])
+    assert isinstance(recovered_receipt["application_rows"], list)
+    assert isinstance(recovered_receipt["membership_rows"], list)
+    assert recovered_receipt["application_rows"] or recovered_receipt["membership_rows"]
+    assert recovered_receipt["head_rows"]
+    assert recovered_receipt["session_rows"]
 
 
 def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_path: Path) -> None:
@@ -451,7 +458,9 @@ def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path:
     resumed = repair_raw_materialization(_config(tmp_path))
 
     assert resolution["blocker_id"] == blocker_id
-    assert resumed.metrics.get("raw_materialization_unresolved_blocker_count", 0.0) == 0.0
+    assert resumed.success is True
+    assert resumed.repaired_count == 1
+    assert "raw_materialization_unresolved_blocker_count" not in resumed.metrics
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 0
@@ -606,3 +615,29 @@ def test_repair_result_bounds_public_plan_outcomes() -> None:
     assert result["plan_outcome_count"] == 10
     assert len(cast(list[object], result["plan_outcomes"])) == 8
     assert result["plan_outcomes_truncated"] is True
+
+
+def test_repair_result_omits_unbounded_receipt_rows_from_outcome_sample() -> None:
+    outcome = RawReplayPlanOutcome(
+        "plan-with-receipt",
+        tuple(f"raw-{index}" for index in range(100)),
+        RawReplayPlanStatus.EXECUTED,
+        "done",
+        "none",
+        json_document({"application_rows": [{"row": index} for index in range(1000)]}),
+    )
+    result = RepairResult(
+        "raw_materialization",
+        MaintenanceCategory.DERIVED_REPAIR,
+        False,
+        1,
+        True,
+        plan_outcomes=(outcome,),
+    ).to_dict()
+    sample = cast(list[dict[str, object]], result["plan_outcomes"])[0]
+    assert sample["has_application_receipt"] is True
+    assert "application_receipt" not in sample
+    assert sample["input_raw_count"] == 100
+    assert len(cast(list[object], sample["input_raw_id_sample"])) == 8
+    assert sample["input_raw_id_sample_truncated"] is True
+    assert "input_raw_ids" not in sample

@@ -21,6 +21,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -571,17 +572,12 @@ def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pyte
     from polylogue.daemon import cli as daemon_cli
 
     events: list[tuple[str, dict[str, object]]] = []
-    outcome = SimpleNamespace(
-        status=SimpleNamespace(value="executed"),
+    outcome = RawReplayPlanOutcome(
         plan_id="raw-replay:stable",
+        input_raw_ids=("raw-a",),
+        status=RawReplayPlanStatus.EXECUTED,
         reason="applied",
-        to_dict=lambda: {
-            "plan_id": "raw-replay:stable",
-            "input_raw_ids": ["raw-a"],
-            "status": "executed",
-            "reason": "applied",
-            "next_action": "none",
-        },
+        next_action="none",
     )
     monkeypatch.setattr(
         "polylogue.daemon.events.emit_daemon_event",
@@ -615,7 +611,7 @@ def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pyte
                     "raw_materialization_remaining_candidate_count": 0.0,
                 },
                 "plan_outcome_count": 1,
-                "plan_outcome_sample": [outcome.to_dict()],
+                "plan_outcome_sample": [outcome.to_summary_dict()],
                 "plan_outcome_sample_truncated": False,
             },
         )
@@ -652,7 +648,16 @@ def test_raw_materialization_pass_bounds_outcome_sample(monkeypatch: pytest.Monk
     from polylogue.daemon import cli as daemon_cli
 
     events: list[tuple[str, dict[str, object]]] = []
-    outcomes = tuple(SimpleNamespace(to_dict=lambda index=index: {"plan_id": f"plan:{index}"}) for index in range(9))
+    outcomes = tuple(
+        RawReplayPlanOutcome(
+            plan_id=f"plan:{index}",
+            input_raw_ids=(f"raw:{index}",),
+            status=RawReplayPlanStatus.CARRIED_FORWARD,
+            reason="not selected in bounded pass",
+            next_action="retry later",
+        )
+        for index in range(9)
+    )
     monkeypatch.setattr(
         "polylogue.daemon.events.emit_daemon_event",
         lambda kind, *, payload: events.append((kind, payload)),

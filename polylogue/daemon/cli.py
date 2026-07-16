@@ -671,7 +671,7 @@ def _emit_raw_materialization_pass(result: Any) -> None:
         "detail": str(result.detail),
         "metrics": metrics,
         "plan_outcome_count": len(outcomes),
-        "plan_outcome_sample": [outcome.to_dict() for outcome in outcomes[:outcome_sample_limit]],
+        "plan_outcome_sample": [outcome.to_summary_dict() for outcome in outcomes[:outcome_sample_limit]],
         "plan_outcome_sample_truncated": len(outcomes) > outcome_sample_limit,
     }
     if census_payload is not None:

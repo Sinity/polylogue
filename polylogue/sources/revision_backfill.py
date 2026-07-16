@@ -308,6 +308,13 @@ def backfill_historical_revision_evidence(
             selected_raw_ids=selected_raw_ids,
             max_payload_bytes=max_payload_bytes,
         )
+        censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        # The direct backfill entry point must publish the same current-parser
+        # receipt as the census-only entry point before it assigns or applies
+        # any index plan. Commit the source census first so the separate
+        # durable receipt writer observes one complete source snapshot.
+        archive.commit()
+        _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
 

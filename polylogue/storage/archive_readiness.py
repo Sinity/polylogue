@@ -309,10 +309,6 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     }
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
-    if authority_blocker_count:
-        category_counts["raw_authority_blocker"] = authority_blocker_count
-    if authority_pending_census_count:
-        category_counts["raw_authority_pending_census"] = authority_pending_census_count
     category_counts.update(
         {category: count for category, count in classified_counts.items() if category != "parse-failed"}
     )
@@ -328,12 +324,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "critical": critical,
         "warning": 0,
         "actionable": actionable,
-        "blocked": adoption_deferred_count + authority_blocker_count + authority_pending_census_count,
+        "blocked": adoption_deferred_count,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
         "affected_actionable": affected_actionable,
-        "affected_blocked": adoption_deferred_count + authority_blocker_count + authority_pending_census_count,
+        "affected_blocked": adoption_deferred_count,
         "affected_open": 0,
         "affected_classified": classified,
         "affected_unchecked": unchecked,
@@ -344,6 +340,10 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "raw_authority_census": authority_census,
         "raw_authority_blocker_count": authority_blocker_count,
         "raw_authority_pending_census_count": authority_pending_census_count,
+        "raw_authority_ledger_counts": {
+            "unresolved_blockers": authority_blocker_count,
+            "pending_censuses": authority_pending_census_count,
+        },
     }
 
 
