@@ -241,6 +241,42 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
         ).fetchone() == (0,)
 
 
+def test_unified_frontier_first_census_rejects_replaced_blob_bytes(tmp_path: Path) -> None:
+    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        blob_hash = bytes(
+            conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (stale_raw_id,)).fetchone()[0]
+        )
+    blob_path = tmp_path / "blob" / blob_hash.hex()[:2] / blob_hash.hex()[2:]
+    blob_path.write_bytes(b"replacement bytes present before the first census")
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    replaced = next(item for item in census.items if item.raw_id == stale_raw_id)
+    assert replaced.state is RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE
+    assert replaced.actuator is RawAuthorityActuator.REACQUIRE
+
+
+def test_unified_frontier_apply_obeys_offline_daemon_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
+    monkeypatch.setattr(
+        "polylogue.maintenance.offline_guard.offline_maintenance_block_reason",
+        lambda *_args, **_kwargs: "daemon owns the archive write lease",
+    )
+
+    with pytest.raises(RuntimeError, match="daemon owns"):
+        apply_raw_authority_frontier(
+            _config(tmp_path),
+            preview_census_id=preview.census_id,
+            selected_plan_ids=(selected.plan_id,),
+        )
+
+
 def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_path: Path) -> None:
     stale_raw_id, canonical_raw_id, session_id, logical_key = _seed_duplicate_raw_pair(tmp_path)
     preview = inspect_raw_authority_frontier(_config(tmp_path))

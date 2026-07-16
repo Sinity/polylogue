@@ -19,7 +19,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
@@ -39,6 +39,13 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from polylogue.storage.repair import (
+        BrowserCaptureOriginRepairItem,
+        DuplicateRawIdentityRepairItem,
+        QuarantinedAcceptedRawRepairItem,
+    )
 
 
 class RawAuthorityFrontierState(StrEnum):
@@ -71,6 +78,8 @@ _EXECUTABLE_STATES = {
     RawAuthorityFrontierState.DUPLICATE_ALIAS,
 }
 
+_VERIFIED_BLOB_STATS: dict[str, tuple[int, int, int, int, int]] = {}
+
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -100,6 +109,7 @@ class RawAuthorityFrontierItem:
     input_raw_ids: tuple[str, ...]
     source_preconditions: JSONDocument
     index_preconditions: JSONDocument
+    strategy_witness: JSONDocument
     plan_id: str
     evidence_ref: str | None = None
 
@@ -109,6 +119,15 @@ class RawAuthorityFrontierItem:
     @property
     def executable(self) -> bool:
         return self.state in _EXECUTABLE_STATES
+
+
+@dataclass(frozen=True, slots=True)
+class _StrategyOverride:
+    state: RawAuthorityFrontierState
+    actuator: RawAuthorityActuator
+    reason: str
+    witness: JSONDocument
+    input_raw_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +200,85 @@ def _chunks(values: Sequence[str], size: int = 100) -> Iterator[list[str]]:
     """Yield bounded strategy-proof requests in deterministic order."""
     for start in range(0, len(values), size):
         yield list(values[start : start + size])
+
+
+def _verified_blob_bytes(blob_store: BlobStore, hash_hex: str) -> bool:
+    """Hash once per stable on-disk inode state, then reuse the process receipt."""
+    path = blob_store.blob_path(hash_hex)
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if _VERIFIED_BLOB_STATS.get(hash_hex) == fingerprint:
+        return True
+    if not blob_store.verify(hash_hex):
+        return False
+    _VERIFIED_BLOB_STATS[hash_hex] = fingerprint
+    return True
+
+
+def _browser_strategy_witness(item: BrowserCaptureOriginRepairItem) -> JSONDocument:
+    from polylogue.storage.repair import _browser_origin_item_payload
+
+    return json_document(
+        {
+            "schema": "polylogue.raw-authority-strategy-witness.v1",
+            "kind": "browser_origin",
+            "item": _browser_origin_item_payload(item),
+        }
+    )
+
+
+def _quarantine_strategy_witness(item: QuarantinedAcceptedRawRepairItem) -> JSONDocument:
+    from polylogue.storage.repair import _repair_receipt_targets
+
+    return json_document(
+        {
+            "schema": "polylogue.raw-authority-strategy-witness.v1",
+            "kind": "quarantine_refinement",
+            "item": _repair_receipt_targets([item])[0],
+        }
+    )
+
+
+def _duplicate_strategy_witness(item: DuplicateRawIdentityRepairItem) -> JSONDocument:
+    from polylogue.storage.repair import _duplicate_raw_identity_proof_digest
+
+    return json_document(
+        {
+            "schema": "polylogue.raw-authority-strategy-witness.v1",
+            "kind": "duplicate_alias",
+            "proof_digest": _duplicate_raw_identity_proof_digest(item),
+            "stale_raw_id": item.stale_raw_id,
+            "canonical_raw_id": item.canonical_raw_id,
+            "session_id": item.session_id,
+            "logical_source_key": item.logical_source_key,
+            "accepted_source_revision": item.accepted_source_revision,
+            "accepted_content_hash": item.accepted_content_hash,
+            "accepted_frontier_kind": item.accepted_frontier_kind,
+            "accepted_frontier": item.accepted_frontier,
+            "accepted_decided_at_ms": item.accepted_decided_at_ms,
+        }
+    )
+
+
+def _browser_strategy_raw_ids(item: BrowserCaptureOriginRepairItem) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                raw_id
+                for raw_id in (
+                    item.raw_id,
+                    item.replacement_raw_id,
+                    item.copy_forward_raw_id,
+                    item.semantic_canonical_raw_id,
+                    *item.semantic_historical_raw_ids,
+                )
+                if raw_id is not None
+            }
+        )
+    )
 
 
 def _frontier_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
@@ -259,31 +357,6 @@ def _duplicate_alias_siblings(conn: sqlite3.Connection, row: dict[str, object]) 
     return tuple(str(sibling[0]) for sibling in siblings if str(sibling[0]) == expected_canonical)
 
 
-def _has_open_reacquisition_obligation(conn: sqlite3.Connection, raw_id: str) -> bool:
-    """Return whether this raw must re-prove bytes before leaving missing state."""
-    return (
-        conn.execute(
-            """
-            SELECT 1
-            FROM raw_authority_blockers AS b
-            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
-            WHERE b.resolved_at_ms IS NULL
-              AND json_extract(p.authority_witness_json, '$.schema') =
-                  'polylogue.raw-authority-frontier-plan.v1'
-              AND json_extract(p.authority_witness_json, '$.state') =
-                  'missing_bytes_reacquire'
-              AND EXISTS (
-                  SELECT 1 FROM json_each(p.input_raw_ids_json)
-                  WHERE json_each.value = ?
-              )
-            LIMIT 1
-            """,
-            (raw_id,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _item(
     *,
     state: RawAuthorityFrontierState,
@@ -291,6 +364,7 @@ def _item(
     row: dict[str, object],
     reason: str,
     input_raw_ids: tuple[str, ...] | None = None,
+    strategy_witness: JSONDocument | None = None,
 ) -> RawAuthorityFrontierItem:
     raw_id = str(row["accepted_raw_id"])
     source = json_document(
@@ -344,6 +418,7 @@ def _item(
         "input_raw_ids": ids,
         "source": source,
         "index": index,
+        "strategy_witness": strategy_witness or {},
     }
     evidence_digest = _digest(evidence)
     plan_id = f"raw-authority-frontier:{evidence_digest}"
@@ -358,6 +433,7 @@ def _item(
         input_raw_ids=ids,
         source_preconditions=source,
         index_preconditions=index,
+        strategy_witness=strategy_witness or json_document({}),
         plan_id=plan_id,
     )
 
@@ -366,7 +442,7 @@ def _classify_frontier(
     conn: sqlite3.Connection,
     blob_store: BlobStore,
     row: dict[str, object],
-    strategy_override: tuple[RawAuthorityFrontierState, RawAuthorityActuator, str] | None,
+    strategy_override: _StrategyOverride | None,
 ) -> RawAuthorityFrontierItem:
     raw_id = str(row["accepted_raw_id"])
     if row.get("raw_origin") is None:
@@ -378,7 +454,7 @@ def _classify_frontier(
         )
     blob_hash = str(row["blob_hash"]).lower()
     blob_exists = blob_store.exists(blob_hash)
-    reacquisition_proven = not _has_open_reacquisition_obligation(conn, raw_id) or blob_store.verify(blob_hash)
+    reacquisition_proven = blob_exists and _verified_blob_bytes(blob_store, blob_hash)
     if not blob_exists or not reacquisition_proven:
         return _item(
             state=RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
@@ -402,16 +478,42 @@ def _classify_frontier(
         )
     duplicate_siblings = _duplicate_alias_siblings(conn, row)
     if duplicate_siblings and row.get("native_id") is not None:
+        from polylogue.storage.repair import _inspect_duplicate_raw_identity
+
+        if len(duplicate_siblings) != 1:
+            raise RuntimeError(f"duplicate alias classification is not injective for {raw_id}")
+        with closing(sqlite3.connect(f"file:{blob_store.root.parent / 'index.db'}?mode=ro", uri=True)) as proof_conn:
+            proof_conn.row_factory = sqlite3.Row
+            proof_conn.execute(
+                "ATTACH DATABASE ? AS source",
+                (f"file:{blob_store.root.parent / 'source.db'}?mode=ro",),
+            )
+            duplicate_item = _inspect_duplicate_raw_identity(
+                proof_conn,
+                blob_store.root.parent,
+                raw_id,
+                duplicate_siblings[0],
+            )
+        if duplicate_item.status not in {"eligible", "already_repaired"}:
+            raise RuntimeError(f"duplicate alias lacks an exact strategy proof: {duplicate_item.reason}")
+        duplicate_witness = _duplicate_strategy_witness(duplicate_item)
         return _item(
             state=RawAuthorityFrontierState.DUPLICATE_ALIAS,
             actuator=RawAuthorityActuator.FOLD_DUPLICATE_ALIAS,
             row=row,
             reason="accepted raw uses the obsolete native-id-inclusive identity while an exact canonical twin exists",
             input_raw_ids=(raw_id, *duplicate_siblings),
+            strategy_witness=duplicate_witness,
         )
     if strategy_override is not None:
-        state, actuator, reason = strategy_override
-        return _item(state=state, actuator=actuator, row=row, reason=reason)
+        return _item(
+            state=strategy_override.state,
+            actuator=strategy_override.actuator,
+            row=row,
+            reason=strategy_override.reason,
+            strategy_witness=strategy_override.witness,
+            input_raw_ids=strategy_override.input_raw_ids,
+        )
     if row.get("head_accepted_raw_id") != raw_id:
         return _item(
             state=RawAuthorityFrontierState.CORRUPT,
@@ -451,7 +553,7 @@ def _classify_frontier(
 def _strategy_overrides(
     config: Config,
     rows: list[dict[str, object]],
-) -> dict[str, tuple[RawAuthorityFrontierState, RawAuthorityActuator, str]]:
+) -> dict[str, _StrategyOverride]:
     """Ask legacy incident inspectors for proofs, never for plan identity."""
     from polylogue.storage.repair import (
         inspect_browser_canonical_authority_conflicts,
@@ -459,7 +561,7 @@ def _strategy_overrides(
         repair_quarantined_accepted_raws,
     )
 
-    overrides: dict[str, tuple[RawAuthorityFrontierState, RawAuthorityActuator, str]] = {}
+    overrides: dict[str, _StrategyOverride] = {}
     browser_ids = sorted(
         {
             str(row["accepted_raw_id"])
@@ -471,19 +573,37 @@ def _strategy_overrides(
         browser = repair_browser_capture_origin_mismatches(config, browser_chunk)
         for browser_item in browser.items:
             if browser_item.status in {"eligible", "already_repaired"}:
-                overrides[browser_item.raw_id] = (
-                    RawAuthorityFrontierState.SAFELY_REKEYABLE,
-                    RawAuthorityActuator.COPY_FORWARD_ORIGIN,
-                    "browser-origin strategy proved an exact evidence-preserving copy-forward",
+                overrides[browser_item.raw_id] = _StrategyOverride(
+                    state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
+                    actuator=RawAuthorityActuator.COPY_FORWARD_ORIGIN,
+                    reason="browser-origin strategy proved an exact evidence-preserving copy-forward",
+                    witness=_browser_strategy_witness(browser_item),
+                    input_raw_ids=_browser_strategy_raw_ids(browser_item),
                 )
         conflicts = inspect_browser_canonical_authority_conflicts(config, browser_chunk)
         for conflict_item in conflicts.items:
             if conflict_item.raw_id in overrides:
                 continue
-            overrides[conflict_item.raw_id] = (
-                RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
-                RawAuthorityActuator.REQUEST_JUDGMENT,
-                conflict_item.reason,
+            overrides[conflict_item.raw_id] = _StrategyOverride(
+                state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
+                actuator=RawAuthorityActuator.REQUEST_JUDGMENT,
+                reason=conflict_item.reason,
+                witness=json_document(
+                    {
+                        "schema": "polylogue.raw-authority-strategy-witness.v1",
+                        "kind": "browser_conflict",
+                        "evidence": dataclasses.asdict(conflict_item),
+                    }
+                ),
+                input_raw_ids=tuple(
+                    sorted(
+                        {
+                            raw_id
+                            for raw_id in (conflict_item.raw_id, conflict_item.competing_raw_id)
+                            if raw_id is not None
+                        }
+                    )
+                ),
             )
     quarantine_ids = sorted(
         {
@@ -496,10 +616,12 @@ def _strategy_overrides(
         quarantine = repair_quarantined_accepted_raws(config, quarantine_chunk)
         for quarantine_item in quarantine.items:
             if quarantine_item.status in {"eligible", "already_repaired"}:
-                overrides[quarantine_item.raw_id] = (
-                    RawAuthorityFrontierState.SAFELY_REKEYABLE,
-                    RawAuthorityActuator.REFINE_QUARANTINE,
-                    "quarantined-raw strategy proved exact accepted-byte and semantic authority",
+                overrides[quarantine_item.raw_id] = _StrategyOverride(
+                    state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
+                    actuator=RawAuthorityActuator.REFINE_QUARANTINE,
+                    reason="quarantined-raw strategy proved exact accepted-byte and semantic authority",
+                    witness=_quarantine_strategy_witness(quarantine_item),
+                    input_raw_ids=tuple(sorted({quarantine_item.raw_id, *quarantine_item.census_stage_raw_ids})),
                 )
     return overrides
 
@@ -682,6 +804,7 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
             "actuator": item.actuator.value,
             "reason": item.reason,
             "evidence_digest": item.evidence_digest,
+            "strategy_witness": item.strategy_witness,
         }
     )
     return RawReplayPlan(
@@ -840,6 +963,8 @@ def _apply_strategy(
             conn.execute("BEGIN IMMEDIATE")
             try:
                 duplicate_locked = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0])
+                if _duplicate_strategy_witness(duplicate_locked) != item.strategy_witness:
+                    raise RuntimeError("duplicate strategy proof changed after plan authorization")
                 if duplicate_locked.status == "eligible":
                     _apply_duplicate_raw_identity_repair(conn, duplicate_locked)
                 elif duplicate_locked.status != "already_repaired":
@@ -865,6 +990,8 @@ def _apply_strategy(
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
                 proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 preview = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=proof_conn)
+            if _browser_strategy_witness(preview) != item.strategy_witness:
+                raise RuntimeError("browser-origin strategy proof changed after plan authorization")
             if preview.status == "eligible" and preview.repair_strategy == "copy_forward":
                 with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
                     source_conn.execute("PRAGMA foreign_keys = ON")
@@ -877,6 +1004,8 @@ def _apply_strategy(
                     except Exception:
                         source_conn.rollback()
                         raise
+            elif preview.status == "eligible" and preview.repair_strategy == "restore_canonical_head":
+                pass
             elif preview.status != "already_repaired":
                 raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
             with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
@@ -885,6 +1014,8 @@ def _apply_strategy(
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     browser_locked = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=conn)
+                    if _browser_strategy_witness(browser_locked) != item.strategy_witness:
+                        raise RuntimeError("browser-origin strategy proof changed under the apply transaction")
                     if browser_locked.status == "eligible":
                         _apply_browser_origin_repair_item(conn, browser_locked)
                     elif browser_locked.status != "already_repaired":
@@ -911,6 +1042,8 @@ def _apply_strategy(
             try:
                 _validate_quarantined_raw_repair_blob_budget(source_conn, [item.raw_id])
                 quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                if _quarantine_strategy_witness(quarantine_locked) != item.strategy_witness:
+                    raise RuntimeError("quarantine strategy proof changed after plan authorization")
                 if quarantine_locked.status == "eligible" and quarantine_locked.census_stage_raw_ids:
                     _stage_quarantined_census_cohort(source_conn, quarantine_locked)
                     quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
@@ -942,6 +1075,11 @@ def apply_raw_authority_frontier(
     selected_plan_ids: tuple[str, ...],
 ) -> RawAuthorityFrontierApplyReport:
     """Authorize, apply, receipt, and postflight exact plans through one contract."""
+    from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
+
+    block_reason = offline_maintenance_block_reason(config, active=True, dry_run=False)
+    if block_reason is not None:
+        raise RuntimeError(block_reason)
     if not selected_plan_ids or len(set(selected_plan_ids)) != len(selected_plan_ids):
         raise ValueError("raw authority apply requires unique selected plan ids")
     root = _archive_root(config)

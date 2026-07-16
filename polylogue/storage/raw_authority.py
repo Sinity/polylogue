@@ -1199,16 +1199,33 @@ def finalize_raw_authority_census(
         if pending:
             raise RuntimeError(f"raw authority census still has {pending} pending selected outcome(s)")
         post_ids = {plan.plan_id for plan in post_plans}
-        persistent = {
-            str(row[0])
-            for row in conn.execute(
+        selected_inputs = {
+            str(raw_id)
+            for (input_raw_ids_json,) in conn.execute(
                 """
-                SELECT plan_id FROM raw_authority_census_plans
-                WHERE census_id = ? AND outcome_status IN ('retryable', 'carried_forward')
+                SELECT p.input_raw_ids_json
+                FROM raw_authority_census_plans AS cp
+                JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+                WHERE cp.census_id = ? AND cp.selected = 1
                 """,
                 (census_id,),
             )
+            for raw_id in json.loads(str(input_raw_ids_json))
         }
+        persistent: set[str] = set()
+        for plan_id, outcome_status, input_raw_ids_json in conn.execute(
+            """
+            SELECT cp.plan_id, cp.outcome_status, p.input_raw_ids_json
+            FROM raw_authority_census_plans AS cp
+            JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+            WHERE cp.census_id = ?
+              AND cp.outcome_status IN ('retryable', 'carried_forward')
+            """,
+            (census_id,),
+        ):
+            plan_inputs = {str(raw_id) for raw_id in json.loads(str(input_raw_ids_json))}
+            if str(outcome_status) == RawReplayPlanStatus.RETRYABLE.value or plan_inputs.isdisjoint(selected_inputs):
+                persistent.add(str(plan_id))
         if not persistent.issubset(post_ids):
             raise RuntimeError(
                 f"raw authority postflight changed a retryable/carried-forward plan: {sorted(persistent - post_ids)}"

@@ -695,6 +695,28 @@ def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_pa
     assert not (tmp_path / "recovery").exists()
 
 
+def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == mismatched_raw_id)
+    strategy_item = cast(dict[str, Any], selected.strategy_witness["item"])
+    assert strategy_item["repair_strategy"] == "restore_canonical_head"
+
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(selected.plan_id,),
+    )
+
+    assert report.executed_plan_count == 1
+    assert report.retryable_plan_count == 0
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (canonical_raw_id,)
+
+
 def test_browser_origin_repair_resumes_prelegacy_planned_receipt(tmp_path: Path) -> None:
     import polylogue.storage.repair as repair_module
 
