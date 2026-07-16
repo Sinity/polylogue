@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
@@ -10,9 +12,26 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 
-from .base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession, ParsedWebConstruct
+from .base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+    ParsedWebConstruct,
+)
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
+
+
+@dataclass(frozen=True)
+class _GenerationTiming:
+    message_provider_id: str
+    elapsed_duration_ms: int
+    started_at_ms: int | None
+    ended_at_ms: int | None
+    event_timestamp: str | None
+    fidelity: str
 
 
 def _coerce_float(value: object) -> float | None:
@@ -30,6 +49,101 @@ def _coerce_float(value: object) -> float | None:
         if parsed is not None:
             return parsed.timestamp()
     return None
+
+
+def _non_negative_finite_float(value: object) -> float | None:
+    parsed = _coerce_float(value)
+    if parsed is None or not math.isfinite(parsed) or parsed < 0:
+        return None
+    return parsed
+
+
+def _generation_branch_key(mapping: Mapping[str, object], node_id: str) -> str:
+    """Return the first assistant-side node below the nearest user ancestor.
+
+    ChatGPT repeats run-wide reasoning metadata across thought, tool, recap,
+    and final-answer nodes. Grouping by this branch root deduplicates those
+    copies while preserving regenerated alternatives beneath the same user
+    message as distinct generations.
+    """
+
+    current_id = node_id
+    seen: set[str] = set()
+    while current_id not in seen:
+        seen.add(current_id)
+        current = mapping.get(current_id)
+        if not isinstance(current, Mapping):
+            break
+        parent_raw = current.get("parent")
+        if not isinstance(parent_raw, str) or not parent_raw:
+            break
+        parent = mapping.get(parent_raw)
+        if not isinstance(parent, Mapping):
+            break
+        parent_message = parent.get("message")
+        parent_author = parent_message.get("author") if isinstance(parent_message, Mapping) else None
+        parent_role = parent_author.get("role") if isinstance(parent_author, Mapping) else None
+        if parent_role == "user":
+            return current_id
+        current_id = parent_raw
+    return current_id
+
+
+def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_GenerationTiming]:
+    """Select one authoritative lifecycle timing per ChatGPT generation.
+
+    Native conversation payloads commonly copy ``reasoning_start_time`` and
+    ``finished_duration_sec`` onto many nodes. A complete ``reasoning_recap``
+    is preferred over those partial copies; otherwise the best complete node
+    on the same assistant branch owns the timing. Provider-finished duration
+    is authoritative, with a valid start/end delta as the derived fallback.
+    """
+
+    candidates: dict[str, list[tuple[tuple[int, int, int, int], _GenerationTiming]]] = {}
+    for position, (node_id, raw_node) in enumerate(mapping.items()):
+        if not isinstance(raw_node, Mapping):
+            continue
+        raw_message = raw_node.get("message")
+        if not isinstance(raw_message, Mapping):
+            continue
+        raw_metadata = raw_message.get("metadata")
+        if not isinstance(raw_metadata, Mapping):
+            continue
+
+        start_sec = _non_negative_finite_float(raw_metadata.get("reasoning_start_time"))
+        end_sec = _non_negative_finite_float(raw_metadata.get("reasoning_end_time"))
+        finished_sec = _non_negative_finite_float(raw_metadata.get("finished_duration_sec"))
+        if finished_sec is not None:
+            elapsed_ms = round(finished_sec * 1000)
+            fidelity = "exact"
+        elif start_sec is not None and end_sec is not None and end_sec >= start_sec:
+            elapsed_ms = round((end_sec - start_sec) * 1000)
+            fidelity = "derived"
+        else:
+            continue
+
+        content = raw_message.get("content")
+        content_type = content.get("content_type") if isinstance(content, Mapping) else None
+        message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
+        message_id = str(message_id_raw)
+        timing = _GenerationTiming(
+            message_provider_id=message_id,
+            elapsed_duration_ms=elapsed_ms,
+            started_at_ms=round(start_sec * 1000) if start_sec is not None else None,
+            ended_at_ms=round(end_sec * 1000) if end_sec is not None else None,
+            event_timestamp=str(end_sec) if end_sec is not None else None,
+            fidelity=fidelity,
+        )
+        score = (
+            int(content_type == "reasoning_recap"),
+            int(start_sec is not None and end_sec is not None),
+            int(raw_message.get("end_turn") is True),
+            position,
+        )
+        branch_key = _generation_branch_key(mapping, str(node_id))
+        candidates.setdefault(branch_key, []).append((score, timing))
+
+    return [max(branch_candidates, key=lambda item: item[0])[1] for branch_candidates in candidates.values()]
 
 
 def _string_value(payload: Mapping[str, object], *keys: str) -> str | None:
@@ -667,6 +781,35 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     current_node = payload.get("current_node")
     current_node = current_node if isinstance(current_node, str) else None
     messages, attachments = extract_messages_from_mapping(mapping, current_node)
+    generation_timings = _extract_generation_timings(mapping)
+    timing_by_message_id = {timing.message_provider_id: timing for timing in generation_timings}
+    if timing_by_message_id:
+        messages = [
+            message.model_copy(
+                update={"duration_ms": timing_by_message_id[message.provider_message_id].elapsed_duration_ms}
+            )
+            if message.provider_message_id in timing_by_message_id
+            else message
+            for message in messages
+        ]
+    session_events = [
+        ParsedSessionEvent(
+            event_type="generation_lifecycle",
+            timestamp=timing.event_timestamp,
+            source_message_provider_id=timing.message_provider_id,
+            payload={
+                "state": "completed",
+                "evidence_source": "provider_native",
+                "fidelity": timing.fidelity,
+                "duration_semantics": "provider_reported_elapsed",
+                "elapsed_duration_ms": timing.elapsed_duration_ms,
+                **({"started_at_ms": timing.started_at_ms} if timing.started_at_ms is not None else {}),
+                **({"ended_at_ms": timing.ended_at_ms} if timing.ended_at_ms is not None else {}),
+            },
+        )
+        for timing in generation_timings
+    ]
+    duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     ingest_flags: list[str] = []
@@ -696,5 +839,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             None,
         ),
         attachments=attachments,
+        session_events=session_events,
+        reported_duration_ms=sum(duration_values) if duration_values else None,
         ingest_flags=ingest_flags,
     )
