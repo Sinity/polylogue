@@ -255,7 +255,7 @@
           <div class="mark" aria-hidden="true">P</div>
           <div>
             <h1>Polylogue Mission Control</h1>
-            <div class="subtitle">Capture, recovery, and external work across open conversations</div>
+            <div class="subtitle">Capture health across open and recently changed conversations</div>
           </div>
         </div>
         <div id="badge" class="badge neutral" aria-live="polite">checking</div>
@@ -267,29 +267,26 @@
       </section>
 
       <section class="active-card" aria-labelledby="active-heading">
-        <div class="section-head"><strong id="active-heading">Active conversation</strong><span id="operator-state" class="state-chip neutral">Checking</span></div>
+        <div class="section-head"><strong id="active-heading">Current page</strong><span id="operator-state" class="state-chip neutral">Checking</span></div>
         <div class="row"><span id="page" class="value provider-chip">Unknown</span><span id="fidelity-flag" class="state-chip warn" hidden>Partial fidelity</span></div>
         <p id="state">Checking receiver...</p>
         <p id="state-detail"></p>
-        <div class="row"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
-        <div class="row"><span class="label">Captured / visible</span><span id="turns" class="value">--</span></div>
-        <div class="row"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value">Unavailable</span></div>
-        <div class="row"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
-        <div id="asset-failures" class="log-meta"></div>
+        <div class="row conversation-only"><span class="label">Fidelity</span><span id="fidelity" class="value">--</span></div>
+        <div class="row conversation-only"><span class="label">Captured / visible</span><span id="turns" class="value">--</span></div>
+        <div class="row conversation-only"><span class="label">Cost / tokens</span><span id="cost-tokens" class="value">Unavailable</span></div>
+        <div class="row conversation-only"><span class="label">Assets</span><span id="assets" class="value">--</span></div>
+        <div id="asset-failures" class="log-meta conversation-only"></div>
       </section>
 
       <section aria-label="Conversation controls">
         <div class="controls">
-          <button id="capture" class="primary"><span class="button-label">Capture page</span><span class="button-status"></span></button>
-          <button id="check"><span class="button-label">Check status</span><span class="button-status"></span></button>
-          <button id="sync-open-tabs"><span class="button-label">Sync open tabs</span><span class="button-status"></span></button>
-          <button id="copy-ref"><span class="button-label">Copy ref</span><span class="button-status"></span></button>
-          <button id="open-polylogue"><span class="button-label">Open in Polylogue</span><span class="button-status"></span></button>
-          <button id="check-receiver"><span class="button-label">Check receiver</span><span class="button-status"></span></button>
+          <button id="copy-ref" class="conversation-only"><span class="button-label">Copy ref</span><span class="button-status"></span></button>
+          <button id="open-polylogue" class="conversation-only"><span class="button-label">Open in Polylogue</span><span class="button-status"></span></button>
         </div>
+        <p class="section-note">Capture, freshness checks, open-tab convergence, and receiver health run automatically.</p>
       </section>
 
-      <section aria-labelledby="timeline-heading">
+      <section class="conversation-only" aria-labelledby="timeline-heading">
         <div class="section-head"><strong id="timeline-heading">What Polylogue did here</strong></div>
         <div id="timeline" class="log" aria-live="polite"></div>
       </section>
@@ -302,14 +299,13 @@
         </div>
         <div class="controls">
           <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
-          <button id="retry-captures"><span class="button-label">Retry capture queue</span><span class="button-status"></span></button>
         </div>
-        <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture, backfill, or Sol Pro queues.</p>
+        <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture or backfill queues.</p>
       </section>
 
       <section aria-labelledby="work-heading">
         <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value">0</span></div>
-        <p class="section-note">One vocabulary covers local capture retries, provider backfills, and receiver-owned GPT-5.6 Sol Pro work.</p>
+        <p class="section-note">One vocabulary covers local capture retries and provider backfills.</p>
         <div id="work-queue" class="work-list" aria-live="polite"></div>
         <details>
           <summary>Capture retry detail · <span id="queue-count">0</span></summary>
@@ -344,37 +340,6 @@
         <p class="section-note">Runs against authenticated provider inventory without activating foreground tabs. Provider cooldowns remain authoritative.</p>
       </section>
 
-      <section id="launch-panel" aria-labelledby="launch-heading">
-        <div class="section-head">
-          <strong id="launch-heading">GPT-5.6 Sol Pro queue</strong>
-          <span id="launch-status" class="value">disabled</span>
-        </div>
-        <div class="switch-row">
-          <label for="launch-enabled">Allow this extension to execute receiver-leased jobs in inactive tabs</label>
-          <input id="launch-enabled" type="checkbox">
-        </div>
-        <select id="launch-job" aria-label="Agent work job"><option value="">No jobs yet</option></select>
-        <div class="row"><span class="label">Job</span><span id="launch-title" class="value">--</span></div>
-        <div class="row"><span class="label">Target safeguard</span><span class="value">Chat · GPT-5.6 Sol · Pro</span></div>
-        <div class="row"><span class="label">Phase</span><span id="launch-phase" class="value">--</span></div>
-        <div class="row"><span class="label">Cadence / cooldown</span><span id="launch-cadence" class="value">--</span></div>
-        <div class="row"><span class="label">Owner</span><span id="launch-owner" class="value">--</span></div>
-        <div class="row"><span class="label">Handoff</span><span id="launch-handoff" class="value">--</span></div>
-        <div class="row"><span class="label">Last receipt / error</span><span id="launch-last" class="value">--</span></div>
-        <div class="controls">
-          <button id="launch-poll" class="primary"><span class="button-label">Run due job</span><span class="button-status"></span></button>
-          <button id="launch-now"><span class="button-label">Launch now</span><span class="button-status"></span></button>
-          <button id="launch-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
-          <button id="launch-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
-          <button id="launch-retry"><span class="button-label">Retry</span><span class="button-status"></span></button>
-          <button id="launch-confirm-existing" disabled><span class="button-label">Confirmed submitted</span><span class="button-status"></span></button>
-          <button id="launch-confirm-absent" disabled><span class="button-label">Confirmed absent</span><span class="button-status"></span></button>
-          <button id="launch-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
-          <button id="launch-inspect"><span class="button-label">Inspect chat</span><span class="button-status"></span></button>
-        </div>
-        <p class="section-note">The receiver owns queue order and grants one submission lease across extension instances. Launch now never bypasses provider rate or safety circuits, and execution fails closed unless Chat, GPT-5.6 Sol, and Pro are selected exactly.</p>
-      </section>
-
       <section aria-labelledby="ambient-heading">
         <div class="section-head"><strong id="ambient-heading">Ambient surface</strong><span id="ambient-site" class="value">Current site</span></div>
         <div class="switch-row">
@@ -386,11 +351,6 @@
           <input id="ambient-site-enabled" type="checkbox">
         </div>
         <p id="assertion-status" class="section-note">Text selections can form a local assertion candidate. Save remains disabled until the authenticated receiver advertises an assertion route.</p>
-      </section>
-
-      <section aria-labelledby="reverse-heading">
-        <div class="section-head"><strong id="reverse-heading">Reverse channel</strong><span id="reverse-status" class="state-chip neutral">Off — safe default</span></div>
-        <p id="reverse-detail" class="section-note">No ambient control can post or submit. Extension and receiver posting gates remain independently required.</p>
       </section>
 
       <section>

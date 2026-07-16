@@ -176,8 +176,9 @@ function installBridge(adapter, source = bridgeSource, { bootstrapToken = null }
   return { dom, posted, requestAsset };
 }
 
-function installFullCapture(adapter, { url } = {}) {
+function installFullCapture(adapter, { url, beforeInstall } = {}) {
   const dom = makeDom(adapter, url);
+  beforeInstall?.(dom.window.document);
   const posted = [];
   const runtimeMessages = [];
   const runtimeListeners = [];
@@ -406,6 +407,58 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     });
     expect(result.envelope.session.provider_meta.asset_acquisition).toMatchObject({ acquired: 1 });
     expect(harness.dom.window.location.pathname).toBe("/");
+  });
+
+  it("debounces full transcript freshness scans across streamed DOM mutations", async () => {
+    let textReads = 0;
+    const harness = installFullCapture(syntheticEndpointAdapter(), {
+      beforeInstall(document) {
+        for (let index = 0; index < 12; index += 1) {
+          const turn = document.createElement("article");
+          turn.setAttribute("data-message-id", `message-${index}`);
+          turn.textContent = `turn ${index}`;
+          Object.defineProperty(turn, "innerText", {
+            configurable: true,
+            get() {
+              textReads += 1;
+              return turn.textContent;
+            },
+          });
+          document.body.appendChild(turn);
+        }
+      },
+    });
+    const baselineReads = textReads;
+    const turns = [...harness.dom.window.document.querySelectorAll("article")];
+
+    for (let index = 0; index < 6; index += 1) {
+      turns[index].firstChild.data += ` streamed-${index}`;
+      await Promise.resolve();
+    }
+    expect(textReads).toBe(baselineReads);
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 800));
+    expect(textReads).toBe(baselineReads + turns.length);
+  });
+
+  it("debounces native freshness hints independently per conversation", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter());
+    for (const conversationId of ["conversation-a", "conversation-b"]) {
+      harness.dom.window.postMessage({
+        type: "polylogue.chatgpt.nativeCapture",
+        capture: {
+          ok: true,
+          body: JSON.stringify({ conversation_id: conversationId, update_time: 1781366460 }),
+        },
+      });
+    }
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 800));
+    const hints = harness.runtimeMessages.filter((message) => message.type === "polylogue.captureFreshnessHint");
+    expect(hints.map((message) => message.provider_session_id).sort()).toEqual([
+      "conversation-a",
+      "conversation-b",
+    ]);
   });
 
   it("reuses supplied native detail without a second conversation read", async () => {

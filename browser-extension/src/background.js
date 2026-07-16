@@ -4,10 +4,18 @@ import { providerAdapters } from "./backfill/providers.js";
 import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
 import {
-  classifyLaunchFailure,
-  executeChatGptLaunchInPage,
-  inspectChatGptLaunchPage,
-} from "./launch/chatgpt_launch.js";
+  classifyBrowserActionFailure,
+  executeChatGptBrowserActionInPage,
+} from "./actions/chatgpt.js";
+import {
+  chatGptCaptureNeedsFollowUp,
+  claimDueFreshness,
+  completeFreshnessClaim,
+  failureRetryDelayMs,
+  normalizeFreshnessQueue,
+  runningPollDelayMs,
+  scheduleFreshnessHint,
+} from "./capture/freshness.js";
 
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
@@ -16,7 +24,6 @@ const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
 const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
 const RECEIVER_TRUST_CACHE_MS = 10000;
 const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
-const LAST_LAUNCH_SNAPSHOT_KEY = "polylogueLastLaunchSnapshot";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
@@ -26,9 +33,14 @@ const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
 const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
-const POST_POLL_INTERVAL_MS = 5000;
-const LAUNCH_ALARM = "polylogueLaunchWake";
-const LAUNCH_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
+const BROWSER_ACTION_ALARM = "polylogueBrowserActionWake";
+const CAPTURE_FRESHNESS_ALARM = "polylogueCaptureFreshnessWake";
+const CAPTURE_FRESHNESS_SWEEP_ALARM = "polylogueCaptureFreshnessSweep";
+const CAPTURE_FRESHNESS_QUEUE_KEY = "polylogueCaptureFreshnessQueue";
+const CAPTURE_FRESHNESS_LEASE_MS = 2 * 60 * 1000;
+const CAPTURE_FRESHNESS_SWEEP_MINUTES = 15;
+const CAPTURE_FRESHNESS_SWEEP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
@@ -36,17 +48,13 @@ const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
 const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
-// command_id -> true once dispatched to a content script this SW lifetime, so a
-// fast poll cannot deliver the same command twice before its ack lands.
-const inFlightPostCommands = new Set();
-const pendingPostCommandAcks = new Map();
-let postPollTimer = 0;
 let backfillCoordinatorPromise = null;
 let extensionInstanceIdPromise = null;
-let launchExecutorIdPromise = null;
+let browserActionExecutorIdPromise = null;
 const providerTransportPromises = new Map();
 const providerTransportOperations = new Map();
-let launchPollPromise = null;
+let browserActionPollPromise = null;
+let captureFreshnessPollPromise = null;
 let storageMutationQueue = Promise.resolve();
 let captureQueueMutationQueue = Promise.resolve();
 let trustedReceiverHealthCache = null;
@@ -81,24 +89,24 @@ function extensionInstanceId() {
   return extensionInstanceIdPromise;
 }
 
-function launchExecutorId() {
-  if (!launchExecutorIdPromise) {
-    const key = "polylogueLaunchExecutorId";
+function browserActionExecutorId() {
+  if (!browserActionExecutorIdPromise) {
+    const key = "polylogueBrowserActionExecutorId";
     const candidate = (async () => {
       const session = chrome.storage.session;
-      if (!session?.get || !session?.set) return `launch-${BACKFILL_WORKER_EPOCH}`;
+      if (!session?.get || !session?.set) return `browser-action-${BACKFILL_WORKER_EPOCH}`;
       const stored = await session.get({ [key]: "" });
       if (stored[key]) return stored[key];
-      const created = `launch-${globalThis.crypto?.randomUUID?.() || BACKFILL_WORKER_EPOCH}`;
+      const created = `browser-action-${globalThis.crypto?.randomUUID?.() || BACKFILL_WORKER_EPOCH}`;
       await session.set({ [key]: created });
       return created;
     })();
-    launchExecutorIdPromise = candidate;
+    browserActionExecutorIdPromise = candidate;
     void candidate.catch(() => {
-      if (launchExecutorIdPromise === candidate) launchExecutorIdPromise = null;
+      if (browserActionExecutorIdPromise === candidate) browserActionExecutorIdPromise = null;
     });
   }
-  return launchExecutorIdPromise;
+  return browserActionExecutorIdPromise;
 }
 
 async function withExtensionInstanceAttribution(envelope) {
@@ -1396,6 +1404,7 @@ async function cleanupBackfillTransportTab(alarmName) {
   } catch {
     // The operator or browser already closed the inactive transport tab.
   }
+  await chrome.alarms.clear(alarmName);
   await forgetProviderTransport(provider, tabId);
 }
 
@@ -1411,12 +1420,17 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
     ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
     tab = currentTab;
   }
-  if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
+  const conversationUrl = tab?.url || tab?.pendingUrl || "";
+  if (
+    !tab?.id
+    || !archiveProviderForUrl(conversationUrl)
+    || !conversationIdForUrl(conversationUrl)
+    || !injectionPlanForUrl(conversationUrl).length
+  ) return null;
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
   if (
     reason !== "extension_installed_or_updated"
-    && !reason.startsWith("launch_job_")
     && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS
   ) {
     return { ok: false, skipped: true, reason: "background_capture_throttled" };
@@ -1562,148 +1576,217 @@ async function captureProviderConversation(
   });
 }
 
-function chatGptProjectedText(content) {
-  if (!content || typeof content !== "object") return "";
-  if (Array.isArray(content.parts)) {
-    return content.parts.flatMap((part) => {
-      if (typeof part === "string") return [part];
-      if (part && typeof part.text === "string") return [part.text];
-      return [];
-    }).filter(Boolean).join("\n");
-  }
-  if (typeof content.text === "string") return content.text;
-  if (typeof content.result === "string") return content.result;
-  return "";
+async function storedCaptureFreshnessQueue() {
+  const stored = await chrome.storage.local.get({ [CAPTURE_FRESHNESS_QUEUE_KEY]: null });
+  return normalizeFreshnessQueue(stored[CAPTURE_FRESHNESS_QUEUE_KEY]);
 }
 
-async function inspectChatGptConversationNative(
-  conversationId,
-  expectedHandoffName = "polylogue-sol-pro-launch-handoff.zip",
-) {
-  const response = await providerPageFetch(
-    `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(conversationId)}`,
-  );
-  if (!response.ok) {
-    const errorPayload = await response.json().catch(() => null);
-    return {
-      ok: false,
-      status: response.status,
-      retry_after: response.headers.get("retry-after"),
-      provider_error_code: errorPayload?.detail?.code || errorPayload?.code || null,
-      can_retry: errorPayload?.detail?.can_retry ?? errorPayload?.can_retry ?? null,
-    };
+async function persistCaptureFreshnessQueue(queue) {
+  await chrome.storage.local.set({ [CAPTURE_FRESHNESS_QUEUE_KEY]: queue });
+  return queue;
+}
+
+async function scheduleCaptureFreshness({
+  provider,
+  nativeId,
+  reason,
+  delayMs = 0,
+  providerUpdatedAt = null,
+}) {
+  if (provider !== "chatgpt" || !/^[A-Za-z0-9_-]{1,256}$/.test(String(nativeId || ""))) {
+    return { scheduled: false, reason: "unsupported_or_invalid_identity" };
   }
-  const payload = await response.json();
-  const payloadId = payload.conversation_id || payload.id;
-  if (payloadId && String(payloadId) !== conversationId) {
-    throw new Error("provider_contract_drift:chatgpt_conversation_identity_mismatch");
+  const queue = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    return persistCaptureFreshnessQueue(scheduleFreshnessHint(current, {
+      provider,
+      nativeId,
+      reason,
+      nowMs: Date.now(),
+      delayMs,
+      providerUpdatedAt,
+    }));
+  });
+  const entry = queue.entries[`${provider}:${nativeId}`];
+  await scheduleNextCaptureFreshnessWake(queue);
+  return { scheduled: true, entry };
+}
+
+async function scheduleNextCaptureFreshnessWake(queueValue = null) {
+  const queue = queueValue || await storedCaptureFreshnessQueue();
+  const deadlines = Object.values(queue.entries).map((entry) => (
+    entry.lease_owner ? entry.lease_expires_at_ms : entry.next_attempt_at_ms
+  )).filter(Number.isFinite);
+  if (!deadlines.length) {
+    await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+    return;
   }
-  const mapping = payload.mapping;
-  const currentNodeId = payload.current_node;
-  if (!mapping || typeof mapping !== "object" || typeof currentNodeId !== "string") {
-    throw new Error("provider_contract_drift:chatgpt_conversation_current_node_missing");
+  await chrome.alarms?.create?.(CAPTURE_FRESHNESS_ALARM, {
+    when: Math.max(Date.now() + 1_000, Math.min(...deadlines)),
+  });
+}
+
+async function processCaptureFreshnessQueueOnce() {
+  const owner = await extensionInstanceId();
+  const now = Date.now();
+  const { queue, claim } = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    const claimed = claimDueFreshness(current, {
+      nowMs: now,
+      owner,
+      leaseMs: CAPTURE_FRESHNESS_LEASE_MS,
+    });
+    if (claimed.claim) await persistCaptureFreshnessQueue(claimed.queue);
+    return claimed;
+  });
+  if (!claim) {
+    await scheduleNextCaptureFreshnessWake(queue);
+    return { processed: 0, remaining: Object.keys(queue.entries).length };
   }
-  const currentMessage = mapping[currentNodeId]?.message;
-  const role = currentMessage?.author?.role || null;
-  const text = chatGptProjectedText(currentMessage?.content);
-  const complete = role === "assistant" && currentMessage?.end_turn === true;
-  const assistantTurns = Object.values(mapping).filter((node) => node?.message?.author?.role === "assistant").length;
-  return {
-    ok: true,
-    complete,
-    busy: !complete,
-    assistant_turns: assistantTurns,
-    current_node: currentNodeId,
-    current_status: currentMessage?.status || null,
-    current_role: role,
-    current_end_turn: currentMessage?.end_turn ?? null,
-    handoff_name: complete && text.includes(expectedHandoffName)
-      ? expectedHandoffName
-      : null,
-    native_payload: payload,
-    conversation_id: conversationId,
-    conversation_url: `https://chatgpt.com/c/${conversationId}`,
-  };
+
+  let needsFollowUp = false;
+  let retryDelayMs = 0;
+  let failure = null;
+  try {
+    const result = await captureProviderConversation(
+      claim.provider,
+      claim.native_id,
+      "freshness_convergence",
+    );
+    needsFollowUp = chatGptCaptureNeedsFollowUp(result.envelope);
+    retryDelayMs = needsFollowUp ? runningPollDelayMs(claim.running_poll_count || 0) : 0;
+    const receipt = result.captureResult || {};
+    if (claim.provider_updated_at && receipt.content_hash) {
+      const coordinator = await backfillCoordinator();
+      await coordinator.store.putRevision({
+        id: `${claim.provider}:${claim.native_id}`,
+        provider: claim.provider,
+        native_id: claim.native_id,
+        provider_updated_at: claim.provider_updated_at,
+        receiver_content_hash: receipt.content_hash,
+        receiver_request_id: receipt.receiver_request_id || null,
+        completed_at: new Date().toISOString(),
+      });
+    }
+    await appendConversationTimeline({
+      provider: claim.provider,
+      providerSessionId: claim.native_id,
+      event: needsFollowUp ? "detected_new" : "captured",
+      reason: "freshness_convergence",
+      detail: needsFollowUp ? "provider_still_running" : "provider_head_current",
+    });
+  } catch (error) {
+    failure = String(error?.message || error);
+    const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    retryDelayMs = failureRetryDelayMs(
+      claim.attempt_count || 0,
+      classified.outcome,
+      classified.retry_after_seconds,
+    );
+    await appendConversationTimeline({
+      provider: claim.provider,
+      providerSessionId: claim.native_id,
+      event: "held_with_reason",
+      reason: "freshness_convergence",
+      detail: classified.outcome,
+    });
+  }
+
+  const next = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    return persistCaptureFreshnessQueue(completeFreshnessClaim(current, claim, {
+      nowMs: Date.now(),
+      needsFollowUp,
+      retryDelayMs,
+      error: failure,
+    }));
+  });
+  await scheduleNextCaptureFreshnessWake(next);
+  return { processed: 1, remaining: Object.keys(next.entries).length, needsFollowUp, error: failure };
+}
+
+function processCaptureFreshnessQueue() {
+  if (captureFreshnessPollPromise) return captureFreshnessPollPromise;
+  const tracked = processCaptureFreshnessQueueOnce().finally(() => {
+    if (captureFreshnessPollPromise === tracked) captureFreshnessPollPromise = null;
+  });
+  captureFreshnessPollPromise = tracked;
+  return tracked;
+}
+
+async function runCaptureFreshnessSweep() {
+  const now = Date.now();
+  let queue = await storedCaptureFreshnessQueue();
+  if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
+  const coordinator = await backfillCoordinator();
+  const activeJobs = await coordinator.store.listJobs();
+  if (activeJobs.some((job) => job.provider === "chatgpt" && job.status === "running")) {
+    return { skipped: true, reason: "explicit_backfill_running" };
+  }
+  const partition = queue.sweep_partition % 4;
+  try {
+    const cutoff = new Date(now - CAPTURE_FRESHNESS_SWEEP_WINDOW_MS).toISOString();
+    const adapter = coordinator.adapters.chatgpt;
+    const result = await adapter.enumerate(`${partition}:0`, cutoff);
+    if (result.classification !== "success") {
+      const error = new Error(`provider_${result.classification}_http_${result.response?.status || 0}`);
+      error.retryAfterSeconds = Number.parseInt(result.response?.headers?.get?.("Retry-After") || "", 10) || null;
+      throw error;
+    }
+    queue = await serializeStorageMutation(async () => {
+      const current = await storedCaptureFreshnessQueue();
+      return persistCaptureFreshnessQueue({
+        ...current,
+        sweep_partition: (partition + 1) % 4,
+        sweep_not_before_ms: 0,
+        last_sweep_at: new Date(now).toISOString(),
+        last_sweep_error: null,
+      });
+    });
+    let scheduled = 0;
+    for (const item of result.items) {
+      const revision = item.updated_at
+        ? await coordinator.store.getRevision("chatgpt", item.native_id)
+        : null;
+      if (item.updated_at && revision?.provider_updated_at === item.updated_at) continue;
+      const outcome = await scheduleCaptureFreshness({
+        provider: "chatgpt",
+        nativeId: item.native_id,
+        reason: "inventory_delta",
+        delayMs: scheduled * 15_000,
+        providerUpdatedAt: item.updated_at,
+      });
+      if (outcome.scheduled) scheduled += 1;
+    }
+    return { skipped: false, partition, observed: result.items.length, scheduled };
+  } catch (error) {
+    const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    const retryDelay = failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds);
+    await serializeStorageMutation(async () => {
+      const current = await storedCaptureFreshnessQueue();
+      await persistCaptureFreshnessQueue({
+        ...current,
+        sweep_not_before_ms: now + retryDelay,
+        last_sweep_at: new Date(now).toISOString(),
+        last_sweep_error: classified.outcome,
+      });
+    });
+    return { skipped: true, reason: classified.outcome, error: String(error?.message || error) };
+  }
+}
+
+async function ensureCaptureFreshnessAlarms() {
+  await chrome.alarms?.create?.(CAPTURE_FRESHNESS_SWEEP_ALARM, {
+    delayInMinutes: 1,
+    periodInMinutes: CAPTURE_FRESHNESS_SWEEP_MINUTES,
+  });
+  await scheduleNextCaptureFreshnessWake();
 }
 
 async function captureSupportedTabs(reason) {
   if (!chrome.tabs?.query) return;
   const tabs = await chrome.tabs.query({});
   await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
-}
-
-// ---- GPT-5.6 Sol Pro Chat launch queue ----------------------------------
-
-async function launchSettings() {
-  const stored = await chrome.storage.local.get({ launchEnabled: false });
-  return { launchEnabled: Boolean(stored.launchEnabled) };
-}
-
-async function saveLaunchSettings(launchEnabled) {
-  await chrome.storage.local.set({ launchEnabled: Boolean(launchEnabled) });
-  if (launchEnabled) {
-    await ensureLaunchAlarm();
-    void pollLaunchJobs();
-  } else {
-    await chrome.alarms?.clear?.(LAUNCH_ALARM);
-  }
-  return launchSettings();
-}
-
-
-async function storedLaunchSnapshot() {
-  const stored = await chrome.storage.local.get({
-    [LAST_LAUNCH_SNAPSHOT_KEY]: { jobs: [], cached_at: null },
-  });
-  const snapshot = stored[LAST_LAUNCH_SNAPSHOT_KEY];
-  return snapshot && Array.isArray(snapshot.jobs)
-    ? snapshot
-    : { jobs: [], cached_at: null };
-}
-
-async function rememberLaunchSnapshot(status) {
-  const snapshot = {
-    jobs: Array.isArray(status?.jobs) ? status.jobs : [],
-    cached_at: new Date().toISOString(),
-  };
-  await chrome.storage.local.set({ [LAST_LAUNCH_SNAPSHOT_KEY]: snapshot });
-  return snapshot;
-}
-
-async function missionLaunchSnapshot(receiverOnline, offlineDetail = null) {
-  if (receiverOnline) {
-    try {
-      const status = await getJson("/v1/launch-jobs");
-      const snapshot = await rememberLaunchSnapshot(status);
-      return { ...status, jobs: snapshot.jobs, source: "live", cached_at: snapshot.cached_at, error: null };
-    } catch (error) {
-      const cached = await storedLaunchSnapshot();
-      return {
-        jobs: cached.jobs,
-        source: cached.jobs.length ? "cached" : "unavailable",
-        cached_at: cached.cached_at,
-        error: String(error.message || error),
-      };
-    }
-  }
-  const cached = await storedLaunchSnapshot();
-  return {
-    jobs: cached.jobs,
-    source: cached.jobs.length ? "cached" : "unavailable",
-    cached_at: cached.cached_at,
-    error: offlineDetail || "receiver_unavailable",
-  };
-}
-
-async function ensureLaunchAlarm() {
-  await chrome.alarms?.create?.(LAUNCH_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
-}
-
-async function updateLaunchJob(jobId, ownerInstanceId, patch) {
-  return postJson(`/v1/launch-jobs/${encodeURIComponent(jobId)}/events`, {
-    owner_instance_id: ownerInstanceId,
-    ...patch,
-  });
 }
 
 function bytesToBase64(bytes) {
@@ -1715,28 +1798,64 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-async function loadLaunchAttachments(job) {
+// ---- Provider-neutral browser actions ----------------------------------
+
+async function updateBrowserAction(actionId, ownerInstanceId, patch) {
+  return postJson(`/v1/browser-actions/${encodeURIComponent(actionId)}/events`, {
+    owner_instance_id: ownerInstanceId,
+    ...patch,
+  });
+}
+
+async function browserActionAttachmentBytes(action) {
   const settings = await receiverSettings();
   const attachments = [];
   let total = 0;
-  for (const item of job.attachments || []) {
+  for (const item of action.attachments || []) {
     total += Number(item.size_bytes || 0);
-    if (total > LAUNCH_MAX_EXTENSION_TRANSPORT_BYTES) {
+    if (total > BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES) {
       throw new Error(`protocol_attachment_transport_limit:${total}`);
     }
     const requestId = buildReceiverRequestId();
     const response = await fetch(
-      `${settings.baseUrl}/v1/launch-jobs/${encodeURIComponent(job.job_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+      `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
       { headers: await requestHeaders({ requestId }) },
     );
     if (!response.ok) {
-      const retryAfter = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
-      const error = new Error(`launch_attachment_http_${response.status}`);
-      error.retryAfterSeconds = retryAfter;
+      const error = new Error(`browser_action_attachment_http_${response.status}`);
+      error.retryAfterSeconds = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
       throw error;
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const remaining = BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES - (total - Number(item.size_bytes || 0));
+    const declaredLength = Number.parseInt(response.headers.get("Content-Length") || "", 10);
+    if (Number.isFinite(declaredLength) && declaredLength > remaining) {
+      throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + declaredLength}`);
+    }
+    if (!response.body?.getReader) throw new Error("protocol_attachment_stream_unavailable");
+    const reader = response.body.getReader();
+    const chunks = [];
+    let downloaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      downloaded += value.byteLength;
+      if (downloaded > remaining) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + downloaded}`);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(downloaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
     if (bytes.length !== item.size_bytes) throw new Error(`protocol_attachment_size_mismatch:${item.attachment_id}`);
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    if (digest !== item.sha256) throw new Error(`protocol_attachment_hash_mismatch:${item.attachment_id}`);
     attachments.push({
       attachment_id: item.attachment_id,
       name: item.name,
@@ -1747,338 +1866,189 @@ async function loadLaunchAttachments(job) {
   return attachments;
 }
 
-async function waitForTabComplete(tabId, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab.status === "complete") return tab;
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+function browserActionTargetUrl(action) {
+  if (action.target?.conversation_url) return action.target.conversation_url;
+  if (action.operation === "conversation.reply") {
+    return `https://chatgpt.com/c/${encodeURIComponent(action.target.conversation_id)}`;
   }
-  throw new Error("protocol_chatgpt_tab_load_timeout");
+  if (action.target?.project_ref) {
+    const project = String(action.target.project_ref).replace(/^https:\/\/chatgpt\.com\/g\//, "").replace(/^\/+|\/+$/g, "");
+    return `https://chatgpt.com/g/${project}/project?tab=chats`;
+  }
+  return "https://chatgpt.com/";
 }
 
-async function monitorSubmittedLaunch(job, ownerInstanceId) {
-  let inspection;
-  try {
-    if (!job.conversation_id) throw new Error("submitted_launch_missing_conversation_identity");
-    inspection = await inspectChatGptConversationNative(
-      job.conversation_id,
-      job.handoff_filename || "polylogue-sol-pro-launch-handoff.zip",
-    );
-  } catch (error) {
-    const classified = classifyLaunchFailure(error);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      ...classified,
-      phase: "monitoring",
-      tab_id: null,
-      conversation_id: job.conversation_id,
-      conversation_url: job.conversation_url,
-    });
-    return;
+async function prepareBrowserActionTransport(action) {
+  if (action.provider !== "chatgpt") throw new Error(`unsupported_browser_action_provider:${action.provider}`);
+  const transport = await providerTab("chatgpt");
+  const targetUrl = browserActionTargetUrl(action);
+  const currentUrl = transport.tab.url || transport.tab.pendingUrl || "";
+  if (currentUrl !== targetUrl) {
+    await chrome.tabs.update(transport.tab.id, { url: targetUrl, active: false });
+    await waitForProviderTab(transport.tab.id, "chatgpt");
   }
-  if (!inspection.ok) {
-    const retryAfter = Number.parseInt(inspection.retry_after || "", 10) || null;
-    const inaccessible = inspection.status === 404
-      && inspection.provider_error_code === "conversation_inaccessible"
-      && inspection.can_retry === false;
-    const authChallenge = inspection.status === 401 || inspection.status === 403;
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: inaccessible ? "protocol_mismatch" : authChallenge ? "auth_challenge" : "network_error",
-      phase: inaccessible
-        ? "conversation_inaccessible"
-        : authChallenge
-          ? "monitor_auth_challenge"
-          : inspection.status === 429
-            ? "monitor_read_throttled"
-            : "monitor_read_failed",
-      detail: `authenticated conversation read returned HTTP ${inspection.status}`,
-      retry_after_seconds: retryAfter,
-      tab_id: null,
-      conversation_id: job.conversation_id,
-      conversation_url: job.conversation_url,
-    });
-    return;
-  }
-  if (inspection.busy && job.phase !== "provider_running") {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "provider_running",
-      detail: "authenticated provider state shows the submitted chat is still running",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-  }
-  if (inspection.busy || !inspection.assistant_turns) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "monitoring_heartbeat",
-      detail: "renewed exact-conversation completion monitor",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-    return;
-  }
-  let captured;
-  try {
-    captured = await captureProviderConversation(
-      "chatgpt",
-      inspection.conversation_id,
-      "launch_job_completion",
-      { nativePayload: inspection.native_payload },
-    );
-  } catch (error) {
-    const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      ...classified,
-      phase: "completion_capture",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-    return;
-  }
-  if (!inspection.handoff_name) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "protocol_mismatch",
-      phase: "handoff_validation",
-      detail: "assistant completed and was canonically captured without the required cohesive handoff archive",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-    return;
-  }
-  try {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "handoff_visible_pending_acquisition",
-      detail: "required cohesive handoff archive is visible; acquiring bytes for receiver validation",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-      handoff_attachment_id: inspection.handoff_name,
-    });
-    const expectedSandboxPath = `/mnt/data/${inspection.handoff_name}`;
-    const handoff = captured?.envelope?.session?.attachments?.find((attachment) => {
-      if (!attachment.inline_base64) return false;
-      const sandboxPath = attachment.provider_meta?.sandbox_path;
-      const providerAttachmentId = attachment.provider_attachment_id;
-      return attachment.name === inspection.handoff_name
-        || sandboxPath === expectedSandboxPath
-        || (typeof providerAttachmentId === "string"
-          && providerAttachmentId.endsWith(`:${expectedSandboxPath}`));
-    });
-    if (!handoff) {
-      await updateLaunchJob(job.job_id, ownerInstanceId, {
+  return transport;
+}
+
+function startBrowserActionLeaseHeartbeat(action, ownerInstanceId, phase) {
+  let stopped = false;
+  let failure = null;
+  let inFlight = Promise.resolve();
+  const renew = () => {
+    inFlight = inFlight.then(async () => {
+      if (stopped) return;
+      await updateBrowserAction(action.action_id, ownerInstanceId, {
         outcome: "progress",
-        phase: "handoff_asset_pending",
-        detail: "handoff link is visible but authenticated capture has not acquired its bytes yet",
-        tab_id: null,
-        conversation_id: inspection.conversation_id,
-        conversation_url: inspection.conversation_url,
+        phase,
+        detail: "renewed browser action lease during provider execution",
       });
-      return;
-    }
-    // Exact provider capture already sent these bytes through the ordinary capture
-    // envelope used for every user- or queue-created conversation. The
-    // receiver correlates that canonical artifact to the launch job; never
-    // repost or store assistant output through a launch-only side channel.
-    await appendCaptureLog({
-      ok: true,
-      reason: "sol_pro_handoff_captured",
-      job_id: job.job_id,
-      provider_attachment_id: handoff.provider_attachment_id || null,
-      artifact_ref: captured?.captureResult?.artifact_ref || null,
+    }).catch((error) => {
+      failure ||= error;
     });
-  } catch (error) {
-    const classified = classifyLaunchFailure(error, error?.retryAfterSeconds || null);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      ...classified,
-      phase: "handoff_acquisition",
-      tab_id: null,
-      conversation_id: inspection.conversation_id,
-      conversation_url: inspection.conversation_url,
-    });
-  }
+    return inFlight;
+  };
+  const timer = globalThis.setInterval(() => {
+    void renew();
+  }, 60_000);
+  return async () => {
+    stopped = true;
+    globalThis.clearInterval(timer);
+    await inFlight;
+    if (failure) throw failure;
+  };
 }
 
-async function recoverSubmittingLaunch(job, ownerInstanceId) {
-  if (!job.tab_id) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "submission_unknown",
-      phase: "unknown_submit_outcome",
-      detail: "submit intent was recorded without a recoverable tab; operator inspection required",
-    });
-    return;
-  }
-  try {
-    await chrome.tabs.get(job.tab_id);
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: job.tab_id },
-      world: "MAIN",
-      func: inspectChatGptLaunchPage,
-      args: [job.handoff_filename || "polylogue-sol-pro-launch-handoff.zip"],
-    });
-    if (!result?.conversation_id) return;
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "submitted",
-      phase: "submitted_recovered",
-      detail: "recovered the conversation after an unknown submit acknowledgement outcome",
-      tab_id: null,
-      conversation_id: result.conversation_id,
-      conversation_url: result.conversation_url,
-    });
-    await chrome.tabs.remove(job.tab_id).catch(() => undefined);
-  } catch (error) {
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "submission_unknown",
-      phase: "unknown_submit_outcome",
-      detail: `submit intent cannot be reconciled automatically: ${String(error.message || error)}`,
-      tab_id: job.tab_id,
-    });
-  }
-}
-
-async function dispatchLaunchJob(job, ownerInstanceId) {
-  let tab = null;
+async function dispatchBrowserAction(action, ownerInstanceId) {
+  let submitIntentRecorded = false;
   let pageExecutionStarted = false;
+  let actionTransport = null;
   try {
-    const attachments = await loadLaunchAttachments(job);
-    tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
-    if (!tab?.id) throw new Error("protocol_background_tab_create_failed");
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "uploading",
-      detail: "background Chat tab created without activation",
-      tab_id: tab.id,
-    });
-    await waitForTabComplete(tab.id);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "progress",
-      phase: "submit_intent",
-      detail: "durable intent recorded before the single submit boundary",
-      tab_id: tab.id,
-    });
-    pageExecutionStarted = true;
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: executeChatGptLaunchInPage,
-      args: [job, attachments],
+    const attachments = await browserActionAttachmentBytes(action);
+    const result = await withProviderTransportOperation(action.provider, async () => {
+      const transport = await prepareBrowserActionTransport(action);
+      actionTransport = transport;
+      await updateBrowserAction(action.action_id, ownerInstanceId, {
+        outcome: "progress",
+        phase: action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+        detail: action.submit_policy === "submit_once"
+          ? "durable submit intent recorded before the single provider submit boundary"
+          : "owned inactive provider target prepared for a staged draft",
+      });
+      submitIntentRecorded = action.submit_policy === "submit_once";
+      pageExecutionStarted = true;
+      const stopHeartbeat = startBrowserActionLeaseHeartbeat(
+        action,
+        ownerInstanceId,
+        action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+      );
+      try {
+        const [execution] = await chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeChatGptBrowserActionInPage,
+          args: [action, attachments],
+        });
+        return execution?.result;
+      } finally {
+        await stopHeartbeat();
+      }
     });
     if (!result?.ok) {
-      const error = new Error(result?.detail || "protocol_launch_result_missing");
+      const error = new Error(result?.detail || "protocol_browser_action_result_missing");
       error.submissionMayHaveOccurred = Boolean(result?.submission_may_have_occurred);
+      error.retryAfterSeconds = result?.retry_after_seconds || null;
       throw error;
     }
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
-      outcome: "submitted",
-      phase: "submitted",
-      detail: "Chat / GPT-5.6 Sol / Pro preflight passed; monitoring continues through authenticated provider capture",
-      tab_id: null,
-      conversation_id: result.conversation_id,
-      conversation_url: result.conversation_url,
+    const receipt = {
+      action_id: action.action_id,
+      receiver_id: action.receiver_id,
+      extension_instance_id: ownerInstanceId,
+      provider_conversation_id: result.provider_conversation_id || null,
+      provider_conversation_url: result.provider_conversation_url || null,
+      provider_turn_id: result.provider_turn_id || null,
+      observed_surface: result.observed_surface || null,
+      observed_model: result.observed_model || null,
+      observed_effort: result.observed_effort || null,
+      observed_project_ref: result.observed_project_ref || null,
+      provider_evidence: result.provider_evidence || {},
+      observed_at: new Date().toISOString(),
+    };
+    await updateBrowserAction(action.action_id, ownerInstanceId, {
+      outcome: result.outcome,
+      phase: result.outcome,
+      detail: result.outcome === "submitted"
+        ? "provider returned an exact conversation and user-turn receipt"
+        : "provider composer was staged without submitting",
+      receipt,
     });
-    await chrome.tabs.remove(tab.id).catch(() => undefined);
-    tab = null;
+    if (result.outcome === "submitted" && result.provider_conversation_id) {
+      await scheduleCaptureFreshness({
+        provider: action.provider,
+        nativeId: result.provider_conversation_id,
+        reason: "provider_turn_submitted",
+        delayMs: 30_000,
+      });
+    }
+    if (result.outcome === "submitted" && actionTransport?.cleanupAlarm) {
+      await cleanupBackfillTransportTab(actionTransport.cleanupAlarm);
+    } else if (result.outcome === "drafted" && actionTransport?.tab?.id) {
+      // A staged draft is operator-visible provider state, not a reusable
+      // transport. Keep its inactive tab and TTL cleanup, but relinquish
+      // ownership so later captures/actions cannot inherit draft text or
+      // attachments from it.
+      await forgetProviderTransport(action.provider, actionTransport.tab.id);
+    }
     await appendCaptureLog({
       ok: true,
-      reason: "sol_pro_launch_submitted",
-      job_id: job.job_id,
-      conversation_id: result.conversation_id,
+      reason: `browser_action_${result.outcome}`,
+      action_id: action.action_id,
+      provider: action.provider,
+      provider_session_id: result.provider_conversation_id || null,
+      provider_turn_id: result.provider_turn_id || null,
     });
   } catch (error) {
-    const ambiguous = error?.submissionMayHaveOccurred === true
-      || (pageExecutionStarted && error?.submissionMayHaveOccurred !== false);
+    const ambiguous = submitIntentRecorded
+      && (error?.submissionMayHaveOccurred === true || (pageExecutionStarted && error?.submissionMayHaveOccurred !== false));
     const classified = ambiguous
       ? {
-        outcome: "submission_unknown",
+        outcome: "outcome_unknown",
         retry_after_seconds: null,
-        detail: `submit execution channel ended without a durable acknowledgement: ${String(error.message || error)}`,
+        detail: `submit execution ended without an exact provider receipt: ${String(error.message || error)}`,
       }
-      : classifyLaunchFailure(error, error?.retryAfterSeconds || null);
-    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      : classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    await updateBrowserAction(action.action_id, ownerInstanceId, {
       ...classified,
-      phase: "launch",
-      tab_id: tab?.id || null,
+      phase: ambiguous ? "outcome_unknown" : "provider_action_failed",
     }).catch(() => undefined);
     await appendCaptureLog({
       ok: false,
-      reason: "sol_pro_launch_failed",
-      job_id: job.job_id,
+      reason: "browser_action_failed",
+      action_id: action.action_id,
       error: String(error.message || error),
     });
   }
 }
 
-async function pollLaunchJobsOnce() {
-  const { launchEnabled } = await launchSettings();
-  if (!launchEnabled) return { enabled: false, jobs: [] };
-  const ownerInstanceId = await launchExecutorId();
-  const status = await getJson("/v1/launch-jobs").catch(() => ({ jobs: [] }));
-  if (Array.isArray(status.jobs)) await rememberLaunchSnapshot(status);
-  for (const job of status.jobs || []) {
-    if (job.status === "cancelled" && job.executor_instance_id === ownerInstanceId && job.tab_id) {
-      await chrome.tabs.remove(job.tab_id).catch(() => undefined);
-    } else if (job.status === "submitting" && job.lease_owner === ownerInstanceId) {
-      await recoverSubmittingLaunch(job, ownerInstanceId);
-    }
-  }
-  // Monitoring is receiver-leased just like dispatch. Never sweep every
-  // submitted job owned by this extension: with many concurrent Sol chats that
-  // becomes a synchronized authenticated-read burst and triggers ChatGPT's
-  // conversation-access protection. The claim route returns at most one due
-  // conversation and applies its per-conversation backoff.
-  const claim = await getJson(`/v1/launch-jobs?claim_by=${encodeURIComponent(ownerInstanceId)}`);
-  const [job] = claim.jobs || [];
-  if (job?.status === "submitted") {
-    await monitorSubmittedLaunch(job, ownerInstanceId);
-  } else if (job?.status === "submitting") {
-    await recoverSubmittingLaunch(job, ownerInstanceId);
-  } else if (job?.status === "leased") {
-    await dispatchLaunchJob(job, ownerInstanceId);
-  }
-  return { enabled: true, jobs: status.jobs || [], claimed: job || null };
+async function pollBrowserActionsOnce() {
+  const ownerInstanceId = await browserActionExecutorId();
+  const claimed = await getJson(`/v1/browser-actions?claim_by=${encodeURIComponent(ownerInstanceId)}`)
+    .catch(() => ({ actions: [] }));
+  const action = Array.isArray(claimed.actions) ? claimed.actions[0] : null;
+  if (action) await dispatchBrowserAction(action, ownerInstanceId);
+  return claimed;
 }
 
-function pollLaunchJobs() {
-  if (launchPollPromise) return launchPollPromise;
-  const candidate = pollLaunchJobsOnce();
-  const tracked = candidate.finally(() => {
-    if (launchPollPromise === tracked) launchPollPromise = null;
+function pollBrowserActions() {
+  if (browserActionPollPromise) return browserActionPollPromise;
+  const tracked = pollBrowserActionsOnce().finally(() => {
+    if (browserActionPollPromise === tracked) browserActionPollPromise = null;
   });
-  launchPollPromise = tracked;
-  return launchPollPromise;
+  browserActionPollPromise = tracked;
+  return browserActionPollPromise;
 }
 
-// ---- Outbound posting (reverse channel) ---------------------------------
-//
-// Disabled by default. The local receiver only serves post commands when its
-// own POLYLOGUE_BROWSER_POST_ENABLED=1 guard is set; the extension adds a second
-// independent guard (`postingEnabled`, default false) so a misconfigured
-// receiver still cannot drive the page without an explicit opt-in here.
-
-async function postingSettings() {
-  const stored = await chrome.storage.local.get({ postingEnabled: false });
-  return { postingEnabled: Boolean(stored.postingEnabled) };
-}
-
-async function savePostingSettings(postingEnabled) {
-  await chrome.storage.local.set({ postingEnabled: Boolean(postingEnabled) });
-  return postingSettings();
-}
-
-function providerTokenForUrl(url) {
-  try {
-    const parsed = new URL(url || "");
-    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
-    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude";
-  } catch {
-    return null;
-  }
-  return null;
+async function ensureBrowserActionAlarm() {
+  await chrome.alarms?.create?.(BROWSER_ACTION_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
 }
 
 function archiveProviderForUrl(url) {
@@ -2216,7 +2186,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
           dedupeWindowMs: 5 * 60 * 1000,
         });
       }
-      return;
+      return state.state || "unknown";
     }
 
     const health = await checkReceiverHealth();
@@ -2241,6 +2211,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       passive_reason: reason,
       last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
     }, url);
+    return "not_conversation";
   } catch (error) {
     if (allowRecovery) {
       const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
@@ -2278,6 +2249,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       error: String(error.message || error),
       last_receiver_request_id: error.receiverRequestId || null,
     }, url);
+    return "receiver_error";
   }
 }
 
@@ -2356,37 +2328,38 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     await refreshActiveTabArchiveState(resolvedTab, "mission_control_snapshot").catch(() => undefined);
   }
 
-  const [coordinator, ownerInstanceId, captureInstanceId] = await Promise.all([
+  const [coordinator, captureInstanceId] = await Promise.all([
     backfillCoordinator().catch(() => null),
-    launchExecutorId().catch(() => null),
     extensionInstanceId().catch(() => null),
   ]);
   const backfillStatusPromise = coordinator
     ? coordinator.listStatus().catch(() => [])
     : Promise.resolve([]);
-  const [stored, backfillJobs, launchResult, posting, ambient] = await Promise.all([
+  const [stored, backfillJobs, ambient] = await Promise.all([
     chrome.storage.local.get({
       polylogueState: null,
       polylogueSessionLedger: {},
       [CONVERSATION_TIMELINE_KEY]: {},
       [CAPTURE_QUEUE_KEY]: { entries: [], dropped_count: 0 },
-      launchEnabled: false,
-      postingEnabled: false,
+      [CAPTURE_FRESHNESS_QUEUE_KEY]: null,
       [RECEIVER_PAIRING_KEY]: null,
     }),
     backfillStatusPromise,
-    missionLaunchSnapshot(receiverOnline, health.detail || "receiver_unavailable"),
-    postingSettings(),
     ambientSettings(hostnameForUrl(tabUrl)),
   ]);
   const pairing = health.pairing || stored[RECEIVER_PAIRING_KEY] || null;
-  const state = stateSnapshotForTab(
+  const baseState = stateSnapshotForTab(
     resolvedTab,
     stored.polylogueState,
     stored.polylogueSessionLedger || {},
     pairing,
     health,
   );
+  const freshnessQueue = normalizeFreshnessQueue(stored[CAPTURE_FRESHNESS_QUEUE_KEY]);
+  const freshnessEntry = baseState.provider && baseState.provider_session_id
+    ? freshnessQueue.entries[sessionKey(baseState.provider, baseState.provider_session_id)] || null
+    : null;
+  const state = { ...baseState, capture_freshness: freshnessEntry };
   const timelineKey = sessionKey(state.provider, state.provider_session_id);
   const timeline = state.provider && state.provider_session_id
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
@@ -2416,20 +2389,10 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     },
     work: {
       capture_queue: stored[CAPTURE_QUEUE_KEY] || { entries: [], dropped_count: 0 },
+      freshness_queue: freshnessQueue,
       backfill_jobs: backfillJobs || [],
-      launch_jobs: launchResult.jobs || [],
-      launch_enabled: Boolean(stored.launchEnabled),
-      launch_owner_instance_id: ownerInstanceId,
-      launch_error: launchResult.error || null,
-      launch_source: launchResult.source || "live",
-      launch_cached_at: launchResult.cached_at || null,
     },
     ambient,
-    reverse: {
-      enabled: Boolean(posting.postingEnabled),
-      default_state: "off",
-      receiver_gate_required: true,
-    },
     assertions: {
       selection_candidate_supported: true,
       persistence_supported: false,
@@ -2438,128 +2401,21 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
   };
 }
 
-async function ackPostCommand(commandId, result) {
-  try {
-    await postJson(`/v1/post-commands/${encodeURIComponent(commandId)}/ack`, result);
-    pendingPostCommandAcks.delete(commandId);
-    inFlightPostCommands.delete(commandId);
-    return true;
-  } catch (error) {
-    await appendCaptureLog({ ok: false, reason: "post_ack", command_id: commandId, error: String(error.message || error) });
-    pendingPostCommandAcks.set(commandId, result);
-    return false;
-  }
-}
-
-async function retryPendingPostCommandAcks() {
-  for (const [commandId, result] of [...pendingPostCommandAcks.entries()]) {
-    await ackPostCommand(commandId, result);
-  }
-}
-
-async function findTabForCommand(command) {
-  if (!chrome.tabs?.query) return null;
-  const tabs = await chrome.tabs.query({});
-  const provider = command.provider;
-  const target = command.target || {};
-  const wantNew = !target.conversation_id || target.conversation_id === "new";
-  let fallback = null;
-  for (const tab of tabs) {
-    const url = tab.url || tab.pendingUrl || "";
-    if (providerTokenForUrl(url) !== provider) continue;
-    if (wantNew) {
-      if (conversationIdForUrl(url)) continue;
-      if (tab.active) return tab;
-      fallback = fallback || tab;
-      continue;
-    }
-    if (conversationIdForUrl(url) === target.conversation_id) return tab;
-  }
-  return wantNew ? fallback : null;
-}
-
-async function dispatchPostCommand(command) {
-  if (!command || !command.command_id || inFlightPostCommands.has(command.command_id)) return;
-  inFlightPostCommands.add(command.command_id);
-  let terminalAckRecorded = false;
-  try {
-    const tab = await findTabForCommand(command);
-    if (!tab?.id) {
-      terminalAckRecorded = await ackPostCommand(command.command_id, { status: "failed", detail: "no_matching_tab" });
-      return;
-    }
-    await ensureCaptureScripts(tab);
-    let result;
-    try {
-      result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.postReply", command });
-    } catch (error) {
-      terminalAckRecorded = await ackPostCommand(command.command_id, {
-        status: "failed",
-        detail: String(error.message || error),
-        observed_url: tab.url || null,
-      });
-      return;
-    }
-    terminalAckRecorded = await ackPostCommand(command.command_id, {
-      status: result?.status === "submitted" ? "submitted" : "failed",
-      detail: result?.detail || null,
-      observed_url: result?.observed_url || tab.url || null,
-    });
-  } finally {
-    if (terminalAckRecorded) inFlightPostCommands.delete(command.command_id);
-  }
-}
-
-async function pollPostCommands() {
-  const { postingEnabled } = await postingSettings();
-  if (!postingEnabled) return;
-  await retryPendingPostCommandAcks();
-  for (const provider of ["chatgpt", "claude"]) {
-    let body;
-    try {
-      body = await getJson(`/v1/post-commands?provider=${provider}`);
-    } catch {
-      continue;
-    }
-    if (!body?.post_enabled || !Array.isArray(body.commands)) continue;
-    for (const command of body.commands) {
-      await dispatchPostCommand(command);
-    }
-  }
-}
-
-async function startPostPolling() {
-  const { postingEnabled } = await postingSettings();
-  if (!postingEnabled) {
-    stopPostPolling();
-    return;
-  }
-  if (postPollTimer) return;
-  postPollTimer = globalThis.setInterval(() => {
-    void pollPostCommands();
-  }, POST_POLL_INTERVAL_MS);
-  void pollPostCommands();
-}
-
-function stopPostPolling() {
-  if (postPollTimer) {
-    globalThis.clearInterval(postPollTimer);
-    postPollTimer = 0;
-  }
-}
-
-void startPostPolling();
 void loadCaptureQueueIntoCache();
-void launchSettings().then(({ launchEnabled }) => {
-  if (launchEnabled) {
-    void ensureLaunchAlarm();
-    void pollLaunchJobs();
-  }
-});
+void ensureBrowserActionAlarm();
+void ensureCaptureFreshnessAlarms();
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
-  if (alarm?.name === LAUNCH_ALARM) {
-    void pollLaunchJobs();
+  if (alarm?.name === BROWSER_ACTION_ALARM) {
+    void pollBrowserActions();
+    return;
+  }
+  if (alarm?.name === CAPTURE_FRESHNESS_ALARM) {
+    void processCaptureFreshnessQueue();
+    return;
+  }
+  if (alarm?.name === CAPTURE_FRESHNESS_SWEEP_ALARM) {
+    void runCaptureFreshnessSweep();
     return;
   }
   if (alarm?.name?.startsWith(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:`)) {
@@ -2576,26 +2432,33 @@ chrome.alarms?.onAlarm?.addListener((alarm) => {
 });
 
 chrome.runtime.onInstalled?.addListener(() => {
-  void refreshCurrentActiveTab("extension_installed");
+  void captureSupportedTabs("extension_installed_or_updated");
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  void refreshCurrentActiveTab("browser_startup");
+  void captureSupportedTabs("browser_startup");
   void backfillCoordinator().then((coordinator) => coordinator.wake());
-  void pollLaunchJobs();
+  void ensureCaptureFreshnessAlarms();
 });
 
 chrome.tabs?.onActivated?.addListener((activeInfo) => {
   void (async () => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    await refreshActiveTabArchiveState(tab, "tab_activated");
+    const archiveState = await refreshActiveTabArchiveState(tab, "tab_activated");
+    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
+      await captureTab(tab, "tab_activated");
+    }
   })();
 });
 
 chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
   void (async () => {
-    await refreshActiveTabArchiveState(tab?.id ? tab : await chrome.tabs.get(tabId), "tab_updated");
+    const resolvedTab = tab?.id ? tab : await chrome.tabs.get(tabId);
+    const archiveState = await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
+    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
+      await captureTab(resolvedTab, "tab_updated");
+    }
   })();
 });
 
@@ -2772,6 +2635,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, ...result });
       return;
     }
+    if (message.type === "polylogue.captureFreshnessHint") {
+      const senderUrl = sender.tab?.url || sender.tab?.pendingUrl || "";
+      const senderProvider = archiveProviderForUrl(senderUrl);
+      const senderSessionId = conversationIdForUrl(senderUrl);
+      const provider = message.provider || senderProvider;
+      const nativeId = message.provider_session_id || senderSessionId;
+      if (sender.tab && (provider !== senderProvider || (senderSessionId && nativeId !== senderSessionId))) {
+        throw new Error("freshness_hint_sender_identity_mismatch");
+      }
+      sendResponse({
+        ok: true,
+        ...(await scheduleCaptureFreshness({
+          provider,
+          nativeId,
+          reason: message.reason || "provider_page_hint",
+          delayMs: Math.max(0, Math.min(5 * 60_000, Number(message.delay_ms) || 5_000)),
+          providerUpdatedAt: message.provider_updated_at || null,
+        })),
+      });
+      return;
+    }
     if (message.type === "polylogue.getCaptureQueue") {
       const queue = await getCaptureQueue();
       sendResponse({
@@ -2902,47 +2786,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
-    if (message.type === "polylogue.configurePosting") {
-      const settings = await savePostingSettings(message.postingEnabled);
-      await startPostPolling();
-      sendResponse({ ok: true, postingEnabled: settings.postingEnabled });
-      return;
-    }
-    if (message.type === "polylogue.launch.configure") {
-      const settings = await saveLaunchSettings(message.launchEnabled);
-      sendResponse({ ok: true, ...settings });
-      return;
-    }
-    if (message.type === "polylogue.launch.status") {
-      const [settings, status, ownerInstanceId] = await Promise.all([
-        launchSettings(),
-        getJson("/v1/launch-jobs"),
-        launchExecutorId(),
+    if (message.type === "polylogue.browserActions.status") {
+      const [status, ownerInstanceId] = await Promise.all([
+        getJson("/v1/browser-actions"),
+        browserActionExecutorId(),
       ]);
-      await rememberLaunchSnapshot(status);
-      sendResponse({ ok: true, ...settings, ownerInstanceId, jobs: status.jobs || [] });
+      sendResponse({ ok: true, ownerInstanceId, actions: status.actions || [] });
       return;
     }
-    if (message.type === "polylogue.launch.control") {
-      const result = await postJson(`/v1/launch-jobs/${encodeURIComponent(message.job_id)}/control`, {
-        action: message.action,
-        inspection_receipt: message.inspection_receipt || null,
-        conversation_id: message.conversation_id || null,
-        conversation_url: message.conversation_url || null,
-      });
-      if (["resume", "retry", "launch_now", "confirm_no_conversation", "confirm_existing_conversation"].includes(message.action)) {
-        void pollLaunchJobs();
-      }
-      sendResponse({ ok: true, job: result.job });
-      return;
-    }
-    if (message.type === "polylogue.launch.poll") {
-      sendResponse({ ok: true, ...(await pollLaunchJobs()) });
-      return;
-    }
-    if (message.type === "polylogue.pollPostCommands") {
-      await pollPostCommands();
-      sendResponse({ ok: true });
+    if (message.type === "polylogue.browserActions.poll") {
+      sendResponse({ ok: true, ...(await pollBrowserActions()) });
       return;
     }
   })().catch(async (error) => {

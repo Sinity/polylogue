@@ -16,7 +16,6 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 import orjson
 
@@ -29,9 +28,6 @@ from polylogue.browser_capture.models import (
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
-    BrowserPostCommand,
-    BrowserPostCommandAckRequest,
-    BrowserPostCommandRequest,
 )
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.timestamps import parse_timestamp
@@ -42,15 +38,6 @@ from polylogue.paths import browser_capture_receiver_token_path, browser_capture
 logger = get_logger(__name__)
 
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
-
-#: Environment flag that must equal ``"1"`` before the receiver will enqueue or
-#: dispatch any outbound post command. Default OFF: the posting capability is a
-#: high-authority action (it writes into a live ChatGPT/Claude thread through the
-#: extension), so it cannot fire by accident — an operator must opt in explicitly.
-BROWSER_POST_ENABLED_ENV = "POLYLOGUE_BROWSER_POST_ENABLED"
-
-#: Subdirectory of the capture spool that holds queued post commands.
-POST_COMMAND_QUEUE_DIRNAME = "post-commands"
 
 #: Subdirectory of the capture spool that holds mirrored backfill-ledger
 #: checkpoints (polylogue-06zm). One file per extension_instance_id.
@@ -454,15 +441,6 @@ def _escape_like_suffix(value: str) -> str:
 SPOOL_MAX_FILES = 20_000
 SPOOL_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
-#: Outbound post commands are small control-plane objects (a target, some
-#: text, a submit flag), not archive content, so their queue gets a much
-#: tighter bound than the capture spool. This still exists to cap a runaway
-#: caller looping enqueue_post_command, not to bound legitimate use --
-#: dispatched/acked commands are expected to be pruned by the extension's
-#: poll/ack cycle long before this is reached.
-POST_COMMAND_QUEUE_MAX_FILES = 5_000
-POST_COMMAND_QUEUE_MAX_BYTES = 50 * 1024 * 1024  # 50 MiB
-
 
 class SpoolQuotaExceededError(RuntimeError):
     """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
@@ -737,33 +715,6 @@ def existing_capture_state(
     ).model_dump(mode="json", exclude_none=True)
 
 
-class BrowserPostDisabledError(RuntimeError):
-    """Raised when a post command is requested while posting is disabled."""
-
-
-class BrowserPostCommandConflictError(RuntimeError):
-    """Raised when a queued post command id would overwrite an existing command."""
-
-
-class BrowserPostCommandStateError(RuntimeError):
-    """Raised when an ack targets a command state that cannot be acked."""
-
-
-def browser_post_enabled() -> bool:
-    """Return whether outbound posting is enabled via the env safety flag."""
-    return os.environ.get(BROWSER_POST_ENABLED_ENV, "") == "1"
-
-
-def post_command_queue_root(spool_path: Path | None = None) -> Path:
-    """Return the directory that holds queued outbound post commands."""
-    root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
-    return root / POST_COMMAND_QUEUE_DIRNAME
-
-
-def _post_command_path(root: Path, command_id: str) -> Path:
-    return root / f"{_safe_token(command_id)}.json"
-
-
 def _atomic_write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
@@ -772,126 +723,6 @@ def _atomic_write_json(path: Path, payload: object) -> None:
         handle.write(raw)
         handle.write(b"\n")
     temp_path.replace(path)
-
-
-def _write_post_command(root: Path, command: BrowserPostCommand) -> Path:
-    target = _post_command_path(root, command.command_id)
-    _atomic_write_json(target, command.model_dump(mode="json", exclude_none=True))
-    return target
-
-
-def _read_post_command(path: Path) -> BrowserPostCommand | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    try:
-        return BrowserPostCommand.model_validate(payload)
-    except Exception:
-        return None
-
-
-def enqueue_post_command(
-    request: BrowserPostCommandRequest,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserPostCommand:
-    """Persist an outbound post command in the queue.
-
-    Raises :class:`BrowserPostDisabledError` unless the
-    ``POLYLOGUE_BROWSER_POST_ENABLED=1`` safety flag is set, so the capability
-    cannot fire by accident. Raises :class:`SpoolQuotaExceededError` before
-    writing a NEW command once the queue quota is reached, guarded by the
-    same write lock the capture-spool path uses so concurrent enqueues
-    cannot all pass the check before any one write lands (polylogue-gnie).
-    """
-    if not browser_post_enabled():
-        raise BrowserPostDisabledError(f"outbound posting is disabled; set {BROWSER_POST_ENABLED_ENV}=1 to enable")
-    root = post_command_queue_root(spool_path)
-    command_id = _safe_token(request.command_id) if request.command_id else uuid4().hex
-    with _SPOOL_WRITE_LOCK:
-        if _post_command_path(root, command_id).exists():
-            raise BrowserPostCommandConflictError(f"post command already exists: {command_id}")
-        _check_spool_quota(
-            root,
-            max_files=POST_COMMAND_QUEUE_MAX_FILES,
-            max_bytes=POST_COMMAND_QUEUE_MAX_BYTES,
-            label="post-command queue",
-        )
-        now = datetime.now(UTC).isoformat()
-        command = BrowserPostCommand(
-            command_id=command_id,
-            provider=request.provider,
-            target=request.target,
-            text=request.text,
-            submit=request.submit,
-            status="pending",
-            created_at=now,
-            updated_at=now,
-        )
-        _write_post_command(root, command)
-    return command
-
-
-def poll_post_commands(
-    *,
-    provider: str | None = None,
-    spool_path: Path | None = None,
-    claim: bool = True,
-) -> list[BrowserPostCommand]:
-    """Return pending post commands, optionally claiming them (pending -> dispatched).
-
-    Returns an empty list when posting is disabled, so a manually-placed queue
-    file is never dispatched while the safety flag is off. Claiming a command
-    prevents a subsequent poll from re-dispatching it; an unacked dispatched
-    command is intentionally not auto-retried.
-    """
-    if not browser_post_enabled():
-        return []
-    root = post_command_queue_root(spool_path)
-    if not root.exists():
-        return []
-    commands: list[BrowserPostCommand] = []
-    for path in sorted(root.glob("*.json")):
-        command = _read_post_command(path)
-        if command is None or command.status != "pending":
-            continue
-        if provider is not None and command.provider != provider:
-            continue
-        if claim:
-            now = datetime.now(UTC).isoformat()
-            command.status = "dispatched"
-            command.dispatched_at = now
-            command.updated_at = now
-            _write_post_command(root, command)
-        commands.append(command)
-    return commands
-
-
-def ack_post_command(
-    command_id: str,
-    ack: BrowserPostCommandAckRequest,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserPostCommand | None:
-    """Record the extension's result for a dispatched post command."""
-    root = post_command_queue_root(spool_path)
-    path = _post_command_path(root, command_id)
-    command = _read_post_command(path)
-    if command is None:
-        return None
-    if command.status in {"submitted", "failed"}:
-        return command
-    if command.status != "dispatched":
-        raise BrowserPostCommandStateError(f"cannot ack post command in {command.status!r} state")
-    now = datetime.now(UTC).isoformat()
-    command.status = ack.status
-    command.detail = ack.detail
-    command.observed_url = ack.observed_url
-    command.acked_at = now
-    command.updated_at = now
-    _write_post_command(root, command)
-    return command
 
 
 # ---- Backfill-ledger checkpoint mirror (polylogue-06zm) --------------------
@@ -975,26 +806,16 @@ __all__ = [
     "BACKFILL_CHECKPOINT_MAX_BYTES",
     "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
-    "BROWSER_POST_ENABLED_ENV",
-    "POST_COMMAND_QUEUE_DIRNAME",
     "RECEIVER_TOKEN_ENTROPY_BYTES",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
-    "BrowserPostCommandConflictError",
-    "BrowserPostCommandStateError",
-    "BrowserPostDisabledError",
-    "ack_post_command",
     "backfill_checkpoint_root",
-    "browser_post_enabled",
     "capture_artifact_ref",
     "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
-    "enqueue_post_command",
     "existing_capture_state",
     "load_or_mint_receiver_token",
-    "poll_post_commands",
-    "post_command_queue_root",
     "read_backfill_checkpoint",
     "receiver_identity",
     "receiver_status_payload",

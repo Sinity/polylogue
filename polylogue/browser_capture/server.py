@@ -5,31 +5,39 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
 
-from polylogue.browser_capture.launch_jobs import (
-    BrowserLaunchConflictError,
-    BrowserLaunchLeaseError,
-    BrowserLaunchQuotaError,
-    BrowserLaunchStateError,
-    claim_due_launch_job,
-    control_launch_job,
-    enqueue_launch_job,
-    list_launch_jobs,
-    read_launch_attachment,
-    reconcile_launch_handoff_capture,
-    update_launch_job,
+from polylogue.browser_capture.actions import (
+    BrowserActionConflictError,
+    BrowserActionLeaseError,
+    BrowserActionQuotaError,
+    BrowserActionStateError,
+    browser_action_capabilities,
+    claim_action,
+    enqueue_action,
+    get_action,
+    list_actions,
+    read_action_attachment,
+    reconcile_action,
+    update_action,
 )
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserActionCapabilitiesPayload,
+    BrowserActionListPayload,
+    BrowserActionPayload,
+    BrowserActionReconcileRequest,
+    BrowserActionRequest,
+    BrowserActionUpdateRequest,
     BrowserBackfillCheckpointAcceptedPayload,
     BrowserBackfillCheckpointPayload,
     BrowserBackfillCheckpointRequest,
@@ -37,30 +45,14 @@ from polylogue.browser_capture.models import (
     BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
-    BrowserLaunchJobControlRequest,
-    BrowserLaunchJobEnqueuedPayload,
-    BrowserLaunchJobListPayload,
-    BrowserLaunchJobRequest,
-    BrowserLaunchJobUpdateRequest,
-    BrowserPostAckPayload,
-    BrowserPostCommandAckRequest,
-    BrowserPostCommandListPayload,
-    BrowserPostCommandRequest,
-    BrowserPostEnqueuedPayload,
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
-    BrowserPostCommandConflictError,
-    BrowserPostCommandStateError,
-    BrowserPostDisabledError,
     SpoolQuotaExceededError,
-    ack_post_command,
-    browser_post_enabled,
     capture_response_id,
-    enqueue_post_command,
     existing_capture_state,
-    poll_post_commands,
     read_backfill_checkpoint,
+    receiver_identity,
     receiver_status_payload,
     write_backfill_checkpoint,
     write_capture_envelope,
@@ -72,6 +64,7 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+_SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -176,13 +169,19 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _send_bytes(self, payload: bytes, *, content_type: str, filename: str) -> None:
         if any(ord(character) < 32 or ord(character) == 127 for character in filename):
-            raise BrowserLaunchConflictError("download filename contains control characters")
+            raise ValueError("download filename contains control characters")
+        safe_content_type = content_type if _SAFE_MEDIA_TYPE.fullmatch(content_type) else "application/octet-stream"
+        ascii_filename = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").replace("\\", "")
+        ascii_filename = ascii_filename or "download"
         origin = self.headers.get("Origin")
         self.send_response(HTTPStatus.OK.value)
         self.send_header("X-Request-ID", self._request_id())
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", safe_content_type)
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Content-Disposition", f'attachment; filename="{filename.replace(chr(34), "")}"')
+        self.send_header(
+            "Content-Disposition",
+            f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename, safe='')}",
+        )
         if _origin_allowed(origin, self.server.config):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
@@ -268,60 +267,69 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
-        if parsed.path == "/v1/post-commands":
-            params = parse_qs(parsed.query)
-            post_provider = params.get("provider", [""])[0] or None
-            try:
-                commands = poll_post_commands(provider=post_provider, spool_path=self.server.config.spool_path)
-            except OSError as exc:
-                logger.warning("browser_capture.post_poll_failed", request_id=self._request_id(), error=repr(exc))
-                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-                return
+        if parsed.path == "/v1/browser-actions/capabilities":
             self._send_json(
                 HTTPStatus.OK,
-                BrowserPostCommandListPayload(
-                    post_enabled=browser_post_enabled(),
-                    commands=commands,
-                ).model_dump(mode="json", exclude_none=True),
+                BrowserActionCapabilitiesPayload(providers=browser_action_capabilities()).model_dump(mode="json"),
             )
             return
-        if parsed.path == "/v1/launch-jobs":
+        if parsed.path == "/v1/browser-actions":
             params = parse_qs(parsed.query)
             claim_by = params.get("claim_by", [""])[0]
             try:
-                if claim_by:
-                    claimed = claim_due_launch_job(claim_by, spool_path=self.server.config.spool_path)
-                    jobs = [claimed] if claimed is not None else []
-                else:
-                    jobs = list_launch_jobs(spool_path=self.server.config.spool_path)
-            except (OSError, BrowserLaunchStateError) as exc:
-                logger.warning("browser_capture.launch_list_failed", request_id=self._request_id(), error=repr(exc))
+                actions = (
+                    [claimed]
+                    if claim_by
+                    and (claimed := claim_action(claim_by, spool_path=self.server.config.spool_path)) is not None
+                    else ([] if claim_by else list_actions(spool_path=self.server.config.spool_path))
+                )
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
+                logger.warning("browser_capture.action_list_failed", request_id=self._request_id(), error=repr(exc))
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
                 return
-            self._send_json(HTTPStatus.OK, BrowserLaunchJobListPayload(jobs=jobs).model_dump(mode="json"))
+            self._send_json(HTTPStatus.OK, BrowserActionListPayload(actions=actions).model_dump(mode="json"))
             return
-        if parsed.path.startswith("/v1/launch-jobs/") and "/attachments/" in parsed.path:
-            prefix = "/v1/launch-jobs/"
-            job_id, attachment_id = parsed.path[len(prefix) :].split("/attachments/", maxsplit=1)
+        if parsed.path.startswith("/v1/browser-actions/") and "/attachments/" in parsed.path:
+            prefix = "/v1/browser-actions/"
+            action_id, attachment_id = parsed.path[len(prefix) :].split("/attachments/", maxsplit=1)
             try:
-                result = read_launch_attachment(job_id, attachment_id, spool_path=self.server.config.spool_path)
-            except BrowserLaunchConflictError:
-                self._safe_error(HTTPStatus.CONFLICT, "launch_attachment_integrity_mismatch")
+                result = read_action_attachment(action_id, attachment_id, spool_path=self.server.config.spool_path)
+            except BrowserActionConflictError:
+                self._safe_error(HTTPStatus.CONFLICT, "browser_action_attachment_integrity_mismatch")
                 return
-            except (OSError, BrowserLaunchStateError) as exc:
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
                 logger.warning(
-                    "browser_capture.launch_attachment_read_failed", request_id=self._request_id(), error=repr(exc)
+                    "browser_capture.action_attachment_failed", request_id=self._request_id(), error=repr(exc)
                 )
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
                 return
             if result is None:
-                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_attachment")
+                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action_attachment")
                 return
             attachment, content = result
+            self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
+            return
+        if parsed.path.startswith("/v1/browser-actions/"):
+            action_id = parsed.path[len("/v1/browser-actions/") :]
             try:
-                self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
-            except BrowserLaunchConflictError:
-                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_attachment")
+                action = get_action(action_id, spool_path=self.server.config.spool_path)
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
+                logger.warning("browser_capture.action_read_failed", request_id=self._request_id(), error=repr(exc))
+                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
+            if action is None:
+                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
+                return
+            self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
             return
         if parsed.path == "/v1/backfill-checkpoint":
             params = parse_qs(parsed.query)
@@ -371,23 +379,16 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if self._reject_origin() or self._reject_token():
             return
         path = urlparse(self.path).path
-        if path == "/v1/post-commands":
-            self._post_command_enqueue()
+        if path == "/v1/browser-actions":
+            self._browser_action_enqueue()
             return
-        if path.startswith("/v1/post-commands/") and path.endswith("/ack"):
-            command_id = path[len("/v1/post-commands/") : -len("/ack")]
-            self._post_command_ack(command_id)
+        if path.startswith("/v1/browser-actions/") and path.endswith("/events"):
+            action_id = path[len("/v1/browser-actions/") : -len("/events")]
+            self._browser_action_update(action_id)
             return
-        if path == "/v1/launch-jobs":
-            self._launch_job_enqueue()
-            return
-        if path.startswith("/v1/launch-jobs/") and path.endswith("/events"):
-            job_id = path[len("/v1/launch-jobs/") : -len("/events")]
-            self._launch_job_update(job_id)
-            return
-        if path.startswith("/v1/launch-jobs/") and path.endswith("/control"):
-            job_id = path[len("/v1/launch-jobs/") : -len("/control")]
-            self._launch_job_control(job_id)
+        if path.startswith("/v1/browser-actions/") and path.endswith("/reconcile"):
+            action_id = path[len("/v1/browser-actions/") : -len("/reconcile")]
+            self._browser_action_reconcile(action_id)
             return
         if path == "/v1/backfill-checkpoint":
             self._backfill_checkpoint_store()
@@ -414,24 +415,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.spool_quota_exceeded", request_id=self._request_id(), error=str(exc))
             self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "spool_quota_exceeded")
             return
-        except (OSError, BrowserLaunchStateError) as exc:
+        except OSError as exc:
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        try:
-            reconcile_launch_handoff_capture(
-                envelope,
-                result.artifact_ref,
-                spool_path=self.server.config.spool_path,
-            )
-        except (OSError, BrowserLaunchStateError) as exc:
-            # The canonical conversation capture is already durable. Launch
-            # projection failure must not reject or duplicate that capture.
-            logger.warning(
-                "browser_capture.launch_reconcile_failed",
-                request_id=self._request_id(),
-                error=repr(exc),
-            )
         logger.debug(
             "browser_capture.capture_accepted",
             request_id=self._request_id(),
@@ -459,157 +446,87 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             ).model_dump(mode="json"),
         )
 
-    def _post_command_enqueue(self) -> None:
+    def _browser_action_enqueue(self) -> None:
         payload = self._read_json_body()
         if payload is None:
             return
         try:
-            request = BrowserPostCommandRequest.model_validate(payload)
+            request = BrowserActionRequest.model_validate(payload)
+            action = enqueue_action(
+                request,
+                receiver_id=receiver_identity(self.server.config),
+                spool_path=self.server.config.spool_path,
+            )
         except ValidationError:
-            logger.warning("browser_capture.invalid_post_command", request_id=self._request_id())
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_command")
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action")
             return
-        try:
-            command = enqueue_post_command(request, spool_path=self.server.config.spool_path)
-        except BrowserPostDisabledError:
-            logger.warning("browser_capture.post_disabled", request_id=self._request_id())
-            self._safe_error(HTTPStatus.FORBIDDEN, "post_disabled")
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_conflict")
             return
-        except BrowserPostCommandConflictError:
-            logger.warning("browser_capture.post_command_conflict", request_id=self._request_id())
-            self._safe_error(HTTPStatus.CONFLICT, "duplicate_post_command")
+        except BrowserActionQuotaError:
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "browser_action_quota_exceeded")
             return
-        except SpoolQuotaExceededError as exc:
-            logger.warning("browser_capture.post_command_quota_exceeded", request_id=self._request_id(), error=str(exc))
-            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "post_command_quota_exceeded")
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_attachment")
             return
-        except OSError as exc:
-            logger.warning("browser_capture.post_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_enqueue_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        logger.debug(
-            "browser_capture.post_command_enqueued",
-            request_id=self._request_id(),
-            command_id=command.command_id,
-            provider=command.provider,
-            submit=command.submit,
-        )
-        self._send_json(
-            HTTPStatus.ACCEPTED,
-            BrowserPostEnqueuedPayload(
-                command_id=command.command_id,
-                provider=command.provider,
-                status=command.status,
-                submit=command.submit,
-            ).model_dump(mode="json"),
-        )
+        self._send_json(HTTPStatus.ACCEPTED, BrowserActionPayload(action=action).model_dump(mode="json"))
 
-    def _launch_job_enqueue(self) -> None:
+    def _browser_action_update(self, action_id: str) -> None:
         payload = self._read_json_body()
         if payload is None:
             return
         try:
-            request = BrowserLaunchJobRequest.model_validate(payload)
-            job = enqueue_launch_job(request, spool_path=self.server.config.spool_path)
+            request = BrowserActionUpdateRequest.model_validate(payload)
+            action = update_action(action_id, request, spool_path=self.server.config.spool_path)
         except ValidationError:
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_job")
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_update")
             return
-        except BrowserLaunchConflictError:
-            self._safe_error(HTTPStatus.CONFLICT, "duplicate_launch_job")
+        except BrowserActionLeaseError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_lease_owner_mismatch")
             return
-        except BrowserLaunchQuotaError:
-            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "launch_job_quota_exceeded")
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_receipt_conflict")
             return
-        except (OSError, BrowserLaunchStateError) as exc:
-            logger.warning("browser_capture.launch_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_update_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        except ValueError as exc:
-            logger.warning("browser_capture.launch_enqueue_failed", request_id=self._request_id(), error=repr(exc))
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_attachment")
+        if action is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
             return
-        self._send_json(
-            HTTPStatus.ACCEPTED,
-            BrowserLaunchJobEnqueuedPayload(job=job).model_dump(mode="json"),
-        )
+        self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
 
-    def _launch_job_update(self, job_id: str) -> None:
+    def _browser_action_reconcile(self, action_id: str) -> None:
         payload = self._read_json_body()
         if payload is None:
             return
         try:
-            request = BrowserLaunchJobUpdateRequest.model_validate(payload)
-            job = update_launch_job(job_id, request, spool_path=self.server.config.spool_path)
+            request = BrowserActionReconcileRequest.model_validate(payload)
+            action = reconcile_action(action_id, request, spool_path=self.server.config.spool_path)
         except ValidationError:
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_update")
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_reconciliation")
             return
-        except BrowserLaunchLeaseError:
-            self._safe_error(HTTPStatus.CONFLICT, "launch_lease_owner_mismatch")
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_reconciliation_conflict")
             return
-        except (OSError, BrowserLaunchStateError) as exc:
-            logger.warning("browser_capture.launch_update_failed", request_id=self._request_id(), error=repr(exc))
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_reconcile_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
-        if job is None:
-            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
+        if action is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
             return
-        self._send_json(HTTPStatus.OK, BrowserLaunchJobEnqueuedPayload(job=job).model_dump(mode="json"))
-
-    def _launch_job_control(self, job_id: str) -> None:
-        payload = self._read_json_body()
-        if payload is None:
-            return
-        try:
-            request = BrowserLaunchJobControlRequest.model_validate(payload)
-            job = control_launch_job(job_id, request, spool_path=self.server.config.spool_path)
-        except ValidationError:
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_control")
-            return
-        except BrowserLaunchConflictError:
-            self._safe_error(HTTPStatus.CONFLICT, "invalid_launch_job_state")
-            return
-        except (OSError, BrowserLaunchStateError) as exc:
-            logger.warning("browser_capture.launch_control_failed", request_id=self._request_id(), error=repr(exc))
-            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-            return
-        if job is None:
-            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
-            return
-        self._send_json(HTTPStatus.OK, BrowserLaunchJobEnqueuedPayload(job=job).model_dump(mode="json"))
-
-    def _post_command_ack(self, command_id: str) -> None:
-        payload = self._read_json_body()
-        if payload is None:
-            return
-        try:
-            ack = BrowserPostCommandAckRequest.model_validate(payload)
-        except ValidationError:
-            logger.warning("browser_capture.invalid_post_ack", request_id=self._request_id())
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_ack")
-            return
-        try:
-            command = ack_post_command(command_id, ack, spool_path=self.server.config.spool_path)
-        except BrowserPostCommandStateError:
-            logger.warning("browser_capture.post_ack_invalid_state", request_id=self._request_id())
-            self._safe_error(HTTPStatus.CONFLICT, "invalid_post_command_state")
-            return
-        except OSError as exc:
-            logger.warning("browser_capture.post_ack_failed", request_id=self._request_id(), error=repr(exc))
-            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-            return
-        if command is None:
-            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_command")
-            return
-        logger.debug(
-            "browser_capture.post_command_acked",
-            request_id=self._request_id(),
-            command_id=command.command_id,
-            status=command.status,
-        )
-        self._send_json(
-            HTTPStatus.OK,
-            BrowserPostAckPayload(command_id=command.command_id, status=command.status).model_dump(mode="json"),
-        )
+        self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
 
     def _backfill_checkpoint_store(self) -> None:
         payload = self._read_json_body()

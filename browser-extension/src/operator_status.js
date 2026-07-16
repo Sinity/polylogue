@@ -1,5 +1,11 @@
 (function (root) {
   const OPERATOR_STATUS = Object.freeze({
+    not_conversation: Object.freeze({
+      code: "not_conversation",
+      label: "No conversation",
+      tone: "neutral",
+      detail: "The current page is not a conversation, so conversation capture status does not apply.",
+    }),
     safe_current: Object.freeze({
       code: "safe_current",
       label: "Safe / current",
@@ -66,9 +72,6 @@
     "network_error",
   ]);
 
-  const RUNNING_LAUNCH_STATES = new Set(["leased", "uploading", "submitting", "submitted"]);
-  const TERMINAL_LAUNCH_STATES = new Set(["completed", "cancelled"]);
-
   function withDetail(status, detail = null) {
     return detail ? { ...status, detail } : { ...status };
   }
@@ -86,7 +89,14 @@
 
   function operatorStatusForState(state = {}) {
     let status;
-    if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") {
+    if (["unsupported", "supported_no_session"].includes(state.active_page_state)) {
+      status = withDetail(
+        OPERATOR_STATUS.not_conversation,
+        state.active_page_state === "supported_no_session"
+          ? "No conversation is selected on this provider page. Polylogue remains available and observes conversations automatically."
+          : OPERATOR_STATUS.not_conversation.detail,
+      );
+    } else if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") {
       status = withDetail(
         OPERATOR_STATUS.needs_attention,
         "The configured endpoint answered as a different receiver. Reset pairing only after verifying the local receiver.",
@@ -102,24 +112,31 @@
       const archiveState = state.archive_state?.state;
       if (archiveState === "failed" || state.error) {
         status = withDetail(OPERATOR_STATUS.failed, state.archive_state?.latest_failure || state.error || null);
+      } else if (state.capture_freshness) {
+        status = withDetail(
+          OPERATOR_STATUS.catching_up,
+          state.capture_freshness.last_error
+            ? `Freshness check will retry: ${state.capture_freshness.last_error}`
+            : "A provider change was observed and canonical capture is checking the latest turn.",
+        );
       } else if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) {
         status = withDetail(OPERATOR_STATUS.catching_up);
       } else if (archiveState === "missing") {
         status = withDetail(
-          OPERATOR_STATUS.needs_attention,
-          "This conversation is not saved yet. Capture it now or let automatic capture retry when the page is ready.",
+          OPERATOR_STATUS.catching_up,
+          "This conversation is not saved yet. Automatic capture is acquiring it now or will retry when the provider is ready.",
         );
       } else if (archiveState === "archived" || state.captured) {
         status = withDetail(OPERATOR_STATUS.safe_current);
       } else {
-        status = withDetail(OPERATOR_STATUS.needs_attention);
+        status = withDetail(OPERATOR_STATUS.catching_up, "Polylogue is checking the current conversation automatically.");
       }
     }
 
     return {
       ...status,
-      partialFidelity: state.capture_mode === "dom_degraded",
-      fidelity: state.capture_mode === "dom_degraded"
+      partialFidelity: status.code !== "not_conversation" && state.capture_mode === "dom_degraded",
+      fidelity: status.code !== "not_conversation" && state.capture_mode === "dom_degraded"
         ? { ...OPERATOR_STATUS.partial_fidelity }
         : null,
     };
@@ -140,11 +157,19 @@
     };
 
     if (state.active_page_state === "unsupported") return {
-      status: { ...OPERATOR_STATUS.needs_attention },
-      badge: ["warn", "needs attention"],
-      archive: "Unsupported page",
-      headline: "This page is outside the supported conversation surfaces.",
-      detail: "Open a ChatGPT, Claude.ai, or Grok/X conversation tab.",
+      status: { ...OPERATOR_STATUS.not_conversation },
+      badge: ["neutral", "idle"],
+      archive: "Not applicable",
+      headline: "Ordinary webpage",
+      detail: "This page is not a conversation. Polylogue has no conversation work to report here.",
+    };
+
+    if (state.active_page_state === "supported_no_session") return {
+      status: operatorStatusForState(state),
+      badge: ["neutral", "idle"],
+      archive: "Not applicable",
+      headline: "No conversation selected",
+      detail: "Polylogue will observe and capture conversations automatically when one is opened.",
     };
 
     const status = operatorStatusForState(state);
@@ -206,10 +231,10 @@
     };
     if (archiveState === "missing") return {
       status,
-      badge: ["warn", "needs attention"],
+      badge: ["warn", "catching up"],
       archive: status.label,
       headline: "This conversation is not saved yet.",
-      detail: "Use Capture page now. Automatic capture also retries when a supported conversation becomes ready.",
+      detail: "Automatic capture is acquiring it now or will retry when the provider is ready.",
     };
     if (archiveState === "archived" || state.captured) return {
       status,
@@ -228,13 +253,6 @@
       archive: OPERATOR_STATUS.partial_fidelity.label,
       headline: "Captured from visible page content.",
       detail: "Provider ids, timestamps, branches, or attachments can be incomplete. Reload, wait for provider-native data, then capture again.",
-    };
-    if (state.active_page_state === "supported_no_session") return {
-      status,
-      badge: ["warn", "needs attention"],
-      archive: status.label,
-      headline: "Supported site open, but no concrete conversation is selected.",
-      detail: "Open or select a conversation. Polylogue does not infer a session id from a provider home page.",
     };
     return {
       status,
@@ -274,20 +292,6 @@
     return `Due in ${Math.ceil(seconds / 3600)}h`;
   }
 
-  function launchWorkStatus(job, receiverOnline) {
-    if (receiverOnline === false && !TERMINAL_LAUNCH_STATES.has(job?.status)) return { ...OPERATOR_STATUS.receiver_offline };
-    if (providerWarning(job)) return { ...OPERATOR_STATUS.provider_warning };
-    if (job?.status === "completed") return { ...WORK_STATUS.completed };
-    if (job?.status === "cancelled") return { ...WORK_STATUS.stopped };
-    if (job?.status === "failed") return { ...OPERATOR_STATUS.failed };
-    if (job?.status === "submission_unknown") return { ...OPERATOR_STATUS.needs_attention };
-    if (job?.status === "paused" && !AUTOMATIC_WAIT_REASONS.has(job?.cooldown_reason)) {
-      return { ...OPERATOR_STATUS.needs_attention };
-    }
-    if (RUNNING_LAUNCH_STATES.has(job?.status)) return { ...WORK_STATUS.running };
-    return { ...WORK_STATUS.queued };
-  }
-
   function backfillWorkStatus(job, receiverOnline) {
     if (receiverOnline === false && !["complete", "completed", "cancelled"].includes(job?.status)) {
       return { ...OPERATOR_STATUS.receiver_offline };
@@ -306,18 +310,6 @@
     return { ...WORK_STATUS.queued };
   }
 
-  function handoffLabel(job) {
-    if (job?.handoff_validated_at) {
-      const pieces = ["Validated"];
-      if (Number.isFinite(job.handoff_file_count)) pieces.push(`${job.handoff_file_count} files`);
-      if (Number.isFinite(job.handoff_size_bytes)) pieces.push(`${job.handoff_size_bytes} bytes`);
-      return pieces.join(" · ");
-    }
-    if (job?.handoff_artifact_ref || job?.handoff_attachment_id) return "Acquired; validation pending";
-    if (job?.status === "completed") return "Completion recorded without a handoff receipt";
-    return "Awaiting completion handoff";
-  }
-
   function captureQueueItems(captureQueue, receiverOnline) {
     const entries = Array.isArray(captureQueue?.entries) ? captureQueue.entries : [];
     return entries.map((entry, index) => {
@@ -334,7 +326,7 @@
         cadence: nextAttemptLabel(entry.next_attempt_at),
         owner: "This extension",
         cooldown: entry.last_error || null,
-        handoff: "Receiver acknowledgement pending",
+        receipt: "Receiver acknowledgement pending",
         updated_at: entry.enqueued_at || null,
         raw: entry,
       };
@@ -357,7 +349,7 @@
         cadence: cadenceSeconds ? `${cadenceSeconds}s cadence` : "Adaptive cadence",
         owner: job.lease_owner || job.owner_instance_id || "This extension",
         cooldown: job.cooldown_reason || job.last_error || null,
-        handoff: job.last_ack?.receiver_request_id
+        receipt: job.last_ack?.receiver_request_id
           ? `Last receiver ACK ${job.last_ack.receiver_request_id}`
           : "No receiver ACK yet",
         updated_at: job.updated_at || job.created_at || null,
@@ -366,29 +358,31 @@
     });
   }
 
-  function launchItems(launchJobs, ownerInstanceId, receiverOnline) {
-    return (Array.isArray(launchJobs) ? launchJobs : []).map((job, index) => ({
-      id: job.job_id || `launch-${index}`,
-      kind: "sol_pro",
-      title: job.job_title || "GPT-5.6 Sol Pro work",
-      status: launchWorkStatus(job, receiverOnline),
-      phase: humanize(job.phase || job.status, "Queued"),
-      cadence: `${job.cadence_minutes || 5}m cadence · ${nextAttemptLabel(job.next_attempt_at)}`,
-      owner: job.lease_owner
-        ? (job.lease_owner === ownerInstanceId ? "This extension" : "Another extension")
-        : "Unclaimed",
-      cooldown: job.cooldown_reason || job.last_error || null,
-      handoff: handoffLabel(job),
-      updated_at: job.updated_at || job.created_at || null,
-      raw: job,
+  function freshnessItems(freshnessQueue, receiverOnline) {
+    const entries = freshnessQueue?.entries && typeof freshnessQueue.entries === "object"
+      ? Object.values(freshnessQueue.entries)
+      : [];
+    return entries.map((entry, index) => ({
+      id: entry.key || `freshness-${index}`,
+      kind: "freshness",
+      title: `${providerLabel(entry.provider)} conversation ${entry.native_id}`,
+      status: receiverOnline === false
+        ? { ...OPERATOR_STATUS.receiver_offline }
+        : { ...(entry.lease_owner ? WORK_STATUS.running : WORK_STATUS.queued) },
+      phase: entry.lease_owner ? "Checking latest provider turn" : "Waiting for freshness check",
+      cadence: nextAttemptLabel(new Date(entry.next_attempt_at_ms || 0).toISOString()),
+      owner: entry.lease_owner || "This extension",
+      cooldown: entry.last_error || null,
+      receipt: (entry.reasons || []).join(", ") || "Provider change observed",
+      updated_at: entry.hinted_at || null,
+      raw: entry,
     }));
   }
 
   function normalizeWorkItems({
     captureQueue = null,
+    freshnessQueue = null,
     backfillJobs = [],
-    launchJobs = [],
-    ownerInstanceId = null,
     receiverOnline = true,
   } = {}) {
     const priority = {
@@ -403,8 +397,8 @@
     };
     return [
       ...captureQueueItems(captureQueue, receiverOnline),
+      ...freshnessItems(freshnessQueue, receiverOnline),
       ...backfillItems(backfillJobs, receiverOnline),
-      ...launchItems(launchJobs, ownerInstanceId, receiverOnline),
     ].sort((left, right) => {
       const statusOrder = (priority[left.status.code] ?? 99) - (priority[right.status.code] ?? 99);
       if (statusOrder) return statusOrder;
@@ -426,6 +420,8 @@
       already_safe: "Archive was already current, so Polylogue did not create a duplicate capture.",
       receiver_already_processing: "Durable evidence already existed and the receiver was still catching up.",
       archive_state_checked: "Polylogue checked the receiver and recorded the result.",
+      provider_still_running: "The provider response is still running; Polylogue will check again automatically.",
+      provider_head_current: "The latest provider turn was captured through a terminal assistant response.",
     };
     return {
       label: labels[entry.event] || humanize(entry.event, "Observed"),

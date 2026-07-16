@@ -17,10 +17,11 @@ describe("shared operator status vocabulary", () => {
   it("maps archive, receiver, provider, and fidelity states to the canonical vocabulary", () => {
     const cases = [
       [{ online: true, archive_state: { state: "archived" } }, "safe_current", "Safe / current"],
+      [{ online: true, archive_state: { state: "archived" }, capture_freshness: { next_attempt_at_ms: 1 } }, "catching_up", "Catching up"],
       [{ online: true, archive_state: { state: "spooled_only" } }, "catching_up", "Catching up"],
       [{ online: true, archive_state: { state: "ingest_pending" } }, "catching_up", "Catching up"],
       [{ online: true, archive_state: { state: "stale" } }, "catching_up", "Catching up"],
-      [{ online: true, archive_state: { state: "missing" } }, "needs_attention", "Needs attention"],
+      [{ online: true, archive_state: { state: "missing" } }, "catching_up", "Catching up"],
       [{ online: true, archive_state: { state: "failed", latest_failure: "index rejected" } }, "failed", "Failed"],
       [{ online: false }, "receiver_offline", "Receiver offline"],
       [{ online: true, cooldown_reason: "rate_limited" }, "provider_warning", "Provider warning"],
@@ -44,7 +45,36 @@ describe("shared operator status vocabulary", () => {
     })).toBe("Safe / current · Partial fidelity");
   });
 
-  it("normalizes capture retry, history backfill, and Sol Pro work into one readable contract", () => {
+  it("treats ordinary and provider landing pages as non-conversations", () => {
+    for (const activePageState of ["unsupported", "supported_no_session"]) {
+      const status = api.operatorStatusForState({
+        online: false,
+        error: "receiver_pairing_mismatch",
+        active_page_state: activePageState,
+        capture_mode: "dom_degraded",
+      });
+      expect(status).toMatchObject({
+        code: "not_conversation",
+        label: "No conversation",
+        tone: "neutral",
+        partialFidelity: false,
+        fidelity: null,
+      });
+    }
+
+    expect(api.operatorPresentationForState({ active_page_state: "unsupported" })).toMatchObject({
+      badge: ["neutral", "idle"],
+      archive: "Not applicable",
+      headline: "Ordinary webpage",
+    });
+    expect(api.operatorPresentationForState({ active_page_state: "supported_no_session" })).toMatchObject({
+      badge: ["neutral", "idle"],
+      archive: "Not applicable",
+      headline: "No conversation selected",
+    });
+  });
+
+  it("normalizes capture retry and history backfill into one readable contract", () => {
     vi.setSystemTime(new Date("2026-07-16T12:00:00Z"));
     const items = api.normalizeWorkItems({
       receiverOnline: true,
@@ -64,6 +94,18 @@ describe("shared operator status vocabulary", () => {
           },
         }],
       },
+      freshnessQueue: {
+        entries: {
+          "chatgpt:conversation-2": {
+            key: "chatgpt:conversation-2",
+            provider: "chatgpt",
+            native_id: "conversation-2",
+            hinted_at: "2026-07-16T11:59:30Z",
+            next_attempt_at_ms: Date.parse("2026-07-16T12:02:00Z"),
+            reasons: ["provider_push_new_message"],
+          },
+        },
+      },
       backfillJobs: [{
         id: "backfill-1",
         provider: "claude-ai",
@@ -75,18 +117,6 @@ describe("shared operator status vocabulary", () => {
         updated_at: "2026-07-16T11:59:00Z",
         last_ack: { receiver_request_id: "ack-22" },
       }],
-      launchJobs: [{
-        job_id: "launch-1",
-        job_title: "Comprehensive ambient extension mission control",
-        status: "completed",
-        phase: "handoff_validated",
-        cadence_minutes: 5,
-        lease_owner: "executor-this",
-        handoff_validated_at: "2026-07-16T11:57:00Z",
-        handoff_file_count: 17,
-        handoff_size_bytes: 42000,
-        updated_at: "2026-07-16T11:59:30Z",
-      }],
     });
 
     expect(items).toHaveLength(3);
@@ -96,7 +126,7 @@ describe("shared operator status vocabulary", () => {
       phase: "Waiting to deliver capture",
       cadence: "Due in 1m",
       owner: "This extension",
-      handoff: "Receiver acknowledgement pending",
+      receipt: "Receiver acknowledgement pending",
     });
     expect(items.find((item) => item.kind === "backfill")).toMatchObject({
       title: "Claude.ai history backfill since 2026-04-01",
@@ -104,15 +134,30 @@ describe("shared operator status vocabulary", () => {
       phase: "conversation_capture",
       cadence: "15s cadence",
       owner: "extension-backfill",
-      handoff: "Last receiver ACK ack-22",
+      receipt: "Last receiver ACK ack-22",
     });
-    expect(items.find((item) => item.kind === "sol_pro")).toMatchObject({
-      title: "Comprehensive ambient extension mission control",
-      status: { code: "completed", label: "Completed" },
-      phase: "Handoff Validated",
-      owner: "This extension",
-      handoff: "Validated · 17 files · 42000 bytes",
+    expect(items.find((item) => item.kind === "freshness")).toMatchObject({
+      title: "ChatGPT conversation conversation-2",
+      status: { code: "queued", label: "Queued" },
+      phase: "Waiting for freshness check",
+      cadence: "Due in 2m",
+      receipt: "provider_push_new_message",
     });
+
+    const leased = api.normalizeWorkItems({
+      receiverOnline: true,
+      freshnessQueue: {
+        entries: {
+          "chatgpt:leased": {
+            provider: "chatgpt",
+            native_id: "leased",
+            lease_owner: "extension-two",
+            next_attempt_at_ms: Date.parse("2026-07-16T12:02:00Z"),
+          },
+        },
+      },
+    }).find((item) => item.kind === "freshness");
+    expect(leased).toMatchObject({ status: { code: "running", label: "Running" } });
     vi.useRealTimers();
   });
 
@@ -124,34 +169,22 @@ describe("shared operator status vocabulary", () => {
         { id: "rate", provider: "chatgpt", status: "running", cooldown_reason: "provider_rate_limited" },
         { id: "auth", provider: "claude-ai", status: "paused", cooldown_reason: "provider_auth_or_challenge" },
       ],
-      launchJobs: [
-        { job_id: "cadence", job_title: "Cadence wait", status: "cooldown", cooldown_reason: "cadence", cadence_minutes: 5 },
-        { job_id: "unknown", job_title: "Unknown submission", status: "submission_unknown", cadence_minutes: 5 },
-      ],
     });
 
     expect(items.find((item) => item.id === "transport").status).toMatchObject({ code: "queued", label: "Queued" });
-    expect(items.find((item) => item.id === "cadence").status).toMatchObject({ code: "queued", label: "Queued" });
     expect(items.find((item) => item.id === "rate").status).toMatchObject({ code: "provider_warning", label: "Provider warning" });
     expect(items.find((item) => item.id === "auth").status).toMatchObject({ code: "needs_attention", label: "Needs attention" });
-    expect(items.find((item) => item.id === "unknown").status).toMatchObject({ code: "needs_attention", label: "Needs attention" });
   });
 
-  it("keeps completed external work legible while marking unfinished work receiver-offline", () => {
+  it("marks unfinished capture and backfill work receiver-offline", () => {
     const items = api.normalizeWorkItems({
       receiverOnline: false,
       captureQueue: { entries: [{ id: "capture", envelope: { session: { provider: "chatgpt", provider_session_id: "c1" } } }] },
       backfillJobs: [{ id: "backfill", provider: "chatgpt", status: "running" }],
-      launchJobs: [
-        { job_id: "running", job_title: "Still running", status: "submitted", cadence_minutes: 5 },
-        { job_id: "done", job_title: "Already done", status: "completed", cadence_minutes: 5 },
-      ],
     });
 
     expect(items.find((item) => item.id === "capture").status.code).toBe("receiver_offline");
     expect(items.find((item) => item.id === "backfill").status.code).toBe("receiver_offline");
-    expect(items.find((item) => item.id === "running").status.code).toBe("receiver_offline");
-    expect(items.find((item) => item.id === "done").status.code).toBe("completed");
   });
 
   it("presents explicit no-op and recovery events instead of hiding them", () => {

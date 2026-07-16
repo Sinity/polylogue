@@ -61,8 +61,8 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | `--insecure-allow-remote` | off | Allow non-loopback binding |
 
 By default the receiver requires the auto-minted/loaded bearer token on every
-route (GET status/archive-state/post-commands and POST captures/post-commands
-alike) — run `polylogued browser-capture token show` to print it and paste it
+route (including capture, archive-state, and browser-action routes) — run
+`polylogued browser-capture token show` to print it and paste it
 into the extension popup's "Receiver token" field to pair. Pass
 `--browser-capture-allow-no-auth` to opt out and serve unauthenticated (any
 local process can then read/post to the receiver).

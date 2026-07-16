@@ -84,10 +84,10 @@ entries:
   identifier: --provider
   occurrence: 0
   reason: >
-    The `browser-capture post --provider` CLI option identifies which
-    website an outbound reply posts to (BrowserPostProvider) -- wire-boundary
-    -adjacent, Tier-A-like, not a retirement candidate now (polylogue-9e5.8
-    Axis-2 exclusion #4).
+    The `browser-capture action --provider` CLI option identifies the website
+    on which a browser action executes. This is a provider wire boundary,
+    Tier-A-like, not a retirement candidate now (polylogue-9e5.8 Axis-2
+    exclusion #4).
 
 - path: polylogue/daemon/browser_capture.py
   category: param

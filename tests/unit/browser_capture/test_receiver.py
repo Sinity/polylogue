@@ -440,6 +440,44 @@ def test_browser_capture_serve_allow_no_auth_env_var_matches_the_flag(cli_worksp
     assert flag_token is None
 
 
+@pytest.mark.parametrize(
+    ("auth_args", "expected_token"),
+    [(["--auth-token", "explicit-token"], "explicit-token"), (["--allow-no-auth"], None)],
+)
+def test_browser_action_uses_the_selected_receiver_auth_identity(
+    tmp_path: Path,
+    auth_args: list[str],
+    expected_token: str | None,
+) -> None:
+    result = CliRunner().invoke(
+        daemon_cli,
+        [
+            "browser-capture",
+            "action",
+            "--provider",
+            "chatgpt",
+            "--text",
+            "harmless draft",
+            "--model-slug",
+            "gpt-5-6-pro",
+            "--model-label",
+            "GPT-5.6 Sol",
+            "--effort-label",
+            "Pro",
+            "--spool",
+            str(tmp_path),
+            "--format",
+            "json",
+            *auth_args,
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    expected = receiver_identity(BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token=expected_token))
+    assert payload["receiver_id"] == expected
+
+
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
     concrete_routes = {(contract.method, contract.pattern) for contract in BROWSER_CAPTURE_ROUTE_CONTRACTS}
 

@@ -23,7 +23,7 @@ function installChromeMock(storagePatch = {}) {
   updatedListener = null;
   alarmListener = null;
   fetchCalls = [];
-  sessionStored = { polylogueLaunchExecutorId: "launch-executor-test" };
+  sessionStored = {};
   tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
     action: {
@@ -91,9 +91,21 @@ function installChromeMock(storagePatch = {}) {
       },
     },
     tabs: {
-      create: vi.fn(async ({ url }) => ({ id: 99, url, status: "complete" })),
+      create: vi.fn(async ({ url, active = false }) => {
+        const created = { id: 99, url, active, status: "complete" };
+        tabs = [...tabs, created];
+        return created;
+      }),
       get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId)),
-      remove: vi.fn(async () => undefined),
+      update: vi.fn(async (tabId, patch) => {
+        const current = tabs.find((tab) => tab.id === tabId);
+        const updated = { ...current, ...patch, status: "complete" };
+        tabs = tabs.map((tab) => (tab.id === tabId ? updated : tab));
+        return updated;
+      }),
+      remove: vi.fn(async (tabId) => {
+        tabs = tabs.filter((tab) => tab.id !== tabId);
+      }),
       onActivated: {
         addListener: vi.fn((fn) => {
           activatedListener = fn;
@@ -129,9 +141,6 @@ function installChromeMock(storagePatch = {}) {
   };
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     fetchCalls.push({ url, options });
-    if (String(url).includes("/v1/launch-jobs")) {
-      return responseJson({ jobs: [] });
-    }
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
     }
@@ -166,43 +175,6 @@ function responseJson(body, { ok = true, status = 200, requestId = "receiver-req
     ok,
     status,
   };
-}
-
-function chatGptConversationExecution({
-  status = 200,
-  endTurn = false,
-  assistantText = "",
-  currentStatus = endTurn ? "finished_successfully" : "in_progress",
-  errorBody = { error: "provider unavailable" },
-} = {}) {
-  const body = status === 200
-    ? {
-      id: "conversation-1",
-      current_node: "assistant-current",
-      mapping: {
-        "assistant-current": {
-          parent: null,
-          message: {
-            id: "assistant-message",
-            author: { role: "assistant" },
-            content: { parts: [assistantText] },
-            status: currentStatus,
-            end_turn: endTurn,
-          },
-        },
-      },
-    }
-    : errorBody;
-  return [{ result: {
-    ok: true,
-    response: {
-      ok: status >= 200 && status < 300,
-      status,
-      contentType: "application/json",
-      retryAfter: status === 429 ? "45" : null,
-      body: JSON.stringify(body),
-    },
-  } }];
 }
 
 describe("background receiver diagnostics", () => {
@@ -588,16 +560,18 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState).toMatchObject({ online: true, error: "no_turns" });
   });
 
-  it("does not capture existing provider tabs on extension update", async () => {
+  it("automatically captures existing conversation tabs on extension update", async () => {
     expect(installedListener).toBeTypeOf("function");
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-installed", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
 
     installedListener();
 
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
-    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "extension_installed_or_updated",
+    }));
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled();
   });
 
   it("routes backfill inventory through a dedicated inactive provider page", async () => {
@@ -1001,6 +975,47 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
+  it("does not hand a throttled archive-state refresh to automatic capture", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-throttle", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-throttle",
+      state: "archived",
+      captured: true,
+    }));
+
+    activatedListener({ tabId: 42 });
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
+    activatedListener({ tabId: 42 });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    expect((stored.polylogueConversationTimeline?.["chatgpt:conv-throttle"] || [])
+      .some((event) => event.detail === "background_capture_throttled")).toBe(false);
+  });
+
+  it("keeps the earliest freshness deadline when a later hint is queued", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "earliest",
+      reason: "first",
+      delay_ms: 1_000,
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "later",
+      reason: "second",
+      delay_ms: 60_000,
+    });
+
+    const freshnessAlarms = globalThis.chrome.alarms.create.mock.calls
+      .filter(([name]) => name === "polylogueCaptureFreshnessWake");
+    expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 101_000 });
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;
@@ -1059,6 +1074,7 @@ describe("background receiver diagnostics", () => {
   });
 
   it("injects capture scripts into existing provider tabs on explicit sync", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-sync", title: "ChatGPT" }];
     await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
 
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
@@ -1089,6 +1105,7 @@ describe("background receiver diagnostics", () => {
 
   it("bounds explicit sync when a provider tab never answers capture", async () => {
     vi.useFakeTimers();
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-timeout", title: "ChatGPT" }];
     globalThis.chrome.tabs.sendMessage = vi.fn(() => new Promise(() => {}));
 
     const responsePromise = sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
@@ -1265,7 +1282,7 @@ describe("capture retry queue", () => {
 
     expect(response).toEqual({ ok: false, error: "invalid_envelope", receiver_request_id: "receiver-request-1" });
     expect(stored.polylogueCaptureQueue).toBeUndefined();
-    expect(globalThis.chrome.alarms.create).not.toHaveBeenCalled();
+    expect(globalThis.chrome.alarms.create.mock.calls.some(([name]) => name === "polylogueCaptureRetry")).toBe(false);
   });
 
   it("retries a 503 receiver response but bounds the queue at 20 entries with a drop counter", async () => {
@@ -1330,521 +1347,247 @@ describe("capture retry queue", () => {
   });
 });
 
-describe("Sol Pro launch worker", () => {
+describe("provider-neutral browser action worker", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await loadBackground();
   });
 
-  it("recreates the minute wake alarm when an enabled service worker restarts", async () => {
-    await loadBackground({ launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.alarms.create).toHaveBeenCalledWith(
-      "polylogueLaunchWake",
-      { delayInMinutes: 0.1, periodInMinutes: 1 },
-    ));
-  });
-
-  it("coalesces concurrent wakeups before dispatching a leased job", async () => {
-    const job = {
-      job_id: "launch-coalesced",
-      prompt: "work",
+  it("submits in an inactive provider tab and records an owner-bound exact receipt", async () => {
+    const action = {
+      action_id: "action-1",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Describe the requested implementation.",
       attachments: [],
+      presentation: {
+        surface: "chat",
+        model_slug: "gpt-5-6-pro",
+        model_label: "GPT-5.6 Sol",
+        effort_label: "Pro",
+      },
+      submit_policy: "submit_once",
       status: "leased",
-      mode: "chat",
-      model_slug: "gpt-5-6-pro",
-      model_label: "GPT-5.6 Sol",
-      effort_label: "Pro",
-      thinking_effort: "standard",
     };
-    let releaseTab;
-    const tabGate = new Promise((resolve) => { releaseTab = resolve; });
-    globalThis.fetch = vi.fn(async (url) => {
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.tabs.create.mockImplementation(async (details) => {
-      await tabGate;
-      return { id: 99, url: details.url, status: "complete", active: details.active };
-    });
-    chrome.scripting.executeScript.mockResolvedValue([{ result: {
-      ok: true,
-      conversation_id: "conversation-coalesced",
-      conversation_url: "https://chatgpt.com/c/conversation-coalesced",
-    } }]);
-
-    const configure = sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledTimes(1));
-    const overlapping = sendRuntimeMessage({ type: "polylogue.launch.poll" });
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 10));
-    expect(chrome.tabs.create).toHaveBeenCalledTimes(1);
-    releaseTab();
-    await Promise.all([configure, overlapping]);
-  });
-
-  it("leases through the receiver and creates an inactive ordinary Chat tab", async () => {
-    const attachmentBytes = new TextEncoder().encode("targeted context");
-    const job = {
-      job_id: "launch-1",
-      prompt: "Produce exactly one cohesive handoff ZIP.",
-      attachments: [{
-        attachment_id: "a1",
-        name: "context.tar.gz",
-        mime_type: "application/gzip",
-        size_bytes: attachmentBytes.length,
-      }],
-      status: "leased",
-      mode: "chat",
-      model_slug: "gpt-5-6-pro",
-      model_label: "GPT-5.6 Sol",
-      effort_label: "Pro",
-      thinking_effort: "standard",
-    };
-    let claimCount = 0;
+    let claimed = false;
+    const updates = [];
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("/attachments/")) {
-        return {
-          arrayBuffer: vi.fn(async () => attachmentBytes.buffer),
-          headers: { get: vi.fn(() => null) },
-          ok: true,
-          status: 200,
-        };
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
       }
-      if (path.includes("claim_by=")) {
-        claimCount += 1;
-        return responseJson({ jobs: claimCount === 1 ? [job] : [] });
+      if (String(url).endsWith("/v1/browser-actions/action-1/events")) {
+        const update = JSON.parse(options.body);
+        updates.push(update);
+        return responseJson({ action: { ...action, ...update } });
       }
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
-      if (path.endsWith("/events")) return responseJson({ job });
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
-    chrome.tabs.create.mockImplementation(async (details) => {
-      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
-      tabs.push(tab);
-      return tab;
-    });
-    chrome.scripting.executeScript.mockImplementation(async (details) => {
-      if (!details.func) return undefined;
-      return [{ result: {
-        ok: true,
-        conversation_id: "conversation-1",
-        conversation_url: "https://chatgpt.com/c/conversation-1",
-      } }];
-    });
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({
-      url: "https://chatgpt.com/",
-      active: false,
-    }));
-    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events"))).toHaveLength(3));
-    const eventBodies = fetchCalls
-      .filter((call) => String(call.url).endsWith("/events"))
-      .map((call) => JSON.parse(call.options.body));
-    expect(eventBodies[1]).toMatchObject({ outcome: "progress", phase: "submit_intent", tab_id: 99 });
-    const submitted = eventBodies[2];
-    expect(submitted).toMatchObject({
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => [{ result: {
+      ok: true,
       outcome: "submitted",
-      phase: "submitted",
-      conversation_id: "conversation-1",
-      tab_id: null,
-    });
-    expect(chrome.tabs.remove).toHaveBeenCalledWith(99);
-    expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      target: { tabId: 99 },
-      world: "MAIN",
-      args: [job, [expect.objectContaining({ name: "context.tar.gz" })]],
-    }));
-  });
-
-  it("quarantines an ambiguous submit result instead of retrying", async () => {
-    const job = {
-      job_id: "launch-ambiguous",
-      prompt: "Produce exactly one cohesive handoff ZIP.",
-      attachments: [],
-      status: "leased",
-      mode: "chat",
-      model_slug: "gpt-5-6-pro",
-      model_label: "GPT-5.6 Sol",
-      effort_label: "Pro",
-      thinking_effort: "standard",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.tabs.create.mockImplementation(async (details) => {
-      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
-      tabs.push(tab);
-      return tab;
-    });
-    chrome.scripting.executeScript.mockResolvedValue([{ result: {
-      ok: false,
-      detail: "protocol_conversation_navigation_timeout",
-      submission_may_have_occurred: true,
+      provider_conversation_id: "conversation-1",
+      provider_conversation_url: "https://chatgpt.com/c/conversation-1",
+      provider_turn_id: "user-turn-1",
+      observed_surface: "Chat",
+      observed_model: "GPT-5.6 Sol",
+      observed_effort: "Pro",
+      observed_project_ref: null,
+      provider_evidence: { current_node: "assistant-running" },
     } }]);
 
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("submitted"));
 
-    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events"))).toHaveLength(3));
-    const finalEvent = JSON.parse(fetchCalls.filter((call) => String(call.url).endsWith("/events"))[2].options.body);
-    expect(finalEvent).toMatchObject({
-      outcome: "submission_unknown",
-      phase: "launch",
+    const owner = new URL(fetchCalls.find((call) => String(call.url).includes("claim_by="))?.url)
+      .searchParams.get("claim_by");
+    expect(updates[0]).toMatchObject({ outcome: "progress", phase: "submit_intent" });
+    expect(updates.at(-1).receipt).toMatchObject({
+      extension_instance_id: owner,
+      provider_conversation_id: "conversation-1",
+      provider_turn_id: "user-turn-1",
     });
-    expect(finalEvent.detail).toContain("without a durable acknowledgement");
-  });
-
-  it("records authenticated conversation-read throttling without opening a global launch circuit", async () => {
-    const job = {
-      job_id: "launch-monitor-throttled",
-      status: "submitted",
-      phase: "submitted",
-      lease_owner: "launch-executor-test",
-      tab_id: null,
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution({ status: 429 }));
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
-    const event = JSON.parse(fetchCalls.find((call) => String(call.url).endsWith("/events")).options.body);
-    expect(event).toMatchObject({
-      outcome: "network_error",
-      phase: "monitor_read_throttled",
-      retry_after_seconds: 45,
-      tab_id: null,
-    });
-  });
-
-  it.each([
-    [401, "auth_challenge", "monitor_auth_challenge", { error: "missing auth context" }],
-    [403, "auth_challenge", "monitor_auth_challenge", { error: "provider challenge" }],
-    [404, "protocol_mismatch", "conversation_inaccessible", {
-      detail: { code: "conversation_inaccessible", can_retry: false },
-    }],
-  ])("classifies monitor HTTP %i without treating it as a transient network error", async (
-    status,
-    outcome,
-    phase,
-    errorBody,
-  ) => {
-    const job = {
-      job_id: `launch-monitor-${status}`,
-      status: "submitted",
-      phase: "submitted",
-      lease_owner: "launch-executor-test",
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution({ status, errorBody }));
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
-    const event = JSON.parse(fetchCalls.find((call) => String(call.url).endsWith("/events")).options.body);
-    expect(event).toMatchObject({ outcome, phase, tab_id: null });
-  });
-
-  it("records a clean provider-running observation", async () => {
-    const job = {
-      job_id: "launch-provider-running",
-      status: "submitted",
-      phase: "submitted",
-      lease_owner: "launch-executor-test",
-      tab_id: 42,
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job: { ...job, phase: "provider_running" } });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution());
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
-    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events")).length).toBeGreaterThan(1));
-    const events = fetchCalls
-      .filter((call) => String(call.url).endsWith("/events"))
-      .map((call) => JSON.parse(call.options.body));
-    expect(events).toContainEqual(expect.objectContaining({
-      outcome: "progress",
-      phase: "provider_running",
-      detail: expect.stringContaining("still running"),
-    }));
-    expect(events).toContainEqual(expect.objectContaining({
-      outcome: "progress",
-      phase: "monitoring_heartbeat",
-    }));
-  });
-
-  it("reuses canonical capture for a launched chat handoff", async () => {
-    const zipBase64 = btoa("PK synthetic handoff");
-    const job = {
-      job_id: "launch-complete",
-      status: "submitted",
-      phase: "submitted",
-      lease_owner: "launch-executor-test",
-      next_attempt_at: "2099-01-01T00:00:00Z",
-      tab_id: 42,
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution({
-      endTurn: true,
-      assistantText: "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
-    }));
-    chrome.tabs.sendMessage.mockResolvedValue({
-      ok: true,
-      envelope: {
-        session: {
-          provider: "chatgpt",
-          provider_session_id: "conversation-1",
-          turns: [{ role: "assistant", text: "handoff" }],
-          attachments: [{ name: "polylogue-sol-pro-launch-handoff.zip", inline_base64: zipBase64 }],
-        },
-      },
-      captureResult: {
-        ok: true,
-        provider: "chatgpt",
-        provider_session_id: "conversation-1",
-        artifact_ref: "chatgpt/conversation-1.json",
-      },
-      archiveState: { captured: true, state: "archived" },
-    });
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.tabs.sendMessage).toHaveBeenCalled());
-    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(99, expect.objectContaining({
-      type: "polylogue.capturePage",
-      reason: "launch_job_completion",
-      providerSessionId: "conversation-1",
-      deferReceiver: false,
-      nativePayload: expect.objectContaining({
-        id: "conversation-1",
-        current_node: "assistant-current",
-      }),
-    }));
-    expect(chrome.scripting.executeScript.mock.calls.filter(([details]) => details.func)).toHaveLength(1);
-    expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(false);
-  });
-
-  it("recognizes a handoff by provider identity after Chrome collision-renames it", async () => {
-    const zipBase64 = btoa("PK synthetic handoff");
-    const job = {
-      job_id: "launch-collision-renamed",
-      status: "submitted",
-      phase: "submitted",
-      lease_owner: "launch-executor-test",
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution({
-      endTurn: true,
-      assistantText: "[Download](sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip)",
-    }));
-    chrome.tabs.sendMessage.mockResolvedValue({
-      ok: true,
-      envelope: {
-        session: {
-          provider: "chatgpt",
-          provider_session_id: "conversation-1",
-          turns: [{ role: "assistant", text: "handoff" }],
-          attachments: [{
-            name: "polylogue-sol-pro-launch-handoff(14).zip",
-            inline_base64: zipBase64,
-            provider_attachment_id: "sandbox:turn-1:/mnt/data/polylogue-sol-pro-launch-handoff.zip",
-            provider_meta: { sandbox_path: "/mnt/data/polylogue-sol-pro-launch-handoff.zip" },
-          }],
-        },
-      },
-      captureResult: {
-        ok: true,
-        provider: "chatgpt",
-        provider_session_id: "conversation-1",
-        artifact_ref: "chatgpt/conversation-1.json",
-      },
-      archiveState: { captured: true, state: "archived" },
-    });
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.tabs.sendMessage).toHaveBeenCalled());
-    expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(false);
-  });
-
-  it("uses one reusable authenticated transport page after the submitted tab was closed", async () => {
-    const job = {
-      job_id: "launch-reopen-closed",
-      status: "submitted",
-      phase: "provider_running",
-      lease_owner: "launch-executor-test",
-      tab_id: 42,
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
-    };
-    tabs = [];
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    chrome.tabs.create.mockImplementation(async (details) => {
-      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
-      tabs.push(tab);
-      return tab;
-    });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution());
-
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({
+    expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({
       url: "https://chatgpt.com/",
       active: false,
-    }));
-    await vi.waitFor(() => expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      target: { tabId: 99 },
-    })));
-    expect(chrome.tabs.create).not.toHaveBeenCalledWith(expect.objectContaining({ url: job.conversation_url }));
+    });
+    expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99);
   });
 
-  it("does not depend on the old launch tab after it navigated to another conversation", async () => {
-    const job = {
-      job_id: "launch-reopen-navigated",
-      status: "submitted",
-      phase: "provider_running",
-      lease_owner: "launch-executor-test",
-      tab_id: 42,
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
+  it("renews the receiver lease while provider execution remains in flight", async () => {
+    const action = {
+      action_id: "action-slow",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Perform a slow provider operation.",
+      attachments: [],
+      presentation: {
+        surface: "chat",
+        model_slug: "gpt-5-6-pro",
+        model_label: "GPT-5.6 Sol",
+        effort_label: "Pro",
+      },
+      submit_policy: "submit_once",
+      status: "leased",
     };
-    tabs[0] = { id: 42, url: "https://chatgpt.com/c/different-conversation", status: "complete" };
+    const updates = [];
+    let claimed = false;
+    let heartbeat = null;
+    let finishExecution = null;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback) => {
+      heartbeat = callback;
+      return 123;
+    });
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => undefined);
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      if (path.endsWith("/events")) return responseJson({ job });
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-slow/events")) {
+        const update = JSON.parse(options.body);
+        updates.push(update);
+        return responseJson({ action: { ...action, ...update } });
+      }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution());
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (!details.func) return undefined;
+      return new Promise((resolve) => {
+        finishExecution = () => resolve([{ result: {
+          ok: true,
+          outcome: "submitted",
+          provider_conversation_id: "conversation-slow",
+          provider_conversation_url: "https://chatgpt.com/c/conversation-slow",
+          provider_turn_id: "user-turn-slow",
+          observed_surface: "Chat",
+          observed_model: "GPT-5.6 Sol",
+          observed_effort: "Pro",
+          observed_project_ref: null,
+          provider_evidence: { current_node: "assistant-running" },
+        } }]);
+      });
+    });
 
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
-      target: { tabId: 99 },
-    })));
-    expect(chrome.tabs.remove).not.toHaveBeenCalledWith(42);
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(heartbeat).toBeTypeOf("function"));
+    heartbeat();
+    await vi.waitFor(() => expect(updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: "progress",
+        phase: "submit_intent",
+        detail: "renewed browser action lease during provider execution",
+      }),
+    ])));
+    expect(finishExecution).toBeTypeOf("function");
+    finishExecution();
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("submitted"));
+    expect(clearIntervalSpy).toHaveBeenCalledWith(123);
   });
 
-  it("monitors only the one conversation leased by the receiver per scheduler tick", async () => {
-    const first = {
-      job_id: "launch-monitor-first",
-      status: "submitted",
-      phase: "provider_running",
-      lease_owner: "launch-executor-test",
-      conversation_id: "conversation-1",
-      conversation_url: "https://chatgpt.com/c/conversation-1",
+  it("honors structured provider Retry-After after the submit boundary fails closed", async () => {
+    const action = {
+      action_id: "action-rate",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless rate-limit fixture.",
+      attachments: [],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "submit_once",
+      status: "leased",
     };
-    const second = {
-      ...first,
-      job_id: "launch-monitor-second",
-      conversation_id: "conversation-2",
-      conversation_url: "https://chatgpt.com/c/conversation-2",
-    };
+    const updates = [];
+    let claimed = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [first] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [first, second] });
-      if (path.endsWith("/events")) return responseJson({ job: first });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-rate/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
     });
-    chrome.scripting.executeScript.mockResolvedValue(chatGptConversationExecution({ status: 429 }));
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => [{ result: {
+      ok: false,
+      detail: "provider response http_429",
+      retry_after_seconds: 75,
+      submission_may_have_occurred: false,
+    } }]);
 
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
-    expect(chrome.scripting.executeScript).toHaveBeenCalledTimes(1);
-    expect(fetchCalls.filter((call) => String(call.url).endsWith("/events"))).toHaveLength(1);
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
+    expect(updates.at(-1)).toMatchObject({ retry_after_seconds: 75, phase: "provider_action_failed" });
   });
 
-  it("lets the owning extension close a cancelled background run", async () => {
-    const cancelled = {
-      job_id: "launch-cancelled",
-      status: "cancelled",
-      executor_instance_id: "launch-executor-test",
-      tab_id: 42,
+  it("stops reading an attachment response at the extension transport limit", async () => {
+    const action = {
+      action_id: "action-oversized",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless bounded-read fixture.",
+      attachments: [{
+        attachment_id: "attachment-1",
+        name: "context.bin",
+        mime_type: "application/octet-stream",
+        size_bytes: 1,
+        sha256: "00".repeat(32),
+      }],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "stage_only",
+      status: "leased",
     };
-    globalThis.fetch = vi.fn(async (url) => {
-      const path = String(url);
-      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
-      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [cancelled] });
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    const updates = [];
+    let claimed = false;
+    let cancelled = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).includes("/attachments/attachment-1")) {
+        const body = new globalThis.ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+            controller.enqueue(new Uint8Array(9 * 1024 * 1024));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        });
+        return new globalThis.Response(body, { status: 200 });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-oversized/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
     });
 
-    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
-
-    await vi.waitFor(() => expect(chrome.tabs.remove).toHaveBeenCalledWith(42));
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("provider_drift"));
+    expect(updates.at(-1).detail).toContain("protocol_attachment_transport_limit");
+    expect(cancelled).toBe(true);
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 });
 
-describe("ambient mission-control evidence", () => {
+describe("ambient capture status", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -2079,67 +1822,6 @@ describe("receiver health probe", () => {
 
     expect(response.pairing).toMatchObject({ state: "online", receiver_id: "rx-new" });
     expect(stored.polylogueCaptureQueue).toEqual(queue);
-  });
-
-  it("keeps last-known Sol Pro work visible while the receiver is offline", async () => {
-    const cachedAt = "2026-07-16T10:00:00.000Z";
-    const job = {
-      job_id: "launch-cached",
-      job_title: "Analyze browser capture trust",
-      status: "submitted",
-      phase: "provider_running",
-      cadence_minutes: 5,
-    };
-    await loadBackground({
-      launchEnabled: false,
-      polylogueLastLaunchSnapshot: { jobs: [job], cached_at: cachedAt },
-    });
-    globalThis.fetch = vi.fn(async () => { throw new TypeError("receiver offline"); });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.missionControl.status", refresh: false });
-
-    expect(response).toMatchObject({
-      ok: true,
-      extension: {
-        contract_epoch: "canonical-capture-mission-control-v1",
-        manifest_version: "0.1.0",
-        extension_id: "polylogue-test-extension",
-        instance_id: expect.any(String),
-      },
-      state: { online: false },
-      work: {
-        launch_jobs: [job],
-        launch_source: "cached",
-        launch_cached_at: cachedAt,
-      },
-      reverse: { enabled: false, default_state: "off" },
-      assertions: { selection_candidate_supported: true, persistence_supported: false },
-    });
-  });
-
-  it("caches a live Sol Pro snapshot for later offline mission control", async () => {
-    const job = {
-      job_id: "launch-live",
-      job_title: "Complete durable handoff",
-      status: "queued",
-      phase: "queued",
-      cadence_minutes: 1,
-    };
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      if (String(url).endsWith("/v1/status")) return responseJson({
-        ok: true,
-        api_schema: "polylogue-browser-capture/v1",
-        receiver_id: "rx-mission",
-      });
-      if (String(url).endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
-      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.missionControl.status", refresh: false });
-
-    expect(response.work).toMatchObject({ launch_jobs: [job], launch_source: "live" });
-    expect(stored.polylogueLastLaunchSnapshot).toMatchObject({ jobs: [job], cached_at: expect.any(String) });
   });
 
   it("reports the receiver as reachable but unauthorized when no valid token is configured", async () => {
