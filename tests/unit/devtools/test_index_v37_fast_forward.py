@@ -88,6 +88,37 @@ def test_prepare_and_activate_preserve_surviving_rows_without_raw_replay(
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 36
 
 
+def test_ddl_normalization_preserves_token_and_literal_boundaries() -> None:
+    assert forward._normalize_ddl("CREATE TABLE t(a TEXT)") == forward._normalize_ddl(
+        'create table IF NOT EXISTS "t" ( "a" text )'
+    )
+    assert forward._normalize_ddl("CREATE TABLE t(a b)") != forward._normalize_ddl("CREATE TABLE t(ab)")
+    assert forward._normalize_ddl("CREATE TABLE t(a DEFAULT 'a b')") != forward._normalize_ddl(
+        "CREATE TABLE t(a DEFAULT 'ab')"
+    )
+    assert forward._normalize_ddl("CREATE TABLE t(a CHECK(a = 1-2))") != forward._normalize_ddl(
+        "CREATE TABLE t(a CHECK(a = 1e-2))"
+    )
+
+
+def test_activate_keeps_completed_receipt_byte_for_byte(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _archive(tmp_path)
+    receipt = tmp_path / "receipt.json"
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    prepare_forward(archive_root=root, receipt_path=receipt)
+    activated = activate_forward(receipt_path=receipt)
+    before = receipt.read_bytes()
+    active = root / "index.db"
+    with sqlite3.connect(active) as conn:
+        conn.execute("UPDATE sessions SET title = 'later write'")
+        conn.commit()
+
+    repeated = activate_forward(receipt_path=receipt)
+
+    assert repeated == activated
+    assert receipt.read_bytes() == before
+
+
 def test_prepare_refuses_unexpected_v36_schema_surplus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _archive(tmp_path)
     with sqlite3.connect(root / "index.db") as conn:

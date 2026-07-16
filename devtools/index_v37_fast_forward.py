@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 FROM_VERSION = 36
 TO_VERSION = 37
 RECEIPT_SCHEMA = "polylogue.index-v37-fast-forward.v1"
+_DDL_NUMBER = re.compile(r"(?:0[xX][0-9A-Fa-f]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)")
 RETIRED_TABLES = (
     "session_observed_events",
     "session_context_snapshots",
@@ -47,10 +48,103 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _ddl_tokens(sql: str) -> list[tuple[str, str]]:
+    """Tokenize SQLite DDL without erasing literal or token boundaries."""
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        if char.isspace():
+            index += 1
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end < 0:
+                raise IndexV37FastForwardError("unterminated comment in schema DDL")
+            index = end + 2
+            continue
+        if char == "'":
+            index += 1
+            value: list[str] = []
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        value.append("'")
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(sql[index])
+                index += 1
+            else:
+                raise IndexV37FastForwardError("unterminated string literal in schema DDL")
+            tokens.append(("string", "".join(value)))
+            continue
+        if char in {'"', "`", "["}:
+            closing = "]" if char == "[" else char
+            index += 1
+            value = []
+            while index < length:
+                if sql[index] == closing:
+                    if index + 1 < length and sql[index + 1] == closing:
+                        value.append(closing)
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(sql[index])
+                index += 1
+            else:
+                raise IndexV37FastForwardError("unterminated quoted identifier in schema DDL")
+            tokens.append(("word", "".join(value).casefold()))
+            continue
+        if char.isalpha() or char in {"_", "$"}:
+            end = index + 1
+            while end < length and (sql[end].isalnum() or sql[end] in {"_", "$"}):
+                end += 1
+            tokens.append(("word", sql[index:end].casefold()))
+            index = end
+            continue
+        if char.isdigit() or (char == "." and index + 1 < length and sql[index + 1].isdigit()):
+            match = _DDL_NUMBER.match(sql, index)
+            if match is None:
+                raise AssertionError("numeric DDL token did not match")
+            tokens.append(("number", match.group(0).casefold()))
+            index = match.end()
+            continue
+        operator = next(
+            (
+                candidate
+                for candidate in ("->>", "||", "<=", ">=", "<>", "!=", "==", "<<", ">>", "->")
+                if sql.startswith(candidate, index)
+            ),
+            char,
+        )
+        tokens.append(("symbol", operator))
+        index += len(operator)
+    return tokens
+
+
 def _normalize_ddl(sql: str) -> str:
-    normalized = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", sql, flags=re.IGNORECASE)
-    normalized = normalized.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
-    return re.sub(r"\s+", "", normalized).casefold()
+    tokens = _ddl_tokens(sql)
+    normalized: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index : index + 3] == [
+            ("word", "if"),
+            ("word", "not"),
+            ("word", "exists"),
+        ]:
+            index += 3
+            continue
+        normalized.append(tokens[index])
+        index += 1
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
 def _schema_objects(conn: sqlite3.Connection) -> dict[str, str]:
@@ -373,6 +467,8 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     status = receipt.get("status")
     if status not in {"prepared", "activating", "activated"}:
         raise IndexV37FastForwardError(f"receipt is not prepared: {receipt.get('status')}")
+    if status == "activated":
+        return receipt
     archive_root = Path(str(receipt["archive_root"])).resolve(strict=True)
     _require_daemon_stopped(archive_root)
     store = IndexGenerationStore(archive_root)
@@ -380,7 +476,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     generation = store.load(str(generation_payload["generation_id"]))
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
-        if status in {"activating", "activated"}:
+        if status == "activating":
             generation = store.recover_promotion(generation.generation_id)
         if generation.owner_id != generation_payload["owner_id"]:
             raise IndexV37FastForwardError("prepared generation ownership changed")
@@ -388,6 +484,8 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
         if generation.state == "active":
             if store.active_pointer.resolve(strict=True) != clone.resolve(strict=True):
                 raise IndexV37FastForwardError("active generation does not own the active index pointer")
+            if status != "activating":
+                raise IndexV37FastForwardError(f"active generation has incompatible receipt status {status}")
             receipt.update(
                 {
                     "status": "activated",
