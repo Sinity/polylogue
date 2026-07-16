@@ -796,6 +796,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
         (child_id,),
     ).fetchall()
     assert [row[0] for row in stored_positions] == [2, 3]
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
     event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
