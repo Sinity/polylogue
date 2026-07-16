@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "purpose": "Per-job map from testdiet mission to the Beads records that own the durable product contracts the worker must honor (architecture decisions persisted by PR #2947 and later notes). Paste the job's line into the dispatch chat alongside the prompt; workers read the full current records in the attached snapshot's .beads/issues.jsonl. Wrong-or-stale anchors are worse than none: check-dispatch.py validates these ids against the snapshot before launch.",
+  "generated": "2026-07-16",
+  "verified_against": ".beads/issues.jsonl @ origin/master 09fa18710",
+  "jobs": {
+    "testdiet-01": {"owning_beads": ["polylogue-z9gh.9", "polylogue-z9gh.1", "polylogue-z9gh.9.1", "polylogue-4p1"], "confidence": "high", "note": "Query-transaction semantics (.9), bounded execution (.1), adapter migration (.9.1), read-algebra doctrine (4p1)."},
+    "testdiet-02": {"owning_beads": ["polylogue-avmq", "polylogue-enj7", "polylogue-5vbs", "polylogue-0puw", "polylogue-qs0a"], "confidence": "high", "note": "Service lifecycle contract (avmq), production-valid daemon harnesses (enj7), fts debt-feeder gap (5vbs), reservation/lease semantics shared with convergence (0puw, qs0a)."},
+    "testdiet-03": {"owning_beads": ["polylogue-9rw0", "polylogue-b5l", "polylogue-b5l.1"], "confidence": "high", "note": "Source-replay equivalence proof (9rw0), derived-tier transition protocol (b5l), exactly-resumable rebuild (b5l.1)."},
+    "testdiet-04": {"owning_beads": ["polylogue-wmsc", "polylogue-1xc.12"], "confidence": "high", "note": "One monotonic DerivationKey value shared across embedding and FTS freshness; storage-neutral, never a universal table."},
+    "testdiet-05": {"owning_beads": ["polylogue-z9gh.1", "polylogue-z9gh.9"], "confidence": "high", "note": "Interruption/cancellation/budget mechanics (.1); budgeted-page and continuation semantics (.9)."},
+    "testdiet-06": {"owning_beads": ["polylogue-cuxz.2"], "confidence": "high", "note": "EvidenceValue declaration core; authority/coverage/freshness/unknown semantics."},
+    "testdiet-07": {"owning_beads": ["polylogue-yeq.3", "polylogue-4p1"], "confidence": "high", "note": "Cross-surface parity and query-law falsification (yeq.3); Query x Projection x Render as sole read algebra (4p1)."},
+    "testdiet-08": {"owning_beads": ["polylogue-2qx", "polylogue-2qx.1"], "confidence": "medium", "note": "OriginSpec admission/fidelity contract; no per-origin ChatGPT bead — brief + architecture docs carry the specifics."},
+    "testdiet-09": {"owning_beads": ["polylogue-2qx", "polylogue-2qx.1", "polylogue-866e", "polylogue-4ts.3"], "confidence": "medium", "note": "OriginSpec family plus lineage-write laws (866e) and subagent-vs-main compaction distinction (4ts.3) — Claude Code's distinctive axes."},
+    "testdiet-10": {"owning_beads": ["polylogue-2qx", "polylogue-2qx.1"], "confidence": "medium", "note": "OriginSpec family; no per-origin Claude-web bead."},
+    "testdiet-11": {"owning_beads": ["polylogue-2qx", "polylogue-2qx.1", "polylogue-ih67"], "confidence": "medium", "note": "OriginSpec family; Codex title enrichment (ih67) touches the same ingest surface — coordination hotspot if that lane is active."},
+    "testdiet-12": {"owning_beads": ["polylogue-2qx", "polylogue-2qx.1"], "confidence": "medium", "note": "OriginSpec family; dogfood-2 found dead detector code for aistudio-drive — check current source before assuming the detector shape."},
+    "testdiet-13": {"owning_beads": ["polylogue-u0dm"], "confidence": "low", "note": "DSL nesting-depth guard is adjacent; no single owner for output/schema injection safety — treat live source + security tests as authority."},
+    "testdiet-14": {"owning_beads": ["polylogue-fd2s", "polylogue-9gh1", "polylogue-cxlk", "polylogue-ovme"], "confidence": "high", "note": "load_polylogue_config as sole resolver (fd2s), config epic (9gh1), nested-table merge bug (cxlk), typed tier map/ArchiveLocation (ovme)."},
+    "testdiet-15": {"owning_beads": ["polylogue-896y"], "confidence": "medium", "note": "Production time-authority audit (896y) is the local evidence base. Test-side authority: tests/infra/frozen_clock.py, docs/plans/test-clock-allowlist.yaml, and the verify-test-clock-hygiene lint."},
+    "testdiet-16": {"owning_beads": ["polylogue-9e5.31.1", "polylogue-o21.1"], "confidence": "high", "note": "DefinitionClosureGraph kernel (9e5.31.1) consuming the DeclarationSpec foundation (o21.1). Parent epic 9e5.31 may be in progress locally — coordination hotspot."}
+  }
+}
