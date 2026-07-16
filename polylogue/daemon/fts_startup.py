@@ -131,7 +131,13 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
     """Run message FTS startup maintenance when applicable."""
     try:
         has_blocks_table = table_exists_sync(conn, "blocks")
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "FTS startup maintenance skipped: archive schema probe failed (%s: %s); "
+            "message FTS freshness will not be reconciled this startup",
+            type(exc).__name__,
+            exc,
+        )
         return False
     if not has_blocks_table:
         return False

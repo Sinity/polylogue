@@ -86,6 +86,11 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
             return False
     if not bool(readiness.get("available", False)):
         return False
+    # A surface that composes the archive-debt classifier records a failure to
+    # run it here (see paths._merge_raw_materialization_debt). Readiness that
+    # required the classifier cannot be claimed when the classifier failed.
+    if readiness.get("debt_classifier_error"):
+        return False
     blocking_keys = (
         "critical",
         "warning",

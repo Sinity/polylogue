@@ -74,12 +74,18 @@ class AuthoredScenarioCatalog:
 
 @lru_cache(maxsize=1)
 def get_authored_scenario_catalog() -> AuthoredScenarioCatalog:
+    # Repo-authored surfaces (rendered docs, verify gates) must be hermetic:
+    # pin the schema registry to the in-repo SCHEMA_DIR so operator-local
+    # inferred schemas under data_home()/schemas cannot leak into generated
+    # docs or flip `render --check` per machine.
+    from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+
     return AuthoredScenarioCatalog(
         validation_lanes=build_validation_lane_entries(),
         mutation_campaigns=build_mutation_entries(),
         benchmark_campaigns=build_benchmark_entries(),
         synthetic_benchmark_campaigns=build_synthetic_benchmark_entries(),
-        inferred_corpus_scenarios=list_inferred_corpus_scenarios(),
+        inferred_corpus_scenarios=list_inferred_corpus_scenarios(registry=SchemaRegistry(storage_root=SCHEMA_DIR)),
     )
 
 

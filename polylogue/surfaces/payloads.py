@@ -3315,6 +3315,11 @@ class ContextPreamble(SurfacePayloadModel):
     project_state: ContextPreambleProjectState | None = None
     blackboard_notes: list[ContextPreambleBlackboardNote] = Field(default_factory=list)
     guidance: str | ContextPreambleGuidance | None = None
+    # Component name -> "ExceptionType: message" for preamble sections that
+    # failed to assemble. An empty section with a failure entry here means
+    # "lookup failed", never "nothing relevant exists" — consumers must not
+    # treat degraded context as complete context.
+    component_failures: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

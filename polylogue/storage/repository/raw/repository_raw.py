@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.logging import get_logger
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
@@ -15,6 +16,8 @@ from polylogue.storage.runtime import (
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import cursor as cursor_queries
 from polylogue.storage.sqlite.queries import raw as raw_queries
+
+logger = get_logger(__name__)
 
 
 class RepositoryRawMixin:
@@ -107,7 +110,14 @@ class RepositoryRawMixin:
         async with self._backend.connection() as conn:
             try:
                 return await cursor_queries.get_known_source_cursors(conn)
-            except Exception:
+            except Exception as exc:
+                # An empty map silently disables the stat fast path (every
+                # source re-hashes); make the degradation visible.
+                logger.warning(
+                    "source-cursor fast path unavailable (%s: %s); falling back to full source scan",
+                    type(exc).__name__,
+                    exc,
+                )
                 return {}
 
     async def upsert_source_file_cursor(

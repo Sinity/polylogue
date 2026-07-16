@@ -279,8 +279,12 @@ def _merge_raw_materialization_debt(readiness: dict[str, object], active_archive
             kinds=("raw-materialization",),
             exact_fts=False,
         )
-    except Exception:
-        return readiness
+    except Exception as exc:
+        # The docstring contract is that paths composes the debt classifier;
+        # when it fails, readiness must say so instead of implying clean debt.
+        degraded = dict(readiness)
+        degraded["debt_classifier_error"] = f"{type(exc).__name__}: {exc}"
+        return degraded
     rows = getattr(payload, "rows", ())
     totals = getattr(payload, "totals", None)
     if totals is None or not rows:

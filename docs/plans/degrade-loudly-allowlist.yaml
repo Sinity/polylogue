@@ -74,13 +74,6 @@ entries:
   reason: Narrow startup probe; 0 is the fail-toward-repair default consumed by the FTS startup-readiness
     decision (safe direction, matches the 1xc.11 precedent).
 - path: polylogue/daemon/fts_startup.py
-  function: <module>._ensure_archive_messages_fts_startup_readiness_sync
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: False triggers startup FTS repair (fail-toward-needs-work), matching the 1xc.11 precedent for
-    probe handlers.
-- path: polylogue/daemon/fts_startup.py
   function: <module>._message_fts_docsize_has_rows_sync
   exceptions:
   - Error
@@ -210,13 +203,6 @@ entries:
   occurrence: 0
   reason: quick_check_ok=False is the safe fail-toward-unhealthy direction and is itself the boolean field
     the JSON response reports.
-- path: polylogue/daemon/http.py
-  function: <module>._handle_health_check
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: 'Sends a typed JSON error response ({"ok": False, "status": "error", "detail": "health check
-    failed"}) -- the HTTP response itself is the signal.'
 - path: polylogue/daemon/metrics.py
   function: <module>.format_metrics
   exceptions:
@@ -424,13 +410,6 @@ entries:
   - Exception
   occurrence: 0
   reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
-- path: polylogue/storage/repository/raw/repository_raw.py
-  function: <module>.get_known_source_cursors
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: Feeds the stat-based fast path for cursor comparison (per its own docstring); an empty dict
-    only degrades the optimization, the correctness-critical cursor path does not depend on this cache.
 - path: polylogue/storage/sqlite/archive_tiers/archive.py
   function: <module>._ensure_read_runtime_indexes
   exceptions:

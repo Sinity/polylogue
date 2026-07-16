@@ -27,16 +27,16 @@ SchemaInput: TypeAlias = Mapping[str, object]
 SchemaPayload: TypeAlias = JSONDocument
 
 
-def _load_pins_safe(provider: str) -> dict[str, set[str]]:
-    try:
-        pins = load_pins(provider)
-        rejected: dict[str, set[str]] = {}
-        for pin in pins.pins:
-            if pin.action == "reject":
-                rejected.setdefault(pin.path, set()).add(pin.role)
-        return rejected
-    except Exception:
-        return {}
+def _load_rejected_pins(provider: str) -> dict[str, set[str]]:
+    # load_pins already degrades loudly (missing file -> empty PinSet, corrupt
+    # file -> logged warning + empty PinSet); swallowing anything beyond that
+    # would silently drop operator rejection decisions from generated schemas.
+    pins = load_pins(provider)
+    rejected: dict[str, set[str]] = {}
+    for pin in pins.pins:
+        if pin.action == "reject":
+            rejected.setdefault(pin.path, set()).add(pin.role)
+    return rejected
 
 
 MutableSchemaPayload: TypeAlias = JSONDocument
@@ -77,7 +77,7 @@ def _generate_cluster_schema(
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
     field_stats = _collect_field_stats(samples, session_ids=conv_ids_for_stats)
-    pins = _load_pins_safe(provider)
+    pins = _load_rejected_pins(provider)
     schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema = _annotate_schema(
         schema,
@@ -111,7 +111,7 @@ def _apply_schema_metadata(
     schema["description"] = config.description
     schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
     schema["x-polylogue-sample-count"] = schema_sample_count
-    schema["x-polylogue-generator"] = "po lylogue.schemas.operator.schema_inference"
+    schema["x-polylogue-generator"] = "polylogue.schemas.operator.schema_inference"
     schema["x-polylogue-sample-granularity"] = config.sample_granularity
     schema["x-polylogue-anchor-profile-family-id"] = anchor_profile_family_id
     schema["x-polylogue-observed-artifact-count"] = observed_artifact_count
@@ -154,7 +154,7 @@ def generate_schema_from_samples(
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)
-        pins = _load_pins_safe(provider) if provider else {}
+        pins = _load_rejected_pins(provider) if provider else {}
         schema = _annotate_semantic_and_relational(schema, field_stats, pins=pins)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"

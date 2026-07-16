@@ -372,7 +372,8 @@ class TestComposeContextPreambleEmptyArchive:
     @pytest.mark.asyncio
     async def test_find_resume_candidates_exception_is_graceful(self, mcp_server: MCPServerUnderTest) -> None:
         """When find_resume_candidates raises, the tool still returns a valid
-        preamble with an empty sessions list."""
+        preamble with an empty sessions list — and the failure is visible in
+        component_failures instead of masquerading as "no related sessions"."""
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,
             patch("subprocess.run", return_value=_mock_subprocess_failure()),
@@ -389,6 +390,45 @@ class TestComposeContextPreambleEmptyArchive:
         payload = json.loads(raw)
         assert payload["recent_related_sessions"] == []
         assert "injected_at" in payload
+        assert payload["component_failures"]["recent_related_sessions"] == "RuntimeError: database is locked"
+
+    @pytest.mark.asyncio
+    async def test_component_failures_records_every_degraded_section(self) -> None:
+        """Each optional preamble section that raises lands in component_failures;
+        sections that succeed stay absent from it."""
+        from polylogue.context.preamble import build_context_preamble_payload
+
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_session = AsyncMock(return_value=MagicMock(git_repository_url=None, git_branch=None))
+        mock_poly.get_session_topology = AsyncMock(side_effect=RuntimeError("topology store corrupt"))
+        mock_poly.find_resume_candidates = AsyncMock(return_value=())
+        mock_poly.list_assertion_claim_payloads = AsyncMock(side_effect=ValueError("bad assertion row"))
+
+        preamble = await build_context_preamble_payload(mock_poly, session_id="seed-session")
+
+        assert preamble is not None
+        assert preamble.session_lineage is None
+        assert preamble.guidance is None
+        assert preamble.component_failures == {
+            "session_lineage": "RuntimeError: topology store corrupt",
+            "assertion_guidance": "ValueError: bad assertion row",
+        }
+
+    @pytest.mark.asyncio
+    async def test_component_failures_empty_on_clean_build(self) -> None:
+        """A fully successful build reports no component failures."""
+        from polylogue.context.preamble import build_context_preamble_payload
+
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_session = AsyncMock(return_value=MagicMock(git_repository_url=None, git_branch=None))
+        mock_poly.get_session_topology = AsyncMock(return_value=None)
+        mock_poly.find_resume_candidates = AsyncMock(return_value=())
+        mock_poly.list_assertion_claim_payloads = AsyncMock(return_value=())
+
+        preamble = await build_context_preamble_payload(mock_poly, session_id="seed-session")
+
+        assert preamble is not None
+        assert preamble.component_failures == {}
 
     @pytest.mark.asyncio
     async def test_git_exception_is_graceful(self, mcp_server: MCPServerUnderTest) -> None:

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.logging import get_logger
 from polylogue.readiness.capability import (
     normalize_raw_frontier_status_payload,
     raw_frontier_integrity_is_proven_healthy,
@@ -26,6 +27,8 @@ from polylogue.storage.archive_readiness import raw_materialization_ready as _ra
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+logger = get_logger(__name__)
 
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 # Bare `polylogue` uses this as a quick probe before falling back to SQLite.
@@ -222,8 +225,13 @@ def _active_status_db(db: Any) -> Any | None:
             active_db = active_index_db_path()
             if active_db.exists():
                 return active_db
-        except Exception:
-            pass
+        except Exception as exc:
+            # An unreadable active pointer is not the same as an absent one:
+            # falling back to a sibling index.db may read a different archive
+            # generation, so say which happened.
+            logger.warning(
+                "active archive pointer unreadable (%s: %s); falling back to sibling index.db", type(exc).__name__, exc
+            )
     index_db = _archive_index_path(db)
     if index_db is not None:
         return index_db
@@ -1096,7 +1104,8 @@ def _archive_source_raw_count(conn: Any) -> int:
         return _fast_count(conn, "SELECT COUNT(*) FROM raw_sessions")
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
-    except Exception:
+    except Exception as exc:
+        logger.warning("raw-record count unavailable (database_list probe failed: %s); reporting 0", exc)
         return 0
     if row is None or len(row) < 3 or not row[2]:
         return 0
@@ -2390,8 +2399,8 @@ def _show_direct_status(
 
             ep = embedding_status_payload(env, include_retrieval_bands=False)
             _render_direct_embedding_status(env, dict(ep))
-        except Exception:
-            pass
+        except Exception as exc:
+            env.ui.console.print(f"  Embeddings: [yellow]status unavailable ({type(exc).__name__})[/yellow]")
         # When the archive is empty (no ingest has run yet), surface the
         # most relevant first-run diagnostic so the operator knows what to
         # do next — typically `no_sources` or `no_daemon` (#1263).
@@ -2405,8 +2414,14 @@ def _show_direct_status(
 
         if not compact and not actively_ingesting:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
-    except Exception:
-        env.ui.console.print(f"\n[yellow]Archive exists at {archive_root()} but could not be queried.[/yellow]")
+    except Exception as exc:
+        # markup=False: raw exception text may contain [brackets] Rich would
+        # otherwise parse as style tags and crash on, hiding the error.
+        env.ui.console.print(
+            f"\nArchive exists at {archive_root()} but could not be queried ({type(exc).__name__}: {exc}).",
+            style="yellow",
+            markup=False,
+        )
 
 
 def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:
