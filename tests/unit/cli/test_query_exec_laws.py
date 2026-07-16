@@ -131,6 +131,20 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         )
         .save()
     )
+    (
+        SessionBuilder(index_db, "run-hit-subagent")
+        .provider("codex")
+        .parent_session("ext-run-hit")
+        .branch_type("subagent")
+        .git_repository_url("polylogue")
+        .git_branch("feature/query-runs")
+        .working_directories(["/realm/project/polylogue"])
+        .title("Run query rendering subagent")
+        .created_at((now - timedelta(minutes=29)).isoformat())
+        .updated_at((now - timedelta(minutes=29)).isoformat())
+        .add_message("m9", role="assistant", text="Run query unit rendered.")
+        .save()
+    )
 
     with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -3342,13 +3356,13 @@ class TestSearchQueryContracts:
                 "AND",
                 "role:subagent",
                 "AND",
-                "agent:Explore",
+                "agent:subagent",
             ],
         )
 
         assert result.exit_code == 0, result.output
-        assert "run:codex-session:ext-run-hit:subagent:0:tool-run [subagent/completed]" in result.output
-        assert "agent:codex/Explore" in result.output
+        assert "run:codex-session:ext-run-hit-subagent [subagent/completed]" in result.output
+        assert "agent:codex/subagent" in result.output
 
     def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
         """Context snapshot expressions stay on terminal query-unit routing, not stats."""
