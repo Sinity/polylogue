@@ -47,6 +47,8 @@ class SyntheticGenerationReport:
     seed: int | None
     workload_profile_id: str | None = None
     structural_variant_counts: dict[str, int] = field(default_factory=dict)
+    relationship_variant_counts: dict[str, int] = field(default_factory=dict)
+    lineage_edge_count: int = 0
 
 
 @dataclass(frozen=True)

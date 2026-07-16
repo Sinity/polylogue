@@ -6,12 +6,20 @@ import gzip
 import json
 import random
 import sqlite3
+import time
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.scenarios import (
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    lineage_replay_canary_spec,
+    tool_pairing_canary_spec,
+)
 from polylogue.schemas.field_stats.collection import _collect_field_stats
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 from polylogue.schemas.generation.archive_workload_profile import (
@@ -20,13 +28,23 @@ from polylogue.schemas.generation.archive_workload_profile import (
 )
 from polylogue.schemas.generation.field_annotations import annotate_schema
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
-from polylogue.schemas.generation.workload_profiles import build_package_workload_profile, workload_profile_identity
+from polylogue.schemas.generation.workload_profiles import (
+    _TOOL_IDS_PER_SCOPE_CAP,
+    build_package_workload_profile,
+    workload_profile_identity,
+)
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 from polylogue.sources.dispatch import parse_payload
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import (
+    read_archive_session_envelope,
+    write_parsed_session_to_archive,
+)
 
 
 def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
@@ -296,7 +314,7 @@ def test_joint_variant_selection_does_not_perturb_content_rng() -> None:
     assert profiled.generate(count=3, seed=9) == baseline.generate(count=3, seed=9)
 
 
-def test_synthetic_codex_realizes_record_stream_variant_through_parser() -> None:
+def _codex_record_stream_corpus(*, relationships: JSONDocument | None = None) -> SyntheticCorpus:
     schema: JSONDocument = {
         "type": "object",
         "properties": {
@@ -319,16 +337,23 @@ def test_synthetic_codex_realizes_record_stream_variant_through_parser() -> None
             f"type:type:{bucket}:type:string",
         )
     ]
-    corpus = SyntheticCorpus(
+    workload_profile: JSONDocument = {
+        "profile_id": "workload-profile:codex-stream",
+        "elements": {"session_record_stream": {"structural_variants": [{"count": 1, "tokens": bucket_tokens}]}},
+    }
+    if relationships is not None:
+        workload_profile["relationships"] = relationships
+    return SyntheticCorpus(
         schema,
         WireFormat(encoding="jsonl"),
         "codex",
         element_kind="session_record_stream",
-        workload_profile={
-            "profile_id": "workload-profile:codex-stream",
-            "elements": {"session_record_stream": {"structural_variants": [{"count": 1, "tokens": bucket_tokens}]}},
-        },
+        workload_profile=workload_profile,
     )
+
+
+def test_synthetic_codex_realizes_record_stream_variant_through_parser() -> None:
+    corpus = _codex_record_stream_corpus()
 
     batch = corpus.generate_batch(
         count=1,
@@ -349,6 +374,180 @@ def test_synthetic_codex_realizes_record_stream_variant_through_parser() -> None
     assert len(sessions) == 1
     assert sessions[0].provider_session_id == "synthetic-session"
     assert sessions[0].messages
+
+
+def test_profile_generated_tool_pair_reaches_production_action_view(tmp_path: Path) -> None:
+    corpus = _codex_record_stream_corpus(
+        relationships={
+            "tool_results": {
+                "calls": 1,
+                "results": 1,
+                "paired": 1,
+                "error_results": 1,
+                "functions_exec_calls": 1,
+            }
+        }
+    )
+    started = time.perf_counter()
+    batch = corpus.generate_batch(
+        count=1,
+        seed=23,
+        messages_per_session=range(4, 5),
+        session_native_ids=("tool-pair-canary",),
+    )
+    generated_at = time.perf_counter()
+    records = [json.loads(line) for line in batch.raw_items[0].splitlines()]
+    sessions = parse_payload("codex", records, "fallback")
+    parsed_at = time.perf_counter()
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    session_id = write_parsed_session_to_archive(conn, sessions[0])
+    materialized_at = time.perf_counter()
+    actions = conn.execute(
+        "SELECT tool_name, is_error, exit_code FROM actions WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    queried_at = time.perf_counter()
+    spec = tool_pairing_canary_spec(
+        profile_id=batch.report.workload_profile_id or "",
+        archive_id="archive:test:tool-pair-canary",
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:test",
+        runtime_id="python:test",
+        archive_id="archive:test:tool-pair-canary",
+        generation_id="synthetic:seed:23",
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="generate", wall_ms=(generated_at - started) * 1_000),
+            WorkloadPhaseObservation(name="parse", wall_ms=(parsed_at - generated_at) * 1_000),
+            WorkloadPhaseObservation(name="materialize", wall_ms=(materialized_at - parsed_at) * 1_000),
+            WorkloadPhaseObservation(name="query", wall_ms=(queried_at - materialized_at) * 1_000),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert [tuple(action) for action in actions] == [("exec", 1, 1)]
+    assert batch.report.relationship_variant_counts == {
+        "error_result": 1,
+        "functions_exec": 1,
+        "paired": 1,
+    }
+    assert receipt.spec.inputs[0].profile_id == batch.report.workload_profile_id
+    assert receipt.receipt_id.startswith("workload-receipt:sha256:")
+    conn.close()
+
+
+def test_profile_generation_activates_every_observed_tool_relationship_class() -> None:
+    relationship_names = (
+        "paired",
+        "missing",
+        "orphan",
+        "duplicate_calls",
+        "duplicate_results",
+        "out_of_order",
+        "call_without_id",
+        "result_without_id",
+    )
+    tool_results: JSONDocument = {
+        "calls": 8,
+        "results": 8,
+        "error_results": 8,
+        "functions_exec_calls": 8,
+        "result_record_distance": {"quantiles": {"p99": 4}, "max": 4},
+    }
+    tool_results.update(dict.fromkeys(relationship_names, 1))
+    corpus = _codex_record_stream_corpus(relationships={"tool_results": tool_results})
+
+    batch = corpus.generate_batch(
+        count=len(relationship_names),
+        seed=31,
+        messages_per_session=range(4, 5),
+        session_native_ids=tuple(f"relationship-{index}" for index in range(len(relationship_names))),
+    )
+
+    for raw in batch.raw_items:
+        records = [json.loads(line) for line in raw.splitlines()]
+        sessions = parse_payload("codex", records, "fallback")
+        assert len(sessions) == 1
+        assert sessions[0].messages
+    assert {name: batch.report.relationship_variant_counts[name] for name in relationship_names} == dict.fromkeys(
+        relationship_names, 1
+    )
+    assert batch.report.relationship_variant_counts["functions_exec"] == len(relationship_names)
+    assert batch.report.relationship_variant_counts["error_result"] == len(relationship_names)
+    assert batch.report.relationship_variant_counts["late_result"] == 3
+
+
+def test_profile_generated_lineage_replays_through_production_write_and_read(tmp_path: Path) -> None:
+    corpus = _codex_record_stream_corpus(relationships={"lineage": {"parent_references": 1}})
+    started = time.perf_counter()
+    batch = corpus.generate_batch(
+        count=2,
+        seed=29,
+        messages_per_session=range(4, 5),
+        session_native_ids=("lineage-parent", "lineage-child"),
+    )
+    generated_at = time.perf_counter()
+    parsed = [
+        parse_payload("codex", [json.loads(line) for line in raw.splitlines()], "fallback")[0]
+        for raw in batch.raw_items
+    ]
+    parsed_at = time.perf_counter()
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    parent_id = write_parsed_session_to_archive(conn, parsed[0])
+    child_id = write_parsed_session_to_archive(conn, parsed[1])
+    materialized_at = time.perf_counter()
+    child_physical_count = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        (child_id,),
+    ).fetchone()[0]
+    envelope = read_archive_session_envelope(conn, child_id)
+    composed_at = time.perf_counter()
+    link = conn.execute(
+        "SELECT resolved_dst_session_id, inheritance, branch_point_message_id "
+        "FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    spec = lineage_replay_canary_spec(
+        profile_id=batch.report.workload_profile_id or "",
+        archive_id="archive:test:lineage-canary",
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:test",
+        runtime_id="python:test",
+        archive_id="archive:test:lineage-canary",
+        generation_id="synthetic:seed:29",
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="generate", wall_ms=(generated_at - started) * 1_000),
+            WorkloadPhaseObservation(name="parse", wall_ms=(parsed_at - generated_at) * 1_000),
+            WorkloadPhaseObservation(name="materialize", wall_ms=(materialized_at - parsed_at) * 1_000),
+            WorkloadPhaseObservation(name="compose", wall_ms=(composed_at - materialized_at) * 1_000),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert batch.report.lineage_edge_count == 1
+    assert parsed[1].parent_session_provider_id == "lineage-parent"
+    assert tuple(link)[:2] == (parent_id, "prefix-sharing")
+    assert link["branch_point_message_id"] is not None
+    assert child_physical_count < len(envelope.messages)
+    assert envelope.lineage_complete is True
+    assert receipt.spec.inputs[0].profile_id == batch.report.workload_profile_id
+    assert receipt.receipt_id.startswith("workload-receipt:sha256:")
+    conn.close()
 
 
 def test_workload_profile_models_tool_relationships_without_persisting_ids() -> None:
@@ -407,6 +606,8 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
     relationships = cast(dict[str, JSONValue], profile["relationships"])
     tool_results = cast(dict[str, JSONValue], relationships["tool_results"])
     lineage = cast(dict[str, JSONValue], relationships["lineage"])
+    assert tool_results["calls"] == 3
+    assert tool_results["results"] == 3
     assert tool_results["paired"] == 2
     assert tool_results["missing"] == 1
     assert tool_results["orphan"] == 1
@@ -425,6 +626,42 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
     provenance = cast(dict[str, JSONValue], profile["provenance"])
     outcomes = cast(dict[str, JSONValue], provenance["observation_outcomes"])
     assert outcomes["status_counts"] == {"included": 1, "decode_failed": 1}
+
+
+def test_tool_totals_remain_exact_when_pairing_identity_sketch_is_full() -> None:
+    observed_calls = _TOOL_IDS_PER_SCOPE_CAP + 3
+    unit = SchemaUnit(
+        cluster_payload={},
+        schema_samples=[
+            {"type": "custom_tool_call", "name": "exec", "call_id": f"private-{index}"}
+            for index in range(observed_calls)
+        ],
+        artifact_kind="session_record_stream",
+        bundle_scope="large-session",
+        profile_tokens=("record:custom_tool_call", "field:call_id"),
+    )
+    package = _PackageAccumulator(
+        provider="codex",
+        anchor_family_id="family-a",
+        anchor_kind="session_record_stream",
+        memberships=[_UnitMembership(unit, "family-a")],
+        bundle_scopes={"large-session"},
+    )
+
+    profile = build_package_workload_profile(
+        provider="codex",
+        version="v1",
+        package=package,
+        element_schemas={"session_record_stream": {"type": "object"}},
+        privacy_policy="standard",
+    )
+
+    relationships = cast(dict[str, JSONValue], profile["relationships"])
+    tool_results = cast(dict[str, JSONValue], relationships["tool_results"])
+    loss_inventory = cast(dict[str, JSONValue], relationships["loss_inventory"])
+    assert tool_results["calls"] == observed_calls
+    assert tool_results["functions_exec_calls"] == observed_calls
+    assert loss_inventory["tool_ids_over_capacity"] == 3
 
 
 def test_archive_profile_preserves_composition_without_private_dimension_values(tmp_path: Path) -> None:

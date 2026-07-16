@@ -98,6 +98,8 @@ def _first_text(record: Mapping[str, object], names: tuple[str, ...]) -> str | N
 class _ToolScope:
     calls: dict[str, list[int]] = field(default_factory=dict)
     results: dict[str, list[int]] = field(default_factory=dict)
+    call_count: int = 0
+    result_count: int = 0
     call_without_id: int = 0
     result_without_id: int = 0
     error_results: int = 0
@@ -134,6 +136,7 @@ class _ToolScope:
         if is_exec:
             self.functions_exec_calls += 1
         if is_result:
+            self.result_count += 1
             tool_id = _first_text(record, ("tool_use_id", "call_id", "tool_call_id", "id"))
             if tool_id is None:
                 self.result_without_id += 1
@@ -148,6 +151,7 @@ class _ToolScope:
             ):
                 self.error_results += 1
             return
+        self.call_count += 1
         tool_id = _first_text(record, ("id", "call_id", "tool_call_id"))
         if tool_id is None:
             self.call_without_id += 1
@@ -157,6 +161,8 @@ class _ToolScope:
 
 @dataclass
 class _RelationshipAccumulator:
+    calls: int = 0
+    results: int = 0
     paired: int = 0
     missing_results: int = 0
     orphan_results: int = 0
@@ -177,6 +183,8 @@ class _RelationshipAccumulator:
 
     def merge_scope(self, scope: _ToolScope, record_count: int) -> None:
         self.scope_record_counts.observe(record_count)
+        self.calls += scope.call_count
+        self.results += scope.result_count
         self.call_without_id += scope.call_without_id
         self.result_without_id += scope.result_without_id
         self.error_results += scope.error_results
@@ -215,6 +223,8 @@ class _RelationshipAccumulator:
         return json_document(
             {
                 "tool_results": {
+                    "calls": self.calls,
+                    "results": self.results,
                     "paired": self.paired,
                     "missing": self.missing_results,
                     "orphan": self.orphan_results,

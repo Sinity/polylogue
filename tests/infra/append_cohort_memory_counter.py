@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from polylogue.scenarios import (
+    MeasurementScope,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    watcher_append_cohort_canary_spec,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryPhase:
@@ -87,6 +95,63 @@ class AppendCohortMemoryCounter:
                 f"batches={phase.batch_count}, plans={phase.plan_count}"
             )
         return "\n".join(lines)
+
+    def workload_receipt(
+        self,
+        *,
+        profile_id: str,
+        archive_id: str,
+        build_id: str,
+        runtime_id: str,
+        generation_id: str,
+    ) -> WorkloadReceipt:
+        """Project kernel observations into the shared scoped receipt contract."""
+        spec = watcher_append_cohort_canary_spec(profile_id=profile_id, archive_id=archive_id)
+        peak_rss = max((phase.rss_bytes for phase in self.phases if phase.rss_bytes is not None), default=None)
+        observations: list[WorkloadPhaseObservation] = []
+        for phase in self.phases:
+            observations.extend(
+                (
+                    WorkloadPhaseObservation(
+                        name=f"{phase.name}:{MeasurementScope.PROCESS_TREE.value}",
+                        measurement_scope=MeasurementScope.PROCESS_TREE,
+                        current_rss_bytes=phase.rss_bytes,
+                        peak_rss_bytes=peak_rss if phase.name == "quiescent" else None,
+                        current_pss_bytes=phase.pss_bytes,
+                        anon_bytes=phase.anonymous_pss_bytes,
+                        read_io_bytes=phase.io_read_bytes,
+                        write_io_bytes=phase.io_write_bytes,
+                        progress_completed=phase.plan_count,
+                        progress_total=self.plan_count,
+                        quiescent=phase.name == "quiescent",
+                    ),
+                    WorkloadPhaseObservation(
+                        name=f"{phase.name}:{MeasurementScope.CGROUP.value}",
+                        measurement_scope=MeasurementScope.CGROUP,
+                        anon_bytes=phase.cgroup_anon_bytes,
+                        file_cache_bytes=phase.cgroup_file_bytes,
+                        progress_completed=phase.plan_count,
+                        progress_total=self.plan_count,
+                        quiescent=phase.name == "quiescent",
+                    ),
+                )
+            )
+        return WorkloadReceipt.from_observations(
+            spec=spec,
+            status=WorkloadRunStatus.SUCCEEDED,
+            build_id=build_id,
+            runtime_id=runtime_id,
+            archive_id=archive_id,
+            generation_id=generation_id,
+            frame_id=None,
+            phases=tuple(observations),
+            cleanup_complete=True,
+            notes=(
+                "The synchronous append route owns no child workers; its current process is the complete process tree. "
+                "Pytest archive teardown is outside the measured workload boundary.",
+                "peak_rss_bytes is the maximum sampled RSS across declared route boundaries.",
+            ),
+        )
 
 
 def _rss_bytes() -> int | None:

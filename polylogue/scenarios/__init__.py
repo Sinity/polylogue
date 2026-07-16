@@ -111,6 +111,10 @@ from .workload import (
     WorkloadRunStatus,
     evaluate_budgets,
     exact_session_actions_canary_spec,
+    lineage_replay_canary_spec,
+    partial_convergence_canary_spec,
+    tool_pairing_canary_spec,
+    watcher_append_cohort_canary_spec,
 )
 
 __all__ = [
@@ -210,4 +214,8 @@ __all__ = [
     "WorkloadSelectivityTier",
     "evaluate_budgets",
     "exact_session_actions_canary_spec",
+    "lineage_replay_canary_spec",
+    "partial_convergence_canary_spec",
+    "tool_pairing_canary_spec",
+    "watcher_append_cohort_canary_spec",
 ]

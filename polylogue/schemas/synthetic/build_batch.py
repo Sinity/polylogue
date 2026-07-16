@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import random
 from collections import Counter
 from typing import Protocol
@@ -86,6 +87,304 @@ def _as_json_value(value: object) -> JSONValue:
     raise TypeError(f"Generated payload is not JSON-compatible: {type(value).__name__}")
 
 
+def _profile_mapping(profile: SchemaRecord | None, *path: str) -> dict[str, JSONValue]:
+    value: object = profile
+    for name in path:
+        if not isinstance(value, dict):
+            return {}
+        value = value.get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def _positive_profile_count(profile: dict[str, JSONValue], name: str) -> int:
+    value = profile.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _tool_relationship_variants(profile: SchemaRecord | None) -> tuple[tuple[str, int], ...]:
+    relationships = _profile_mapping(profile, "relationships", "tool_results")
+    names = (
+        "paired",
+        "missing",
+        "orphan",
+        "duplicate_calls",
+        "duplicate_results",
+        "out_of_order",
+        "call_without_id",
+        "result_without_id",
+    )
+    return tuple((name, count) for name in names if (count := _positive_profile_count(relationships, name)))
+
+
+def _relationship_variant_sequence(
+    variants: tuple[tuple[str, int], ...],
+    *,
+    count: int,
+    rng: random.Random,
+) -> list[str]:
+    """Choose weighted states while retaining every positive class when possible."""
+    if count <= 0 or not variants:
+        return []
+    selected = [name for name, _weight in variants] if count >= len(variants) else []
+    selected.extend(
+        rng.choices(
+            [item[0] for item in variants],
+            weights=[item[1] for item in variants],
+            k=count - len(selected),
+        )
+    )
+    rng.shuffle(selected)
+    return selected
+
+
+def _profile_result_distance(profile: SchemaRecord | None) -> int:
+    relationships = _profile_mapping(profile, "relationships", "tool_results")
+    distance = relationships.get("result_record_distance")
+    if not isinstance(distance, dict):
+        return 1
+    quantiles = distance.get("quantiles")
+    candidate: object = quantiles.get("p99") if isinstance(quantiles, dict) else None
+    if not isinstance(candidate, (int, float)) or isinstance(candidate, bool):
+        candidate = distance.get("max")
+    if not isinstance(candidate, (int, float)) or isinstance(candidate, bool):
+        return 1
+    return max(1, int(round(candidate)))
+
+
+def _tool_result_payload(call_id: str | None, *, failed: bool) -> dict[str, JSONValue]:
+    payload: dict[str, JSONValue] = {
+        "type": "custom_tool_call_output",
+        "output": {
+            "output": "synthetic command failed" if failed else "synthetic command succeeded",
+            "metadata": {"exit_code": 1 if failed else 0},
+        },
+    }
+    if call_id is not None:
+        payload["call_id"] = call_id
+    return payload
+
+
+def _codex_tool_records(
+    variant: str,
+    *,
+    call_id: str,
+    functions_exec: bool,
+    failed: bool,
+    result_distance: int,
+) -> list[dict[str, JSONValue]]:
+    call_payload: dict[str, JSONValue] = {
+        "type": "custom_tool_call",
+        "name": "exec" if functions_exec else "synthetic_tool",
+        "input": "printf synthetic",
+    }
+    if variant != "call_without_id":
+        call_payload["call_id"] = call_id
+    call: dict[str, JSONValue] = {"type": "response_item", "payload": call_payload}
+    result_id = None if variant == "result_without_id" else call_id
+    result: dict[str, JSONValue] = {
+        "type": "response_item",
+        "payload": _tool_result_payload(result_id, failed=failed),
+    }
+    fillers: list[dict[str, JSONValue]] = [
+        {
+            "type": "event_msg",
+            "payload": {"type": "agent_message", "message": f"synthetic intervening event {index}"},
+        }
+        for index in range(max(0, result_distance - 1))
+    ]
+
+    if variant in {"missing", "call_without_id"}:
+        return [call]
+    if variant in {"orphan", "result_without_id"}:
+        return [result]
+    if variant == "duplicate_calls":
+        return [call, copy.deepcopy(call), *fillers, result]
+    if variant == "duplicate_results":
+        return [call, *fillers, result, copy.deepcopy(result)]
+    if variant == "out_of_order":
+        return [result, call]
+    return [call, *fillers, result]
+
+
+def _claude_code_tool_records(
+    variant: str,
+    *,
+    call_id: str,
+    functions_exec: bool,
+    failed: bool,
+    session_id: str,
+    rng: random.Random,
+    result_distance: int,
+) -> list[dict[str, JSONValue]]:
+    call_block: dict[str, JSONValue] = {
+        "type": "tool_use",
+        "name": "Bash" if functions_exec else "SyntheticTool",
+        "input": {"command": "printf synthetic"},
+    }
+    if variant != "call_without_id":
+        call_block["id"] = call_id
+    result_block: dict[str, JSONValue] = {
+        "type": "tool_result",
+        "content": "synthetic command failed" if failed else "synthetic command succeeded",
+        "is_error": failed,
+    }
+    if variant != "result_without_id":
+        result_block["tool_use_id"] = call_id
+
+    def record(role: str, block: dict[str, JSONValue]) -> dict[str, JSONValue]:
+        return {
+            "type": role,
+            "sessionId": session_id,
+            "uuid": str(rng.getrandbits(128)),
+            "parentUuid": None,
+            "message": {"role": role, "content": [block]},
+        }
+
+    call = record("assistant", call_block)
+    result = record("user", result_block)
+    fillers = [
+        record(
+            "assistant",
+            {"type": "text", "text": f"synthetic intervening message {index}"},
+        )
+        for index in range(max(0, result_distance - 1))
+    ]
+    if variant in {"missing", "call_without_id"}:
+        return [call]
+    if variant in {"orphan", "result_without_id"}:
+        return [result]
+    if variant == "duplicate_calls":
+        return [call, copy.deepcopy(call), *fillers, result]
+    if variant == "duplicate_results":
+        return [call, *fillers, result, copy.deepcopy(result)]
+    if variant == "out_of_order":
+        return [result, call]
+    return [call, *fillers, result]
+
+
+def _session_native_id(provider: str, data: JSONValue) -> str | None:
+    if not isinstance(data, list):
+        return None
+    if provider == "codex":
+        for record in data:
+            if not isinstance(record, dict) or record.get("type") != "session_meta":
+                continue
+            payload = record.get("payload")
+            if isinstance(payload, dict):
+                native_id = payload.get("id")
+                if isinstance(native_id, str):
+                    return native_id
+    if provider == "claude-code":
+        for record in data:
+            if isinstance(record, dict):
+                native_id = record.get("sessionId")
+                if isinstance(native_id, str):
+                    return native_id
+    return None
+
+
+def _apply_tool_relationship(
+    provider: str,
+    data: JSONValue,
+    *,
+    variant: str,
+    profile: SchemaRecord | None,
+    rng: random.Random,
+) -> tuple[bool, bool]:
+    if not isinstance(data, list):
+        return False, False
+    relationships = _profile_mapping(profile, "relationships", "tool_results")
+    call_count = max(_positive_profile_count(relationships, "calls"), 1)
+    functions_exec = rng.randrange(call_count) < _positive_profile_count(relationships, "functions_exec_calls")
+    result_count = max(_positive_profile_count(relationships, "results"), 1)
+    failed = rng.randrange(result_count) < _positive_profile_count(relationships, "error_results")
+    result_distance = _profile_result_distance(profile)
+    call_id = f"synthetic-call-{rng.getrandbits(64):016x}"
+    if provider == "codex":
+        data.extend(
+            _codex_tool_records(
+                variant,
+                call_id=call_id,
+                functions_exec=functions_exec,
+                failed=failed,
+                result_distance=result_distance,
+            )
+        )
+        return functions_exec, failed
+    if provider == "claude-code":
+        session_id = _session_native_id(provider, data)
+        if session_id is None:
+            return False, False
+        data.extend(
+            _claude_code_tool_records(
+                variant,
+                call_id=call_id,
+                functions_exec=functions_exec,
+                failed=failed,
+                session_id=session_id,
+                rng=rng,
+                result_distance=result_distance,
+            )
+        )
+        return functions_exec, failed
+    return False, False
+
+
+def _codex_message_records(data: JSONValue) -> list[dict[str, JSONValue]]:
+    if not isinstance(data, list):
+        return []
+    records: list[dict[str, JSONValue]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "response_item":
+            payload = item.get("payload")
+            if isinstance(payload, dict) and payload.get("type") == "message":
+                records.append(copy.deepcopy(item))
+        elif item.get("type") == "message":
+            records.append(copy.deepcopy(item))
+    return records
+
+
+def _apply_profile_lineage(provider: str, data_items: list[JSONValue], profile: SchemaRecord | None) -> int:
+    if provider != "codex" or len(data_items) < 2:
+        return 0
+    lineage = _profile_mapping(profile, "relationships", "lineage")
+    if _positive_profile_count(lineage, "parent_references") == 0:
+        return 0
+    edge_count = 0
+    for index in range(1, len(data_items)):
+        parent = data_items[index - 1]
+        child = data_items[index]
+        parent_id = _session_native_id(provider, parent)
+        if parent_id is None or not isinstance(child, list):
+            continue
+        prefix = _codex_message_records(parent)
+        if not prefix:
+            continue
+        meta_index = next(
+            (
+                record_index
+                for record_index, record in enumerate(child)
+                if isinstance(record, dict) and record.get("type") == "session_meta"
+            ),
+            None,
+        )
+        if meta_index is None:
+            continue
+        meta = child[meta_index]
+        if not isinstance(meta, dict):
+            continue
+        payload = meta.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+            meta["payload"] = payload
+        payload["forked_from_id"] = parent_id
+        child[meta_index + 1 : meta_index + 1] = prefix
+        edge_count += 1
+    return edge_count
+
+
 def generate_batch(
     self: _SyntheticBatchContext,
     count: int = 5,
@@ -105,7 +404,8 @@ def generate_batch(
         else "no-profile"
     )
     profile_rng = random.Random(f"{seed!r}\x1f{self.provider}\x1f{self.package_version}\x1f{profile_id}")
-    artifacts: list[SyntheticArtifact] = []
+    generated_data: list[JSONValue] = []
+    generated_message_counts: list[int] = []
     selected_variants: Counter[str] = Counter()
     for index in range(count):
         self._relation_solver = RelationConstraintSolver(self.schema)
@@ -126,13 +426,49 @@ def generate_batch(
             data = _add_demo_attachment_blocks(self.provider, data)
         if session_native_ids:
             data = _pin_session_native_id(self.provider, data, session_native_ids[index])
-        artifacts.append(
-            SyntheticArtifact(
-                raw_bytes=self._serialize(data),
-                message_count=n_messages,
-                style=resolved_style,
-            )
+        generated_data.append(data)
+        generated_message_counts.append(n_messages)
+
+    relationship_variants = _tool_relationship_variants(self.workload_profile)
+    selected_relationships: Counter[str] = Counter()
+    if relationship_variants:
+        variants = _relationship_variant_sequence(
+            relationship_variants,
+            count=len(generated_data),
+            rng=profile_rng,
         )
+        result_distance = _profile_result_distance(self.workload_profile)
+        for data, variant in zip(generated_data, variants, strict=True):
+            functions_exec, failed = _apply_tool_relationship(
+                self.provider,
+                data,
+                variant=variant,
+                profile=self.workload_profile,
+                rng=profile_rng,
+            )
+            selected_relationships[variant] += 1
+            if functions_exec:
+                selected_relationships["functions_exec"] += 1
+            if failed:
+                selected_relationships["error_result"] += 1
+            if result_distance > 1 and variant not in {
+                "missing",
+                "orphan",
+                "out_of_order",
+                "call_without_id",
+                "result_without_id",
+            }:
+                selected_relationships["late_result"] += 1
+
+    lineage_edge_count = _apply_profile_lineage(self.provider, generated_data, self.workload_profile)
+    artifacts = [
+        SyntheticArtifact(
+            raw_bytes=self._serialize(data),
+            message_count=message_count,
+            style=resolved_style,
+        )
+        for data, message_count in zip(generated_data, generated_message_counts, strict=True)
+    ]
 
     report = SyntheticGenerationReport(
         provider=self.provider,
@@ -145,6 +481,8 @@ def generate_batch(
         seed=seed,
         workload_profile_id=None if profile_id == "no-profile" else profile_id,
         structural_variant_counts=dict(sorted(selected_variants.items())),
+        relationship_variant_counts=dict(sorted(selected_relationships.items())),
+        lineage_edge_count=lineage_edge_count,
     )
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
 

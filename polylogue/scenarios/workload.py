@@ -212,6 +212,7 @@ class WorkloadPhaseObservation:
     """Resource and progress evidence for one declared phase."""
 
     name: str
+    measurement_scope: MeasurementScope | None = None
     wall_ms: float | None = None
     cpu_ms: float | None = None
     current_rss_bytes: int | None = None
@@ -248,7 +249,10 @@ class WorkloadPhaseObservation:
                 raise ValueError(f"Workload measure {measure} cannot be both observed and unavailable")
 
     def to_payload(self) -> JSONDocument:
-        values: dict[str, JSONValue] = {"name": self.name}
+        values: dict[str, JSONValue] = {
+            "name": self.name,
+            "measurement_scope": self.measurement_scope.value if self.measurement_scope is not None else None,
+        }
         for field_name in sorted(_PHASE_MEASURES):
             value = getattr(self, field_name)
             if value is not None:
@@ -484,6 +488,130 @@ def exact_session_actions_canary_spec(
     )
 
 
+def _schema_profile_canary_spec(
+    *,
+    workload_id: str,
+    profile_id: str,
+    archive_id: str,
+    phases: tuple[str, ...],
+    distribution_refs: tuple[str, ...],
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    input_id = _identity(
+        "workload-input",
+        {
+            "archive_id": archive_id,
+            "profile_id": profile_id,
+            "scale_tier": scale_tier.value,
+            "distribution_refs": list(distribution_refs),
+        },
+    )
+    return WorkloadEnvelopeSpec(
+        workload_id=workload_id,
+        family_id="schema-profile-production-canary",
+        version=1,
+        inputs=(
+            WorkloadInputRef(
+                input_id=input_id,
+                corpus_id=archive_id,
+                profile_id=profile_id,
+                scale_tier=scale_tier.value,
+                distribution_refs=distribution_refs,
+            ),
+        ),
+        phases=phases,
+    )
+
+
+def tool_pairing_canary_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    """Declare profile-generated tool call/result pairing through actions."""
+    return _schema_profile_canary_spec(
+        workload_id="canary:tool-pairing-actions",
+        profile_id=profile_id,
+        archive_id=archive_id,
+        phases=("generate", "parse", "materialize", "query", "quiescent"),
+        distribution_refs=("relationships.tool_results", "index.action_shapes.tool_pairing"),
+        scale_tier=scale_tier,
+    )
+
+
+def lineage_replay_canary_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    """Declare profile-generated parent/child replay through composed reads."""
+    return _schema_profile_canary_spec(
+        workload_id="canary:lineage-replay-composition",
+        profile_id=profile_id,
+        archive_id=archive_id,
+        phases=("generate", "parse", "materialize", "compose", "quiescent"),
+        distribution_refs=("relationships.lineage", "index.topology"),
+        scale_tier=scale_tier,
+    )
+
+
+def watcher_append_cohort_canary_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    """Declare the watcher append/cohort memory incident production route."""
+    route_phases = (
+        "watcher_append:before",
+        "raw_revision_replay_plan:before",
+        "raw_revision_replay_plan:after",
+        "watcher_append:after",
+        "quiescent",
+    )
+    phases = tuple(f"{phase}:{scope.value}" for phase in route_phases for scope in MeasurementScope)
+    spec = _schema_profile_canary_spec(
+        workload_id="canary:watcher-append-cohort",
+        profile_id=profile_id,
+        archive_id=archive_id,
+        phases=phases,
+        distribution_refs=(
+            "source.revisions_per_logical_source",
+            "source.append_span",
+            "operations.growing_sources",
+        ),
+        scale_tier=scale_tier,
+    )
+    return WorkloadEnvelopeSpec(
+        workload_id=spec.workload_id,
+        family_id=spec.family_id,
+        version=spec.version,
+        inputs=spec.inputs,
+        phases=spec.phases,
+        measurement_scope=MeasurementScope.CGROUP,
+        quiescence_ms=0,
+    )
+
+
+def partial_convergence_canary_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+) -> WorkloadEnvelopeSpec:
+    """Declare ingest that leaves and then drains typed convergence debt."""
+    return _schema_profile_canary_spec(
+        workload_id="canary:partial-convergence-drain",
+        profile_id=profile_id,
+        archive_id=archive_id,
+        phases=("generate", "ingest", "observe-debt", "converge", "query", "quiescent"),
+        distribution_refs=("operations.convergence_debt", "operations.cursor_lag"),
+        scale_tier=scale_tier,
+    )
+
+
 def _identity(namespace: str, payload: JSONDocument) -> str:
     encoded = json.dumps(
         payload,
@@ -510,4 +638,8 @@ __all__ = [
     "WorkloadRunStatus",
     "evaluate_budgets",
     "exact_session_actions_canary_spec",
+    "lineage_replay_canary_spec",
+    "partial_convergence_canary_spec",
+    "tool_pairing_canary_spec",
+    "watcher_append_cohort_canary_spec",
 ]
