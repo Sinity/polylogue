@@ -19,8 +19,10 @@ not claim to be, live Sinex JetStream transport.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Protocol, runtime_checkable
 
 from polylogue.sinex.models import PublicationReceipt, ReceiptState
@@ -44,6 +46,54 @@ class SinexTransport(Protocol):
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
     ) -> PublicationReceipt: ...
+
+
+class SinexTransportUnavailableError(RuntimeError):
+    """Configured mirror/primary mode has no injected transport."""
+
+
+TransportFactory = Callable[[], SinexTransport]
+_TRANSPORT_FACTORY_LOCK = RLock()
+_CONFIGURED_TRANSPORT_FACTORY: TransportFactory | None = None
+
+
+def register_configured_transport_factory(factory: TransportFactory) -> None:
+    """Register the deployment-owned transport composition hook.
+
+    Polylogue intentionally does not infer endpoint credentials from ad-hoc
+    environment variables.  Deployment composition registers one factory
+    before the daemon builds its default convergence stages.
+    """
+    if not callable(factory):
+        raise TypeError("Sinex transport factory must be callable")
+    global _CONFIGURED_TRANSPORT_FACTORY
+    with _TRANSPORT_FACTORY_LOCK:
+        _CONFIGURED_TRANSPORT_FACTORY = factory
+
+
+def clear_configured_transport_factory() -> None:
+    """Clear process-local transport composition (primarily test isolation)."""
+    global _CONFIGURED_TRANSPORT_FACTORY
+    with _TRANSPORT_FACTORY_LOCK:
+        _CONFIGURED_TRANSPORT_FACTORY = None
+
+
+def resolve_configured_transport() -> SinexTransport:
+    """Construct the registered transport or fail backed-mode startup loudly."""
+    with _TRANSPORT_FACTORY_LOCK:
+        factory = _CONFIGURED_TRANSPORT_FACTORY
+    if factory is None:
+        raise SinexTransportUnavailableError(
+            "mirror/primary mode requires deployment composition to register a Sinex transport factory"
+        )
+    transport = factory()
+    if not isinstance(transport, SinexTransport):
+        raise TypeError("configured Sinex transport does not satisfy SinexTransport")
+    return transport
+
+
+class TransportPayloadConflictError(RuntimeError):
+    """A request id was reused with bytes different from its first attempt."""
 
 
 class TransportUsedInOffModeError(RuntimeError):
@@ -99,6 +149,7 @@ class LocalReferenceTransport:
     fault_fn: Callable[[str, int], ReceiptState | None] | None = None
     _receipts_by_request_id: dict[str, PublicationReceipt] = field(default_factory=dict)
     _attempt_counts: dict[str, int] = field(default_factory=dict)
+    _payload_digests: dict[str, str] = field(default_factory=dict)
     calls: list[_RecordedCall] = field(default_factory=list)
 
     async def publish_revision(
@@ -108,6 +159,17 @@ class LocalReferenceTransport:
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
     ) -> PublicationReceipt:
+        digest = hashlib.sha256(manifest_bytes)
+        for name, payload in sorted(segment_bytes.items()):
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(payload)
+        payload_digest = digest.hexdigest()
+        existing_digest = self._payload_digests.get(request_id)
+        if existing_digest is not None and existing_digest != payload_digest:
+            raise TransportPayloadConflictError(f"request_id={request_id!r} was reused with different exact bytes")
+        self._payload_digests.setdefault(request_id, payload_digest)
+
         # Idempotency: a request_id that already reached a durable outcome
         # returns that SAME receipt rather than doing (or recording) another
         # publish. This is the property real Sinex transport must have too.
@@ -137,5 +199,11 @@ __all__ = [
     "LocalReferenceTransport",
     "NullTransport",
     "SinexTransport",
+    "SinexTransportUnavailableError",
+    "TransportFactory",
+    "TransportPayloadConflictError",
     "TransportUsedInOffModeError",
+    "clear_configured_transport_factory",
+    "register_configured_transport_factory",
+    "resolve_configured_transport",
 ]

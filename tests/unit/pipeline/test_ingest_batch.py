@@ -139,10 +139,10 @@ class _FakeConnectionBackend:
 
 
 class _FakeBulkBackend:
-    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[object]]) -> None:
+    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[None]]) -> None:
         self._connection = connection
 
-    def bulk_connection(self) -> AbstractAsyncContextManager[object]:
+    def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         return self._connection()
 
 
@@ -1527,6 +1527,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         archive_root_str: str,
         blob_root_str: str,
         validation_mode: str,
+        publication_mode: str,
         ingest_workers: int | None,
         measure_ingest_result_size: bool,
         force_write: bool,
@@ -1541,6 +1542,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
                 "archive_root_str": archive_root_str,
                 "blob_root_str": blob_root_str,
                 "validation_mode": validation_mode,
+                "publication_mode": publication_mode,
                 "ingest_workers": ingest_workers,
                 "measure_ingest_result_size": measure_ingest_result_size,
                 "force_write": force_write,
@@ -1567,6 +1569,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
     assert seen["archive_root_str"] == str(archive_root)
     assert seen["blob_root_str"] == str(expected_blob_root)
     assert seen["blob_root_str"] != str(ambient_blob_root)
+    assert seen["publication_mode"] == "off"
 
 
 def test_iter_ingest_results_sync_bounds_in_flight_process_results(

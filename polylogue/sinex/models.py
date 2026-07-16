@@ -1,11 +1,9 @@
-"""Typed vocabulary for the Sinex publication obligation ledger and transport.
+"""Typed vocabulary for durable Sinex publication and convergence.
 
-``ReceiptState`` mirrors the outcome vocabulary Sinex documents for
-``DurableEmissionReceipt`` (sinex-r6d.11): progress may unlock only on
-``PERSISTED_CONFIRMED`` or a documented terminal debt/lossless-spool outcome,
-never on a bare in-memory accept. ``ObligationStatus`` is the Polylogue-side
-publication-obligation lifecycle this package actually owns and persists in
-``source.db``.
+The source-tier ledger stores both the obligation metadata and the exact
+manifest/segment bytes needed to redrive it after a process crash.  Receipt
+state, rather than successful invocation of a transport method, is the only
+thing that may unlock primary-mode projection progress.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from enum import Enum
 
 
 class PublicationMode(str, Enum):
-    """Sinex-backed authority profile (design: polylogue-303r / 303r.2)."""
+    """Sinex-backed authority profile (polylogue-303r / polylogue-303r.2)."""
 
     OFF = "off"
     MIRROR = "mirror"
@@ -44,24 +42,14 @@ class ObligationStatus(str, Enum):
         return cls(str(value).strip().lower())
 
 
-#: Terminal states: a drain loop must not keep retrying these automatically.
 TERMINAL_OBLIGATION_STATUSES = frozenset({ObligationStatus.CONFIRMED, ObligationStatus.REJECTED})
-
-#: Retryable states: durable_debt is terminal-for-this-attempt but explicitly
-#: retryable (design: "configured failure is never a no-op").
 RETRYABLE_OBLIGATION_STATUSES = frozenset(
     {ObligationStatus.PENDING, ObligationStatus.PUBLISHING, ObligationStatus.DURABLE_DEBT}
 )
 
 
 class ReceiptState(str, Enum):
-    """Outcome vocabulary modeled on Sinex's DurableEmissionReceipt (r6d.11).
-
-    Only :meth:`unlocks_progress` states may advance a local projection.
-    ``RAW_ACCEPTED`` intentionally does NOT unlock progress -- it models the
-    documented failure mode (mpsc/NATS-publish acceptance mistaken for a
-    durable commit) that r6d.11 exists to close off.
-    """
+    """Durable-emission outcome vocabulary shared with the transport."""
 
     RAW_ACCEPTED = "raw_accepted"
     PERSISTED_CONFIRMED = "persisted_confirmed"
@@ -70,13 +58,7 @@ class ReceiptState(str, Enum):
     REJECTED = "rejected"
 
     def unlocks_progress(self) -> bool:
-        """Whether this receipt state may unlock a local projection advance.
-
-        Mirrors sinex-r6d.11's stated rule: PersistedConfirmed or a
-        documented terminal DurableDebt/SpoolAcceptedLossless outcome only.
-        RawAccepted (bare mpsc/NATS-publish acceptance) and Rejected never
-        unlock progress.
-        """
+        """Return whether this receipt may release primary-mode projection."""
         return self in (
             ReceiptState.PERSISTED_CONFIRMED,
             ReceiptState.DURABLE_DEBT,
@@ -86,7 +68,7 @@ class ReceiptState(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class PublicationReceipt:
-    """One transport attempt's outcome, keyed by the obligation's request_id."""
+    """One transport attempt's outcome, keyed by the obligation request id."""
 
     request_id: str
     state: ReceiptState
@@ -94,14 +76,34 @@ class PublicationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
-class PublicationObligation:
-    """One durable ``sinex_publication_obligations`` row.
+class PublicationPayload:
+    """Exact, restart-safe material bytes staged with an obligation.
 
-    The 4-tuple ``(object_id, protocol_version, revision_id,
-    manifest_digest)`` is both the SQL primary key and the transport
-    idempotency key (design: polylogue-303r.2, "idempotent by protocol
-    version + stable object revision + manifest digest").
+    ``segments`` is an ordered tuple rather than a mutable mapping so the
+    payload can cross the process-pool/async boundary without aliasing.  The
+    segment name is the transport-visible protocol filename, not an invented
+    database identifier.
     """
+
+    object_id: str
+    protocol_version: str
+    revision_id: str
+    manifest_digest: str
+    manifest_bytes: bytes
+    segments: tuple[tuple[str, bytes], ...]
+
+    @property
+    def segment_bytes(self) -> dict[str, bytes]:
+        return dict(self.segments)
+
+    @property
+    def size_bytes(self) -> int:
+        return len(self.manifest_bytes) + sum(len(payload) for _, payload in self.segments)
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationObligation:
+    """One durable ``sinex_publication_obligations`` row."""
 
     object_id: str
     protocol_version: str
@@ -116,22 +118,61 @@ class PublicationObligation:
     created_at_ms: int
     updated_at_ms: int
     retired_at_ms: int | None
+    next_attempt_at_ms: int | None = None
 
     @property
     def request_id(self) -> str:
-        """Deterministic transport idempotency key for this exact revision.
-
-        Same revision -> same request_id -> a real transport can de-duplicate
-        retried attempts by identity rather than by side-channel bookkeeping.
-        """
+        """Deterministic transport idempotency key for this exact revision."""
         return "|".join((self.object_id, self.protocol_version, self.revision_id, self.manifest_digest))
+
+    @property
+    def progress_unlocked(self) -> bool:
+        return self.last_receipt_state is not None and self.last_receipt_state.unlocks_progress()
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationStatus:
+    """Secret-safe status snapshot for daemon/operator observability."""
+
+    mode: PublicationMode
+    total: int = 0
+    pending: int = 0
+    publishing: int = 0
+    confirmed: int = 0
+    durable_debt: int = 0
+    rejected: int = 0
+    retry_due: int = 0
+    blocking: int = 0
+    active_lag: int = 0
+    oldest_active_age_ms: int | None = None
+    last_receipt_state: ReceiptState | None = None
+    last_error_code: str | None = None
+
+    def as_dict(self) -> dict[str, str | int | None]:
+        return {
+            "mode": self.mode.value,
+            "total": self.total,
+            "pending": self.pending,
+            "publishing": self.publishing,
+            "confirmed": self.confirmed,
+            "durable_debt": self.durable_debt,
+            "rejected": self.rejected,
+            "retry_due": self.retry_due,
+            "blocking": self.blocking,
+            "active_lag": self.active_lag,
+            "oldest_active_age_ms": self.oldest_active_age_ms,
+            "last_receipt_state": self.last_receipt_state.value if self.last_receipt_state else None,
+            "last_error_code": self.last_error_code,
+        }
 
 
 __all__ = [
     "ObligationStatus",
     "PublicationMode",
     "PublicationObligation",
+    "PublicationPayload",
     "PublicationReceipt",
+    "PublicationStatus",
     "ReceiptState",
     "RETRYABLE_OBLIGATION_STATUSES",
     "TERMINAL_OBLIGATION_STATUSES",

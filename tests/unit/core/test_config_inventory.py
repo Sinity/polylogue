@@ -382,19 +382,16 @@ def test_effective_config_payload_reports_embedding_enabled_without_key(
     )
 
 
-def test_effective_config_payload_reports_sinex_mode_not_yet_wired(
+def test_effective_config_payload_accepts_wired_sinex_mode_without_noop_warning(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     workspace_env: dict[str, Path],
 ) -> None:
-    """Setting sinex_mode=mirror must surface a loud diagnostic, not a silent no-op.
+    """A recognized backed mode is no longer described as an unwired no-op.
 
-    Guards polylogue-303r.2's design principle ("configured failure is never
-    a no-op"): as of this test, no ingest/daemon/CLI code path constructs a
-    PublicationService from config.sinex_mode, so flipping the config knob
-    must remain observable through this diagnostic. Mutation check: removing
-    the ``_sinex_mode_diagnostics`` call from ``config_diagnostics`` (or
-    reverting ``sinex_mode`` to ``"off"``) makes this assertion fail.
+    Production-route ingest and daemon tests exercise the actual service
+    construction. This guards the operator-facing config surface against
+    regressing to the stale `sinex_mode_not_yet_wired` warning.
     """
     from polylogue.config import effective_config_payload, load_polylogue_config
 
@@ -408,14 +405,7 @@ def test_effective_config_payload_reports_sinex_mode_not_yet_wired(
 
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert any(
-        diag.get("code") == "sinex_mode_not_yet_wired"
-        and diag.get("severity") == "warning"
-        and diag.get("key") == "sinex_mode"
-        and diag.get("value") == "mirror"
-        for diag in diagnostics
-        if isinstance(diag, dict)
-    )
+    assert not any(diag.get("code") == "sinex_mode_not_yet_wired" for diag in diagnostics if isinstance(diag, dict))
 
 
 def test_effective_config_payload_reports_sinex_mode_unrecognized_value(

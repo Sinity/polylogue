@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.sinex.models import PublicationPayload
 from polylogue.storage.raw.models import RawSessionStateUpdate
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ _DEFAULT_INGEST_WORKER_LIMIT = 16
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
 _INGEST_EXTREME_BLOB_LIMIT_BYTES = 2048 * 1024 * 1024
+_SINEX_STAGED_PAYLOAD_LIMIT_BYTES = 256 * 1024 * 1024
 
 
 class _RawStateRepositoryLike(Protocol):
@@ -28,7 +30,11 @@ class _ParsingServiceRawStateLike(Protocol):
 
 
 class _BulkConnectionBackendLike(Protocol):
-    def bulk_connection(self) -> AbstractAsyncContextManager[object]: ...
+    def bulk_connection(self) -> AbstractAsyncContextManager[None]: ...
+
+
+class _SourceTierBackendLike(_BulkConnectionBackendLike, Protocol):
+    def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]: ...
 
 
 class _ConnectionBackendLike(Protocol):
@@ -54,6 +60,8 @@ class _IngestBatchSummary:
     processed_ids: set[str] = field(default_factory=set)
     changed_session_ids: list[str] = field(default_factory=list)
     fts_repair_session_ids: list[str] = field(default_factory=list)
+    publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
+    publication_payload_bytes: int = 0
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

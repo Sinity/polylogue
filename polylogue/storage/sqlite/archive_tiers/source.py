@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 11
+SOURCE_SCHEMA_VERSION = 12
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -222,15 +222,76 @@ CREATE TABLE IF NOT EXISTS sinex_publication_obligations (
     created_at_ms        INTEGER NOT NULL,
     updated_at_ms        INTEGER NOT NULL,
     retired_at_ms        INTEGER,
+    next_attempt_at_ms   INTEGER,
     PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_pending
-ON sinex_publication_obligations(status, created_at_ms)
+ON sinex_publication_obligations(status, next_attempt_at_ms, created_at_ms)
 WHERE status IN ('pending', 'publishing', 'durable_debt');
 
 CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_object
 ON sinex_publication_obligations(object_id, created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS sinex_publication_payloads (
+    object_id            TEXT NOT NULL,
+    protocol_version     TEXT NOT NULL,
+    revision_id          TEXT NOT NULL,
+    manifest_digest      TEXT NOT NULL,
+    manifest_bytes       BLOB NOT NULL,
+    manifest_sha256      TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
+    manifest_size_bytes  INTEGER NOT NULL CHECK(manifest_size_bytes >= 0),
+    segment_count        INTEGER NOT NULL CHECK(segment_count >= 0),
+    total_size_bytes     INTEGER NOT NULL CHECK(total_size_bytes >= manifest_size_bytes),
+    staged_at_ms         INTEGER NOT NULL CHECK(staged_at_ms >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_obligations(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS sinex_publication_segments (
+    object_id          TEXT NOT NULL,
+    protocol_version   TEXT NOT NULL,
+    revision_id        TEXT NOT NULL,
+    manifest_digest    TEXT NOT NULL,
+    position           INTEGER NOT NULL CHECK(position >= 0),
+    segment_name       TEXT NOT NULL CHECK(segment_name != ''),
+    segment_bytes      BLOB NOT NULL,
+    segment_sha256     TEXT NOT NULL CHECK(length(segment_sha256) = 64),
+    size_bytes         INTEGER NOT NULL CHECK(size_bytes >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest, position),
+    UNIQUE(object_id, protocol_version, revision_id, manifest_digest, segment_name),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_payloads(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS sinex_publication_receipts (
+    object_id          TEXT NOT NULL,
+    protocol_version   TEXT NOT NULL,
+    revision_id        TEXT NOT NULL,
+    manifest_digest    TEXT NOT NULL,
+    attempt_number     INTEGER NOT NULL CHECK(attempt_number > 0),
+    request_id         TEXT NOT NULL,
+    receipt_state      TEXT CHECK(receipt_state IS NULL OR receipt_state IN (
+                            'raw_accepted', 'persisted_confirmed', 'durable_debt',
+                            'spool_accepted_lossless', 'rejected'
+                        )),
+    receipt_detail     TEXT NOT NULL DEFAULT '',
+    error_code         TEXT,
+    received_at_ms     INTEGER NOT NULL CHECK(received_at_ms >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest, attempt_number),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_obligations(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_receipts_recent
+ON sinex_publication_receipts(received_at_ms DESC);
 
 -- Durable removed-content ledger (polylogue-27m). A row here is the
 -- authoritative "this content is forgotten on purpose" marker for

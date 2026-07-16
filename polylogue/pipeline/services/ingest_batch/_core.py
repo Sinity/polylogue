@@ -21,7 +21,7 @@ from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
@@ -40,6 +40,13 @@ from polylogue.pipeline.services.ingest_worker import (
     ingest_record,
 )
 from polylogue.pipeline.services.process_pool import process_pool_executor
+from polylogue.sinex.material_adapter import (
+    PublicationBackpressureError,
+    PublicationEncodingError,
+    encode_parsed_session_publication,
+)
+from polylogue.sinex.models import PublicationMode, PublicationPayload
+from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -80,6 +87,7 @@ from polylogue.pipeline.services.ingest_batch._memory import (
 )
 from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
+    _SINEX_STAGED_PAYLOAD_LIMIT_BYTES,
     _BulkConnectionBackendLike,
     _ConnectionBackendLike,
     _IngestBatchSummary,
@@ -87,6 +95,7 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _ParsingServiceRawStateLike,
     _RawIngestOutcome,
     _SessionEntry,
+    _SourceTierBackendLike,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_batch._summary import (
@@ -984,12 +993,46 @@ def _record_failed_ingest_result(summary: _IngestBatchSummary, ir: IngestRecordR
     summary.failed_raw_ids[ir.raw_id] = (ir.error or "unknown worker failure")[:500]
 
 
+def _prepare_publication_payloads(
+    ir: IngestRecordResult,
+    *,
+    summary: _IngestBatchSummary,
+    publication_mode: PublicationMode = PublicationMode.OFF,
+) -> tuple[PublicationPayload, ...]:
+    """Encode one raw record before any of its index rows are written.
+
+    Encoding first makes protocol reconciliation/backpressure an explicit raw
+    failure rather than leaving an accepted source revision without an outbox
+    payload.  The index transaction is still rebuildable pre-work; source-tier
+    acceptance and these exact bytes are committed together later.
+    """
+    if publication_mode is PublicationMode.OFF:
+        return ()
+    payloads: list[PublicationPayload] = []
+    payload_bytes = 0
+    for cdata in ir.sessions:
+        payload = encode_parsed_session_publication(
+            cdata.parsed_session,
+            session_id=cdata.session_id,
+        )
+        projected_bytes = summary.publication_payload_bytes + payload_bytes + payload.size_bytes
+        if projected_bytes > _SINEX_STAGED_PAYLOAD_LIMIT_BYTES:
+            raise PublicationBackpressureError(
+                "Sinex exact-payload staging budget exceeded: "
+                f"projected_bytes={projected_bytes} limit_bytes={_SINEX_STAGED_PAYLOAD_LIMIT_BYTES}"
+            )
+        payloads.append(payload)
+        payload_bytes += payload.size_bytes
+    return tuple(payloads)
+
+
 def _drain_ingest_result(
     conn: sqlite3.Connection,
     ir: IngestRecordResult,
     *,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
+    publication_mode: PublicationMode = PublicationMode.OFF,
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
@@ -1005,6 +1048,22 @@ def _drain_ingest_result(
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
+    try:
+        publication_payloads = _prepare_publication_payloads(
+            ir,
+            summary=summary,
+            publication_mode=publication_mode,
+        )
+    except PublicationEncodingError as exc:
+        logger.error(
+            "Sinex publication payload rejected before accepted-revision write",
+            raw_id=ir.raw_id,
+            error_code=type(exc).__name__,
+        )
+        summary.parse_failures += 1
+        summary.failed_raw_ids[ir.raw_id] = f"{type(exc).__name__}: {exc}"[:500]
+        return
+
     drain_started = time.perf_counter()
     written_count = _drain_ready_session_entries(
         conn,
@@ -1017,6 +1076,13 @@ def _drain_ingest_result(
     )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
+    # Keep the reconciled payload for both changed and duplicate revisions.
+    # The source-tier raw acceptance transaction restages duplicates
+    # idempotently, which also provides a safe backfill path when an operator
+    # enables mirror/primary after an earlier off-mode ingest.
+    if publication_payloads:
+        summary.publication_payloads_by_raw_id[ir.raw_id] = list(publication_payloads)
+        summary.publication_payload_bytes += sum(payload.size_bytes for payload in publication_payloads)
     summary.drain_elapsed_s += time.perf_counter() - drain_started
     _observe_current_rss(summary)
 
@@ -1028,6 +1094,7 @@ def _consume_ingest_results(
     worker_request: _IngestWorkerRequest,
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
+    publication_mode: PublicationMode,
     force_write: bool = False,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
@@ -1074,6 +1141,7 @@ def _consume_ingest_results(
                 ir,
                 summary=summary,
                 materialized_ids=materialized_ids,
+                publication_mode=publication_mode,
                 force_write=force_write,
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
@@ -1132,6 +1200,7 @@ def _process_ingest_batch_sync(
     validation_mode: str,
     ingest_workers: int | None,
     measure_ingest_result_size: bool,
+    publication_mode: PublicationMode = PublicationMode.OFF,
     force_write: bool = False,
     repair_message_fts: bool = True,
     heartbeat: IngestHeartbeat | None = None,
@@ -1166,6 +1235,7 @@ def _process_ingest_batch_sync(
             worker_request=worker_request,
             summary=summary,
             materialized_ids=materialized_ids,
+            publication_mode=publication_mode,
             force_write=force_write,
             heartbeat=heartbeat,
             progress=progress,
@@ -1303,8 +1373,13 @@ async def process_ingest_batch(
     rss_start_mb = read_current_rss_mb()
     peak_rss_self_start_mb = read_peak_rss_self_mb()
 
-    # Get validation mode from environment
+    # Get validation mode from environment and Sinex authority mode from the
+    # canonical config layer.  Off mode is passed through so the sync writer
+    # performs no protocol encoding or outbox work.
     validation_mode = os.environ.get("POLYLOGUE_SCHEMA_VALIDATION", "advisory")
+    from polylogue.config import load_polylogue_config
+
+    publication_mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
 
     batch_summary = await asyncio.to_thread(
         _process_ingest_batch_sync,
@@ -1315,6 +1390,7 @@ async def process_ingest_batch(
         validation_mode=validation_mode,
         ingest_workers=service.ingest_workers,
         measure_ingest_result_size=service.measure_ingest_result_size,
+        publication_mode=publication_mode,
         force_write=force_write,
         repair_message_fts=repair_message_fts,
         ingest_result_chunk_size=ingest_result_chunk_size,
@@ -1368,7 +1444,11 @@ async def process_ingest_batch(
         skipped_raw_ids=batch_summary.skipped_raw_ids,
         failed_raw_ids=batch_summary.failed_raw_ids,
         validation_mode=validation_mode,
+        publication_mode=publication_mode,
+        publication_payloads_by_raw_id=batch_summary.publication_payloads_by_raw_id,
     )
+    batch_summary.publication_payloads_by_raw_id.clear()
+    batch_summary.publication_payload_bytes = 0
 
     elapsed_s = time.perf_counter() - batch_started
     rss_end_mb = read_current_rss_mb()
@@ -1456,13 +1536,55 @@ async def _persist_batch_raw_state_updates(
     skipped_raw_ids: set[str],
     failed_raw_ids: dict[str, str],
     validation_mode: str,
+    publication_mode: PublicationMode = PublicationMode.OFF,
+    publication_payloads_by_raw_id: Mapping[str, Sequence[PublicationPayload]] | None = None,
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
     raw_state_update_started = time.perf_counter()
-    source_backend = getattr(service.repository, "_source_backend", None)
+    source_backend = cast(
+        _SourceTierBackendLike | None,
+        getattr(service.repository, "_source_backend", None),
+    )
+    if publication_mode is not PublicationMode.OFF and source_backend is None:
+        raise PublicationEncodingError(
+            "mirror/primary acceptance requires the durable source-tier backend; "
+            "refusing to stage a publication obligation through index.db"
+        )
+
+    now_ms = 0
+
+    async def stage_accepted_payloads(
+        raw_state_conn: AsyncSqlConnection,
+        rid: str,
+        *,
+        required: bool,
+    ) -> None:
+        if publication_mode is PublicationMode.OFF:
+            return
+        payloads = tuple((publication_payloads_by_raw_id or {}).get(rid, ()))
+        if required and not payloads:
+            raise PublicationEncodingError(f"accepted raw revision {rid!r} has no reconciled Sinex publication payload")
+        for payload in payloads:
+            await stage_payload_async(
+                raw_state_conn,
+                payload=payload,
+                mode=publication_mode,
+                now_ms=now_ms,
+            )
+
     async with AsyncExitStack() as stack:
         raw_state_backend = source_backend if source_backend is not None else backend
+        # bulk_connection() owns BEGIN IMMEDIATE but deliberately yields None.
+        # connection() then reuses that backend-local active connection.
         await stack.enter_async_context(raw_state_backend.bulk_connection())
+        now_ms = int(time.time() * 1000)
+        raw_state_conn: AsyncSqlConnection | None = None
+        if publication_mode is not PublicationMode.OFF:
+            assert source_backend is not None
+            raw_state_conn = cast(
+                AsyncSqlConnection,
+                await stack.enter_async_context(source_backend.connection()),
+            )
         for rid in succeeded_raw_ids:
             if rid in skipped_raw_ids:
                 continue
@@ -1474,6 +1596,11 @@ async def _persist_batch_raw_state_updates(
                     validation_mode=validation_mode,
                 ),
             )
+            # update_raw_state reuses source_backend's active bulk connection;
+            # staging on the yielded connection therefore shares its BEGIN
+            # IMMEDIATE/commit/rollback boundary.
+            if raw_state_conn is not None:
+                await stage_accepted_payloads(raw_state_conn, rid, required=True)
         for rid in skipped_raw_ids:
             if rid in failed_raw_ids:
                 continue
@@ -1485,6 +1612,10 @@ async def _persist_batch_raw_state_updates(
                     validation_mode=validation_mode,
                 ),
             )
+            # Empty parse results have no payload.  Content-identical duplicate
+            # revisions do, and are restaged idempotently in this transaction.
+            if raw_state_conn is not None:
+                await stage_accepted_payloads(raw_state_conn, rid, required=False)
         for rid, error in failed_raw_ids.items():
             await service.repository.update_raw_state(
                 rid,

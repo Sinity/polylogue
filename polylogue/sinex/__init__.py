@@ -1,39 +1,23 @@
-"""Sinex-backed evidence mode: durable publication obligation and transport.
+"""Durable Sinex publication outbox and daemon convergence integration.
 
-Polylogue-side implementation of polylogue-303r.2 ("Publish Sinex materials
-and anchored observations with durable retry"). This package owns:
+In ``mirror`` and ``primary`` modes, production ingest encodes each accepted
+normalized session revision and stages its exact manifest/segment bytes in the
+same ``source.db`` transaction that marks the source raw accepted.  The daemon
+then drains that source-tier outbox through an injected
+:class:`~polylogue.sinex.transport.SinexTransport`, persists every receipt,
+and resumes from durable payload bytes after restart.
 
-- the durable **publication obligation** ledger (``obligations.py``), a
-  ``source.db`` table recording that a normalized-session material revision
-  (see ``polylogue.material_protocol.v1``) must reach Sinex before backed-mode
-  local projections may treat that revision as authoritative;
-- the transport contract (``transport.py``) a real Sinex producer must
-  satisfy, modeled on Sinex's documented ``DurableEmissionReceipt``
-  (sinex-r6d.11) and ``RawEnvelopeSettlement`` (sinex-r6d.12) primitives, plus
-  a contract-faithful in-process reference transport for local operation and
-  tests;
-- the orchestration service (``service.py``) that stages obligations and
-  drains them against a transport;
-- a best-effort adapter (``material_adapter.py``) from live archive
-  ``Session`` reads to the ``SessionMaterial`` input the v1 encoder expects.
+``primary`` mode places the publication stage before derived local convergence
+and blocks only the affected objects until their newest accepted revision has
+an allowed durable receipt.  ``mirror`` retains exact lag and failure history
+without blocking later projection stages.  ``off`` mode constructs no
+publication service, encodes no material payload, writes no obligation, and
+performs no transport work.
 
-Scope note (binding, see ``docs/sinex-interop.md``): as of this package's
-introduction, Sinex's own consumer primitives for this exact contract
-(sinex-4j2.1.1, layered on sinex-r6d.11 which is itself still open upstream)
-are not yet landed. This package is therefore a real, fully-tested Polylogue-
-side producer against a documented contract, exercised in tests against a
-local reference transport. Neither that reference transport nor a live Sinex
-JetStream endpoint is wired into any production code path yet: no ingest,
-daemon, or CLI call site constructs a
-:class:`~polylogue.sinex.service.PublicationService` from
-``polylogue.toml``'s ``[sinex] mode`` / ``POLYLOGUE_SINEX_MODE`` today, so
-setting ``mode = "mirror"`` or ``"primary"`` has zero effect on real archive
-writes -- ``polylogue config --format json`` surfaces this explicitly via a
-``sinex_mode_not_yet_wired`` diagnostic (``polylogue/config.py``). Wiring a
-real call site, and then pointing it at a live Sinex JetStream endpoint, is
-cross-repo follow-up work, not something this package can complete
-unilaterally. Standalone (``mode = "off"``) is and remains the default and
-permanently supported mode (operator directive, ``docs/sinex-interop.md``).
+The package does not contain a live Sinex network implementation.
+:class:`~polylogue.sinex.transport.LocalReferenceTransport` is an in-process
+contract double used for deterministic idempotency and failure-path tests; a
+real configured transport must be injected by deployment composition.
 """
 
 from __future__ import annotations
@@ -42,12 +26,31 @@ from polylogue.sinex.models import (
     ObligationStatus,
     PublicationMode,
     PublicationObligation,
+    PublicationPayload,
     PublicationReceipt,
+    PublicationStatus,
     ReceiptState,
 )
-from polylogue.sinex.obligations import get_obligation, list_obligations, record_obligation
+from polylogue.sinex.obligations import (
+    PublicationPayloadConflictError,
+    PublicationPayloadInvalidError,
+    get_obligation,
+    list_obligations,
+    load_payload,
+    record_obligation,
+    stage_payload,
+)
 from polylogue.sinex.service import DrainSummary, PublicationService
-from polylogue.sinex.transport import LocalReferenceTransport, NullTransport, SinexTransport
+from polylogue.sinex.transport import (
+    LocalReferenceTransport,
+    NullTransport,
+    SinexTransport,
+    SinexTransportUnavailableError,
+    TransportPayloadConflictError,
+    clear_configured_transport_factory,
+    register_configured_transport_factory,
+    resolve_configured_transport,
+)
 
 __all__ = [
     "DrainSummary",
@@ -56,11 +59,22 @@ __all__ = [
     "ObligationStatus",
     "PublicationMode",
     "PublicationObligation",
+    "PublicationPayload",
+    "PublicationPayloadConflictError",
+    "PublicationPayloadInvalidError",
     "PublicationReceipt",
     "PublicationService",
+    "PublicationStatus",
     "ReceiptState",
     "SinexTransport",
+    "SinexTransportUnavailableError",
+    "TransportPayloadConflictError",
+    "clear_configured_transport_factory",
     "get_obligation",
     "list_obligations",
+    "load_payload",
     "record_obligation",
+    "register_configured_transport_factory",
+    "resolve_configured_transport",
+    "stage_payload",
 ]
