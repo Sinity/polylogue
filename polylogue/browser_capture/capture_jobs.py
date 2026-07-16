@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,16 +34,24 @@ class CaptureJobError(Exception):
 
 
 def canonical_json(value: object) -> str:
-    if value is None or isinstance(value, (str, bool)):
+    if value is None or isinstance(value, bool):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, str):
+        return json.dumps(unicodedata.normalize("NFC", value), ensure_ascii=False, separators=(",", ":"))
     if isinstance(value, int) and not isinstance(value, bool) and abs(value) <= 9_007_199_254_740_991:
         return str(value)
     if isinstance(value, list):
         return "[" + ",".join(canonical_json(item) for item in value) + "]"
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        entries = sorted(
+            ((unicodedata.normalize("NFC", key), item) for key, item in value.items()),
+            key=lambda entry: entry[0],
+        )
+        if any(entries[index - 1][0] == entries[index][0] for index in range(1, len(entries))):
+            raise CaptureJobError(400, "non_canonical_key_collision")
         return (
             "{"
-            + ",".join(json.dumps(key, ensure_ascii=False) + ":" + canonical_json(value[key]) for key in sorted(value))
+            + ",".join(json.dumps(key, ensure_ascii=False) + ":" + canonical_json(item) for key, item in entries)
             + "}"
         )
     raise CaptureJobError(400, "non_canonical_json")
@@ -161,6 +170,7 @@ class CaptureJobRegistry:
         intent = json.loads(row["intent_json"])
         lease = json.loads(row["lease_json"]) if row["lease_json"] else None
         retry = json.loads(row["retry_json"])
+        latest_receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
         return {
             "job_id": row["job_id"],
             "provider": row["provider"],
@@ -174,7 +184,8 @@ class CaptureJobRegistry:
             "checkpoint_digest": row["checkpoint_digest"],
             "retry": retry,
             "checkpoint": json.loads(row["checkpoint_json"]) if row["checkpoint_json"] else None,
-            "latest_receipt": json.loads(row["receipt_json"]) if row["receipt_json"] else None,
+            "latest_receipt": latest_receipt,
+            "checkpoint_updated_at": latest_receipt["acknowledged_at"] if latest_receipt else None,
             "lease_generation": lease["generation"] if lease else 0,
             "lease_expires_at": lease["expires_at"] if lease else None,
             "lease": (
@@ -452,7 +463,22 @@ class CaptureJobRegistry:
             if ttl is not None:
                 next_lease["expires_at"] = _stamp(now + timedelta(seconds=ttl))
             if next_retry == current_retry and next_lease == lease:
-                return {"job": self._summary(row), "receipt": None, "duplicate": True}
+                receipt = {
+                    "receipt_id": str(uuid4()),
+                    "request_id": request_id,
+                    "job_id": job_id,
+                    "kind": "capture_job_update",
+                    "revision": row["revision"],
+                    "retry": current_retry,
+                    "lease_expires_at": lease["expires_at"],
+                    "acknowledged_at": _stamp(now),
+                    "no_op": True,
+                }
+                connection.execute(
+                    "INSERT INTO capture_job_update_receipts VALUES (?, ?, ?, ?)",
+                    (job_id, request_id, request_digest, canonical_json(receipt)),
+                )
+                return {"job": self._summary(row), "receipt": receipt, "duplicate": True}
             revision = row["revision"] + 1
             receipt = {
                 "receipt_id": str(uuid4()),
@@ -515,7 +541,19 @@ class CaptureJobRegistry:
             if row["checkpoint_sequence"] == checkpoint["sequence"]:
                 if checkpoint["digest"] != row["checkpoint_digest"]:
                     raise CaptureJobError(409, "checkpoint_conflict")
-                return {"job": self._summary(row), "receipt": json.loads(row["receipt_json"]), "duplicate": True}
+                receipt = {
+                    **json.loads(row["receipt_json"]),
+                    "receipt_id": str(uuid4()),
+                    "request_id": request_id,
+                    "revision": row["revision"],
+                    "acknowledged_at": _stamp(),
+                    "no_op": True,
+                }
+                connection.execute(
+                    "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?, ?)",
+                    (job_id, request_id, checkpoint["sequence"], checkpoint["digest"], canonical_json(receipt)),
+                )
+                return {"job": self._summary(row), "receipt": receipt, "duplicate": True}
             revision, now = row["revision"] + 1, _stamp()
             receipt = {
                 "receipt_id": str(uuid4()),

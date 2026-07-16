@@ -19,6 +19,7 @@ describe("CaptureJob extension recovery", () => {
     expect(adopted.job.job_id).toBe("receiver-job");
     expect(cache.set).toHaveBeenCalled();
     expect(canonicalJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+    expect(canonicalJson({ "e\u0301": "e\u0301" })).toBe(canonicalJson({ "é": "é" }));
     const serializedRequests = fetchImpl.mock.calls.map(([, options]) => options.body).join("\n");
     expect(serializedRequests).not.toContain("account@example.test");
     expect(JSON.stringify(cache.values)).not.toContain("account@example.test");
@@ -49,6 +50,21 @@ describe("CaptureJob extension recovery", () => {
 
     expect(discovered.map((request) => request.token)).toEqual(["Bearer old-bearer", "Bearer rotated-bearer"]);
     expect(discovered[0].body.account_scope).toBe(discovered[1].body.account_scope);
+  });
+
+  it("bounds a stalled CaptureJob receiver request", async () => {
+    const fetchImpl = vi.fn(async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    }));
+    const client = new CaptureJobClient({
+      baseUrl: "http://receiver",
+      token: "receiver-token",
+      cache: { get: vi.fn(), set: vi.fn() },
+      fetchImpl,
+      requestTimeoutMs: 1,
+    });
+
+    await expect(client.scopeNamespace()).rejects.toThrow("capture_job_request_timeout");
   });
 
   it("renews the proven lease before checkpointing the returned revision", async () => {

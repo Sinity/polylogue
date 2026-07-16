@@ -218,6 +218,30 @@ describe("background backfill coordinator", () => {
     expect((await h.coordinator.status(job.id)).recovery_checkpoint_error).toBe("storage_local_quota");
   });
 
+  it("isolates a typed receiver checkpoint failure to its owning job", async () => {
+    const h = harness();
+    const failed = await startJob(h);
+    const healthy = {
+      ...await h.store.getJob(failed.id),
+      id: "healthy-claude-job",
+      provider: "claude-ai",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    await h.store.createJob(healthy);
+    h.coordinator.checkpoint = vi.fn(async () => ({
+      failures: [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }],
+    }));
+
+    const status = await h.coordinator.status(failed.id);
+
+    expect(status).toMatchObject({
+      status: "paused",
+      recovery_checkpoint_error: "capture_job_receiver_unavailable",
+    });
+    expect(await h.store.getJob(healthy.id)).toMatchObject({ status: "running" });
+  });
+
   it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
     let releaseCheckpoint;
     const checkpoint = vi.fn(async () => new Promise((resolve) => { releaseCheckpoint = resolve; }));
@@ -489,6 +513,44 @@ describe("background backfill coordinator", () => {
     });
     expect(await store.listQueue("receiver")).toMatchObject([{ id: "done", state: "complete" }]);
     expect(await store.getRevision("chatgpt", "native")).toMatchObject({ id: "chatgpt:native" });
+  });
+
+  it("validates replacement checkpoints before touching existing cache state", async () => {
+    const store = new MemoryBackfillStore();
+    await store.restoreRecoveryCheckpoint({
+      version: 1,
+      jobs: [{ id: "preserved", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } }],
+      queue: [],
+      revisions: [],
+    });
+
+    expect(await store.replaceRecoveryCheckpoint({ version: 1, jobs: [], queue: {}, revisions: [] }))
+      .toEqual({ restored: 0, reason: "checkpoint_unavailable" });
+    expect(await store.getJob("preserved")).toMatchObject({ id: "preserved" });
+  });
+
+  it("reconciles successful providers without erasing a failed provider's local state", async () => {
+    const store = new MemoryBackfillStore();
+    await store.restoreRecoveryCheckpoint({
+      version: 1,
+      jobs: [
+        { id: "local-chatgpt", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } },
+        { id: "local-claude", provider: "claude-ai", status: "paused", policy: { maxDailyRequests: 10 } },
+      ],
+      queue: [],
+      revisions: [],
+    });
+
+    await store.reconcileRecoveryCheckpoint({
+      version: 1,
+      jobs: [{ id: "remote-chatgpt", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 } }],
+      queue: [],
+      revisions: [],
+    }, ["chatgpt"]);
+
+    expect(await store.getJob("local-chatgpt")).toBeUndefined();
+    expect(await store.getJob("remote-chatgpt")).toMatchObject({ status: "paused" });
+    expect(await store.getJob("local-claude")).toMatchObject({ id: "local-claude" });
   });
 
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {

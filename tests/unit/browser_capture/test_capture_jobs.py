@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
 from typing import Any, cast
 
-import polylogue.browser_capture.capture_jobs as capture_jobs
-from polylogue.browser_capture.capture_jobs import canonical_digest, capture_job_scope_namespace
+import pytest
+
+from polylogue.browser_capture.capture_jobs import (
+    CaptureJobRegistry,
+    canonical_digest,
+    canonical_json,
+    capture_job_scope_namespace,
+)
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
 
@@ -91,6 +97,8 @@ def adopt(
 
 
 def test_profile_loss_discovers_exact_scope_and_receiver_checkpoint(tmp_path: Path) -> None:
+    assert canonical_json({"e\u0301": "e\u0301"}) == canonical_json({"é": "é"})
+    assert canonical_digest({"value": "e\u0301"}) == canonical_digest({"value": "é"})
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -215,6 +223,29 @@ def test_adoption_and_checkpoint_conflicts_are_real_route_guards(tmp_path: Path)
             },
         )
         assert status == 200
+        equal_request = {
+            **base,
+            "expected_revision": first["job"]["revision"],
+            "request_id": "equal-no-op",
+            "checkpoint": {"sequence": 4, "payload": checkpoint, "digest": canonical_digest(checkpoint)},
+        }
+        status, equal_no_op = request(host, port, "PUT", f"/v1/capture-jobs/{job['job_id']}/checkpoint", equal_request)
+        assert status == 200 and equal_no_op["duplicate"] is True and equal_no_op["receipt"]["no_op"] is True
+        status, reused_equal = request(
+            host,
+            port,
+            "PUT",
+            f"/v1/capture-jobs/{job['job_id']}/checkpoint",
+            {
+                **equal_request,
+                "checkpoint": {
+                    "sequence": 5,
+                    "payload": {"cursor": 5},
+                    "digest": canonical_digest({"cursor": 5}),
+                },
+            },
+        )
+        assert status == 409 and reused_equal["error"]["code"] == "request_id_conflict"
         stale = {
             **base,
             "expected_revision": first["job"]["revision"],
@@ -245,7 +276,8 @@ def test_adoption_and_checkpoint_conflicts_are_real_route_guards(tmp_path: Path)
         assert status == 426 and incompatible["error"]["code"] == "incompatible_client"
 
 
-def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Path, monkeypatch: Any) -> None:
+@pytest.mark.frozen_clock_modules("polylogue.browser_capture.capture_jobs")
+def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Path, frozen_clock: Any) -> None:
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         status, first = request(
@@ -280,7 +312,7 @@ def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Pa
         )
         assert status == 409 and held["error"]["code"] == "lease_held"
 
-        monkeypatch.setattr(capture_jobs, "_now", lambda: datetime(2099, 1, 1, tzinfo=UTC))
+        frozen_clock.advance(2)
         status, expired = request(
             host,
             port,
@@ -376,11 +408,28 @@ def test_state_update_renews_lease_is_idempotent_and_exposes_receipts(tmp_path: 
         status, rejected = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", conflict)
         assert status == 409 and rejected["error"]["code"] == "request_id_conflict"
 
+        no_op = {
+            **update,
+            "request_id": "no-op-update",
+            "expected_revision": updated["job"]["revision"],
+        }
+        no_op.pop("lease_ttl_seconds")
+        status, no_op_result = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", no_op)
+        assert status == 200 and no_op_result["duplicate"] is True and no_op_result["receipt"]["no_op"] is True
+        status, reused_no_op = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {**no_op, "retry": {**update["retry"], "attempt": 4}},
+        )
+        assert status == 409 and reused_no_op["error"]["code"] == "request_id_conflict"
+
         query = f"provider=chatgpt&account_scope={SCOPE}&client_protocol=1"
         status, detail = request(host, port, "GET", f"/v1/capture-jobs/{job['job_id']}?{query}", {})
         assert status == 200
         assert detail["job"]["latest_receipt"] is None
-        assert detail["receipts"] == [updated["receipt"]]
+        assert detail["receipts"] == [updated["receipt"], no_op_result["receipt"]]
 
 
 def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: Path) -> None:
@@ -426,6 +475,23 @@ def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: P
     assert all(browser_capture_route_contract_for(method, path) is not None for method, path in routes)
     assert capture_job_scope_namespace(tmp_path) == capture_job_scope_namespace(tmp_path)
     assert capture_job_scope_namespace(tmp_path) != capture_job_scope_namespace(tmp_path / "other")
+
+
+def test_registry_storage_failure_is_a_structured_receiver_error(tmp_path: Path, monkeypatch: Any) -> None:
+    def fail_discover(_registry: CaptureJobRegistry, _body: dict[str, object]) -> dict[str, object]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(CaptureJobRegistry, "discover", fail_discover)
+    with receiver(tmp_path) as (host, port):
+        status, body = request(
+            host,
+            port,
+            "POST",
+            "/v1/capture-jobs/discover",
+            {"provider": "chatgpt", "account_scope": SCOPE},
+        )
+    assert status == 500
+    assert body == {"error": {"code": "registry_unavailable", "details": {}}}
 
 
 def test_scope_namespace_survives_receiver_bearer_rotation(tmp_path: Path) -> None:

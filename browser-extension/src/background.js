@@ -140,24 +140,31 @@ async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
   if (!Array.isArray(checkpoint?.jobs)) throw new Error("capture_job_checkpoint_invalid");
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
   const handles = new Map();
-  await Promise.all([...new Set(checkpoint.jobs.map((job) => job.provider))].map(async (provider) => {
-    handles.set(provider, await providerAccountHandle(provider));
+  const accountHandle = (provider) => {
+    if (!handles.has(provider)) handles.set(provider, providerAccountHandle(provider));
+    return handles.get(provider);
+  };
+  const results = await Promise.all(checkpoint.jobs.map(async (job) => {
+    try {
+      // Exact authenticated provider identity is mandatory. Guessing from the
+      // receiver pairing or extension profile can adopt another account's job.
+      const handle = await accountHandle(job.provider);
+      if (!handle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
+      const payload = {
+        version: checkpoint.version,
+        jobs: [job],
+        queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
+        revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
+      };
+      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      adopted = await client.update(adopted, captureJobRetryState(job));
+      await client.checkpoint(adopted, payload);
+      return null;
+    } catch (error) {
+      return { job_id: job.id, error: String(error?.message || error) };
+    }
   }));
-  await Promise.all(checkpoint.jobs.map(async (job) => {
-    const accountHandle = handles.get(job.provider);
-    // Exact authenticated provider identity is mandatory. Guessing from the
-    // receiver pairing or extension profile can adopt another account's job.
-    if (!accountHandle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
-    const payload = {
-      version: checkpoint.version,
-      jobs: [job],
-      queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
-      revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
-    };
-    let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
-    adopted = await client.update(adopted, captureJobRetryState(job));
-    await client.checkpoint(adopted, payload);
-  }));
+  return { failures: results.filter(Boolean) };
 }
 
 function captureJobRetryState(job) {
@@ -197,9 +204,10 @@ async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
 
 async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
   const settings = await receiverSettings();
-  if (!settings.authToken) return null;
+  if (!settings.authToken) return { checkpoint: null, successfulProviders: [] };
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
   const recovered = [];
+  const successfulProviders = [];
   for (const provider of providers) {
     try {
       const accountHandle = await providerAccountHandle(provider);
@@ -208,6 +216,7 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
         ...entry.job,
         recovery_checkpoint_updated_at: entry.recovery_updated_at,
       })));
+      if (adopted.length) successfulProviders.push(provider);
     } catch (error) {
       await appendDebugLog({
         stage: "capture_job_recovery_unavailable",
@@ -216,7 +225,7 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
       });
     }
   }
-  return mergeCaptureJobRecoveryCheckpoints(recovered);
+  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders };
 }
 
 function mergeCaptureJobRecoveryCheckpoints(jobs) {
@@ -264,11 +273,16 @@ async function backfillCoordinator() {
       await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
       const localCheckpoint = await store.exportRecoveryCheckpoint();
       const localProviders = [...new Set(localCheckpoint.jobs.map((job) => job.provider))];
-      const providers = localProviders.length ? localProviders : ["chatgpt", "claude-ai"];
-      const receiverCheckpoint = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
-      if (receiverCheckpoint) {
-        await store.replaceRecoveryCheckpoint(receiverCheckpoint);
-      } else if (!localCheckpoint.jobs.length) {
+      const providers = [...new Set(["chatgpt", "claude-ai", ...localProviders])];
+      const recovery = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
+      if (recovery.successfulProviders.length) {
+        await store.reconcileRecoveryCheckpoint(
+          recovery.checkpoint || { version: 1, jobs: [], queue: [], revisions: [] },
+          recovery.successfulProviders,
+        );
+      }
+      const reconciledCheckpoint = await store.exportRecoveryCheckpoint();
+      if (!reconciledCheckpoint.jobs.length) {
         // The per-instance route is legacy migration input only. It is tried
         // after the receiver-authoritative registry and never overwrites a
         // CaptureJob checkpoint.
@@ -286,9 +300,18 @@ async function backfillCoordinator() {
         ),
         receiverPreflight: backfillReceiverPreflight,
         checkpoint: async (checkpoint) => {
-          await commitCaptureJobsToReceiver(instanceId, checkpoint);
-          await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          const result = await commitCaptureJobsToReceiver(instanceId, checkpoint);
+          if (result.failures.length) return result;
+          try {
+            await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          } catch (error) {
+            await appendDebugLog({
+              stage: "capture_job_local_cache_write_failed",
+              error: String(error?.message || error),
+            });
+          }
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
+          return result;
         },
         captureOverride: async ({ provider, nativeId, response }) => {
           if (provider !== "chatgpt") return null;
@@ -1516,6 +1539,12 @@ async function providerAccountHandle(provider) {
         "backfill_provider_identity",
       );
       result = executions?.[0]?.result;
+      if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
+      const accountHandle = result.response?.accountHandle;
+      if (typeof accountHandle !== "string" || !accountHandle.trim()) {
+        throw new Error("backfill_provider_identity_unavailable");
+      }
+      return accountHandle;
     } catch (error) {
       if (transport.owned) {
         await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
@@ -1524,12 +1553,6 @@ async function providerAccountHandle(provider) {
       }
       throw error;
     }
-    if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
-    const accountHandle = result.response?.accountHandle;
-    if (typeof accountHandle !== "string" || !accountHandle.trim()) {
-      throw new Error("backfill_provider_identity_unavailable");
-    }
-    return accountHandle;
   });
 }
 

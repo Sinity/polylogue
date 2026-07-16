@@ -105,7 +105,7 @@ export class BackfillCoordinator {
       throw new Error("browser_profile_recovery_required");
     }
     if (status === "running") {
-      const authorityError = await this.persistCheckpoint();
+      const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
       if (authorityError) return this.snapshotStatus(jobId, authorityError);
     }
     // Preflight while the job is still paused.  Marking it running first would
@@ -131,7 +131,7 @@ export class BackfillCoordinator {
   }
 
   async status(jobId) {
-    const checkpointError = await this.persistCheckpoint();
+    const checkpointError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
     return this.snapshotStatus(jobId, checkpointError);
   }
 
@@ -160,7 +160,7 @@ export class BackfillCoordinator {
 
   async runJob(jobId) {
     const now = this.clock();
-    const authorityError = await this.persistCheckpoint();
+    const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
     if (authorityError) return this.snapshotStatus(jobId, authorityError);
     const current = await this.requireJob(jobId);
     const job = await this.store.acquireJobExecution(jobId, this.instanceId, now, current.policy.leaseMs);
@@ -509,7 +509,7 @@ export class BackfillCoordinator {
       now + job.learned_cadence_ms + jitter,
     );
     if (!reserved) return null;
-    const authorityError = await this.persistCheckpoint();
+    const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), job.id);
     return authorityError ? this.requireJob(job.id) : reserved;
   }
 
@@ -588,8 +588,24 @@ export class BackfillCoordinator {
 
   async commitCheckpoint(checkpoint) {
     try {
-      await this.checkpoint(checkpoint);
-      return null;
+      const result = await this.checkpoint(checkpoint);
+      const failures = Array.isArray(result?.failures) ? result.failures : [];
+      if (!failures.length) return null;
+      const errors = {};
+      const now = nowIso(this.clock());
+      for (const failure of failures) {
+        if (typeof failure?.job_id !== "string") continue;
+        const detail = String(failure.error || "capture_job_receiver_commit_failed");
+        errors[failure.job_id] = detail;
+        const job = await this.store.getJob(failure.job_id);
+        if (job?.status === "running") {
+          await this.store.controlJob(failure.job_id, "paused", now, {
+            cooldown_reason: "receiver_capture_job_authority_unavailable",
+            last_error: detail,
+          });
+        }
+      }
+      return errors;
     } catch (error) {
       const detail = String(error?.message || error);
       const now = nowIso(this.clock());
@@ -600,8 +616,12 @@ export class BackfillCoordinator {
           last_error: detail,
         });
       }
-      return detail;
+      return { "*": detail };
     }
+  }
+
+  checkpointErrorForJob(errors, jobId) {
+    return errors?.[jobId] || errors?.["*"] || null;
   }
 
   async saveJob(job) {

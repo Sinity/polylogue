@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from http import HTTPStatus
@@ -366,6 +367,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             except CaptureJobError as exc:
                 self._capture_job_error(exc)
                 return
+            except (sqlite3.Error, OSError) as exc:
+                self._capture_job_storage_error(exc)
+                return
             self._send_json(HTTPStatus.OK, capture_job_payload)
             return
         if parsed.path == "/v1/backfill-checkpoint":
@@ -520,15 +524,19 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.INTERNAL_SERVER_ERROR
         self._send_json(status, {"error": {"code": exc.code, "details": exc.details}})
 
+    def _capture_job_storage_error(self, exc: sqlite3.Error | OSError) -> None:
+        logger.warning("browser_capture.capture_job_registry_unavailable", error=repr(exc))
+        self._capture_job_error(CaptureJobError(500, "registry_unavailable"))
+
     def _capture_job_post(self, path: str) -> None:
         payload = self._capture_job_body()
         if payload is None:
             return
-        registry = registry_for_receiver(
-            self.server.config.spool_path,
-            receiver_identity(self.server.config),
-        )
         try:
+            registry = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            )
             if path == "/v1/capture-jobs":
                 status, result = registry.create(payload)
             elif path == "/v1/capture-jobs/discover":
@@ -541,6 +549,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
         except CaptureJobError as exc:
             self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
             return
         self._send_json(HTTPStatus(status), result)
 
@@ -556,6 +567,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             ).checkpoint(job_id, payload)
         except CaptureJobError as exc:
             self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
             return
         self._send_json(HTTPStatus.OK, result)
 

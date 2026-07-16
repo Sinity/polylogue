@@ -2,16 +2,24 @@
 // opaque ids only; account handles are reduced locally before any request.
 
 export const CAPTURE_JOB_PROTOCOL = 1;
+export const CAPTURE_JOB_REQUEST_TIMEOUT_MS = 20_000;
 
 export function canonicalJson(value) {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (value === null || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "string") return JSON.stringify(value.normalize("NFC"));
   if (typeof value === "number") {
     if (!Number.isSafeInteger(value)) throw new Error("capture_job_non_canonical_number");
     return String(value);
   }
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (!value || typeof value !== "object") throw new Error("capture_job_non_canonical_json");
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  const entries = Object.keys(value)
+    .map((key) => [key.normalize("NFC"), value[key]])
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  if (entries.some(([key], index) => index > 0 && entries[index - 1][0] === key)) {
+    throw new Error("capture_job_non_canonical_key_collision");
+  }
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
 }
 
 async function digest(value) {
@@ -36,21 +44,33 @@ async function intentKey(scopeNamespace, provider, accountScope, locator) {
 }
 
 export class CaptureJobClient {
-  constructor({ baseUrl, token, cache, fetchImpl = fetch }) {
+  constructor({ baseUrl, token, cache, fetchImpl = fetch, requestTimeoutMs = CAPTURE_JOB_REQUEST_TIMEOUT_MS }) {
     this.baseUrl = baseUrl;
     this.token = token;
     this.cache = cache;
     this.fetchImpl = fetchImpl;
+    this.requestTimeoutMs = requestTimeoutMs;
     this.scopeNamespacePromise = null;
   }
 
   async request(method, path, body) {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}`, "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL) },
-      ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
-      cache: "no-store",
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    let response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}`, "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL) },
+        ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error("capture_job_request_timeout");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     const payload = await response.json();
     if (!response.ok) {
       const error = new Error(payload?.error?.code || "capture_job_request_failed");
@@ -106,7 +126,10 @@ export class CaptureJobClient {
       .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
     return Promise.all(jobs.map(async (job) => {
       try {
-        return { ...await this.adoptExisting(job, account_scope, sessionId), recovery_updated_at: job.updated_at };
+        return {
+          ...await this.adoptExisting(job, account_scope, sessionId),
+          recovery_updated_at: job.checkpoint_updated_at || job.updated_at,
+        };
       } catch (error) {
         // A wiped profile cannot prove ownership of the destroyed profile's
         // still-live lease. Retain its scoped checkpoint for visible recovery;
@@ -114,7 +137,7 @@ export class CaptureJobClient {
         if (error?.code === "lease_held") {
           return {
             job, account_scope, intent_key: job.intent_key,
-            recovery_state: "lease_held", recovery_updated_at: job.updated_at,
+            recovery_state: "lease_held", recovery_updated_at: job.checkpoint_updated_at || job.updated_at,
           };
         }
         throw error;

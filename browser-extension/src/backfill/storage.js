@@ -64,6 +64,22 @@ function recoveryCheckpointJob(job, hasRecoveryRequiredQueueItem = false) {
   };
 }
 
+function prepareRecoveryCheckpoint(checkpoint) {
+  if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return null;
+  if (![checkpoint.jobs, checkpoint.queue, checkpoint.revisions].every(Array.isArray)) return null;
+  if (![...checkpoint.jobs, ...checkpoint.queue, ...checkpoint.revisions]
+    .every((item) => item && typeof item === "object" && typeof item.id === "string" && item.id)) return null;
+  const queue = checkpoint.queue.map((item) => recoveryRequiredItem(structuredClone(item)));
+  const recoveryRequiredJobs = new Set(
+    queue.filter((item) => item.state === "recovery_required").map((item) => item.job_id),
+  );
+  return {
+    jobs: checkpoint.jobs.map((job) => recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id))),
+    queue,
+    revisions: checkpoint.revisions.map((revision) => structuredClone(revision)),
+  };
+}
+
 export class IndexedDbBackfillStore {
   constructor(indexedDb = globalThis.indexedDB, databaseName = BACKFILL_DB_NAME) {
     this.indexedDb = indexedDb;
@@ -360,7 +376,8 @@ export class IndexedDbBackfillStore {
   }
 
   async restoreRecoveryCheckpoint(checkpoint) {
-    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
     const db = await this.database();
     const tx = db.transaction(["jobs", "queue", "revisions"], "readwrite");
     const jobs = tx.objectStore("jobs");
@@ -369,20 +386,17 @@ export class IndexedDbBackfillStore {
       return { restored: 0, reason: "indexeddb_present" };
     }
     const queue = tx.objectStore("queue");
-    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
-    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
-    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
-    for (const item of restoredQueue) queue.put(item);
+    for (const job of prepared.jobs) jobs.put(job);
+    for (const item of prepared.queue) queue.put(item);
     const revisions = tx.objectStore("revisions");
-    for (const revision of checkpoint.revisions || []) revisions.put(structuredClone(revision));
+    for (const revision of prepared.revisions) revisions.put(revision);
     await transactionDone(tx);
-    return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
+    return { restored: prepared.jobs.length, reason: "browser_profile_recovery_required" };
   }
 
   async replaceRecoveryCheckpoint(checkpoint) {
-    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) {
-      return { restored: 0, reason: "checkpoint_unavailable" };
-    }
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
     const db = await this.database();
     const tx = db.transaction(["jobs", "queue", "revisions"], "readwrite");
     const jobs = tx.objectStore("jobs");
@@ -391,13 +405,30 @@ export class IndexedDbBackfillStore {
     jobs.clear();
     queue.clear();
     revisions.clear();
-    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
-    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
-    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
-    for (const item of restoredQueue) queue.put(item);
-    for (const revision of checkpoint.revisions || []) revisions.put(structuredClone(revision));
+    for (const job of prepared.jobs) jobs.put(job);
+    for (const item of prepared.queue) queue.put(item);
+    for (const revision of prepared.revisions) revisions.put(revision);
     await transactionDone(tx);
-    return { restored: (checkpoint.jobs || []).length, reason: "receiver_authority_reconciled" };
+    return { restored: prepared.jobs.length, reason: "receiver_authority_reconciled" };
+  }
+
+  async reconcileRecoveryCheckpoint(checkpoint, authoritativeProviders) {
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
+    const providers = new Set(authoritativeProviders);
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions"], "readwrite");
+    for (const [name, rows] of await Promise.all([
+      "jobs", "queue", "revisions",
+    ].map(async (name) => [name, await requestResult(tx.objectStore(name).getAll())]))) {
+      const store = tx.objectStore(name);
+      for (const row of rows) if (providers.has(row.provider)) store.delete(row.id);
+    }
+    for (const job of prepared.jobs) tx.objectStore("jobs").put(job);
+    for (const item of prepared.queue) tx.objectStore("queue").put(item);
+    for (const revision of prepared.revisions) tx.objectStore("revisions").put(revision);
+    await transactionDone(tx);
+    return { restored: prepared.jobs.length, reason: "receiver_authority_reconciled" };
   }
 
   async recoverExpiredLeases(jobId, nowMs) {
@@ -571,26 +602,36 @@ export class MemoryBackfillStore {
     };
   }
   async restoreRecoveryCheckpoint(checkpoint) {
-    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
     if (this.jobs.size) return { restored: 0, reason: "indexeddb_present" };
-    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
-    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
-    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
-    for (const item of restoredQueue) this.queue.set(item.id, structuredClone(item));
-    for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
-    return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
+    for (const job of prepared.jobs) this.jobs.set(job.id, job);
+    for (const item of prepared.queue) this.queue.set(item.id, item);
+    for (const revision of prepared.revisions) this.revisions.set(revision.id, revision);
+    return { restored: prepared.jobs.length, reason: "browser_profile_recovery_required" };
   }
   async replaceRecoveryCheckpoint(checkpoint) {
-    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
     this.jobs.clear();
     this.queue.clear();
     this.revisions.clear();
-    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
-    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
-    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
-    for (const item of restoredQueue) this.queue.set(item.id, structuredClone(item));
-    for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
-    return { restored: (checkpoint.jobs || []).length, reason: "receiver_authority_reconciled" };
+    for (const job of prepared.jobs) this.jobs.set(job.id, job);
+    for (const item of prepared.queue) this.queue.set(item.id, item);
+    for (const revision of prepared.revisions) this.revisions.set(revision.id, revision);
+    return { restored: prepared.jobs.length, reason: "receiver_authority_reconciled" };
+  }
+  async reconcileRecoveryCheckpoint(checkpoint, authoritativeProviders) {
+    const prepared = prepareRecoveryCheckpoint(checkpoint);
+    if (!prepared) return { restored: 0, reason: "checkpoint_unavailable" };
+    const providers = new Set(authoritativeProviders);
+    for (const [store, values] of [[this.jobs, this.jobs.values()], [this.queue, this.queue.values()], [this.revisions, this.revisions.values()]]) {
+      for (const row of [...values]) if (providers.has(row.provider)) store.delete(row.id);
+    }
+    for (const job of prepared.jobs) this.jobs.set(job.id, job);
+    for (const item of prepared.queue) this.queue.set(item.id, item);
+    for (const revision of prepared.revisions) this.revisions.set(revision.id, revision);
+    return { restored: prepared.jobs.length, reason: "receiver_authority_reconciled" };
   }
   async recoverExpiredLeases(jobId, nowMs) {
     let recovered = 0;

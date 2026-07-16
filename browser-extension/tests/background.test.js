@@ -782,6 +782,20 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueBackfillRecoveryCheckpoint).toMatchObject({ version: 1 });
   });
 
+  it("does not misclassify a replaceable local-cache failure as receiver authority loss", async () => {
+    globalThis.chrome.storage.local.set = vi.fn(async (patch) => {
+      if ("polylogueBackfillRecoveryCheckpoint" in patch) throw new Error("storage_local_quota");
+      stored = { ...stored, ...patch };
+    });
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z",
+    });
+
+    expect(started.job).toMatchObject({ status: "running", recovery_checkpoint_error: null });
+    expect(stored.polylogueBackfillRecoveryCheckpoint).toBeUndefined();
+  });
+
   it("derives CaptureJob scope from live provider identity without disclosing the handle", async () => {
     const accountHandle = "stable-chatgpt-account-id";
     globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
@@ -1093,12 +1107,14 @@ describe("background receiver diagnostics", () => {
     const receiverJobs = [
       {
         job_id: "receiver-new", provider: "chatgpt", intent_key: "intent-new", revision: 8,
-        lease_generation: 2, checkpoint_sequence: 2, updated_at: "2026-07-16T10:05:00Z",
+        lease_generation: 2, checkpoint_sequence: 2, updated_at: "2026-07-16T10:06:00Z",
+        checkpoint_updated_at: "2026-07-16T10:05:00Z",
         checkpoint: { payload: checkpoint("hash-new") },
       },
       {
         job_id: "receiver-old", provider: "chatgpt", intent_key: "intent-old", revision: 4,
-        lease_generation: 1, checkpoint_sequence: 1, updated_at: "2026-07-16T10:00:00Z",
+        lease_generation: 1, checkpoint_sequence: 1, updated_at: "2026-07-16T10:20:00Z",
+        checkpoint_updated_at: "2026-07-16T10:00:00Z",
         checkpoint: { payload: checkpoint("hash-old") },
       },
     ];
@@ -1276,6 +1292,98 @@ describe("background receiver diagnostics", () => {
       expect(refreshed.jobs.find((job) => job.id === "local-chatgpt")?.status).toBe("complete");
     });
     expect(providerWorkCalls).toBe(0);
+  });
+
+  it("preserves a failed provider partition while reconciling another provider", async () => {
+    const localJob = (id, provider) => ({
+      id, provider, cutoff: "2026-01-01T00:00:00Z", status: "paused",
+      inventory_cursor: "1", inventory_complete: false,
+      policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+      learned_cadence_ms: 40000, daily_requests: 1,
+      cooldown_reason: "manual_pause", last_error: null, last_ack: null,
+    });
+    await loadBackground({
+      polylogueBackfillRecoveryCheckpoint: {
+        version: 1,
+        jobs: [localJob("local-chatgpt", "chatgpt"), localJob("local-claude", "claude-ai")],
+        queue: [],
+        revisions: [],
+      },
+    });
+    tabs = [
+      { id: 42, url: "https://chatgpt.com/", title: "ChatGPT" },
+      { id: 43, url: "https://claude.ai/new", title: "Claude" },
+    ];
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      const request = details.args?.[0];
+      if (request?.operation === "identity" && request.provider === "chatgpt") {
+        return [{ result: { ok: true, response: { accountHandle: "chatgpt-account" } } }];
+      }
+      if (request?.operation === "identity") {
+        return [{ result: { ok: false, error: "claude_auth_unavailable" } }];
+      }
+      return [{ result: { ok: false, error: "provider_work_must_not_run" } }];
+    });
+    const remoteCheckpoint = {
+      version: 1,
+      jobs: [{
+        ...localJob("remote-chatgpt", "chatgpt"), status: "complete",
+        cooldown_reason: null, inventory_complete: true, last_ack: { receiver_request_id: "remote-ack" },
+      }],
+      queue: [],
+      revisions: [],
+    };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = new URL(url).pathname;
+      const body = options.body ? JSON.parse(options.body) : {};
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1,
+          scope_namespace: "cjs1:partial-provider-namespace",
+        });
+      }
+      if (path === "/v1/capture-jobs/discover") {
+        return responseJson({ jobs: body.provider === "chatgpt" ? [{
+          job_id: "receiver-chatgpt", provider: "chatgpt", intent_key: "intent-chatgpt",
+          revision: 4, lease_generation: 1, checkpoint_sequence: 1,
+          updated_at: "2026-07-16T10:00:00Z", checkpoint_updated_at: "2026-07-16T09:59:00Z",
+          checkpoint: { payload: remoteCheckpoint },
+        }] : [] });
+      }
+      if (path.endsWith("/adopt")) {
+        return responseJson({
+          job: {
+            job_id: "receiver-chatgpt", provider: "chatgpt", intent_key: "intent-chatgpt",
+            revision: 5, lease_generation: 2, checkpoint_sequence: 1,
+            updated_at: "2026-07-16T10:01:00Z", checkpoint: { payload: remoteCheckpoint },
+          },
+          lease: { lease_id: "lease-chatgpt", generation: 2, proof: "proof-chatgpt" },
+        });
+      }
+      if (path.endsWith("/update")) {
+        return responseJson({
+          job: {
+            job_id: "receiver-chatgpt", provider: "chatgpt", revision: 6, lease_generation: 2,
+            lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: 1,
+          },
+          receipt: {},
+        });
+      }
+      if (path.endsWith("/checkpoint")) return responseJson({ job: { revision: 7 }, receipt: {} });
+      if (path === "/v1/backfill-checkpoint") {
+        return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+
+    expect(status.jobs.map((job) => job.id).sort()).toEqual(["local-claude", "remote-chatgpt"]);
+    expect(status.jobs.find((job) => job.id === "remote-chatgpt")).toMatchObject({ status: "complete" });
+    expect(status.jobs.find((job) => job.id === "local-claude")).toMatchObject({
+      status: "paused", recovery_checkpoint_error: "claude_auth_unavailable",
+    });
   });
 
   it("does not query the receiver mirror when a local recovery checkpoint already restored jobs", async () => {
