@@ -31,7 +31,10 @@ _RETRYABLE_STATUSES = (
 
 _DEFAULT_CLOCK: Callable[[], int] = lambda: int(time.time() * 1000)  # noqa: E731
 _SAFE_CODE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
-_SECRET_RE = re.compile(r"(?i)(token|secret|password|authorization|api[-_]?key)\s*[:=]\s*\S+")
+_SECRET_RE = re.compile(
+    r"(?i)\b(token|secret|password|authorization|api[-_]?key)\b"
+    r"\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]+"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +47,32 @@ class DrainSummary:
     rejected: int = 0
     deferred: int = 0
     transport_failures: int = 0
+    payload_failures: int = 0
     remaining_lag: int = 0
+
+
+@dataclass(slots=True)
+class _OutcomeCounts:
+    confirmed: int = 0
+    durable_debt: int = 0
+    rejected: int = 0
+    deferred: int = 0
+    transport_failures: int = 0
+    payload_failures: int = 0
+
+    def record(self, obligation: PublicationObligation, *, payload_failed: bool = False) -> None:
+        if obligation.status is ObligationStatus.CONFIRMED:
+            self.confirmed += 1
+        elif obligation.status is ObligationStatus.DURABLE_DEBT:
+            self.durable_debt += 1
+        elif obligation.status is ObligationStatus.REJECTED:
+            self.rejected += 1
+        elif payload_failed:
+            self.payload_failures += 1
+        elif obligation.last_error:
+            self.transport_failures += 1
+        else:
+            self.deferred += 1
 
 
 @dataclass
@@ -479,12 +507,14 @@ class PublicationService:
             )
         finally:
             conn.close()
-        confirmed = debt = rejected = deferred = failures = 0
+        counts = _OutcomeCounts()
         for obligation in due:
+            payload_failed = False
             payload_conn = self._connect(readonly=True)
             try:
                 payload = obligations_store.load_payload(payload_conn, obligation)
             except Exception as exc:
+                payload_failed = True
                 leased = self._lease(obligation)
                 if leased.status is ObligationStatus.PUBLISHING:
                     updated = self._persist_outcome(
@@ -498,23 +528,15 @@ class PublicationService:
                 updated = self._attempt_sync(obligation, payload)
             finally:
                 payload_conn.close()
-            if updated.status is ObligationStatus.CONFIRMED:
-                confirmed += 1
-            elif updated.status is ObligationStatus.DURABLE_DEBT:
-                debt += 1
-            elif updated.status is ObligationStatus.REJECTED:
-                rejected += 1
-            elif updated.last_error:
-                failures += 1
-            else:
-                deferred += 1
+            counts.record(updated, payload_failed=payload_failed)
         return DrainSummary(
             attempted=len(due),
-            confirmed=confirmed,
-            durable_debt=debt,
-            rejected=rejected,
-            deferred=deferred,
-            transport_failures=failures,
+            confirmed=counts.confirmed,
+            durable_debt=counts.durable_debt,
+            rejected=counts.rejected,
+            deferred=counts.deferred,
+            transport_failures=counts.transport_failures,
+            payload_failures=counts.payload_failures,
             remaining_lag=self.lag(object_ids=object_ids),
         )
 
@@ -529,8 +551,10 @@ class PublicationService:
             return DrainSummary()
         if staged is None:
             return await asyncio.to_thread(self.drain_once)
-        confirmed = debt = rejected = deferred = failures = 0
+        counts = _OutcomeCounts()
+        object_ids: list[str] = []
         for obligation, manifest_bytes, segments in staged[: self.max_batch]:
+            object_ids.append(obligation.object_id)
             payload = PublicationPayload(
                 object_id=obligation.object_id,
                 protocol_version=obligation.protocol_version,
@@ -540,24 +564,16 @@ class PublicationService:
                 segments=tuple(sorted((str(name), bytes(value)) for name, value in segments.items())),
             )
             updated = await self._attempt_async(obligation, payload, on_confirmed=on_confirmed)
-            if updated.status is ObligationStatus.CONFIRMED:
-                confirmed += 1
-            elif updated.status is ObligationStatus.DURABLE_DEBT:
-                debt += 1
-            elif updated.status is ObligationStatus.REJECTED:
-                rejected += 1
-            elif updated.last_error:
-                failures += 1
-            else:
-                deferred += 1
+            counts.record(updated)
         return DrainSummary(
             attempted=min(len(staged), self.max_batch),
-            confirmed=confirmed,
-            durable_debt=debt,
-            rejected=rejected,
-            deferred=deferred,
-            transport_failures=failures,
-            remaining_lag=self.lag(),
+            confirmed=counts.confirmed,
+            durable_debt=counts.durable_debt,
+            rejected=counts.rejected,
+            deferred=counts.deferred,
+            transport_failures=counts.transport_failures,
+            payload_failures=counts.payload_failures,
+            remaining_lag=self.lag(object_ids=object_ids),
         )
 
     def reset_retryable(self, *, include_rejected: bool = False) -> int:

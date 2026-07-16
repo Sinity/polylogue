@@ -47,6 +47,8 @@ from polylogue.sinex.material_adapter import (
 )
 from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
+from polylogue.sinex.service import PublicationService
+from polylogue.sinex.transport import resolve_configured_transport
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -95,7 +97,6 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _ParsingServiceRawStateLike,
     _RawIngestOutcome,
     _SessionEntry,
-    _SourceTierBackendLike,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_batch._summary import (
@@ -1011,9 +1012,11 @@ def _prepare_publication_payloads(
     payloads: list[PublicationPayload] = []
     payload_bytes = 0
     for cdata in ir.sessions:
+        remaining_bytes = _SINEX_STAGED_PAYLOAD_LIMIT_BYTES - summary.publication_payload_bytes - payload_bytes
         payload = encode_parsed_session_publication(
             cdata.parsed_session,
             session_id=cdata.session_id,
+            max_payload_bytes=remaining_bytes,
         )
         projected_bytes = summary.publication_payload_bytes + payload_bytes + payload.size_bytes
         if projected_bytes > _SINEX_STAGED_PAYLOAD_LIMIT_BYTES:
@@ -1033,6 +1036,8 @@ def _drain_ingest_result(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     publication_mode: PublicationMode = PublicationMode.OFF,
+    primary_publication_service: PublicationService | None = None,
+    ensure_index_transaction: Callable[[], None] | None = None,
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
@@ -1063,6 +1068,27 @@ def _drain_ingest_result(
         summary.parse_failures += 1
         summary.failed_raw_ids[ir.raw_id] = f"{type(exc).__name__}: {exc}"[:500]
         return
+
+    if publication_mode is PublicationMode.PRIMARY:
+        if primary_publication_service is None:
+            raise PublicationEncodingError("primary ingest requires a pre-index publication service")
+        object_ids = [payload.object_id for payload in publication_payloads]
+        for payload in publication_payloads:
+            primary_publication_service.stage_payload(payload)
+        primary_publication_service.drain_once(object_ids=object_ids, limit=len(object_ids))
+        if primary_publication_service.projection_blocked(object_ids):
+            summary.publication_deferred_raw_ids.add(ir.raw_id)
+            summary.publication_payloads_by_raw_id[ir.raw_id] = list(publication_payloads)
+            summary.publication_payload_bytes += sum(payload.size_bytes for payload in publication_payloads)
+            logger.info(
+                "Sinex primary receipt deferred index projection",
+                raw_id=ir.raw_id,
+                object_count=len(object_ids),
+            )
+            return
+
+    if ensure_index_transaction is not None:
+        ensure_index_transaction()
 
     drain_started = time.perf_counter()
     written_count = _drain_ready_session_entries(
@@ -1095,6 +1121,7 @@ def _consume_ingest_results(
     summary: _IngestBatchSummary,
     materialized_ids: set[str],
     publication_mode: PublicationMode,
+    primary_publication_service: PublicationService | None = None,
     force_write: bool = False,
     heartbeat: IngestHeartbeat | None = None,
     progress: _WorkerProgress | None = None,
@@ -1117,6 +1144,20 @@ def _consume_ingest_results(
         )
     )
     transaction_started = False
+
+    def ensure_index_transaction() -> None:
+        nonlocal transaction_started
+        if transaction_started:
+            return
+        if suspend_fts_triggers:
+            conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        if suspend_fts_triggers:
+            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+
+            suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
+        transaction_started = True
+
     while True:
         wait_started = time.perf_counter()
         try:
@@ -1127,21 +1168,14 @@ def _consume_ingest_results(
         summary.result_wait_s += time.perf_counter() - wait_started
         release_after_drain = ingest_result_needs_memory_release(ir)
         try:
-            if not transaction_started:
-                if suspend_fts_triggers:
-                    conn.execute("PRAGMA foreign_keys = OFF")
-                conn.execute("BEGIN IMMEDIATE")
-                if suspend_fts_triggers:
-                    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
-
-                    suspend_fts_triggers_sync(conn, mark_stale=mark_fts_stale_on_suspend)
-                transaction_started = True
             _drain_ingest_result(
                 conn,
                 ir,
                 summary=summary,
                 materialized_ids=materialized_ids,
                 publication_mode=publication_mode,
+                primary_publication_service=primary_publication_service,
+                ensure_index_transaction=ensure_index_transaction,
                 force_write=force_write,
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
@@ -1224,6 +1258,15 @@ def _process_ingest_batch_sync(
     summary.setup_elapsed_s = time.perf_counter() - setup_started
     materialized_ids: set[str] = set()
     archive_root = Path(archive_root_str)
+    primary_publication_service = (
+        PublicationService(
+            archive_root / "source.db",
+            PublicationMode.PRIMARY,
+            resolve_configured_transport(),
+        )
+        if publication_mode is PublicationMode.PRIMARY
+        else None
+    )
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     pending_attachment_receipts: list[tuple[str, bytes]] = []
     _observe_current_rss(summary)
@@ -1236,6 +1279,7 @@ def _process_ingest_batch_sync(
             summary=summary,
             materialized_ids=materialized_ids,
             publication_mode=publication_mode,
+            primary_publication_service=primary_publication_service,
             force_write=force_write,
             heartbeat=heartbeat,
             progress=progress,
@@ -1541,10 +1585,7 @@ async def _persist_batch_raw_state_updates(
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
     raw_state_update_started = time.perf_counter()
-    source_backend = cast(
-        _SourceTierBackendLike | None,
-        getattr(service.repository, "_source_backend", None),
-    )
+    source_backend = service.repository.source_backend
     if publication_mode is not PublicationMode.OFF and source_backend is None:
         raise PublicationEncodingError(
             "mirror/primary acceptance requires the durable source-tier backend; "

@@ -21,6 +21,9 @@ _SINEX_STAGED_PAYLOAD_LIMIT_BYTES = 256 * 1024 * 1024
 
 
 class _RawStateRepositoryLike(Protocol):
+    @property
+    def source_backend(self) -> _SourceTierBackendLike | None: ...
+
     async def update_raw_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> object: ...
 
 
@@ -62,6 +65,7 @@ class _IngestBatchSummary:
     fts_repair_session_ids: list[str] = field(default_factory=list)
     publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
     publication_payload_bytes: int = 0
+    publication_deferred_raw_ids: set[str] = field(default_factory=set)
     counts: dict[str, int] = field(
         default_factory=lambda: {
             "sessions": 0,

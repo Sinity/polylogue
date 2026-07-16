@@ -71,6 +71,10 @@ class _Repository:
     def __init__(self, backend: _SourceBackend) -> None:
         self._source_backend = backend
 
+    @property
+    def source_backend(self) -> _SourceBackend:
+        return self._source_backend
+
     async def update_raw_state(self, raw_id: str, *, state: object) -> None:
         assert self._source_backend.active is not None
         self._source_backend.active.execute(
@@ -82,10 +86,11 @@ class _Repository:
 def _counts(path: Path) -> tuple[int, int]:
     conn = sqlite3.connect(path)
     try:
-        return (
-            conn.execute("SELECT COUNT(*) FROM test_raw_acceptance").fetchone()[0],
-            conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone()[0],
-        )
+        accepted_row = conn.execute("SELECT COUNT(*) FROM test_raw_acceptance").fetchone()
+        obligation_row = conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone()
+        assert accepted_row is not None
+        assert obligation_row is not None
+        return (int(accepted_row[0]), int(obligation_row[0]))
     finally:
         conn.close()
 
@@ -136,7 +141,7 @@ def test_real_raw_state_helper_commits_or_rolls_back_acceptance_with_payload(
 
 
 def test_backed_mode_refuses_acceptance_without_source_tier_backend() -> None:
-    service = SimpleNamespace(repository=SimpleNamespace())
+    service = SimpleNamespace(repository=SimpleNamespace(source_backend=None))
     backend = SimpleNamespace()
     with pytest.raises(PublicationEncodingError, match="durable source-tier"):
         asyncio.run(

@@ -8,6 +8,8 @@ thing that may unlock primary-mode projection progress.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -123,7 +125,9 @@ class PublicationObligation:
     @property
     def request_id(self) -> str:
         """Deterministic transport idempotency key for this exact revision."""
-        return "|".join((self.object_id, self.protocol_version, self.revision_id, self.manifest_digest))
+        fields = (self.object_id, self.protocol_version, self.revision_id, self.manifest_digest)
+        framed = json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return f"polylogue-publication-v1:{hashlib.sha256(framed).hexdigest()}"
 
     @property
     def progress_unlocked(self) -> bool:

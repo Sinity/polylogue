@@ -44,6 +44,25 @@ def test_request_id_reuse_with_different_exact_bytes_is_rejected() -> None:
         asyncio.run(transport.publish_revision(request_id="req-1", manifest_bytes=b"b", segment_bytes={}))
 
 
+def test_payload_digest_frames_manifest_segment_names_and_bytes() -> None:
+    transport = LocalReferenceTransport()
+    asyncio.run(
+        transport.publish_revision(
+            request_id="req-framing",
+            manifest_bytes=b"a",
+            segment_bytes={"b": b"c"},
+        )
+    )
+    with pytest.raises(TransportPayloadConflictError):
+        asyncio.run(
+            transport.publish_revision(
+                request_id="req-framing",
+                manifest_bytes=b"ab",
+                segment_bytes={"": b"c"},
+            )
+        )
+
+
 def test_deployment_transport_factory_is_explicit_and_resettable() -> None:
     clear_configured_transport_factory()
     with pytest.raises(SinexTransportUnavailableError):

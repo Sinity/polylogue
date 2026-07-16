@@ -547,10 +547,12 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         conn.close()
 
 
-def test_source_additive_ledger_migrations_do_not_require_a_backup(tmp_path: Path) -> None:
-    db_path = tmp_path / "source.db"
+def test_source_publication_backfill_requires_verified_backup(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    db_path = workspace_env["archive_root"] / "source.db"
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(SOURCE_DDL)
         conn.execute("DROP TABLE excised_content")
         conn.execute("DROP TABLE sinex_publication_segments")
         conn.execute("DROP TABLE sinex_publication_receipts")
@@ -559,12 +561,17 @@ def test_source_additive_ledger_migrations_do_not_require_a_backup(tmp_path: Pat
         conn.execute("PRAGMA user_version = 9")
         conn.commit()
 
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        with pytest.raises(MigrationError, match="verified backup manifest"):
+            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+
+    manifest = _verified_backup_manifest(tmp_path / "backup-source-publication")
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
         assert result.to_version == SOURCE_SCHEMA_VERSION == 12
         assert result.applied_versions == (10, 11, 12)
-        assert result.backup_receipt is None
+        assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
             "sinex_publication_obligations",

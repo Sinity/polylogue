@@ -159,11 +159,16 @@ class LocalReferenceTransport:
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
     ) -> PublicationReceipt:
-        digest = hashlib.sha256(manifest_bytes)
-        for name, payload in sorted(segment_bytes.items()):
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
+        digest = hashlib.sha256()
+
+        def add_frame(payload: bytes) -> None:
+            digest.update(len(payload).to_bytes(8, "big"))
             digest.update(payload)
+
+        add_frame(manifest_bytes)
+        for name, payload in sorted(segment_bytes.items()):
+            add_frame(name.encode("utf-8"))
+            add_frame(payload)
         payload_digest = digest.hexdigest()
         existing_digest = self._payload_digests.get(request_id)
         if existing_digest is not None and existing_digest != payload_digest:

@@ -1,4 +1,3 @@
--- migration-safety: additive-no-backup
 -- Restart-safe exact Sinex publication payloads, receipts, and retry schedule
 -- (polylogue-303r.2.1).
 --

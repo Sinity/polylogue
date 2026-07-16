@@ -593,12 +593,14 @@ def make_sinex_publication_stage(
             return True
         summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
         logger.info(
-            "sinex_publication: drain attempted=%d confirmed=%d debt=%d rejected=%d failures=%d remaining=%d",
+            "sinex_publication: drain attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
             summary.attempted,
             summary.confirmed,
             summary.durable_debt,
             summary.rejected,
             summary.transport_failures,
+            summary.payload_failures,
             summary.remaining_lag,
         )
         return not service.unresolved_object_ids(session_ids)
@@ -616,13 +618,15 @@ def make_sinex_publication_stage(
             return True
         summary = service.drain_once(object_ids=all_ids, limit=service.max_batch)
         logger.info(
-            "sinex_publication: batch drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d failures=%d remaining=%d",
+            "sinex_publication: batch drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
             len(all_ids),
             summary.attempted,
             summary.confirmed,
             summary.durable_debt,
             summary.rejected,
             summary.transport_failures,
+            summary.payload_failures,
             summary.remaining_lag,
         )
         return not service.unresolved_object_ids(all_ids)
@@ -635,13 +639,15 @@ def make_sinex_publication_stage(
             return True
         summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
         logger.info(
-            "sinex_publication: session drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d failures=%d remaining=%d",
+            "sinex_publication: session drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
             len(tuple(dict.fromkeys(session_ids))),
             summary.attempted,
             summary.confirmed,
             summary.durable_debt,
             summary.rejected,
             summary.transport_failures,
+            summary.payload_failures,
             summary.remaining_lag,
         )
         return not service.unresolved_object_ids(session_ids)

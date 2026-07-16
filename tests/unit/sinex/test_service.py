@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -35,7 +36,7 @@ class UnsafeDetailTransport:
         return PublicationReceipt(
             request_id=request_id,
             state=ReceiptState.RAW_ACCEPTED,
-            detail="token=top-secret endpoint=local",
+            detail="authorization=Bearer bearer-secret token=top-secret endpoint=local",
         )
 
 
@@ -127,7 +128,8 @@ def test_corrupt_payload_is_retry_debt_and_does_not_abort_bounded_batch(
     summary = service.drain_once(object_ids=["claude-code-session:bad", "claude-code-session:good"], limit=999)
     assert summary.attempted == 2
     assert summary.confirmed == 1
-    assert summary.transport_failures == 1
+    assert summary.payload_failures == 1
+    assert summary.transport_failures == 0
 
 
 def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
@@ -145,6 +147,7 @@ def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     ).fetchone()[0]
     conn.close()
     assert "top-secret" not in detail
+    assert "bearer-secret" not in detail
     assert "<redacted>" in detail
     assert "top-secret" not in json.dumps(service.status().as_dict())
 
@@ -154,3 +157,21 @@ def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     assert off.drain_once().attempted == 0
     assert off.status().total == 0
     assert not nonexistent.exists()
+
+
+def test_compat_retry_reports_lag_only_for_staged_subjects(workspace_env: dict[str, Path]) -> None:
+    db = workspace_env["archive_root"] / "source.db"
+    service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())
+    selected_payload = publication_payload(object_id="claude-code-session:selected")
+    other_payload = publication_payload(object_id="claude-code-session:other", revision_id="other")
+    selected = service.stage_payload(selected_payload)
+    service.stage_payload(other_payload)
+    assert selected is not None
+
+    summary = asyncio.run(
+        service.retry_pending([(selected, selected_payload.manifest_bytes, selected_payload.segment_bytes)])
+    )
+
+    assert summary.confirmed == 1
+    assert summary.remaining_lag == 0
+    assert service.lag() == 1

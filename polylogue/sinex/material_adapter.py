@@ -13,7 +13,7 @@ import dataclasses
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
@@ -46,6 +46,13 @@ from polylogue.material_protocol.v1 import (
 )
 from polylogue.material_protocol.v1.canonical import canonical_bytes
 from polylogue.sinex.models import PublicationPayload
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
 
 _PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 
@@ -85,7 +92,8 @@ def _timestamp_ms(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return int(value.timestamp() * 1000)
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return int(normalized.timestamp() * 1000)
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -97,6 +105,8 @@ def _timestamp_ms(value: object) -> int | None:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
         return int(parsed.timestamp() * 1000)
     return None
 
@@ -121,7 +131,10 @@ def _json_safe(value: object) -> JSONValue:
         return value.hex()
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (set, frozenset)):
+        safe_items = [_json_safe(item) for item in value]
+        return sorted(safe_items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _json_safe(dataclasses.asdict(value))
@@ -250,6 +263,46 @@ def _block_fidelity_gap(
     )
 
 
+def _parsed_block_input(position: int, block: ParsedContentBlock) -> BlockInput:
+    metadata = block.metadata or {}
+    semantic_type = metadata.get("semantic_type")
+    language = metadata.get("language")
+    return BlockInput(
+        position=position,
+        block_type=block.type,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_id=block.tool_id,
+        tool_input=_json_object(block.tool_input) if block.tool_input is not None else None,
+        tool_result_is_error=block.is_error,
+        tool_result_exit_code=block.exit_code,
+        semantic_type=semantic_type if isinstance(semantic_type, str) else None,
+        media_type=block.media_type,
+        language=language if isinstance(language, str) else None,
+    )
+
+
+def _parsed_block_fidelity_gap(
+    session_id: str,
+    message_index: int,
+    block_position: int,
+    block: ParsedContentBlock,
+) -> FidelityGapInput | None:
+    metadata = block.metadata or {}
+    represented_metadata = {"language", "semantic_type"}
+    unsupported = [f"metadata.{key}" for key in sorted(set(metadata) - represented_metadata)]
+    if block.web_constructs:
+        unsupported.append("web_constructs")
+    if not unsupported:
+        return None
+    return FidelityGapInput(
+        scope="block",
+        record_id=f"{session_id}:message[{message_index}]:block[{block_position}]",
+        gap_kind="unsupported_normalized_fields",
+        detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
+    )
+
+
 def _attachment_input(position: int, attachment: object) -> AttachmentInput:
     attachment_id = _attr(
         attachment,
@@ -319,6 +372,49 @@ def _attachment_fidelity_gap(session_id: str, attachment: object) -> FidelityGap
     )
 
 
+def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> AttachmentInput:
+    blob_sha = hashlib.sha256(attachment.inline_bytes).hexdigest() if attachment.inline_bytes is not None else None
+    byte_count = attachment.size_bytes
+    if byte_count is None and attachment.inline_bytes is not None:
+        byte_count = len(attachment.inline_bytes)
+    return AttachmentInput(
+        position=position,
+        attachment_id=attachment.provider_attachment_id,
+        display_name=attachment.name,
+        media_type=attachment.mime_type,
+        byte_count=max(0, byte_count or 0),
+        blob_sha256=blob_sha,
+        acquisition_status="acquired" if attachment.inline_bytes is not None else "unfetched",
+        upload_origin=attachment.upload_origin,
+        source_url=attachment.source_url,
+        caption=attachment.caption,
+    )
+
+
+def _parsed_attachment_fidelity_gap(
+    session_id: str,
+    attachment: ParsedAttachment,
+) -> FidelityGapInput | None:
+    unsupported = [
+        field
+        for field, value in (
+            ("path", attachment.path),
+            ("provider_file_id", attachment.provider_file_id),
+            ("provider_drive_id", attachment.provider_drive_id),
+            ("attachment_kind", attachment.attachment_kind),
+        )
+        if value not in (None, "")
+    ]
+    if not unsupported:
+        return None
+    return FidelityGapInput(
+        scope="attachment",
+        record_id=f"{session_id}:attachment:{attachment.provider_attachment_id}",
+        gap_kind="unsupported_normalized_fields",
+        detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
+    )
+
+
 def _message_anchor(attachment: object) -> tuple[str, object] | None:
     provider_id = _attr(
         attachment,
@@ -343,31 +439,26 @@ def _number(value: object) -> float | None:
     return None
 
 
-def _usage_inputs(messages: tuple[object, ...], session: object) -> tuple[UsageInput, ...]:
+def _usage_inputs(messages: Sequence[ParsedMessage], session: ParsedSession) -> tuple[UsageInput, ...]:
     totals: dict[str, dict[str, int]] = defaultdict(
         lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
     )
     for message in messages:
-        model_name = _attr(message, "model_name", "model")
+        model_name = message.model_name
         token_values = {
-            "input": _attr(message, "input_tokens"),
-            "output": _attr(message, "output_tokens"),
-            "cache_read": _attr(message, "cache_read_tokens"),
-            "cache_write": _attr(message, "cache_write_tokens"),
+            "input": message.input_tokens,
+            "output": message.output_tokens,
+            "cache_read": message.cache_read_tokens,
+            "cache_write": message.cache_write_tokens,
         }
-        has_tokens = any(
-            isinstance(value, int) and not isinstance(value, bool) and value != 0 for value in token_values.values()
-        )
+        has_tokens = any(value != 0 for value in token_values.values())
         if model_name is None and not has_tokens:
             continue
         key = str(model_name or "unknown")
         for name, value in token_values.items():
-            if isinstance(value, int) and not isinstance(value, bool):
-                totals[key][name] += max(0, value)
-    cost_usd = _number(_attr(session, "reported_cost_usd", "cost_usd", "total_cost_usd"))
-    cost_credits = _number(_attr(session, "cost_credits", "total_cost_credits"))
-    cost_provenance = _attr(session, "cost_provenance")
-    if not totals and (cost_usd is not None or cost_credits is not None):
+            totals[key][name] += max(0, value)
+    cost_usd = _number(session.reported_cost_usd)
+    if not totals and cost_usd is not None:
         totals["unknown"]
     usages: list[UsageInput] = []
     for index, (model_name, values) in enumerate(sorted(totals.items())):
@@ -379,95 +470,90 @@ def _usage_inputs(messages: tuple[object, ...], session: object) -> tuple[UsageI
                 cache_read_tokens=values["cache_read"],
                 cache_write_tokens=values["cache_write"],
                 cost_usd=cost_usd if index == 0 else None,
-                cost_credits=cost_credits if index == 0 else None,
-                cost_provenance=(str(cost_provenance) if index == 0 and cost_provenance is not None else None),
+                cost_provenance="reported" if index == 0 and cost_usd is not None else None,
             )
         )
     return tuple(usages)
 
 
-def _session_metadata(parsed_session: object) -> dict[str, JSONValue]:
-    fields = (
-        "active_leaf_message_provider_id",
-        "branch_type",
-        "git_commit_hash",
-        "instructions_text",
-        "models_used",
-        "reported_duration_ms",
-        "source_name",
-        "title_source",
-    )
+def _session_metadata(parsed_session: ParsedSession) -> dict[str, JSONValue]:
+    values: dict[str, object] = {
+        "active_leaf_message_provider_id": parsed_session.active_leaf_message_provider_id,
+        "branch_type": parsed_session.branch_type,
+        "git_commit_hash": parsed_session.git_commit_hash,
+        "instructions_text": parsed_session.instructions_text,
+        "models_used": parsed_session.models_used,
+        "reported_duration_ms": parsed_session.reported_duration_ms,
+        "source_name": parsed_session.source_name,
+        "title_source": parsed_session.title_source,
+    }
     metadata: dict[str, JSONValue] = {}
-    supplied = _attr(parsed_session, "metadata", default={})
-    if isinstance(supplied, Mapping):
-        metadata.update({str(key): _json_safe(value) for key, value in supplied.items()})
-    for field in fields:
-        value = _attr(parsed_session, field)
+    for field, value in values.items():
         if value not in (None, (), [], {}, ""):
             metadata[field] = _json_safe(value)
     return metadata
 
 
-def session_material_from_parsed_session(parsed_session: object, *, session_id: str) -> SessionMaterial:
+def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEventInput:
+    payload = _json_object(event.payload)
+    summary_value = payload.get("summary")
+    summary = summary_value if isinstance(summary_value, str) else event.event_type
+    return SessionEventInput(
+        position=position,
+        event_type=event.event_type,
+        summary=summary,
+        payload=payload,
+        source_message_native_id=event.source_message_provider_id,
+        occurred_at_ms=_timestamp_ms(event.timestamp),
+    )
+
+
+def session_material_from_parsed_session(parsed_session: ParsedSession, *, session_id: str) -> SessionMaterial:
     """Build complete v1 material from the real ingest ``ParsedSession``."""
     native_id = native_id_from_session_id(session_id)
     if native_id is None:
         raise ValueError(f"session_id {session_id!r} is not a well-formed 'origin:native_id' session id")
     origin = _origin_for_session_id(session_id)
-    raw_messages = _items(_attr(parsed_session, "messages", default=()))
-    attachments_by_anchor: dict[tuple[str, object], list[object]] = defaultdict(list)
-    unanchored_attachments: list[object] = []
-    for attachment in _items(_attr(parsed_session, "attachments", default=())):
-        anchor = _message_anchor(attachment)
-        if anchor is None:
+    raw_messages = parsed_session.messages
+    attachments_by_message: dict[str, list[ParsedAttachment]] = defaultdict(list)
+    unanchored_attachments: list[ParsedAttachment] = []
+    for attachment in parsed_session.attachments:
+        if attachment.message_provider_id is None:
             unanchored_attachments.append(attachment)
         else:
-            attachments_by_anchor[anchor].append(attachment)
+            attachments_by_message[attachment.message_provider_id].append(attachment)
 
     fidelity_gaps: list[FidelityGapInput] = []
     messages: list[MessageInput] = []
     for index, message in enumerate(raw_messages):
-        position_value = _attr(message, "position")
-        position = position_value if isinstance(position_value, int) and not isinstance(position_value, bool) else index
-        native_message_id = _attr(message, "provider_message_id", "native_id")
-        raw_blocks = _items(_attr(message, "blocks", "content_blocks", default=()))
-        blocks: list[BlockInput] = []
-        for block_index, raw_block in enumerate(raw_blocks):
-            block = _block_input(block_index, raw_block)
-            if block is None:
-                fidelity_gaps.append(_dropped_block_gap(session_id, index, block_index, raw_block))
-            else:
-                blocks.append(block)
-                gap = _block_fidelity_gap(session_id, index, block_index, raw_block)
-                if gap is not None:
-                    fidelity_gaps.append(gap)
-        anchored = list(attachments_by_anchor.pop(("position", position), ()))
-        if native_message_id is not None:
-            anchored.extend(attachments_by_anchor.pop(("native", str(native_message_id)), ()))
-        attachment_inputs: list[AttachmentInput] = []
-        for attachment_position, attachment in enumerate(anchored):
-            attachment_inputs.append(_attachment_input(attachment_position, attachment))
-            gap = _attachment_fidelity_gap(session_id, attachment)
+        position = message.position if message.position is not None else index
+        native_message_id = message.provider_message_id
+        blocks = [_parsed_block_input(block_index, block) for block_index, block in enumerate(message.blocks)]
+        for block_index, block in enumerate(message.blocks):
+            gap = _parsed_block_fidelity_gap(session_id, index, block_index, block)
             if gap is not None:
                 fidelity_gaps.append(gap)
-        unsupported_message_fields = [
-            field
-            for field in (
-                "delivery_status",
-                "end_turn",
-                "is_active_leaf",
-                "is_active_path",
-                "model_effort",
-                "recipient",
-                "sender_name",
-                "user_context_text",
-            )
-            if _attr(message, field) not in (None, "")
-        ]
-        branch_index = _attr(message, "branch_index")
-        if isinstance(branch_index, int) and not isinstance(branch_index, bool) and branch_index != 0:
+        anchored = attachments_by_message.pop(native_message_id, [])
+        attachment_inputs: list[AttachmentInput] = []
+        for attachment_position, attachment in enumerate(anchored):
+            attachment_inputs.append(_parsed_attachment_input(attachment_position, attachment))
+            gap = _parsed_attachment_fidelity_gap(session_id, attachment)
+            if gap is not None:
+                fidelity_gaps.append(gap)
+        message_fields = {
+            "delivery_status": message.delivery_status,
+            "end_turn": message.end_turn,
+            "is_active_leaf": message.is_active_leaf,
+            "is_active_path": message.is_active_path,
+            "model_effort": message.model_effort,
+            "recipient": message.recipient,
+            "sender_name": message.sender_name,
+            "user_context_text": message.user_context_text,
+        }
+        unsupported_message_fields = [field for field, value in message_fields.items() if value not in (None, "")]
+        if message.branch_index != 0:
             unsupported_message_fields.append("branch_index")
-        if _items(_attr(message, "paste_spans", default=())):
+        if message.paste_spans:
             unsupported_message_fields.append("paste_spans")
         if unsupported_message_fields:
             fidelity_gaps.append(
@@ -480,150 +566,82 @@ def session_material_from_parsed_session(parsed_session: object, *, session_id: 
             )
         messages.append(
             MessageInput(
-                native_id=str(native_message_id) if native_message_id is not None else None,
+                native_id=native_message_id,
                 position=position,
-                role=_role(_attr(message, "role")),
-                text=str(_attr(message, "text")) if _attr(message, "text") is not None else None,
-                variant_index=_int(_attr(message, "variant_index", default=0)),
-                message_type=_message_type(_attr(message, "message_type")),
-                material_origin=_material_origin(_attr(message, "material_origin")),
-                occurred_at_ms=_timestamp_ms(_attr(message, "occurred_at_ms", "timestamp")),
-                model_name=(
-                    str(_attr(message, "model_name", "model")) if _attr(message, "model_name", "model") else None
-                ),
-                parent_native_id=(
-                    str(_attr(message, "parent_message_provider_id", "parent_native_id"))
-                    if _attr(message, "parent_message_provider_id", "parent_native_id")
-                    else None
-                ),
-                input_tokens=_int(_attr(message, "input_tokens", default=0)),
-                output_tokens=_int(_attr(message, "output_tokens", default=0)),
-                cache_read_tokens=_int(_attr(message, "cache_read_tokens", default=0)),
-                cache_write_tokens=_int(_attr(message, "cache_write_tokens", default=0)),
-                duration_ms=(
-                    _int(_attr(message, "duration_ms"))
-                    if isinstance(_attr(message, "duration_ms"), int)
-                    and not isinstance(_attr(message, "duration_ms"), bool)
-                    else None
-                ),
+                role=message.role,
+                text=message.text,
+                variant_index=message.variant_index or 0,
+                message_type=message.message_type,
+                material_origin=message.material_origin,
+                occurred_at_ms=message.occurred_at_ms or _timestamp_ms(message.timestamp),
+                model_name=message.model_name,
+                parent_native_id=message.parent_message_provider_id,
+                input_tokens=message.input_tokens,
+                output_tokens=message.output_tokens,
+                cache_read_tokens=message.cache_read_tokens,
+                cache_write_tokens=message.cache_write_tokens,
+                duration_ms=message.duration_ms,
                 blocks=tuple(blocks),
                 attachments=tuple(attachment_inputs),
             )
         )
 
-    for anchor, orphaned in attachments_by_anchor.items():
+    for message_provider_id, orphaned in attachments_by_message.items():
         unanchored_attachments.extend(orphaned)
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=f"{session_id}:attachment-anchor:{anchor[0]}:{anchor[1]}",
+                record_id=f"{session_id}:attachment-anchor:native:{message_provider_id}",
                 gap_kind="unresolved_anchor",
                 detail="attachment referenced a message anchor absent from the accepted session",
             )
         )
     for index, attachment in enumerate(unanchored_attachments):
+        if attachment.message_provider_id is not None:
+            continue
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=str(
-                    _attr(
-                        attachment,
-                        "provider_attachment_id",
-                        "attachment_id",
-                        "id",
-                        default=f"{session_id}:attachment[{index}]",
-                    )
-                ),
+                record_id=attachment.provider_attachment_id or f"{session_id}:attachment[{index}]",
                 gap_kind="unresolved_anchor",
                 detail="material-protocol v1 requires a message anchor; source attachment had none",
             )
         )
 
     lineage: list[LineageInput] = []
-    parent_native_id = _attr(parsed_session, "parent_session_provider_id", "parent_native_id")
+    parent_native_id = parsed_session.parent_session_provider_id
     if parent_native_id:
         lineage.append(
             LineageInput(
                 dst_origin=origin,
                 dst_native_id=str(parent_native_id),
-                link_type=_link_type(_attr(parsed_session, "branch_type", "link_type")),
-                branch_point_message_native_id=(
-                    str(
-                        _attr(
-                            parsed_session,
-                            "branch_point_message_provider_id",
-                            "branch_point_message_native_id",
-                        )
-                    )
-                    if _attr(
-                        parsed_session,
-                        "branch_point_message_provider_id",
-                        "branch_point_message_native_id",
-                    )
-                    else None
-                ),
-                inheritance=str(_attr(parsed_session, "inheritance", default="prefix-sharing")),
-                status=str(_attr(parsed_session, "lineage_status", default="unresolved")),
-                confidence=float(_number(_attr(parsed_session, "lineage_confidence")) or 1.0),
-                observed_at_ms=_timestamp_ms(_attr(parsed_session, "updated_at", "created_at")),
+                link_type=_link_type(parsed_session.branch_type),
+                inheritance="prefix-sharing",
+                status="unresolved",
+                confidence=1.0,
+                observed_at_ms=_timestamp_ms(parsed_session.updated_at or parsed_session.created_at),
             )
         )
 
-    events: list[SessionEventInput] = []
-    for index, event in enumerate(_items(_attr(parsed_session, "session_events", default=()))):
-        event_type = str(_attr(event, "event_type", "type", default="unknown"))
-        summary_value = _attr(event, "summary")
-        payload = _json_object(_attr(event, "payload", "metadata", default={}))
-        if summary_value is None and isinstance(payload.get("summary"), str):
-            summary_value = payload["summary"]
-        position_value = _attr(event, "position")
-        position = position_value if isinstance(position_value, int) and not isinstance(position_value, bool) else index
-        events.append(
-            SessionEventInput(
-                position=position,
-                event_type=event_type,
-                summary=str(summary_value) if summary_value is not None else event_type,
-                payload=payload,
-                source_message_native_id=(
-                    str(_attr(event, "source_message_provider_id", "source_message_native_id"))
-                    if _attr(event, "source_message_provider_id", "source_message_native_id")
-                    else None
-                ),
-                occurred_at_ms=_timestamp_ms(_attr(event, "occurred_at_ms", "timestamp")),
-            )
-        )
+    events = [_parsed_event_input(index, event) for index, event in enumerate(parsed_session.session_events)]
 
-    tags = tuple(str(value) for value in _items(_attr(parsed_session, "ingest_flags", "tags", default=())))
+    tags = tuple(parsed_session.ingest_flags)
     return SessionMaterial(
         origin=origin,
         native_id=native_id,
-        title=(
-            str(_attr(parsed_session, "title", "name")) if _attr(parsed_session, "title", "name") is not None else None
-        ),
-        session_kind=_session_kind(_attr(parsed_session, "session_kind", "kind")),
-        created_at_ms=_timestamp_ms(_attr(parsed_session, "created_at")),
-        updated_at_ms=_timestamp_ms(_attr(parsed_session, "updated_at")),
-        git_branch=(
-            str(_attr(parsed_session, "git_branch")) if _attr(parsed_session, "git_branch") is not None else None
-        ),
-        git_repository_url=(
-            str(_attr(parsed_session, "git_repository_url", "repository_url"))
-            if _attr(parsed_session, "git_repository_url", "repository_url") is not None
-            else None
-        ),
-        provider_project_ref=(
-            str(_attr(parsed_session, "provider_project_ref", "project_ref"))
-            if _attr(parsed_session, "provider_project_ref", "project_ref") is not None
-            else None
-        ),
-        working_directories=tuple(
-            str(value) for value in _items(_attr(parsed_session, "working_directories", default=()))
-        ),
+        title=parsed_session.title,
+        session_kind=parsed_session.session_kind,
+        created_at_ms=_timestamp_ms(parsed_session.created_at),
+        updated_at_ms=_timestamp_ms(parsed_session.updated_at),
+        git_branch=parsed_session.git_branch,
+        git_repository_url=parsed_session.git_repository_url,
+        provider_project_ref=parsed_session.provider_project_ref,
+        working_directories=tuple(parsed_session.working_directories),
         metadata=_session_metadata(parsed_session),
         tags=tags,
         messages=tuple(messages),
         lineage=tuple(lineage),
-        usage=_usage_inputs(raw_messages, parsed_session),
+        usage=_usage_inputs(parsed_session.messages, parsed_session),
         session_events=tuple(events),
         fidelity_gaps=tuple(fidelity_gaps),
     )
@@ -691,11 +709,45 @@ def session_material_from_session(session: Session) -> SessionMaterial:
     )
 
 
-def encode_parsed_session_publication(parsed_session: object, *, session_id: str) -> PublicationPayload:
+def _minimum_text_bytes(value: object, *, stop_after: int) -> int:
+    """Count definitely-emitted text without constructing serialized protocol bytes."""
+    total = 0
+    stack = [value]
+    while stack and total <= stop_after:
+        item = stack.pop()
+        if item is None or isinstance(item, (bool, int, float, bytes, Enum, Decimal)):
+            continue
+        if isinstance(item, str):
+            total += len(item)
+            continue
+        if dataclasses.is_dataclass(item) and not isinstance(item, type):
+            stack.extend(getattr(item, field.name) for field in dataclasses.fields(item))
+            continue
+        if isinstance(item, Mapping):
+            stack.extend(str(key) for key in item)
+            stack.extend(item.values())
+            continue
+        if isinstance(item, Iterable):
+            stack.extend(item)
+    return total
+
+
+def encode_parsed_session_publication(
+    parsed_session: ParsedSession,
+    *,
+    session_id: str,
+    max_payload_bytes: int | None = None,
+) -> PublicationPayload:
     """Encode, verify, and return the exact bytes staged by production ingest."""
     try:
         material = session_material_from_parsed_session(parsed_session, session_id=session_id)
-        revision_time = _attr(parsed_session, "updated_at", "created_at")
+        if max_payload_bytes is not None and (
+            max_payload_bytes < 0 or _minimum_text_bytes(material, stop_after=max_payload_bytes) > max_payload_bytes
+        ):
+            raise PublicationBackpressureError(
+                f"Sinex exact-payload staging budget exceeded before encoding: limit_bytes={max_payload_bytes}"
+            )
+        revision_time = parsed_session.updated_at or parsed_session.created_at
         encoded = encode_session_revision(
             material,
             revision_created_at=_revision_created_at(revision_time),
@@ -721,7 +773,7 @@ def encode_parsed_session_publication(parsed_session: object, *, session_id: str
         raise
     except (MaterialProtocolError, TypeError, ValueError, OverflowError, AssertionError) as exc:
         raise PublicationEncodingError(f"material protocol reconciliation failed: {type(exc).__name__}: {exc}") from exc
-    return PublicationPayload(
+    payload = PublicationPayload(
         object_id=session_id,
         protocol_version=str(protocol_version),
         revision_id=str(revision_id),
@@ -729,6 +781,12 @@ def encode_parsed_session_publication(parsed_session: object, *, session_id: str
         manifest_bytes=manifest_bytes,
         segments=segments,
     )
+    if max_payload_bytes is not None and payload.size_bytes > max_payload_bytes:
+        raise PublicationBackpressureError(
+            "Sinex exact-payload staging budget exceeded after encoding: "
+            f"payload_bytes={payload.size_bytes} limit_bytes={max_payload_bytes}"
+        )
+    return payload
 
 
 __all__ = [

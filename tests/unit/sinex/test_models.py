@@ -53,6 +53,13 @@ def test_request_id_is_stable_and_uses_every_identity_component() -> None:
     assert len({base.request_id, *(item.request_id for item in variants)}) == 5
 
 
+def test_request_id_frames_identity_components_instead_of_delimiter_joining() -> None:
+    base = _obligation()
+    left = dataclasses.replace(base, object_id="a|b", protocol_version="c")
+    right = dataclasses.replace(base, object_id="a", protocol_version="b|c")
+    assert left.request_id != right.request_id
+
+
 def test_status_serialization_contains_only_bounded_operator_fields() -> None:
     status = PublicationStatus(
         mode=PublicationMode.PRIMARY,
