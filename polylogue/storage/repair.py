@@ -2306,7 +2306,12 @@ def _inspect_browser_capture_origin_mismatch(
         """,
         (raw_id,),
     ).fetchone()
-    if blob_ref is None or _bytes_value(blob_ref["blob_hash"]) != blob_hash or int(blob_ref["size_bytes"]) != blob_size:
+    if (
+        blob_ref is None
+        or _bytes_value(blob_ref["blob_hash"]) != blob_hash
+        or str(blob_ref["source_path"] or "") != source_path
+        or int(blob_ref["size_bytes"]) != blob_size
+    ):
         return _browser_origin_ineligible(raw_id, "raw payload blob reference does not match the source envelope")
     store = BlobStore(archive_root / "blob")
     blob_path = store.blob_path(blob_hash_hex)

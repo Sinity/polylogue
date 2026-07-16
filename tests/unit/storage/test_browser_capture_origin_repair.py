@@ -821,6 +821,8 @@ def test_browser_capture_origin_copy_forward_mutations_fail_closed(tmp_path: Pat
                   FROM raw_revision_heads
                 """
             )
+        source.commit()
+        index.commit()
 
     report = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
     assert report.ineligible_count == 1
