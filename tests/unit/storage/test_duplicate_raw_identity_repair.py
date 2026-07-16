@@ -11,6 +11,7 @@ reconciliation without hand-writing a raw UPDATE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -23,11 +24,14 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.raw_authority import record_raw_replay_outcome
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
+    recover_interrupted_raw_authority_frontier,
 )
 from polylogue.storage.repair import repair_duplicate_raw_identity
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -209,6 +213,26 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     assert obligation is not None
     assert obligation[1] is None
     assert json.loads(obligation[2])["state"] == RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE.value
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    assert readiness["raw_authority_frontier_blocking_count"] == 1
+    assert raw_materialization_ready(readiness) is False
+    refs = readiness["raw_authority_frontier_remediation_refs"]
+    assert isinstance(refs, list) and refs[0]["plan_id"] == missing.plan_id
+
+    reacquired = json.dumps({"marker": "duplicate-raw-fixture", "legacy_native_id": "legacy-native-id-1"}).encode()
+    assert hashlib.sha256(reacquired).digest() == blob_hash
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(reacquired)
+    advanced = inspect_raw_authority_frontier(_config(tmp_path))
+    assert (
+        next(item for item in advanced.items if item.raw_id == stale_raw_id).state
+        is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            (missing.plan_id,),
+        ).fetchone() == (0,)
 
 
 def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_path: Path) -> None:
@@ -241,6 +265,46 @@ def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_pat
             (report.census_id,),
         ).fetchone()
         assert row == ("completed",)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (stale_raw_id,)).fetchone() == (1,)
+    postflight = inspect_raw_authority_frontier(_config(tmp_path))
+    assert any(
+        item.raw_id == stale_raw_id and item.state is RawAuthorityFrontierState.SUPERSEDED for item in postflight.items
+    )
+
+
+def test_unified_frontier_recovers_crash_after_strategy_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_raw_id, canonical_raw_id, _session_id, logical_key = _seed_duplicate_raw_pair(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
+
+    def crash_before_outcome(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected crash after strategy commit")
+
+    monkeypatch.setattr("polylogue.storage.raw_reconciler.record_raw_replay_outcome", crash_before_outcome)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        apply_raw_authority_frontier(
+            _config(tmp_path),
+            preview_census_id=preview.census_id,
+            selected_plan_ids=(selected.plan_id,),
+            receipt_dir=tmp_path / "crash-receipts",
+        )
+    monkeypatch.setattr("polylogue.storage.raw_reconciler.record_raw_replay_outcome", record_raw_replay_outcome)
+
+    recovered = recover_interrupted_raw_authority_frontier(_config(tmp_path))
+
+    assert recovered == (selected.plan_id,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            (logical_key,),
+        ).fetchone() == (canonical_raw_id,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"
+        ).fetchone() == ("interrupted",)
 
 
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:
