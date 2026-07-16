@@ -12,7 +12,11 @@ from dataclasses import dataclass, field
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
-from polylogue.schemas.generation.replay import ArtifactMemberships
+from polylogue.schemas.generation.replay import (
+    membership_sample_count,
+    metadata_memberships,
+    select_artifact_memberships,
+)
 
 WORKLOAD_PROFILE_VERSION = 1
 _STRUCTURAL_VARIANT_CAP = 256
@@ -350,14 +354,16 @@ def build_package_workload_profile(
     privacy_policy: str,
 ) -> JSONDocument:
     """Build a bounded package profile without retaining corpus content."""
+    package_metadata = metadata_memberships(package.memberships)
     elements: JSONDocument = {}
     for element_kind, schema in sorted(element_schemas.items()):
-        variants, variant_loss = _structural_variants(package.memberships, element_kind=element_kind)
-        element_memberships = ArtifactMemberships(package.memberships, element_kind)
-        sample_count = sum(len(membership.unit.schema_samples) for membership in element_memberships)
+        variants, variant_loss = _structural_variants(package_metadata, element_kind=element_kind)
+        element_memberships = select_artifact_memberships(package.memberships, element_kind)
+        element_metadata = select_artifact_memberships(package_metadata, element_kind)
+        sample_count = membership_sample_count(element_memberships)
         elements[element_kind] = json_document(
             {
-                "artifact_count": len(element_memberships),
+                "artifact_count": len(element_metadata),
                 "sample_count": sample_count,
                 "field_profiles": _field_profiles(schema),
                 "structural_variants": variants,
@@ -377,7 +383,7 @@ def build_package_workload_profile(
             "first_seen": package.first_seen,
             "last_seen": package.last_seen,
             "bundle_scope_count": len(package.bundle_scopes),
-            "sample_count": sum(len(membership.unit.schema_samples) for membership in package.memberships),
+            "sample_count": membership_sample_count(package.memberships),
             "observation_window": {
                 "start": package.first_seen,
                 "end": package.last_seen,

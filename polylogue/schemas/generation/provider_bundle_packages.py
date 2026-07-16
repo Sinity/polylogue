@@ -25,7 +25,12 @@ from polylogue.schemas.generation.packages import (
     _membership_observed_window,
     _merge_representative_paths,
 )
-from polylogue.schemas.generation.replay import ArtifactMemberships, MembershipSamples, MembershipSessionIds
+from polylogue.schemas.generation.replay import (
+    MembershipSamples,
+    MembershipSessionIds,
+    metadata_memberships,
+    select_artifact_memberships,
+)
 from polylogue.schemas.generation.schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
@@ -83,7 +88,8 @@ def build_provider_catalog_artifacts(
         package_schemas[version] = {}
         package_reports[version] = {}
 
-        element_kinds = {membership.unit.artifact_kind for membership in package_acc.memberships}
+        package_metadata = metadata_memberships(package_acc.memberships)
+        element_kinds = {membership.unit.artifact_kind for membership in package_metadata}
 
         elements: list[SchemaElementManifest] = []
         total_package_samples = 0
@@ -92,17 +98,18 @@ def build_provider_catalog_artifacts(
             key=lambda item: (_artifact_priority(item), item),
             reverse=True,
         ):
-            kind_memberships = ArtifactMemberships(package_acc.memberships, element_kind)
+            kind_memberships = select_artifact_memberships(package_acc.memberships, element_kind)
+            kind_metadata = select_artifact_memberships(package_metadata, element_kind)
             schema_samples = MembershipSamples(kind_memberships)
             conv_ids = MembershipSessionIds(kind_memberships)
             representative_paths: list[str] = []
-            exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_memberships})
-            profile_family_ids = sorted({membership.profile_family_id for membership in kind_memberships})
+            exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_metadata})
+            profile_family_ids = sorted({membership.profile_family_id for membership in kind_metadata})
             element_bundle_scopes = sorted(
-                {membership.unit.bundle_scope for membership in kind_memberships if membership.unit.bundle_scope}
+                {membership.unit.bundle_scope for membership in kind_metadata if membership.unit.bundle_scope}
             )
-            element_first_seen, element_last_seen = _membership_observed_window(kind_memberships)
-            for membership in kind_memberships:
+            element_first_seen, element_last_seen = _membership_observed_window(kind_metadata)
+            for membership in kind_metadata:
                 if membership.unit.source_path:
                     _merge_representative_paths(representative_paths, [membership.unit.source_path])
 
@@ -122,7 +129,7 @@ def build_provider_catalog_artifacts(
                 schema_sample_count=len(schema_samples),
                 anchor_profile_family_id=package_acc.anchor_family_id,
                 artifact_kind=element_kind,
-                observed_artifact_count=len(kind_memberships),
+                observed_artifact_count=len(kind_metadata),
             )
             profile_family_ids_json = _json_text_values(profile_family_ids)
             exact_structure_ids_json = _json_text_values(exact_structure_ids)
@@ -144,16 +151,16 @@ def build_provider_catalog_artifacts(
                     element_kind=element_kind,
                     schema_file=f"{element_kind}.schema.json.gz",
                     sample_count=len(schema_samples),
-                    artifact_count=len(kind_memberships),
+                    artifact_count=len(kind_metadata),
                     first_seen=element_first_seen or "",
                     last_seen=element_last_seen or "",
                     bundle_scope_count=len(element_bundle_scopes),
                     bundle_scopes=element_bundle_scopes,
                     exact_structure_ids=exact_structure_ids,
                     profile_family_ids=profile_family_ids,
-                    profile_tokens=_element_profile_tokens(kind_memberships),
+                    profile_tokens=_element_profile_tokens(kind_metadata),
                     representative_paths=representative_paths,
-                    observed_artifact_count=len(kind_memberships),
+                    observed_artifact_count=len(kind_metadata),
                 )
             )
 

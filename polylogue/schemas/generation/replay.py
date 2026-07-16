@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import overload
 
 from polylogue.schemas.generation.models import _UnitMembership
+from polylogue.schemas.generation.observation_journal import JournalMemberships
 from polylogue.schemas.generation.schema_builder import SchemaInput
 
 
@@ -45,7 +46,7 @@ class MembershipSamples(Collection[SchemaInput]):
             yield from membership.unit.schema_samples
 
     def __len__(self) -> int:
-        return sum(len(membership.unit.schema_samples) for membership in self.memberships)
+        return membership_sample_count(self.memberships)
 
     def __contains__(self, value: object) -> bool:
         return any(sample == value for sample in self)
@@ -62,10 +63,38 @@ class MembershipSessionIds(Collection[str | None]):
             yield from (membership.unit.session_id for _sample in membership.unit.schema_samples)
 
     def __len__(self) -> int:
-        return sum(len(membership.unit.schema_samples) for membership in self.memberships)
+        return membership_sample_count(self.memberships)
 
     def __contains__(self, value: object) -> bool:
         return any(session_id == value for session_id in self)
 
 
-__all__ = ["ArtifactMemberships", "MembershipSamples", "MembershipSessionIds"]
+def select_artifact_memberships(
+    memberships: Sequence[_UnitMembership],
+    artifact_kind: str,
+) -> Sequence[_UnitMembership]:
+    if isinstance(memberships, JournalMemberships):
+        return memberships.for_artifact(artifact_kind)
+    return ArtifactMemberships(memberships, artifact_kind)
+
+
+def metadata_memberships(memberships: Sequence[_UnitMembership]) -> Sequence[_UnitMembership]:
+    if isinstance(memberships, JournalMemberships):
+        return memberships.metadata()
+    return memberships
+
+
+def membership_sample_count(memberships: Sequence[_UnitMembership]) -> int:
+    if isinstance(memberships, JournalMemberships):
+        return memberships.sample_count
+    return sum(len(membership.unit.schema_samples) for membership in memberships)
+
+
+__all__ = [
+    "ArtifactMemberships",
+    "MembershipSamples",
+    "MembershipSessionIds",
+    "membership_sample_count",
+    "metadata_memberships",
+    "select_artifact_memberships",
+]

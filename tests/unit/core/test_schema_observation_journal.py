@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.schemas.generation import observation_journal as observation_journal_module
 from polylogue.schemas.generation.observation_journal import (
     ObservationJournal,
     recover_stale_journals,
@@ -113,6 +114,33 @@ def test_journal_replays_assignments_without_retaining_cluster_payloads(tmp_path
         package = journal.memberships(package_family_id="package-1")
         assert len(package) == 1
         assert package[0].unit.schema_samples == first.schema_samples
+
+
+def test_metadata_membership_passes_do_not_decode_sample_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_decode = observation_journal_module._decode_json
+
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        unit_id = journal.append_unit(_unit(), retain_cluster_payload=False)
+        journal.assign_profile_family(unit_id, "family-a")
+        journal.assign_package_family(unit_id, "package-a")
+        memberships = journal.memberships(package_family_id="package-a")
+
+        def reject_sample_decode(value: bytes) -> object:
+            if b'"tool_result"' in value:
+                raise AssertionError("metadata pass decoded a schema sample")
+            return original_decode(value)
+
+        monkeypatch.setattr(observation_journal_module, "_decode_json", reject_sample_decode)
+
+        metadata = list(memberships.metadata())
+        assert len(metadata) == 1
+        assert metadata[0].unit.schema_samples == []
+        assert memberships.sample_count == 2
+        with pytest.raises(AssertionError, match="decoded a schema sample"):
+            list(memberships)
 
 
 def test_journal_rejects_archive_or_broad_permission_roots(tmp_path: Path) -> None:

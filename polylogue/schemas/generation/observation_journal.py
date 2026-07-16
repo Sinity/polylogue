@@ -296,16 +296,23 @@ class ObservationJournal:
         for _unit_id, unit in self.iter_identified_units():
             yield unit
 
-    def _unit_from_row(self, row: sqlite3.Row, *, include_cluster_payload: bool = True) -> SchemaUnit:
+    def _unit_from_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        include_cluster_payload: bool = True,
+        include_samples: bool = True,
+    ) -> SchemaUnit:
         sample_values = []
-        for sample_row in self._connection.execute(
-            "SELECT sample_json FROM samples WHERE unit_id = ? ORDER BY position",
-            (row["unit_id"],),
-        ):
-            sample = _decode_json(sample_row["sample_json"])
-            if not isinstance(sample, dict):
-                raise TypeError("Observation journal schema sample is not an object")
-            sample_values.append(sample)
+        if include_samples:
+            for sample_row in self._connection.execute(
+                "SELECT sample_json FROM samples WHERE unit_id = ? ORDER BY position",
+                (row["unit_id"],),
+            ):
+                sample = _decode_json(sample_row["sample_json"])
+                if not isinstance(sample, dict):
+                    raise TypeError("Observation journal schema sample is not an object")
+                sample_values.append(sample)
         profile_tokens = _decode_json(row["profile_tokens_json"])
         if not isinstance(profile_tokens, list) or not all(isinstance(item, str) for item in profile_tokens):
             raise TypeError("Observation journal profile tokens are not a string list")
@@ -371,12 +378,14 @@ class ObservationJournal:
         profile_family_id: str | None = None,
         package_family_id: str | None = None,
         artifact_kind: str | None = None,
+        include_samples: bool = True,
     ) -> JournalMemberships:
         return JournalMemberships(
             self,
             profile_family_id=profile_family_id,
             package_family_id=package_family_id,
             artifact_kind=artifact_kind,
+            include_samples=include_samples,
         )
 
     def _membership_where(
@@ -405,6 +414,7 @@ class ObservationJournal:
         package_family_id: str | None = None,
         artifact_kind: str | None = None,
         scope_order: bool = False,
+        include_samples: bool = True,
     ) -> Iterator[tuple[int, _UnitMembership]]:
         where, parameters = self._membership_where(
             profile_family_id=profile_family_id,
@@ -422,7 +432,11 @@ class ObservationJournal:
             yield (
                 int(row["unit_id"]),
                 _UnitMembership(
-                    unit=self._unit_from_row(row, include_cluster_payload=False),
+                    unit=self._unit_from_row(
+                        row,
+                        include_cluster_payload=False,
+                        include_samples=include_samples,
+                    ),
                     profile_family_id=str(row["profile_family_id"]),
                 ),
             )
@@ -440,6 +454,21 @@ class ObservationJournal:
             artifact_kind=artifact_kind,
         )
         query = f"SELECT COUNT(*) FROM units WHERE {where}"
+        return int(self._connection.execute(query, parameters).fetchone()[0])
+
+    def membership_sample_count(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> int:
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = f"SELECT COUNT(*) FROM samples JOIN units USING(unit_id) WHERE {where}"
         return int(self._connection.execute(query, parameters).fetchone()[0])
 
     def iter_terminals(self) -> Iterator[ObservationTerminal]:
@@ -504,11 +533,13 @@ class JournalMemberships(Sequence[_UnitMembership]):
         profile_family_id: str | None,
         package_family_id: str | None,
         artifact_kind: str | None,
+        include_samples: bool = True,
     ) -> None:
         self._journal = journal
         self._profile_family_id = profile_family_id
         self._package_family_id = package_family_id
         self._artifact_kind = artifact_kind
+        self._include_samples = include_samples
 
     def __len__(self) -> int:
         return self._journal.membership_count(
@@ -522,8 +553,37 @@ class JournalMemberships(Sequence[_UnitMembership]):
             profile_family_id=self._profile_family_id,
             package_family_id=self._package_family_id,
             artifact_kind=self._artifact_kind,
+            include_samples=self._include_samples,
         ):
             yield membership
+
+    @property
+    def sample_count(self) -> int:
+        return self._journal.membership_sample_count(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def metadata(self) -> JournalMemberships:
+        return JournalMemberships(
+            self._journal,
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+            include_samples=False,
+        )
+
+    def for_artifact(self, artifact_kind: str) -> JournalMemberships:
+        if self._artifact_kind is not None and self._artifact_kind != artifact_kind:
+            raise ValueError(f"Membership view is already filtered to {self._artifact_kind}")
+        return JournalMemberships(
+            self._journal,
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=artifact_kind,
+            include_samples=self._include_samples,
+        )
 
     @overload
     def __getitem__(self, index: int) -> _UnitMembership: ...

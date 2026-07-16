@@ -209,7 +209,7 @@ def _assemble_journal_package_candidates(
     """Assemble packages one bundle scope at a time and persist assignments."""
     packages: dict[str, _PackageAccumulator] = {}
     orphan_adjunct_counts: Counter[str] = Counter()
-    identified = journal.iter_identified_memberships(scope_order=True)
+    identified = journal.iter_identified_memberships(scope_order=True, include_samples=False)
 
     for scope, group in groupby(identified, key=lambda item: _membership_scope_key(item[1])):
         seen: set[tuple[str, str]] = set()
