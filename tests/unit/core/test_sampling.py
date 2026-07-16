@@ -7,15 +7,33 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
+from polylogue.schemas.observation_runtime import _document_profile_tokens
 from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
 from tests.infra.schema_access import schema_node
+
+
+def test_document_profile_tokens_collapse_record_identity_keys() -> None:
+    tokens = _document_profile_tokens(
+        {
+            "mapping": {
+                "2f5a7f5d-a809-469a-a79a-8f032618fa92": {"message": {}},
+                "client-created-root": {"message": None},
+            }
+        }
+    )
+
+    assert "child:mapping:*" in tokens
+    assert "child:mapping:client-created-root" in tokens
+    assert not any("2f5a7f5d" in token for token in tokens)
 
 
 def _archive_index_db(tmp_path: Path) -> Path:
@@ -237,6 +255,57 @@ class TestLoadSamplesFromDb:
         text = first_block.get("text")
         assert isinstance(text, str)
         assert len(text) == 1024
+
+    def test_document_provider_streams_compacted_values_into_envelope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.schemas import sampling
+
+        db = _archive_index_db(tmp_path)
+        raw_content = json.dumps(
+            {
+                "title": "conversation",
+                "mapping": {
+                    "node-1": {
+                        "id": "node-1",
+                        "message": {
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": ["x" * 4096]},
+                        },
+                    }
+                },
+            }
+        ).encode("utf-8")
+        _insert_raw_session(
+            db_path=db,
+            origin="chatgpt-export",
+            source_path="/tmp/conversation.json",
+            raw_content=raw_content,
+        )
+        original_build = cast(Callable[..., object], sampling.build_raw_payload_envelope)
+        observed_payloads: list[object] = []
+
+        def _capture_payload(raw: object, **kwargs: object) -> object:
+            observed_payloads.append(raw)
+            return original_build(raw, **kwargs)
+
+        monkeypatch.setattr(sampling, "build_raw_payload_envelope", _capture_payload)
+
+        result = load_samples_from_db("chatgpt", db_path=db)
+
+        assert len(result) == 1
+        assert len(observed_payloads) == 1
+        payload = schema_node(observed_payloads[0])
+        mapping = schema_node(payload["mapping"])
+        node = schema_node(mapping["node-1"])
+        message = schema_node(node["message"])
+        content = schema_node(message["content"])
+        parts = content["parts"]
+        assert isinstance(parts, list)
+        assert parts == ["x" * 1024]
+        assert "node-1" in mapping
 
     def test_schema_observation_records_included_and_decode_failed_raws(
         self,

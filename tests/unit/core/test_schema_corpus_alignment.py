@@ -20,10 +20,7 @@ from polylogue.archive.raw_payload.sampling_extract import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.stats import FieldStats
-from polylogue.schemas.generation.schema_builder import (
-    _STRUCTURE_EXEMPLARS_PER_FINGERPRINT,
-    _generate_cluster_schema,
-)
+from polylogue.schemas.generation.schema_builder import _generate_cluster_schema
 from polylogue.schemas.generation.semantic_relations import (
     annotate_semantic_and_relational,
 )
@@ -81,11 +78,9 @@ class TestFullCorpusMode:
         )
         assert len(result) == 50
 
-    def test_generate_cluster_schema_full_corpus_uses_all_exemplars(self) -> None:
-        """full_corpus=True feeds all samples to genson, not just N per fingerprint."""
-        # Create samples with identical structure (same fingerprint).
-        # In normal mode only _STRUCTURE_EXEMPLARS_PER_FINGERPRINT would be used.
-        sample_count = _STRUCTURE_EXEMPLARS_PER_FINGERPRINT * 3
+    def test_generate_cluster_schema_is_lossless_in_normal_and_full_modes(self) -> None:
+        """Both modes incrementally merge every structural observation."""
+        sample_count = 24
         samples = [{"role": "user", "text": f"message {i}"} for i in range(sample_count)]
         conv_ids: list[str | None] = [None] * sample_count
         config = ProviderConfig(
@@ -94,7 +89,6 @@ class TestFullCorpusMode:
             sample_granularity="record",
         )
 
-        # Normal mode — should be capped
         schema_normal, _ = _generate_cluster_schema(
             "test-provider",
             config,
@@ -102,7 +96,6 @@ class TestFullCorpusMode:
             conv_ids,
             privacy_config=None,
         )
-        # Full-corpus mode — all exemplars used
         schema_full, _ = _generate_cluster_schema(
             "test-provider",
             config,
@@ -111,9 +104,7 @@ class TestFullCorpusMode:
             privacy_config=None,
             full_corpus=True,
         )
-        # Both should produce valid schemas
-        assert schema_normal.get("type") == "object" or "$schema" in schema_normal
-        assert schema_full.get("type") == "object" or "$schema" in schema_full
+        assert schema_normal == schema_full
 
 
 # ---------------------------------------------------------------------------

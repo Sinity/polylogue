@@ -11,6 +11,7 @@ from polylogue.core.json import JSONDocumentList, JSONValue
 
 SchemaSampleGranularity: TypeAlias = Literal["document", "record"]
 SchemaClusterPayload: TypeAlias = JSONValue
+SCHEMA_SAMPLE_STRING_LIMIT = 1024
 ObservationTerminalStatus: TypeAlias = Literal[
     "included",
     "intentionally_excluded",
@@ -130,6 +131,7 @@ __all__ = [
     "ObservationTerminalStatus",
     "PROVIDERS",
     "ProviderConfig",
+    "SCHEMA_SAMPLE_STRING_LIMIT",
     "SchemaClusterPayload",
     "SchemaSampleGranularity",
     "SchemaUnit",

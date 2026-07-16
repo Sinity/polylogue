@@ -11,7 +11,6 @@ from polylogue.schemas.generation.cluster_collection import (
 )
 from polylogue.schemas.generation.cluster_support import (
     _cluster_profile_tokens,
-    _cluster_reservoir_size,
     _cluster_sort_key,
 )
 from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
@@ -84,7 +83,6 @@ def _build_provider_bundle(
                 provider,
                 db_path=db_path,
                 max_samples=max_samples,
-                reservoir_size=_cluster_reservoir_size(config, max_samples),
                 full_corpus=full_corpus,
                 journal=journal,
             )
@@ -120,8 +118,16 @@ def _build_provider_bundle(
                                 confidence=1.0,
                                 artifact_kind=acc.artifact_kind,
                                 profile_tokens=list(_cluster_profile_tokens(acc)),
-                                exact_structure_ids=sorted(acc.exact_structure_ids),
-                                bundle_scope_count=len(acc.bundle_scopes),
+                                exact_structure_ids=list(
+                                    journal.memberships(
+                                        profile_family_id=cluster_id,
+                                        include_samples=False,
+                                    ).iter_distinct_values("exact_structure_id")
+                                ),
+                                bundle_scope_count=journal.memberships(
+                                    profile_family_id=cluster_id,
+                                    include_samples=False,
+                                ).distinct_count("bundle_scope"),
                             )
                             for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True)
                         ],
@@ -143,6 +149,7 @@ def _build_provider_bundle(
                 orphan_adjunct_counts=orphan_adjunct_counts,
                 privacy_config=privacy_config,
                 observation_outcomes=observation_outcomes,
+                journal=journal,
             )
             return build_success_provider_bundle(
                 provider_token=provider_token,

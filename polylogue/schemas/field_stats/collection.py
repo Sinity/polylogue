@@ -10,6 +10,7 @@ from polylogue.schemas.field_stats.detection import (
     _detect_numeric_format,
     _detect_string_format,
     is_dynamic_key,
+    should_collapse_observed_keys,
 )
 from polylogue.schemas.field_stats.models import (
     ENUM_MAX_CARDINALITY,
@@ -21,8 +22,6 @@ from polylogue.schemas.field_stats.models import (
 )
 
 SampleMapping: TypeAlias = Mapping[str, object]
-JSONContainer: TypeAlias = dict[str, object]
-JSONList: TypeAlias = list[object]
 FieldStatsByPath: TypeAlias = dict[str, FieldStats]
 DictKeySetsByPath: TypeAlias = dict[str, set[str]]
 
@@ -70,6 +69,7 @@ def _collect_field_stats(
     samples: Collection[SampleMapping],
     *,
     session_ids: Collection[str | None] | None = None,
+    dynamic_paths: Collection[str] = (),
     max_depth: int = 15,
 ) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics."""
@@ -116,15 +116,8 @@ def _collect_field_stats(
             _append_bounded(stats.object_key_counts, len(value), stats, "object_fanout_samples")
             stats.object_fanout_distribution.observe(len(value))
 
-            static_keys: JSONContainer = {}
-            dynamic_values: JSONList = []
-            for key, item in value.items():
-                if is_dynamic_key(key):
-                    dynamic_values.append(item)
-                else:
-                    static_keys[str(key)] = item
-
-            sibling_names = set(static_keys)
+            collapse_all = path in dynamic_paths or should_collapse_observed_keys(value.keys())
+            sibling_names = {str(key) for key in value if not collapse_all and not is_dynamic_key(str(key))}
             for child_name in sibling_names:
                 child_stats = _ensure_stats(f"{path}.{child_name}")
                 for other_name in sibling_names:
@@ -137,27 +130,37 @@ def _collect_field_stats(
                             "co_occurring_fields",
                         )
 
-            for key, item in static_keys.items():
-                _walk(item, f"{path}.{key}", depth + 1, sample_idx)
-            for item in dynamic_values:
-                _walk(item, f"{path}.*", depth + 1, sample_idx)
+            for key, item in value.items():
+                key_text = str(key)
+                child_path = f"{path}.*" if collapse_all or is_dynamic_key(key_text) else f"{path}.{key_text}"
+                _walk(item, child_path, depth + 1, sample_idx)
             return
 
         if isinstance(value, list):
             _append_bounded(stats.array_lengths, len(value), stats, "array_length_samples")
             stats.array_length_distribution.observe(len(value))
             numeric_seq: list[float] = []
+            numeric_pair_count = 0
+            numeric_increasing_pair_count = 0
+            previous_numeric: float | None = None
             for item in value:
                 if isinstance(item, (int, float)) and not isinstance(item, bool):
                     fval = float(item)
                     if not (math.isnan(fval) or math.isinf(fval)):
-                        numeric_seq.append(fval)
+                        if previous_numeric is not None:
+                            numeric_pair_count += 1
+                            if fval >= previous_numeric:
+                                numeric_increasing_pair_count += 1
+                        previous_numeric = fval
+                        if len(numeric_seq) < LEGACY_SAMPLE_CAP:
+                            numeric_seq.append(fval)
                 _walk(item, f"{path}[*]", depth + 1, sample_idx)
-            if len(numeric_seq) >= 2:
+            if numeric_pair_count:
                 item_stats = _ensure_stats(f"{path}[*]")
-                item_stats.observe_ordered_sequence(numeric_seq)
+                item_stats.ordered_pair_count += numeric_pair_count
+                item_stats.ordered_increasing_pair_count += numeric_increasing_pair_count
                 if len(item_stats._ordered_samples) < _ORDERED_SEQUENCE_CAP:
-                    item_stats._ordered_samples.append(numeric_seq[:LEGACY_SAMPLE_CAP])
+                    item_stats._ordered_samples.append(numeric_seq)
                 else:
                     item_stats.truncated_evidence["ordered_sequences"] += 1
             return

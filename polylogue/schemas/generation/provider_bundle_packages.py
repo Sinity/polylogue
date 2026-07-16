@@ -20,10 +20,12 @@ from polylogue.schemas.generation.models import (
     _ProviderBundle,
     _UnitMembership,
 )
+from polylogue.schemas.generation.observation_journal import JournalMemberships, ObservationJournal
 from polylogue.schemas.generation.packages import (
     _element_profile_tokens,
     _membership_observed_window,
     _merge_representative_paths,
+    _package_bundle_scope_count,
 )
 from polylogue.schemas.generation.replay import (
     MembershipSamples,
@@ -104,6 +106,30 @@ def _json_text_values(values: Iterable[str]) -> list[JSONValue]:
     return list(values)
 
 
+def _membership_exact_structure_ids(memberships: Sequence[_UnitMembership]) -> list[str]:
+    if isinstance(memberships, JournalMemberships):
+        return list(memberships.iter_distinct_values("exact_structure_id"))
+    return sorted({membership.unit.exact_structure_id for membership in memberships})
+
+
+def _membership_profile_family_ids(memberships: Sequence[_UnitMembership]) -> list[str]:
+    if isinstance(memberships, JournalMemberships):
+        return list(memberships.iter_distinct_values("profile_family_id"))
+    return sorted({membership.profile_family_id for membership in memberships})
+
+
+def _membership_bundle_scopes(memberships: Sequence[_UnitMembership]) -> list[str]:
+    if isinstance(memberships, JournalMemberships):
+        return list(memberships.iter_distinct_values("bundle_scope"))
+    return sorted({membership.unit.bundle_scope for membership in memberships if membership.unit.bundle_scope})
+
+
+def _package_scope_keys(package: _PackageAccumulator) -> list[str]:
+    if isinstance(package.memberships, JournalMemberships):
+        return list(package.memberships.iter_scope_keys())
+    return sorted(package.bundle_scopes)
+
+
 def build_provider_catalog_artifacts(
     *,
     provider_token: Provider,
@@ -117,6 +143,7 @@ def build_provider_catalog_artifacts(
     orphan_adjunct_counts: dict[str, int],
     privacy_config: SchemaPrivacyConfig | None,
     observation_outcomes: JSONDocument,
+    journal: ObservationJournal | None = None,
 ) -> ProviderCatalogArtifacts:
     """Build package schemas, catalog metadata, and manifest for a provider."""
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
@@ -133,6 +160,8 @@ def build_provider_catalog_artifacts(
 
         package_metadata = metadata_memberships(package_acc.memberships)
         element_kinds = {membership.unit.artifact_kind for membership in package_metadata}
+        package_profile_family_ids = _membership_profile_family_ids(package_metadata)
+        package_profile_family_ids_json = _json_text_values(package_profile_family_ids)
 
         elements: list[SchemaElementManifest] = []
         total_package_samples = 0
@@ -146,11 +175,9 @@ def build_provider_catalog_artifacts(
             schema_samples = MembershipSamples(kind_memberships)
             conv_ids = MembershipSessionIds(kind_memberships)
             representative_paths: list[str] = []
-            exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_metadata})
-            profile_family_ids = sorted({membership.profile_family_id for membership in kind_metadata})
-            element_bundle_scopes = sorted(
-                {membership.unit.bundle_scope for membership in kind_metadata if membership.unit.bundle_scope}
-            )
+            exact_structure_ids = _membership_exact_structure_ids(kind_metadata)
+            profile_family_ids = _membership_profile_family_ids(kind_metadata)
+            element_bundle_scopes = _membership_bundle_scopes(kind_metadata)
             element_first_seen, element_last_seen = _membership_observed_window(kind_metadata)
             for membership in kind_metadata:
                 if membership.unit.source_path:
@@ -176,7 +203,6 @@ def build_provider_catalog_artifacts(
             )
             profile_family_ids_json = _json_text_values(profile_family_ids)
             exact_structure_ids_json = _json_text_values(exact_structure_ids)
-            package_profile_family_ids_json = _json_text_values(sorted(package_acc.profile_family_ids))
             schema["x-polylogue-package-version"] = version
             schema["x-polylogue-profile-family-ids"] = profile_family_ids_json
             schema["x-polylogue-exact-structure-ids"] = exact_structure_ids_json
@@ -214,11 +240,11 @@ def build_provider_catalog_artifacts(
             default_element_kind=package_acc.anchor_kind,
             first_seen=package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
             last_seen=package_acc.last_seen or package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
-            bundle_scope_count=len(package_acc.bundle_scopes),
+            bundle_scope_count=_package_bundle_scope_count(package_acc),
             sample_count=total_package_samples,
             anchor_profile_family_id=package_acc.anchor_family_id,
-            bundle_scopes=sorted(package_acc.bundle_scopes),
-            profile_family_ids=sorted(package_acc.profile_family_ids),
+            bundle_scopes=_package_scope_keys(package_acc),
+            profile_family_ids=package_profile_family_ids,
             representative_paths=package_acc.representative_paths,
             elements=elements,
             workload_profile_file="workload-profile.json.gz",
@@ -250,6 +276,9 @@ def build_provider_catalog_artifacts(
     )
     manifest_clusters: list[SchemaCluster] = []
     for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True):
+        cluster_memberships = (
+            journal.memberships(profile_family_id=cluster_id, include_samples=False) if journal is not None else None
+        )
         manifest_clusters.append(
             SchemaCluster(
                 cluster_id=cluster_id,
@@ -262,8 +291,16 @@ def build_provider_catalog_artifacts(
                 confidence=round(min(1.0, acc.sample_count / max(total_units * 0.1, 1)), 3),
                 artifact_kind=acc.artifact_kind,
                 profile_tokens=list(_cluster_profile_tokens(acc)),
-                exact_structure_ids=sorted(acc.exact_structure_ids),
-                bundle_scope_count=len(acc.bundle_scopes),
+                exact_structure_ids=(
+                    list(cluster_memberships.iter_distinct_values("exact_structure_id"))
+                    if cluster_memberships is not None
+                    else sorted(acc.exact_structure_ids)
+                ),
+                bundle_scope_count=(
+                    cluster_memberships.distinct_count("bundle_scope")
+                    if cluster_memberships is not None
+                    else len(acc.bundle_scopes)
+                ),
                 promoted_package_version=cluster_to_package_version.get(cluster_id),
             )
         )

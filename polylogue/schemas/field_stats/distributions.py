@@ -70,6 +70,23 @@ class DistributionSketch:
         self.m2 += delta * (numeric - self.mean)
         self.buckets[_bucket_index(numeric)] += 1
 
+    def observe_repeated(self, value: int | float, count: int) -> None:
+        """Observe one finite value ``count`` times without a count-sized loop."""
+        if count <= 0:
+            return
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            self.non_finite_count += count
+            return
+        repeated = DistributionSketch(
+            count=count,
+            minimum=numeric,
+            maximum=numeric,
+            mean=numeric,
+            buckets=Counter({_bucket_index(numeric): count}),
+        )
+        self.merge(repeated)
+
     def merge(self, other: DistributionSketch) -> None:
         if other.count:
             if not self.count:

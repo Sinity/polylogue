@@ -35,6 +35,7 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
             {
                 "representative_paths": ["/home/operator/.claude/session.jsonl"],
                 "bundle_scopes": ["session-123"],
+                "profile_tokens": ["child:mapping:2f5a7f5d-a809-469a-a79a-8f032618fa92"],
             }
         ),
         encoding="utf-8",
@@ -43,7 +44,8 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
     report = audit_schema_artifacts(tmp_path)
 
     assert {(item.category, item.value) for item in report.blockers} == {
-        ("unsafe_property_name", "What should happen after approval?")
+        ("unsafe_property_name", "What should happen after approval?"),
+        ("unsafe_structural_identifier", "child:mapping:2f5a7f5d-a809-469a-a79a-8f032618fa92"),
     }
     review = {(item.category, item.value) for item in report.review_items}
     assert ("filesystem_path", "/home/operator/.claude/session.jsonl") in review

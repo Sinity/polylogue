@@ -120,6 +120,13 @@ def _review_category(field: str, value: str) -> str:
     return "approved_readable_value"
 
 
+def _unsafe_profile_token(value: str) -> bool:
+    if ":" not in value:
+        return False
+    token_kind, _, observed_name = value.rpartition(":")
+    return token_kind.startswith(("child:", "field:", "item:")) and is_dynamic_key(observed_name)
+
+
 def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[PromotionAuditFinding]:
     findings = []
     for category, pattern in _SECRET_PATTERNS.items():
@@ -168,6 +175,17 @@ def _walk_artifact(
                     secret_findings = _secret_findings(artifact=artifact, json_path=child_path, value=text)
                     findings.extend(secret_findings)
                     if secret_findings:
+                        continue
+                    if key == "profile_tokens" and _unsafe_profile_token(text):
+                        findings.append(
+                            PromotionAuditFinding(
+                                severity="blocker",
+                                category="unsafe_structural_identifier",
+                                artifact=artifact,
+                                json_path=child_path,
+                                value=text,
+                            )
+                        )
                         continue
                     findings.append(
                         PromotionAuditFinding(

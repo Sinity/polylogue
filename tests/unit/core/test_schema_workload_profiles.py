@@ -52,6 +52,18 @@ def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
     assert upper_quantile >= 100_000
 
 
+def test_distribution_sketch_observes_repeated_values_without_expansion() -> None:
+    sketch = DistributionSketch()
+    sketch.observe_repeated(0, 1_000_000)
+    sketch.observe_repeated(10, 2)
+
+    assert sketch.count == 1_000_002
+    assert sketch.minimum == 0
+    assert sketch.maximum == 10
+    assert sketch.mean == pytest.approx(20 / 1_000_002)
+    assert sketch.buckets[0] == 1_000_000
+
+
 def test_workload_profile_identity_normalizes_unicode_content() -> None:
     composed = {
         "label": "caf\N{LATIN SMALL LETTER E WITH ACUTE}",

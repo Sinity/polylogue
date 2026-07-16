@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
+from polylogue.schemas.generation.packages import _package_bundle_scope_count
 from polylogue.schemas.generation.replay import (
     membership_sample_count,
     metadata_memberships,
@@ -383,7 +384,7 @@ def build_package_workload_profile(
         "provenance": {
             "first_seen": package.first_seen,
             "last_seen": package.last_seen,
-            "bundle_scope_count": len(package.bundle_scopes),
+            "bundle_scope_count": _package_bundle_scope_count(package),
             "sample_count": membership_sample_count(package.memberships),
             "observation_window": {
                 "start": package.first_seen,

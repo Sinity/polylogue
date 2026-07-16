@@ -9,10 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypeAlias, overload
 
+import ijson
+from ijson.common import ObjectBuilder
+
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue, require_json_value
 from polylogue.core.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
@@ -26,7 +29,11 @@ from polylogue.schemas.observation import (
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
-from polylogue.schemas.observation_models import ObservationTerminalRecorder, ObservationTerminalStatus
+from polylogue.schemas.observation_models import (
+    SCHEMA_SAMPLE_STRING_LIMIT,
+    ObservationTerminalRecorder,
+    ObservationTerminalStatus,
+)
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import connection_context
 
@@ -186,15 +193,50 @@ def _build_raw_payload_envelope_for_row(
     source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
-) -> RawPayloadEnvelope | None:
+) -> tuple[RawPayloadEnvelope | None, bool]:
     from polylogue.schemas import sampling as sampling_root
 
-    return sampling_root.build_raw_payload_envelope(
-        raw_content,
-        source_path=row.source_path,
-        fallback_provider=row.provider_token or str(source_name),
-        jsonl_dict_only=config.sample_granularity == "record",
+    compacted_payload = _stream_compact_json_document(raw_content)
+    return (
+        sampling_root.build_raw_payload_envelope(
+            compacted_payload if compacted_payload is not None else raw_content,
+            source_path=row.source_path,
+            fallback_provider=row.provider_token or str(source_name),
+            jsonl_dict_only=config.sample_granularity == "record",
+        ),
+        compacted_payload is not None,
     )
+
+
+def _stream_compact_json_document(raw_content: Path) -> JSONValue | None:
+    """Decode JSON while bounding retained string values for schema inference.
+
+    Schema inference observes structure and small representative values; it
+    never consumes complete transcript bodies.  Truncating value events before
+    ``ObjectBuilder`` retains them avoids materializing multi-megabyte message
+    strings and then copying them during the ordinary schema compaction pass.
+    Map keys remain complete because they are structural evidence.
+
+    ``None`` means the blob does not look like a JSON document.  The caller
+    then delegates to the ordinary raw-envelope decoder for SQLite and other
+    provider-specific artifacts.
+    """
+    with raw_content.open("rb") as handle:
+        prefix = handle.read(64).lstrip()
+        if not prefix.startswith((b"{", b"[")):
+            return None
+        handle.seek(0)
+        builder = ObjectBuilder()
+        try:
+            for event, value in ijson.basic_parse(handle, use_float=True):
+                if event == "string" and isinstance(value, str):
+                    value = value[:SCHEMA_SAMPLE_STRING_LIMIT]
+                builder.event(event, value)
+        except ijson.JSONError:
+            # Preserve the ordinary decoder's JSONL and provider-specific
+            # fallbacks for malformed or concatenated document-like blobs.
+            return None
+    return require_json_value(builder.value, context="stream-compacted schema payload")
 
 
 def _iter_schema_units_from_db(
@@ -276,7 +318,7 @@ def _iter_schema_units_from_db(
                         continue
 
                 try:
-                    envelope = _build_raw_payload_envelope_for_row(
+                    envelope, values_compacted = _build_raw_payload_envelope_for_row(
                         row,
                         source_name=source_name,
                         raw_content=raw_content,
@@ -315,6 +357,7 @@ def _iter_schema_units_from_db(
                     observed_at=row.observed_at,
                     config=config,
                     max_samples=max_samples,
+                    values_compacted=values_compacted,
                 )
                 if not units:
                     _record_terminal(

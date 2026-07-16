@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Collection
+from functools import lru_cache
 
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_HEX_KEY_PATTERN = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
+_PREFIXED_ID_KEY_PATTERN = re.compile(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", re.IGNORECASE)
 
 FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("uuid4", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)),
@@ -24,8 +28,11 @@ FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 _MAX_STRUCTURAL_KEY_LENGTH = 128
 _CONTENT_KEY_MARKERS = frozenset("?<>")
+_HIGH_CARDINALITY_KEY_THRESHOLD = 128
+_PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
 
 
+@lru_cache(maxsize=4096)
 def is_dynamic_key(key: str) -> bool:
     if len(key) > _MAX_STRUCTURAL_KEY_LENGTH:
         return True
@@ -35,9 +42,27 @@ def is_dynamic_key(key: str) -> bool:
         return True
     if UUID_PATTERN.match(key):
         return True
-    if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
+    if _HEX_KEY_PATTERN.match(key):
         return True
-    return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
+    return bool(_PREFIXED_ID_KEY_PATTERN.match(key))
+
+
+def _looks_pathlike_key(key: str) -> bool:
+    if "/" in key or "\\" in key:
+        return True
+    if key.count(".") >= 2:
+        return True
+    return ":" in key and len(key) > 2
+
+
+def should_collapse_observed_keys(keys: Collection[object]) -> bool:
+    """Return whether an observed map must be modeled as a dynamic-key map."""
+    if len(keys) >= _HIGH_CARDINALITY_KEY_THRESHOLD:
+        return True
+    if len(keys) < 24:
+        return False
+    pathlike = sum(1 for key in keys if _looks_pathlike_key(str(key)))
+    return (pathlike / len(keys)) >= _PATHLIKE_KEY_RATIO_THRESHOLD
 
 
 def _detect_string_format(value: str) -> str | None:
@@ -69,4 +94,5 @@ __all__ = [
     "FORMAT_PATTERNS",
     "UUID_PATTERN",
     "is_dynamic_key",
+    "should_collapse_observed_keys",
 ]

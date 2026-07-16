@@ -136,6 +136,75 @@ def _length_distributions(
     return payload
 
 
+def _scan_table_profile(
+    conn: sqlite3.Connection,
+    table: str,
+    *,
+    mix_columns: Sequence[str] = (),
+    distribution_columns: Sequence[str] = (),
+    length_columns: Sequence[str] = (),
+) -> tuple[int, JSONDocument, JSONDocument, JSONDocument]:
+    """Collect independent row statistics in one base-table pass.
+
+    Length expressions stay inside SQLite so large text/tool payloads are not
+    copied into Python merely to measure their encoded size.
+    """
+    available = _columns(conn, table)
+    mixes = [column for column in mix_columns if column in available]
+    distributions = [column for column in distribution_columns if column in available]
+    lengths = [column for column in length_columns if column in available]
+    if not mixes and not distributions and not lengths:
+        return _scalar(conn, f'SELECT COUNT(*) FROM "{table}"'), {}, {}, {}
+
+    expressions = [*(f'"{column}"' for column in mixes), *(f'"{column}"' for column in distributions)]
+    expressions.extend(f'length(CAST("{column}" AS BLOB))' for column in lengths)
+    mix_counts = {column: Counter[str]() for column in mixes}
+    sketches = {column: DistributionSketch() for column in distributions}
+    distribution_nulls = dict.fromkeys(distributions, 0)
+    length_sketches = {column: DistributionSketch() for column in lengths}
+    length_nulls = dict.fromkeys(lengths, 0)
+    row_count = 0
+
+    for row in conn.execute("SELECT " + ", ".join(expressions) + f' FROM "{table}"'):
+        row_count += 1
+        offset = 0
+        for column in mixes:
+            value = row[offset]
+            offset += 1
+            mix_counts[column]["<null>" if value is None else str(value)] += 1
+        for column in distributions:
+            value = row[offset]
+            offset += 1
+            if value is None:
+                distribution_nulls[column] += 1
+            elif isinstance(value, int | float) and not isinstance(value, bool):
+                sketches[column].observe(value)
+        for column in lengths:
+            value = row[offset]
+            offset += 1
+            if value is None:
+                length_nulls[column] += 1
+            elif isinstance(value, int | float) and not isinstance(value, bool):
+                length_sketches[column].observe(value)
+
+    distribution_payload: JSONDocument = {}
+    for column in distributions:
+        payload = sketches[column].to_payload()
+        payload["null_count"] = distribution_nulls[column]
+        distribution_payload[column] = payload
+    length_payload: JSONDocument = {}
+    for column in lengths:
+        payload = length_sketches[column].to_payload()
+        payload["null_count"] = length_nulls[column]
+        length_payload[f"{column}_bytes"] = payload
+    return (
+        row_count,
+        {column: dict(sorted(counts.items())) for column, counts in mix_counts.items()},
+        distribution_payload,
+        length_payload,
+    )
+
+
 def _anonymous_cardinality_profile(
     conn: sqlite3.Connection,
     *,
@@ -163,48 +232,17 @@ def _anonymous_cardinality_profile(
     }
 
 
-def _per_session_tool_distributions(conn: sqlite3.Connection) -> tuple[JSONDocument, JSONDocument]:
-    if not _table_exists(conn, "blocks"):
-        return {}, {}
-    uses = DistributionSketch()
-    results = DistributionSketch()
-    if _table_exists(conn, "sessions"):
-        query = """
-        SELECT
-            SUM(CASE WHEN b.block_type = 'tool_use' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN b.block_type = 'tool_result' THEN 1 ELSE 0 END)
-        FROM sessions AS s
-        LEFT JOIN blocks AS b
-          ON b.session_id = s.session_id
-         AND b.block_type IN ('tool_use', 'tool_result')
-        GROUP BY s.session_id
-        """
-    else:
-        query = """
-        SELECT
-            SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END)
-        FROM blocks
-        WHERE block_type IN ('tool_use', 'tool_result')
-        GROUP BY session_id
-        """
-    rows = conn.execute(query)
-    for row in rows:
-        use_count = int(row[0] or 0)
-        result_count = int(row[1] or 0)
-        uses.observe(use_count)
-        results.observe(result_count)
-    use_payload = uses.to_payload()
-    use_payload["null_count"] = 0
-    result_payload = results.to_payload()
-    result_payload["null_count"] = 0
-    return use_payload, result_payload
-
-
-def _tool_pairing_profile(conn: sqlite3.Connection) -> JSONDocument:
+def _tool_profiles(
+    conn: sqlite3.Connection,
+    *,
+    session_count: int,
+) -> tuple[JSONDocument, JSONDocument, JSONDocument]:
+    """Derive tool pairing and per-session counts from one grouped scan."""
     required = {"session_id", "tool_id", "block_type"}
     if not required <= _columns(conn, "blocks"):
-        return {}
+        return {}, {}, {}
+    uses = DistributionSketch()
+    results = DistributionSketch()
     totals = {
         "paired": 0,
         "missing_results": 0,
@@ -216,28 +254,61 @@ def _tool_pairing_profile(conn: sqlite3.Connection) -> JSONDocument:
     }
     query = """
         SELECT
+            session_id,
             tool_id,
             SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END) AS uses,
             SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END) AS results
         FROM blocks
         WHERE block_type IN ('tool_use', 'tool_result')
         GROUP BY session_id, tool_id
+        ORDER BY session_id, tool_id
     """
     group_size = DistributionSketch()
+    current_session: str | None = None
+    session_uses = 0
+    session_results = 0
+    observed_sessions = 0
     for row in conn.execute(query):
-        uses = int(row[1] or 0)
-        results = int(row[2] or 0)
-        if row[0] is None or row[0] == "":
-            totals["unknown_identity_uses"] += uses
-            totals["unknown_identity_results"] += results
+        session_id = str(row[0])
+        if current_session is not None and session_id != current_session:
+            uses.observe(session_uses)
+            results.observe(session_results)
+            observed_sessions += 1
+            session_uses = 0
+            session_results = 0
+        current_session = session_id
+        use_count = int(row[2] or 0)
+        result_count = int(row[3] or 0)
+        session_uses += use_count
+        session_results += result_count
+        if row[1] is None or row[1] == "":
+            totals["unknown_identity_uses"] += use_count
+            totals["unknown_identity_results"] += result_count
             continue
-        totals["paired"] += min(uses, results)
-        totals["missing_results"] += max(0, uses - results)
-        totals["orphan_results"] += max(0, results - uses)
-        totals["duplicate_calls"] += max(0, uses - 1)
-        totals["duplicate_results"] += max(0, results - 1)
-        group_size.observe(uses + results)
-    return {**totals, "records_per_tool_identity": group_size.to_payload(), "identities_retained": False}
+        totals["paired"] += min(use_count, result_count)
+        totals["missing_results"] += max(0, use_count - result_count)
+        totals["orphan_results"] += max(0, result_count - use_count)
+        totals["duplicate_calls"] += max(0, use_count - 1)
+        totals["duplicate_results"] += max(0, result_count - 1)
+        group_size.observe(use_count + result_count)
+    if current_session is not None:
+        uses.observe(session_uses)
+        results.observe(session_results)
+        observed_sessions += 1
+    zero_tool_sessions = max(0, session_count - observed_sessions)
+    uses.observe_repeated(0, zero_tool_sessions)
+    results.observe_repeated(0, zero_tool_sessions)
+
+    use_payload = uses.to_payload()
+    use_payload["null_count"] = 0
+    result_payload = results.to_payload()
+    result_payload["null_count"] = 0
+    pairing_payload: JSONDocument = {
+        **totals,
+        "records_per_tool_identity": group_size.to_payload(),
+        "identities_retained": False,
+    }
+    return pairing_payload, use_payload, result_payload
 
 
 def _topology_profile(conn: sqlite3.Connection) -> JSONDocument:
@@ -265,13 +336,54 @@ def _topology_profile(conn: sqlite3.Connection) -> JSONDocument:
 
 
 def _index_profile(conn: sqlite3.Connection) -> JSONDocument:
-    session_count = _scalar(conn, "SELECT COUNT(*) FROM sessions")
-    message_count = _scalar(conn, "SELECT COUNT(*) FROM messages") if _table_exists(conn, "messages") else 0
-    block_count = _scalar(conn, "SELECT COUNT(*) FROM blocks") if _table_exists(conn, "blocks") else 0
-    session_mixes = _mixes(conn, "sessions", ("origin", "session_kind", "branch_type", "title_source"))
-    message_mixes = _mixes(conn, "messages", ("role", "message_type", "material_origin"))
-    block_mixes = _mixes(conn, "blocks", ("block_type",))
-    tool_use_distribution, tool_result_distribution = _per_session_tool_distributions(conn)
+    session_count, session_mixes, session_shapes, session_lengths = _scan_table_profile(
+        conn,
+        "sessions",
+        mix_columns=("origin", "session_kind", "branch_type", "title_source"),
+        distribution_columns=(
+            "message_count",
+            "word_count",
+            "tool_use_count",
+            "thinking_count",
+            "paste_count",
+            "user_message_count",
+            "authored_user_message_count",
+            "assistant_message_count",
+            "system_message_count",
+            "tool_message_count",
+            "user_word_count",
+            "authored_user_word_count",
+            "assistant_word_count",
+            "reported_duration_ms",
+        ),
+        length_columns=("title", "instructions_text", "git_branch", "git_repository_url", "provider_project_ref"),
+    )
+    message_count, message_mixes, message_shapes, message_lengths = _scan_table_profile(
+        conn,
+        "messages",
+        mix_columns=("role", "message_type", "material_origin"),
+        distribution_columns=(
+            "position",
+            "variant_index",
+            "word_count",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "duration_ms",
+        ),
+        length_columns=("user_context_text",),
+    )
+    block_count, block_mixes, _block_shapes, block_lengths = _scan_table_profile(
+        conn,
+        "blocks",
+        mix_columns=("block_type",),
+        length_columns=("text", "tool_input"),
+    )
+    pairing_profile, tool_use_distribution, tool_result_distribution = _tool_profiles(
+        conn,
+        session_count=session_count,
+    )
     profile: JSONDocument = {
         "row_counts": {"sessions": session_count, "messages": message_count, "blocks": block_count},
         "closed_vocabulary_mix": {
@@ -284,53 +396,17 @@ def _index_profile(conn: sqlite3.Connection) -> JSONDocument:
             "material_origin": message_mixes.get("material_origin", {}),
             "block_type": block_mixes.get("block_type", {}),
         },
-        "session_shapes": _column_distributions(
-            conn,
-            "sessions",
-            (
-                "message_count",
-                "word_count",
-                "tool_use_count",
-                "thinking_count",
-                "paste_count",
-                "user_message_count",
-                "authored_user_message_count",
-                "assistant_message_count",
-                "system_message_count",
-                "tool_message_count",
-                "user_word_count",
-                "authored_user_word_count",
-                "assistant_word_count",
-                "reported_duration_ms",
-            ),
-        ),
-        "message_shapes": _column_distributions(
-            conn,
-            "messages",
-            (
-                "position",
-                "variant_index",
-                "word_count",
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "duration_ms",
-            ),
-        ),
+        "session_shapes": session_shapes,
+        "message_shapes": message_shapes,
         "payload_tails": {
-            "sessions": _length_distributions(
-                conn,
-                "sessions",
-                ("title", "instructions_text", "git_branch", "git_repository_url", "provider_project_ref"),
-            ),
-            "messages": _length_distributions(conn, "messages", ("user_context_text",)),
-            "blocks": _length_distributions(conn, "blocks", ("text", "tool_input")),
+            "sessions": session_lengths,
+            "messages": message_lengths,
+            "blocks": block_lengths,
         },
         "action_shapes": {
             "tool_uses_per_session": tool_use_distribution,
             "tool_results_per_session": tool_result_distribution,
-            "tool_pairing": _tool_pairing_profile(conn),
+            "tool_pairing": pairing_profile,
         },
         "predicate_selectivity": {
             "repository": _anonymous_cardinality_profile(

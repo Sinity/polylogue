@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.schemas.generation.cluster_collection import _collect_cluster_accumulators
+from polylogue.schemas.generation.observation_journal import ObservationJournal
 from polylogue.schemas.generation.provider_bundle_packages import _select_catalog_versions
 from polylogue.schemas.generation.workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
@@ -360,7 +361,6 @@ class TestProfileClustering:
             "chatgpt",
             db_path=tmp_path / "unused.db",
             max_samples=None,
-            reservoir_size=8,
         )
 
         assert len(memberships) == 2
@@ -369,6 +369,7 @@ class TestProfileClustering:
         assert len(clusters) == 1
         acc = next(iter(clusters.values()))
         assert acc.sample_count == 2
+        assert acc.schema_sample_count == 2
 
     def test_collect_cluster_accumulators_normalizes_merged_profile_family_ids(
         self,
@@ -401,12 +402,51 @@ class TestProfileClustering:
             "chatgpt",
             db_path=tmp_path / "unused.db",
             max_samples=None,
-            reservoir_size=8,
         )
 
         assert len(clusters) == 1
         final_family_id = next(iter(clusters))
         assert {membership.profile_family_id for membership in memberships} == {final_family_id}
+
+    def test_journal_clustering_spills_profile_and_distinct_identity_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        common = tuple(f"field:common-{index}" for index in range(10))
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": str(index)},
+                schema_samples=[{"id": str(index)}],
+                artifact_kind="session_document",
+                bundle_scope=f"scope-{index}",
+                exact_structure_id=f"exact-{index}",
+                profile_tokens=(*common, f"field:variant-{index}"),
+            )
+            for index in range(2)
+        ]
+        monkeypatch.setattr("polylogue.schemas.sampling.iter_schema_units", lambda *args, **kwargs: iter(units))
+
+        with ObservationJournal.create(root=tmp_path / "journals") as journal:
+            clusters, memberships, _sample_count, _artifact_counts = _collect_cluster_accumulators(
+                "chatgpt",
+                db_path=tmp_path / "unused.db",
+                max_samples=None,
+                journal=journal,
+            )
+
+            assert len(clusters) == 1
+            final_family_id, accumulator = next(iter(clusters.items()))
+            assert accumulator.member_profiles == set()
+            assert accumulator.exact_structure_ids == set()
+            assert accumulator.bundle_scopes == set()
+            assert {membership.profile_family_id for membership in memberships} == {final_family_id}
+            cluster_memberships = journal.memberships(
+                profile_family_id=final_family_id,
+                include_samples=False,
+            )
+            assert list(cluster_memberships.iter_distinct_values("exact_structure_id")) == ["exact-0", "exact-1"]
+            assert list(cluster_memberships.iter_distinct_values("bundle_scope")) == ["scope-0", "scope-1"]
 
     def test_profile_family_normalization_never_crosses_artifact_kinds(
         self,
@@ -436,7 +476,6 @@ class TestProfileClustering:
             "chatgpt",
             db_path=tmp_path / "unused.db",
             max_samples=None,
-            reservoir_size=8,
         )
 
         assert {cluster.artifact_kind for cluster in clusters.values()} == {

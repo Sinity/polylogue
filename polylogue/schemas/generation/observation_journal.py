@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sqlite3
 import stat
 import tempfile
+import threading
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Self, overload
+from types import FrameType
+from typing import Literal, NoReturn, Self, overload
 
-from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONDocumentList, JSONValue, json_document
 from polylogue.paths import cache_home
-from polylogue.schemas.generation.models import _UnitMembership
+from polylogue.schemas.generation.models import _ProfileSummary, _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.observation_models import ObservationTerminalStatus
 
@@ -25,6 +28,12 @@ _JOURNAL_FORMAT = 1
 _DEFAULT_STALE_AGE_S = 24 * 60 * 60
 _ROOT_MODE = 0o700
 _FILE_MODE = 0o600
+_DISTINCT_UNIT_COLUMNS = frozenset({"bundle_scope", "exact_structure_id", "profile_family_id"})
+DistinctUnitColumn = Literal["bundle_scope", "exact_structure_id", "profile_family_id"]
+_SCOPE_KEY_SQL = (
+    "COALESCE(bundle_scope, raw_id, source_path, "
+    "profile_family_id || ':' || artifact_kind || ':' || exact_structure_id)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +154,27 @@ class ObservationJournal:
         self.path = path
         self._connection = connection
         self._closed = False
+        self._previous_signal_handlers: dict[signal.Signals, object] = {}
+
+    def _handle_termination(self, signum: int, frame: FrameType | None) -> NoReturn:
+        """Turn ordinary termination into stack unwinding through ``__exit__``."""
+        del frame
+        raise SystemExit(128 + signum)
+
+    def _install_signal_handlers(self) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            self._previous_signal_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, self._handle_termination)
+
+    def _restore_signal_handlers(self) -> None:
+        for signum, handler in self._previous_signal_handlers.items():
+            if isinstance(handler, signal.Handlers) or callable(handler):
+                signal.signal(signum, handler)
+            else:
+                signal.signal(signum, signal.SIG_DFL)
+        self._previous_signal_handlers.clear()
 
     @classmethod
     def create(
@@ -199,6 +229,7 @@ class ObservationJournal:
                     observed_at TEXT,
                     exact_structure_id TEXT NOT NULL,
                     profile_tokens_json BLOB NOT NULL,
+                    schema_sample_count INTEGER NOT NULL,
                     profile_family_id TEXT,
                     package_family_id TEXT
                 ) STRICT;
@@ -208,6 +239,26 @@ class ObservationJournal:
                     position INTEGER NOT NULL,
                     sample_json BLOB NOT NULL,
                     PRIMARY KEY (unit_id, position)
+                ) STRICT, WITHOUT ROWID;
+
+                CREATE TABLE profile_summaries (
+                    artifact_kind TEXT NOT NULL,
+                    profile_tokens_json BLOB NOT NULL,
+                    dominant_keys_json BLOB NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    schema_sample_count INTEGER NOT NULL,
+                    profile_family_id TEXT,
+                    PRIMARY KEY (artifact_kind, profile_tokens_json)
+                ) STRICT, WITHOUT ROWID;
+
+                CREATE TABLE profile_summary_paths (
+                    artifact_kind TEXT NOT NULL,
+                    profile_tokens_json BLOB NOT NULL,
+                    source_path TEXT NOT NULL,
+                    PRIMARY KEY (artifact_kind, profile_tokens_json, source_path),
+                    FOREIGN KEY (artifact_kind, profile_tokens_json)
+                        REFERENCES profile_summaries(artifact_kind, profile_tokens_json)
+                        ON DELETE CASCADE
                 ) STRICT, WITHOUT ROWID;
 
                 CREATE TABLE artifact_terminals (
@@ -224,6 +275,8 @@ class ObservationJournal:
                 CREATE INDEX units_bundle_scope_idx ON units(bundle_scope, unit_id);
                 CREATE INDEX units_profile_family_idx ON units(profile_family_id, unit_id);
                 CREATE INDEX units_package_family_idx ON units(package_family_id, artifact_kind, unit_id);
+                CREATE INDEX profile_summaries_family_idx
+                    ON profile_summaries(profile_family_id, artifact_kind, profile_tokens_json);
                 """
             )
             connection.execute(
@@ -242,8 +295,9 @@ class ObservationJournal:
             """
             INSERT INTO units(
                 cluster_payload_json, artifact_kind, session_id, raw_id, source_path,
-                bundle_scope, observed_at, exact_structure_id, profile_tokens_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                bundle_scope, observed_at, exact_structure_id, profile_tokens_json,
+                schema_sample_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _canonical_json(unit.cluster_payload if retain_cluster_payload else {}),
@@ -255,6 +309,7 @@ class ObservationJournal:
                 unit.observed_at,
                 unit.exact_structure_id,
                 _canonical_json(list(unit.profile_tokens)),
+                len(unit.schema_samples),
             ),
         )
         if cursor.lastrowid is None:
@@ -284,6 +339,111 @@ class ObservationJournal:
             (raw_id, status, artifact_kind, source_path, reason),
         )
 
+    def observe_profile_summary(self, unit: SchemaUnit, *, dominant_keys: Sequence[str]) -> None:
+        """Merge one profile observation into a disk-backed exact summary."""
+        profile_tokens_json = _canonical_json(list(unit.profile_tokens))
+        self._connection.execute(
+            """
+            INSERT INTO profile_summaries(
+                artifact_kind, profile_tokens_json, dominant_keys_json,
+                sample_count, schema_sample_count
+            ) VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(artifact_kind, profile_tokens_json) DO UPDATE SET
+                sample_count = sample_count + 1,
+                schema_sample_count = schema_sample_count + excluded.schema_sample_count
+            """,
+            (
+                unit.artifact_kind,
+                profile_tokens_json,
+                _canonical_json(list(dominant_keys)[:20]),
+                len(unit.schema_samples),
+            ),
+        )
+        if unit.source_path:
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO profile_summary_paths(
+                    artifact_kind, profile_tokens_json, source_path
+                )
+                SELECT ?, ?, ?
+                WHERE (
+                    SELECT COUNT(*) FROM profile_summary_paths
+                    WHERE artifact_kind = ? AND profile_tokens_json = ?
+                ) < 5
+                """,
+                (
+                    unit.artifact_kind,
+                    profile_tokens_json,
+                    unit.source_path,
+                    unit.artifact_kind,
+                    profile_tokens_json,
+                ),
+            )
+
+    def iter_profile_summaries(self) -> Iterator[_ProfileSummary]:
+        """Replay exact summaries in deterministic clustering priority order."""
+        query = """
+            SELECT * FROM profile_summaries
+            ORDER BY
+                CASE artifact_kind
+                    WHEN 'session_document' THEN 120
+                    WHEN 'session_record_stream' THEN 120
+                    WHEN 'subagent_session_stream' THEN 90
+                    ELSE 0
+                END DESC,
+                sample_count DESC,
+                schema_sample_count DESC,
+                artifact_kind,
+                profile_tokens_json
+        """
+        for row in self._connection.execute(query):
+            profile_tokens = _decode_json(row["profile_tokens_json"])
+            dominant_keys = _decode_json(row["dominant_keys_json"])
+            if not isinstance(profile_tokens, list) or not all(isinstance(item, str) for item in profile_tokens):
+                raise TypeError("Observation journal profile summary tokens are not a string list")
+            if not isinstance(dominant_keys, list) or not all(isinstance(item, str) for item in dominant_keys):
+                raise TypeError("Observation journal dominant keys are not a string list")
+            paths = [
+                str(path_row[0])
+                for path_row in self._connection.execute(
+                    """
+                    SELECT source_path FROM profile_summary_paths
+                    WHERE artifact_kind = ? AND profile_tokens_json = ?
+                    ORDER BY source_path
+                    """,
+                    (row["artifact_kind"], row["profile_tokens_json"]),
+                )
+            ]
+            yield _ProfileSummary(
+                artifact_kind=str(row["artifact_kind"]),
+                profile_tokens=tuple(str(item) for item in profile_tokens),
+                dominant_keys=[str(item) for item in dominant_keys],
+                sample_count=int(row["sample_count"]),
+                schema_sample_count=int(row["schema_sample_count"]),
+                representative_paths=paths,
+            )
+
+    def assign_profile_summary_family(self, summary: _ProfileSummary, profile_family_id: str) -> None:
+        self._connection.execute(
+            """
+            UPDATE profile_summaries SET profile_family_id = ?
+            WHERE artifact_kind = ? AND profile_tokens_json = ?
+            """,
+            (profile_family_id, summary.artifact_kind, _canonical_json(list(summary.profile_tokens))),
+        )
+
+    def apply_profile_summary_families_to_units(self) -> None:
+        """Resolve every unit through its exact disk-backed profile summary."""
+        self._connection.execute(
+            """
+            UPDATE units SET profile_family_id = (
+                SELECT profile_family_id FROM profile_summaries
+                WHERE profile_summaries.artifact_kind = units.artifact_kind
+                  AND profile_summaries.profile_tokens_json = units.profile_tokens_json
+            )
+            """
+        )
+
     def iter_units(self) -> Iterator[SchemaUnit]:
         """Replay units in stable ingestion order without retaining the corpus."""
         for _unit_id, unit in self.iter_identified_units():
@@ -295,9 +455,10 @@ class ObservationJournal:
         *,
         include_cluster_payload: bool = True,
         include_samples: bool = True,
+        replayed_samples: JSONDocumentList | None = None,
     ) -> SchemaUnit:
-        sample_values = []
-        if include_samples:
+        sample_values: JSONDocumentList = replayed_samples or []
+        if include_samples and replayed_samples is None:
             for sample_row in self._connection.execute(
                 "SELECT sample_json FROM samples WHERE unit_id = ? ORDER BY position",
                 (row["unit_id"],),
@@ -327,6 +488,27 @@ class ObservationJournal:
         for row in self._connection.execute("SELECT * FROM units ORDER BY unit_id"):
             yield int(row["unit_id"]), self._unit_from_row(row)
 
+    def iter_identified_unit_metadata(self) -> Iterator[tuple[int, SchemaUnit, int]]:
+        """Replay unit metadata and exact sample counts without decoding samples."""
+        for row in self._connection.execute("SELECT * FROM units ORDER BY unit_id"):
+            yield (
+                int(row["unit_id"]),
+                self._unit_from_row(row, include_cluster_payload=False, include_samples=False),
+                int(row["schema_sample_count"]),
+            )
+
+    def iter_identified_membership_metadata(self) -> Iterator[tuple[int, _UnitMembership, int]]:
+        """Replay assigned membership metadata with exact sample counts."""
+        for row in self._connection.execute("SELECT * FROM units WHERE profile_family_id IS NOT NULL ORDER BY unit_id"):
+            yield (
+                int(row["unit_id"]),
+                _UnitMembership(
+                    unit=self._unit_from_row(row, include_cluster_payload=False, include_samples=False),
+                    profile_family_id=str(row["profile_family_id"]),
+                ),
+                int(row["schema_sample_count"]),
+            )
+
     def assign_profile_family(self, unit_id: int, profile_family_id: str) -> None:
         self._connection.execute(
             "UPDATE units SET profile_family_id = ? WHERE unit_id = ?",
@@ -344,6 +526,17 @@ class ObservationJournal:
             self._connection.executemany(
                 "INSERT INTO profile_family_replacements(source, target) VALUES (?, ?)",
                 changed,
+            )
+            self._connection.execute(
+                """
+                UPDATE profile_summaries
+                SET profile_family_id = (
+                    SELECT target
+                    FROM profile_family_replacements
+                    WHERE source = profile_summaries.profile_family_id
+                )
+                WHERE profile_family_id IN (SELECT source FROM profile_family_replacements)
+                """
             )
             self._connection.execute(
                 """
@@ -420,6 +613,9 @@ class ObservationJournal:
             if scope_order
             else "unit_id"
         )
+        if include_samples:
+            yield from self._iter_joined_memberships(where, parameters)
+            return
         query = f"SELECT * FROM units WHERE {where} ORDER BY {order}"
         for row in self._connection.execute(query, parameters):
             yield (
@@ -431,6 +627,57 @@ class ObservationJournal:
                         include_samples=include_samples,
                     ),
                     profile_family_id=str(row["profile_family_id"]),
+                ),
+            )
+
+    def _iter_joined_memberships(
+        self,
+        where: str,
+        parameters: list[str],
+    ) -> Iterator[tuple[int, _UnitMembership]]:
+        """Replay samples with their units in one ordered SQLite scan."""
+        joined_query = (
+            "SELECT units.*, samples.position AS replay_position, "
+            "samples.sample_json AS replay_sample_json "
+            "FROM samples CROSS JOIN units ON units.unit_id = samples.unit_id "
+            f"WHERE {where} ORDER BY samples.unit_id, samples.position"
+        )
+        current_row: sqlite3.Row | None = None
+        current_unit_id: int | None = None
+        sample_values: JSONDocumentList = []
+        for row in self._connection.execute(joined_query, parameters):
+            unit_id = int(row["unit_id"])
+            if current_unit_id is not None and unit_id != current_unit_id and current_row is not None:
+                yield (
+                    current_unit_id,
+                    _UnitMembership(
+                        unit=self._unit_from_row(
+                            current_row,
+                            include_cluster_payload=False,
+                            replayed_samples=sample_values,
+                        ),
+                        profile_family_id=str(current_row["profile_family_id"]),
+                    ),
+                )
+                sample_values = []
+            current_row = row
+            current_unit_id = unit_id
+            encoded_sample = row["replay_sample_json"]
+            if encoded_sample is not None:
+                sample = _decode_json(encoded_sample)
+                if not isinstance(sample, dict):
+                    raise TypeError("Observation journal schema sample is not an object")
+                sample_values.append(sample)
+        if current_unit_id is not None and current_row is not None:
+            yield (
+                current_unit_id,
+                _UnitMembership(
+                    unit=self._unit_from_row(
+                        current_row,
+                        include_cluster_payload=False,
+                        replayed_samples=sample_values,
+                    ),
+                    profile_family_id=str(current_row["profile_family_id"]),
                 ),
             )
 
@@ -462,6 +709,83 @@ class ObservationJournal:
             artifact_kind=artifact_kind,
         )
         query = f"SELECT COUNT(*) FROM samples JOIN units USING(unit_id) WHERE {where}"
+        return int(self._connection.execute(query, parameters).fetchone()[0])
+
+    def iter_distinct_membership_values(
+        self,
+        column: DistinctUnitColumn,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> Iterator[str]:
+        """Stream one exact metadata dimension without a Python dedupe set."""
+        if column not in _DISTINCT_UNIT_COLUMNS:
+            raise ValueError(f"Unsupported journal distinct column: {column}")
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = (
+            f'SELECT DISTINCT "{column}" FROM units '
+            f'WHERE {where} AND "{column}" IS NOT NULL AND "{column}" != ? '
+            f'ORDER BY "{column}"'
+        )
+        for row in self._connection.execute(query, [*parameters, ""]):
+            yield str(row[0])
+
+    def distinct_membership_count(
+        self,
+        column: DistinctUnitColumn,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> int:
+        """Count an exact metadata dimension in SQLite rather than retaining it."""
+        if column not in _DISTINCT_UNIT_COLUMNS:
+            raise ValueError(f"Unsupported journal distinct column: {column}")
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = (
+            f'SELECT COUNT(DISTINCT "{column}") FROM units WHERE {where} AND "{column}" IS NOT NULL AND "{column}" != ?'
+        )
+        return int(self._connection.execute(query, [*parameters, ""]).fetchone()[0])
+
+    def iter_distinct_membership_scope_keys(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> Iterator[str]:
+        """Stream the exact package scope identity used by package assembly."""
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = f"SELECT DISTINCT {_SCOPE_KEY_SQL} AS scope_key FROM units WHERE {where} ORDER BY scope_key"
+        for row in self._connection.execute(query, parameters):
+            yield str(row[0])
+
+    def distinct_membership_scope_count(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> int:
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = f"SELECT COUNT(DISTINCT {_SCOPE_KEY_SQL}) FROM units WHERE {where}"
         return int(self._connection.execute(query, parameters).fetchone()[0])
 
     def iter_membership_session_ids(
@@ -542,9 +866,13 @@ class ObservationJournal:
             try:
                 self._connection.close()
             finally:
-                _delete_journal_files(self.path)
+                try:
+                    _delete_journal_files(self.path)
+                finally:
+                    self._restore_signal_handlers()
 
     def __enter__(self) -> Self:
+        self._install_signal_handlers()
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -601,6 +929,36 @@ class JournalMemberships(Sequence[_UnitMembership]):
             artifact_kind=self._artifact_kind,
         )
 
+    def iter_distinct_values(self, column: DistinctUnitColumn) -> Iterator[str]:
+        return self._journal.iter_distinct_membership_values(
+            column,
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def distinct_count(self, column: DistinctUnitColumn) -> int:
+        return self._journal.distinct_membership_count(
+            column,
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def iter_scope_keys(self) -> Iterator[str]:
+        return self._journal.iter_distinct_membership_scope_keys(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def scope_count(self) -> int:
+        return self._journal.distinct_membership_scope_count(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
     def metadata(self) -> JournalMemberships:
         return JournalMemberships(
             self._journal,
@@ -640,6 +998,7 @@ class JournalMemberships(Sequence[_UnitMembership]):
 
 
 __all__ = [
+    "DistinctUnitColumn",
     "ObservationJournal",
     "JournalMemberships",
     "ObservationTerminal",

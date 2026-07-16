@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -91,6 +92,19 @@ def test_journal_cleanup_runs_for_exceptions(tmp_path: Path) -> None:
     assert not journal_path.exists()
 
 
+def test_journal_cleanup_runs_for_sigterm(tmp_path: Path) -> None:
+    root = tmp_path / "journals"
+    journal = ObservationJournal.create(root=root)
+
+    with pytest.raises(SystemExit) as raised:
+        with journal:
+            journal.append_unit(_unit())
+            signal.raise_signal(signal.SIGTERM)
+
+    assert raised.value.code == 128 + signal.SIGTERM
+    assert not list(root.glob("run-*.sqlite3*"))
+
+
 def test_journal_replays_assignments_without_retaining_cluster_payloads(tmp_path: Path) -> None:
     first = _unit()
     second = SchemaUnit(
@@ -120,6 +134,10 @@ def test_journal_replays_assignments_without_retaining_cluster_payloads(tmp_path
         package = journal.memberships(package_family_id="package-1")
         assert len(package) == 1
         assert package[0].unit.schema_samples == first.schema_samples
+        assert list(package.iter_distinct_values("bundle_scope")) == ["scope-1"]
+        assert list(package.iter_distinct_values("exact_structure_id")) == ["structure-1"]
+        assert list(package.iter_distinct_values("profile_family_id")) == ["family-b"]
+        assert package.distinct_count("bundle_scope") == 1
 
 
 def test_metadata_membership_passes_do_not_decode_sample_payloads(
@@ -144,6 +162,10 @@ def test_metadata_membership_passes_do_not_decode_sample_payloads(
         metadata = list(memberships.metadata())
         assert len(metadata) == 1
         assert metadata[0].unit.schema_samples == []
+        identified_metadata = list(journal.iter_identified_unit_metadata())
+        assert [
+            (unit_id, len(unit.schema_samples), sample_count) for unit_id, unit, sample_count in identified_metadata
+        ] == [(unit_id, 0, 2)]
         assert memberships.sample_count == 2
         assert list(MembershipSessionIds(memberships)) == ["session-1", "session-1"]
         with pytest.raises(AssertionError, match="decoded a schema sample"):

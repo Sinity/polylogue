@@ -113,6 +113,22 @@ def _observe_package_membership(package: _PackageAccumulator, membership: _UnitM
     _update_observed_window(package, membership.unit.observed_at)
 
 
+def _observe_journal_package_membership(
+    package: _PackageAccumulator,
+    membership: _UnitMembership,
+) -> None:
+    """Update bounded package metadata; exact distinct values remain in SQLite."""
+    if membership.unit.source_path:
+        _merge_representative_paths(package.representative_paths, [membership.unit.source_path])
+    _update_observed_window(package, membership.unit.observed_at)
+
+
+def _package_bundle_scope_count(package: _PackageAccumulator) -> int:
+    if package.journal_bundle_scope_count is not None:
+        return package.journal_bundle_scope_count
+    return len(package.bundle_scopes)
+
+
 def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
     if not isinstance(package.memberships, list):
         raise TypeError("Cannot mutate replay-backed package memberships")
@@ -211,7 +227,7 @@ def _assemble_journal_package_candidates(
     orphan_adjunct_counts: Counter[str] = Counter()
     identified = journal.iter_identified_memberships(scope_order=True, include_samples=False)
 
-    for scope, group in groupby(identified, key=lambda item: _membership_scope_key(item[1])):
+    for _scope, group in groupby(identified, key=lambda item: _membership_scope_key(item[1])):
         seen: set[tuple[str, str]] = set()
         items: list[tuple[int, _UnitMembership]] = []
         for unit_id, membership in group:
@@ -245,7 +261,7 @@ def _assemble_journal_package_candidates(
                 packages[family_id] = acc
             for unit_id, membership in items:
                 if membership.profile_family_id == family_id and membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS:
-                    _observe_package_membership(acc, membership, scope=scope)
+                    _observe_journal_package_membership(acc, membership)
                     journal.assign_package_family(unit_id, family_id)
 
         if len(anchor_families) == 1:
@@ -253,7 +269,7 @@ def _assemble_journal_package_candidates(
             target = packages[family_id]
             for unit_id, membership in items:
                 if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
-                    _observe_package_membership(target, membership, scope=scope)
+                    _observe_journal_package_membership(target, membership)
                     journal.assign_package_family(unit_id, family_id)
         else:
             for _unit_id, membership in items:
@@ -262,12 +278,13 @@ def _assemble_journal_package_candidates(
 
     for family_id, package in packages.items():
         package.memberships = journal.memberships(package_family_id=family_id)
+        package.journal_bundle_scope_count = package.memberships.scope_count()
 
     ordered = sorted(
         packages.values(),
         key=lambda item: (
             _parse_observed_at(item.first_seen) or datetime.max.replace(tzinfo=timezone.utc),
-            -len(item.bundle_scopes),
+            -_package_bundle_scope_count(item),
             item.anchor_family_id,
         ),
     )
@@ -303,4 +320,5 @@ __all__ = [
     "_membership_observed_window",
     "_merge_representative_paths",
     "_parse_observed_at",
+    "_package_bundle_scope_count",
 ]
