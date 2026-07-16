@@ -18,7 +18,7 @@ import sqlite3
 import stat as stat_module
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -212,8 +212,6 @@ class LiveWatcher:
         return self._catch_up_complete
 
     async def run(self) -> None:
-        from watchfiles import Change, awatch
-
         # Hook commands create their first pending envelope lazily.  Ensure the
         # nested root exists before ``awatch`` snapshots its roots, otherwise a
         # daemon that starts before the first hook event never sees that file.
@@ -226,6 +224,11 @@ class LiveWatcher:
             self._catch_up_complete.set()
             return
 
+        # Register the filesystem watch before catch-up.  Starting it only
+        # after catch-up left a blind interval where a writer could append
+        # after its file was scanned but before ``awatch`` took its snapshot.
+        watch_task = asyncio.create_task(self._watch_changes(roots))
+        await asyncio.sleep(0)
         try:
             try:
                 await self._catch_up(roots)
@@ -236,21 +239,35 @@ class LiveWatcher:
             self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
 
             logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
-            async for changes in awatch(*roots, watch_filter=self._watch_filter, stop_event=self._stop, recursive=True):
-                for change, raw_path in changes:
-                    if change is Change.deleted:
-                        continue
-                    path = self._canonical_watch_path(Path(raw_path))
-                    if path is None:
-                        continue
-                    if not self._source_accepts(path):
-                        continue
-                    if self._is_hook_spool_path(path):
-                        await self._drain_hook_spool()
-                        continue
-                    self._enqueue(path)
+            await watch_task
         finally:
+            if not watch_task.done():
+                watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watch_task
             self._cancel_periodic_catch_up()
+
+    async def _watch_changes(self, roots: list[Path]) -> None:
+        from watchfiles import Change, awatch
+
+        async for changes in awatch(
+            *roots,
+            watch_filter=self._watch_filter,
+            stop_event=self._stop,
+            recursive=True,
+        ):
+            for change, raw_path in changes:
+                if change is Change.deleted:
+                    continue
+                path = self._canonical_watch_path(Path(raw_path))
+                if path is None:
+                    continue
+                if not self._source_accepts(path):
+                    continue
+                if self._is_hook_spool_path(path):
+                    await self._drain_hook_spool()
+                    continue
+                self._enqueue(path)
 
     def stop(self) -> None:
         self._stop.set()

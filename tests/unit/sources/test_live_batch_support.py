@@ -37,9 +37,9 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.raw.models import UNSET
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import read_archive_raw_session_envelope
@@ -92,6 +92,51 @@ def _raw_parse_state(archive_root: Path) -> tuple[int | None, str | None]:
         row = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions").fetchone()
     assert row is not None
     return cast(tuple[int | None, str | None], row)
+
+
+def _append_raw_parse_state(archive_root: Path) -> tuple[int | None, str | None]:
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        row = conn.execute(
+            """SELECT parsed_at_ms, parse_error FROM raw_sessions
+               WHERE source_index = -1 ORDER BY acquired_at_ms DESC, raw_id DESC LIMIT 1"""
+        ).fetchone()
+    assert row is not None
+    return cast(tuple[int | None, str | None], row)
+
+
+def _seed_live_append_plan(
+    archive_root: Path,
+    *,
+    native_id: str,
+) -> tuple[Path, _AppendPlan, object]:
+    root = archive_root / "sessions"
+    root.mkdir()
+    path = root / f"{native_id}.jsonl"
+    baseline = (
+        f'{{"type":"session_meta","payload":{{"id":"{native_id}",'
+        '"timestamp":"2026-06-02T00:00:00Z"}}}\n'
+        '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+        '"role":"user","content":[{"type":"input_text","text":"zero"}]}}\n'
+    ).encode()
+    path.write_bytes(baseline)
+    index_db = archive_root / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    seeded = asyncio.run(processor.ingest_files([path], emit_event=False))
+    assert seeded.succeeded_file_count == 1
+    append = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    with path.open("ab") as handle:
+        handle.write(append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    return path, plan, _append_owner(archive_root)
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
@@ -591,10 +636,9 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
     assert result.ingested_message_count == 2
     assert result.raw_source_names[source] == "chatgpt"
     with sqlite3.connect(source_db) as conn:
-        assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == (
-            "chatgpt-export",
-            "generic-large",
-        )
+        # Acquisition identity is artifact-scoped because one raw file may
+        # contain many sessions. Parsed identity lives in index + membership.
+        assert conn.execute("SELECT origin, native_id FROM raw_sessions").fetchone() == ("chatgpt-export", None)
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id, title, message_count FROM sessions").fetchone() == (
             "generic-large",
@@ -687,7 +731,7 @@ def test_full_ingest_bootstraps_archive_root(
         "archive_missing_tiers": "",
         "archive_tier_user_versions_json": json.dumps(
             {
-                "embeddings": 1,
+                "embeddings": EMBEDDINGS_SCHEMA_VERSION,
                 "index": INDEX_SCHEMA_VERSION,
                 "ops": 1,
                 "source": SOURCE_SCHEMA_VERSION,
@@ -1661,6 +1705,11 @@ def test_live_append_chain_survives_post_ingest_compaction(
         b'"content":[{"type":"output_text","text":"three"}]}}\n',
     )
     results = [asyncio.run(processor.ingest_files([path]))]
+    # The live compactor intentionally considers only raws older than the
+    # process-start frontier. Move that frontier beyond this synthetic chain
+    # so the test actually exercises retention authority rather than passing
+    # because every raw is too new to compact.
+    processor._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
     for chunk in append_chunks:
         with path.open("ab") as handle:
             handle.write(chunk)
@@ -1672,30 +1721,22 @@ def test_live_append_chain_survives_post_ingest_compaction(
     append_identity = b'{"type":"session_meta","payload":{"id":"append-v1"}}\n'
     assert published_payloads == [payload, *(append_identity + chunk for chunk in append_chunks)]
     if not protect_chain:
-        assert [result.succeeded_file_count for result in results] == [1, 1, 1, 0]
-        assert [result.failed_file_count for result in results] == [0, 0, 0, 1]
+        # Accepted index receipts make later appends independent of whether
+        # the compactor currently retains their predecessor payloads.
+        assert all(result.succeeded_file_count == 1 for result in results)
+        assert all(result.failed_file_count == 0 for result in results)
         cursor_record = cursor.get_record(path)
         assert cursor_record is not None
-        assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks[:2])
-        assert cursor_record.failure_count == 1
+        assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks)
+        assert cursor_record.failure_count == 0
         with sqlite3.connect(index_db) as conn:
-            head_raw_id = str(conn.execute("SELECT accepted_raw_id FROM raw_revision_heads").fetchone()[0])
             assert {str(row[0]) for row in conn.execute("SELECT native_id FROM messages")} == {
                 "message-0",
                 "message-1",
                 "message-2",
+                "message-3",
             }
-        with sqlite3.connect(source_db) as conn:
-            predecessor_raw_id = str(
-                conn.execute(
-                    "SELECT predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
-                    (head_raw_id,),
-                ).fetchone()[0]
-            )
-            assert conn.execute(
-                "SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?",
-                (predecessor_raw_id,),
-            ).fetchone() == (0,)
+            assert conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_revision_applications").fetchone() == (4,)
         return
 
     assert all(result.succeeded_file_count == 1 for result in results)
@@ -2948,27 +2989,24 @@ def test_append_index_failure_never_marks_raw_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "append-index-fail.jsonl"
-    payload = b'{"type":"session_meta","payload":{"id":"index-fail"}}\n'
-    path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="index-fail")
-    owner = _append_owner(tmp_path)
+    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="index-fail")
 
     def fail_index(*_args: object, **_kwargs: object) -> object:
         raise sqlite3.IntegrityError("injected index commit failure")
 
-    monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", fail_index)
+    monkeypatch.setattr(ArchiveStore, "apply_raw_revision_replay", fail_index)
     result = ingest_append_plans(cast(Any, owner), [plan])
 
     assert result.failed == [plan]
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
     assert isinstance(parse_error, str) and "injected index commit failure" in parse_error
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
-def test_append_multi_session_failure_does_not_finalize_after_first(
+def test_append_multi_session_payload_is_rejected_before_index_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2982,30 +3020,14 @@ def test_append_multi_session_failure_does_not_finalize_after_first(
         ParsedSession(source_name=Provider.CODEX, provider_session_id="multi-2", messages=[]),
     ]
     monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", lambda *_args, **_kwargs: sessions)
-    original_write = ArchiveStore._write_parsed_precedence_result
-    write_count = 0
-
-    def fail_second_index(
-        archive: ArchiveStore,
-        session: ParsedSession,
-        **kwargs: object,
-    ) -> object:
-        nonlocal write_count
-        write_count += 1
-        if write_count == 2:
-            raise sqlite3.IntegrityError("injected second-session index failure")
-        return original_write(archive, session, **cast(Any, kwargs))
-
-    monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", fail_second_index)
-
     result = ingest_append_plans(cast(Any, owner), [plan])
 
     assert result.failed == [plan]
     parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
     assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "second-session index failure" in parse_error
+    assert isinstance(parse_error, str) and "did not prove one session and cursor identity" in parse_error
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 def test_full_multi_session_failure_retries_without_success_mapping(
@@ -3742,49 +3764,49 @@ def test_append_crash_after_index_commit_repairs_idempotently(
     class SimulatedProcessCrash(BaseException):
         pass
 
-    path = tmp_path / "append-crash.jsonl"
-    payload = b'{"type":"session_meta","payload":{"id":"crash-retry"}}\n'
-    path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="crash")
-    owner = _append_owner(tmp_path)
-    original_finalize = ArchiveStore.finalize_raw_parse_state
+    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="crash-retry")
+    original_mark_succeeded = ArchiveStore.mark_raw_parse_succeeded
     crashed = False
 
     def crash_after_index(
         archive: ArchiveStore,
         raw_id: str,
         *,
-        state: object,
+        provider: Provider,
     ) -> None:
         nonlocal crashed
-        parsed_at = getattr(state, "parsed_at", UNSET)
-        if parsed_at is not UNSET and not crashed:
-            assert (
-                archive._conn.execute("SELECT 1 FROM sessions WHERE native_id = 'crash-retry'").fetchone() is not None
-            )
+        source_index = (
+            archive._ensure_source_conn()
+            .execute("SELECT source_index FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()[0]
+        )
+        if source_index == -1 and not crashed:
+            assert archive._conn.execute("SELECT 1 FROM messages WHERE native_id = 'message-1'").fetchone() is not None
             crashed = True
             raise SimulatedProcessCrash
-        original_finalize(archive, raw_id, state=cast(Any, state))
+        original_mark_succeeded(archive, raw_id, provider=provider)
 
-    monkeypatch.setattr(ArchiveStore, "finalize_raw_parse_state", crash_after_index)
+    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", crash_after_index)
     with pytest.raises(SimulatedProcessCrash):
         ingest_append_plans(cast(Any, owner), [plan])
 
-    assert _raw_parse_state(tmp_path) == (None, None)
+    assert _append_raw_parse_state(tmp_path) == (None, None)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
-    monkeypatch.setattr(ArchiveStore, "finalize_raw_parse_state", original_finalize)
+    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", original_mark_succeeded)
     retry = ingest_append_plans(cast(Any, owner), [plan])
 
     assert retry.succeeded == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
+    parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is not None
     assert parse_error is None
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
 
 def test_append_ingest_bootstraps_archive_root(

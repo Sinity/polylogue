@@ -2495,6 +2495,8 @@ class ArchiveStore:
         parsed_by_raw_id: dict[str, ParsedSession],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "revision_replay",
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state."""
         if not plan.accepted_raw_ids:
@@ -2540,17 +2542,21 @@ class ArchiveStore:
             else:
                 accepted_frontier = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     parsed_by_raw_id[raw_id],
                     raw_id=raw_id,
                     source_index=0 if position == 0 else -1,
-                    stage_timings_s=None,
-                    stage_timing_prefix="revision_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_ids.add(result.session_id)
             if len(session_ids) != 1:
                 raise RuntimeError("one logical revision chain produced multiple session ids")
@@ -2632,6 +2638,8 @@ class ArchiveStore:
         projections_by_raw_id: dict[str, SessionRevisionProjection],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "membership_replay",
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision."""
         conn = self._ensure_source_conn()
@@ -2687,17 +2695,21 @@ class ArchiveStore:
                         "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                         (logical_source_key,),
                     )
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     accepted_session,
                     raw_id=accepted_raw_id,
                     source_index=0,
-                    stage_timings_s=None,
-                    stage_timing_prefix="membership_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments,
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_id = result.session_id
                 repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
                 assert_session_fts_exact_sync(self._conn, session_id)
