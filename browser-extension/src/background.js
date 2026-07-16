@@ -1208,8 +1208,95 @@ async function waitForTabComplete(tabId, timeoutMs = 30000) {
   throw new Error("protocol_chatgpt_tab_load_timeout");
 }
 
+function exactChatGptConversation(url) {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parts.length !== 2 || parts[0] !== "c") {
+      return null;
+    }
+    return { conversation_id: parts[1], conversation_url: parsed.href };
+  } catch {
+    return null;
+  }
+}
+
+async function monitoringTabForLaunch(job, ownerInstanceId) {
+  const expected = exactChatGptConversation(job.conversation_url || "");
+  if (!expected || (job.conversation_id && expected.conversation_id !== job.conversation_id)) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "protocol_mismatch",
+      phase: "monitoring",
+      detail: "submitted launch has no exact recoverable ChatGPT conversation URL",
+      tab_id: job.tab_id || null,
+      conversation_id: job.conversation_id || null,
+      conversation_url: job.conversation_url || null,
+    });
+    return null;
+  }
+
+  let currentTab = null;
+  if (job.tab_id) {
+    try {
+      currentTab = await chrome.tabs.get(job.tab_id);
+    } catch {
+      currentTab = null;
+    }
+  }
+  const currentConversation = exactChatGptConversation(currentTab?.url || "");
+  if (currentTab?.id && currentConversation?.conversation_id === expected.conversation_id) {
+    return currentTab;
+  }
+
+  const existingTabs = await chrome.tabs.query({});
+  const existingTab = existingTabs.find((tab) =>
+    exactChatGptConversation(tab.url || "")?.conversation_id === expected.conversation_id
+  );
+  if (existingTab?.id) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "monitoring_recovered",
+      detail: "re-associated submitted launch with an existing background conversation tab",
+      tab_id: existingTab.id,
+      conversation_id: expected.conversation_id,
+      conversation_url: expected.conversation_url,
+    });
+    return existingTab;
+  }
+
+  // The submission boundary is already behind us. Reopen only the known
+  // conversation URL; never return to the composer or resubmit the prompt.
+  const reopenedTab = await chrome.tabs.create({ url: expected.conversation_url, active: false });
+  if (!reopenedTab?.id) throw new Error("protocol_background_tab_create_failed");
+  const loadedTab = await waitForTabComplete(reopenedTab.id);
+  await updateLaunchJob(job.job_id, ownerInstanceId, {
+    outcome: "progress",
+    phase: "monitoring_recovered",
+    detail: "reopened submitted conversation in a background tab after the original tab disappeared",
+    tab_id: loadedTab.id,
+    conversation_id: expected.conversation_id,
+    conversation_url: expected.conversation_url,
+  });
+  return loadedTab;
+}
+
 async function monitorSubmittedLaunch(job, ownerInstanceId) {
-  if (!job.tab_id) return;
+  let monitoringTab;
+  try {
+    monitoringTab = await monitoringTabForLaunch(job, ownerInstanceId);
+  } catch (error) {
+    const classified = classifyLaunchFailure(error);
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      ...classified,
+      phase: "monitoring",
+      tab_id: job.tab_id || null,
+      conversation_id: job.conversation_id || null,
+      conversation_url: job.conversation_url || null,
+    });
+    return;
+  }
+  if (!monitoringTab?.id) return;
+  job = { ...job, tab_id: monitoringTab.id };
   let inspection;
   try {
     const [{ result }] = await chrome.scripting.executeScript({
@@ -1295,7 +1382,7 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       conversation_url: inspection.conversation_url,
       handoff_attachment_id: inspection.handoff_name,
     });
-    const captured = await captureTab(await chrome.tabs.get(job.tab_id), "launch_job_handoff");
+    const captured = await captureTab(monitoringTab, "launch_job_handoff");
     const handoff = captured?.envelope?.session?.attachments?.find(
       (attachment) => attachment.name === inspection.handoff_name && attachment.inline_base64,
     );

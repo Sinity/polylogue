@@ -1416,6 +1416,7 @@ describe("Sol Pro launch worker", () => {
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",
     };
+    tabs[0] = { ...tabs[0], url: job.conversation_url, status: "complete" };
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = String(url);
@@ -1453,6 +1454,7 @@ describe("Sol Pro launch worker", () => {
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",
     };
+    tabs[0] = { ...tabs[0], url: job.conversation_url, status: "complete" };
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = String(url);
@@ -1493,6 +1495,7 @@ describe("Sol Pro launch worker", () => {
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",
     };
+    tabs[0] = { ...tabs[0], url: job.conversation_url, status: "complete" };
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = String(url);
@@ -1539,6 +1542,105 @@ describe("Sol Pro launch worker", () => {
       reason: "launch_job_handoff",
     });
     expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(false);
+  });
+
+  it("reopens a submitted conversation in the background after its tab was closed", async () => {
+    const job = {
+      job_id: "launch-reopen-closed",
+      status: "submitted",
+      phase: "provider_running",
+      lease_owner: "launch-executor-test",
+      tab_id: 42,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+    };
+    tabs = [];
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.tabs.create.mockImplementation(async (details) => {
+      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
+      tabs.push(tab);
+      return tab;
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      busy: true,
+      assistant_turns: 0,
+      conversation_id: "conversation-1",
+      conversation_url: job.conversation_url,
+      soft_warning: false,
+      rate_limited: false,
+      safety_lock: false,
+    } }]);
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({
+      url: job.conversation_url,
+      active: false,
+    }));
+    await vi.waitFor(() => expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 99 },
+    })));
+    const eventBodies = fetchCalls
+      .filter((call) => String(call.url).endsWith("/events"))
+      .map((call) => JSON.parse(call.options.body));
+    expect(eventBodies).toContainEqual(expect.objectContaining({
+      outcome: "progress",
+      phase: "monitoring_recovered",
+      tab_id: 99,
+      conversation_id: "conversation-1",
+    }));
+  });
+
+  it("does not monitor a reused tab id after it navigated to another conversation", async () => {
+    const job = {
+      job_id: "launch-reopen-navigated",
+      status: "submitted",
+      phase: "provider_running",
+      lease_owner: "launch-executor-test",
+      tab_id: 42,
+      conversation_id: "conversation-1",
+      conversation_url: "https://chatgpt.com/c/conversation-1",
+    };
+    tabs[0] = { id: 42, url: "https://chatgpt.com/c/different-conversation", status: "complete" };
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = String(url);
+      if (path.includes("claim_by=")) return responseJson({ jobs: [] });
+      if (path.endsWith("/v1/launch-jobs")) return responseJson({ jobs: [job] });
+      if (path.endsWith("/events")) return responseJson({ job });
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    chrome.tabs.create.mockImplementation(async (details) => {
+      const tab = { id: 99, url: details.url, status: "complete", active: details.active };
+      tabs.push(tab);
+      return tab;
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: {
+      busy: true,
+      assistant_turns: 0,
+      conversation_id: "conversation-1",
+      conversation_url: job.conversation_url,
+      soft_warning: false,
+      rate_limited: false,
+      safety_lock: false,
+    } }]);
+
+    await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
+
+    await vi.waitFor(() => expect(chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 99 },
+    })));
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalledWith(expect.objectContaining({
+      target: { tabId: 42 },
+    }));
+    expect(chrome.tabs.remove).not.toHaveBeenCalledWith(42);
   });
 
   it("lets the owning extension close a cancelled background run", async () => {
