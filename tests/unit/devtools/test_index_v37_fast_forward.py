@@ -135,6 +135,26 @@ def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch
     assert list(generations.iterdir()) == [generations / "v36"]
 
 
+def test_prepare_refuses_unwritable_receipt_before_checkpoint_or_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _archive(tmp_path)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("block receipt parent creation", encoding="utf-8")
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+
+    def unexpected_checkpoint(_path: Path, *, label: str = "active index") -> None:
+        pytest.fail(f"receipt preflight ran after {label} checkpoint")
+
+    monkeypatch.setattr(forward, "_checkpoint_stopped_database", unexpected_checkpoint)
+
+    with pytest.raises(IndexV37FastForwardError, match="receipt destination is not writable"):
+        prepare_forward(archive_root=root, receipt_path=blocker / "receipt.json")
+
+    generations = IndexGenerationStore(root).generations_root
+    assert list(generations.iterdir()) == [generations / "v36"]
+
+
 def test_prepare_checkpoints_stopped_active_index_before_census(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

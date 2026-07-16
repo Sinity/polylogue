@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
@@ -144,6 +144,25 @@ def _canonical_schema_sha256(schema: dict[str, str]) -> str:
 def _receipt_hash(payload: dict[str, object]) -> str:
     body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _require_receipt_destination_writable(path: Path) -> None:
+    """Fail before expensive preparation when an atomic receipt cannot land."""
+    probe = path.with_name(f".{path.name}.{uuid.uuid4().hex}.probe")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and not path.is_file():
+            raise OSError(f"receipt destination is not a regular file: {path}")
+        descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        probe.unlink()
+    except OSError as exc:
+        with suppress(OSError):
+            probe.unlink(missing_ok=True)
+        raise IndexV37FastForwardError(f"receipt destination is not writable: {path}: {exc}") from exc
 
 
 def _write_receipt(path: Path, payload: dict[str, object]) -> None:
@@ -295,6 +314,7 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
     phase_timings_ms: dict[str, int] = {}
     archive_root = archive_root.resolve(strict=True)
     _require_daemon_stopped(archive_root)
+    _require_receipt_destination_writable(receipt_path)
     store = IndexGenerationStore(archive_root)
     active_pointer = store.active_pointer
     with RebuildLease(archive_root):
