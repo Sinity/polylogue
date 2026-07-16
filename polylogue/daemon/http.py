@@ -2097,7 +2097,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {"ok": False, "status": health.overall_status, "alerts": len(health.alerts)},
                 )
-        except Exception:
+        except Exception as exc:
+            # Response detail stays generic; the reason goes to the daemon log.
+            logger.warning("health endpoint: check raised %s: %s", type(exc).__name__, exc)
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 {"ok": False, "status": "error", "detail": "health check failed"},

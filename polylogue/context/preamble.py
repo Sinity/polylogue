@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from polylogue.core.assertions import derive_assertion_context_trust
+from polylogue.logging import get_logger
 from polylogue.surfaces.payloads import (
     AssertionClaimPayload,
     ContextPreamble,
@@ -21,6 +22,8 @@ from polylogue.surfaces.payloads import (
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
+
+logger = get_logger(__name__)
 
 
 async def build_context_preamble_payload(
@@ -44,6 +47,12 @@ async def build_context_preamble_payload(
     if conv is None and require_session:
         return None
 
+    # Each optional section degrades gracefully (the preamble must never crash
+    # a SessionStart hook), but every failure is recorded in
+    # ``component_failures`` so consumers can distinguish "nothing relevant"
+    # from "lookup failed" — silent context loss is invisible by construction.
+    component_failures: dict[str, str] = {}
+
     lineage: ContextPreambleLineage | None = None
     if session_id:
         try:
@@ -53,8 +62,9 @@ async def build_context_preamble_payload(
                     logical_session_root=getattr(topology, "logical_session_id", None),
                     parent_session_id=getattr(topology, "parent_session_id", None),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            component_failures["session_lineage"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("context preamble: session lineage lookup failed for %s: %s", session_id, exc)
 
     related: list[ContextPreambleSession] = []
     try:
@@ -77,8 +87,9 @@ async def build_context_preamble_payload(
                     origin=getattr(c, "origin", None),
                 )
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        component_failures["recent_related_sessions"] = f"{type(exc).__name__}: {exc}"
+        logger.warning("context preamble: resume-candidate lookup failed: %s", exc)
 
     project: ContextPreambleProjectState | None = None
     git_repo = getattr(conv, "git_repository_url", None) if conv is not None else None
@@ -99,8 +110,9 @@ async def build_context_preamble_payload(
                 limit=20,
             )
             assertion_guidance = [_assertion_guidance_from_claim(claim) for claim in claims]
-        except Exception:
-            pass
+        except Exception as exc:
+            component_failures["assertion_guidance"] = f"{type(exc).__name__}: {exc}"
+            logger.warning("context preamble: assertion guidance lookup failed for %s: %s", session_id, exc)
 
     guidance = ContextPreambleGuidance(assertions=assertion_guidance) if assertion_guidance else None
     return ContextPreamble(
@@ -112,6 +124,7 @@ async def build_context_preamble_payload(
         open_issues=[],
         project_state=project,
         guidance=guidance,
+        component_failures=component_failures,
     )
 
 

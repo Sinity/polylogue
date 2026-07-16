@@ -90,8 +90,11 @@ def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None
 
     try:
         timing = get_session_tool_timing(str(active_index_db_path()), session_id)
-    except Exception:
-        env.ui.console.print("\n[dim]No OTLP data available.[/dim]")
+    except Exception as exc:
+        # A failed query is not the same as an empty OTLP store — say which.
+        env.ui.console.print(
+            f"\n[yellow]OTLP evidence unavailable (query failed: {type(exc).__name__}: {exc}).[/yellow]"
+        )
         return
 
     if output_format == "json":

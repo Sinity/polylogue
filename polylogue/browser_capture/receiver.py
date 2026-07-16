@@ -793,11 +793,19 @@ def read_backfill_checkpoint(
     path = _backfill_checkpoint_path(root, instance_id)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        # A corrupt/unreadable mirror is not "no checkpoint": returning None
+        # triggers a full re-backfill, so leave a trace of why.
+        logger.warning(
+            "backfill checkpoint mirror unreadable for %s (%s); extension will re-backfill", instance_id, exc
+        )
         return None
     try:
         return BrowserBackfillCheckpointRecord.model_validate(payload)
-    except Exception:
+    except Exception as exc:
+        logger.warning("backfill checkpoint mirror invalid for %s (%s); extension will re-backfill", instance_id, exc)
         return None
 
 
