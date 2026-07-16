@@ -3017,12 +3017,12 @@ def test_own_db_signatures_uses_session_scoped_block_lookup(tmp_path: Path) -> N
     plan_rows = conn.execute(
         """
         EXPLAIN QUERY PLAN
-        SELECT m.message_id, m.position, m.role,
+        SELECT m.message_id, m.position, m.variant_index, m.role,
                b.block_type, b.text, b.tool_name, b.tool_input
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ? AND m.variant_index = 0
-        ORDER BY m.position, b.position
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
         """,
         ("session:planner",),
     ).fetchall()
