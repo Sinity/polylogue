@@ -390,6 +390,7 @@ def build_supervisor_launch(
     receipt_path: Path,
     run_id: str | None,
     env: Mapping[str, str] | None = None,
+    cleanup_path: Path | None = None,
 ) -> SupervisorLaunch:
     """Build the Linux supervisor command and optional owned cgroup scope."""
     values = dict(os.environ if env is None else env)
@@ -438,6 +439,8 @@ def build_supervisor_launch(
             argv.extend(("--unit", launch_unit))
         if launch_runtime_cap_s is not None:
             argv.extend(("--runtime-cap-s", f"{launch_runtime_cap_s:g}"))
+        if cleanup_path is not None:
+            argv.extend(("--cleanup-path", str(cleanup_path)))
         argv.extend(("--", *controller_cmd))
         return argv
 
@@ -895,22 +898,49 @@ def _parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--mode", choices=("process-group", "systemd-scope"), required=True)
     parser.add_argument("--unit")
     parser.add_argument("--runtime-cap-s", type=float)
+    parser.add_argument("--cleanup-path", type=Path)
     return parser.parse_args(option_argv), controller_cmd
+
+
+def cleanup_managed_tmpfs_path(path: Path | None) -> bool:
+    """Remove only a harness-owned direct child of the system tmpfs."""
+    if path is None or not path.name.startswith("pytest-polylogue-"):
+        return False
+    try:
+        if path.parent.resolve() != Path("/dev/shm").resolve():
+            return False
+    except OSError:
+        return False
+    shutil.rmtree(path, ignore_errors=True)
+    return not path.exists()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args, controller_cmd = _parse_args(sys.argv[1:] if argv is None else argv)
-    return supervise(
-        controller_cmd,
-        receipt_path=args.receipt,
-        owner_pid=args.owner_pid,
-        owner_start_ticks=args.owner_start_ticks,
-        timeout_s=max(0.0, args.timeout_s),
-        term_grace_s=max(0.0, args.term_grace_s),
-        mode=args.mode,
-        unit=args.unit,
-        runtime_cap_s=args.runtime_cap_s,
-    )
+    cleanup_complete = False
+    try:
+        return supervise(
+            controller_cmd,
+            receipt_path=args.receipt,
+            owner_pid=args.owner_pid,
+            owner_start_ticks=args.owner_start_ticks,
+            timeout_s=max(0.0, args.timeout_s),
+            term_grace_s=max(0.0, args.term_grace_s),
+            mode=args.mode,
+            unit=args.unit,
+            runtime_cap_s=args.runtime_cap_s,
+        )
+    finally:
+        cleanup_complete = cleanup_managed_tmpfs_path(args.cleanup_path)
+        if args.cleanup_path is not None:
+            with contextlib.suppress(OSError):
+                update_receipt(
+                    args.receipt,
+                    {
+                        "tmpfs_cleanup_path": str(args.cleanup_path),
+                        "tmpfs_cleanup_complete": cleanup_complete,
+                    },
+                )
 
 
 if __name__ == "__main__":

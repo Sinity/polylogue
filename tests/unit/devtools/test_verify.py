@@ -19,11 +19,14 @@ from devtools.verify import (
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
+    TESTMON_AFFECTED_STAMP,
     TESTMON_DATA,
     TESTMON_SEED_ATTEMPT,
     TESTMON_SEED_PROTOCOL_VERSION,
+    TESTMON_SEED_STAMP,
     _finalize_testmon_seed_attempt,
     _format_completion_notification,
+    _matching_testmon_coverage,
     _parse_pytest_test_count,
     _prepare_testmon_seed_attempt,
     _pytest_command_metadata,
@@ -31,6 +34,7 @@ from devtools.verify import (
     _pytest_stall_timeout_s,
     _pytest_timeout_s,
     _read_pytest_report,
+    _record_testmon_affected_coverage,
     _run,
     _stop_after_failed_step,
     _testmon_database_state,
@@ -40,11 +44,15 @@ from devtools.verify import (
     main,
 )
 from devtools.verify_runs import (
+    PytestResourceError,
     ResourceSampler,
     VerifyRun,
+    adaptive_pytest_runtime_policy,
+    apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
     pytest_basetemp_path,
+    pytest_tmpfs_budget_kb,
 )
 
 
@@ -85,7 +93,8 @@ def test_quick_verify_omits_pytest() -> None:
     ]
 
 
-def test_default_verify_uses_pytest_testmon() -> None:
+def test_default_verify_uses_adaptive_pytest_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
 
     label, command = steps[-1]
@@ -94,17 +103,18 @@ def test_default_verify_uses_pytest_testmon() -> None:
     assert "--testmon-noselect" not in command
     assert "--testmon-forceselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
-def test_broad_default_verify_uses_parallel_testmon() -> None:
+def test_broad_default_verify_uses_parallel_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False, broad_testmon=True)
 
     label, command = steps[-1]
     assert label == "pytest testmon (broad)"
     assert "--testmon" in command
     assert "--testmon-forceselect" in command
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_pytest_step_requests_structured_json_report() -> None:
@@ -130,6 +140,7 @@ def test_pytest_step_requests_structured_json_report() -> None:
 
 def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
 
     label, command = steps[-1]
@@ -137,7 +148,7 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
@@ -158,6 +169,7 @@ def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
 
 def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False, full_pytest=True)
 
     # #1775: the full diagnostic runs as two lanes — a parallel bulk lane plus a
@@ -170,7 +182,7 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     assert bulk_label == "pytest full (parallel)"
     assert "--testmon" not in bulk_command
     assert "-n" in bulk_command
-    assert bulk_command[bulk_command.index("-n") + 1] == "4"
+    assert bulk_command[bulk_command.index("-n") + 1] == "8"
 
     isolated_label, isolated_command = steps[-1]
     assert isolated_label == "pytest load-sensitive (isolated)"
@@ -188,7 +200,7 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     assert command[command.index("-n") + 1] == "4"
 
 
-def test_seed_does_not_auto_enable_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_seed_auto_enables_bounded_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
@@ -199,8 +211,8 @@ def test_seed_does_not_auto_enable_tmpfs(monkeypatch: pytest.MonkeyPatch) -> Non
         rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "--testmon-noselect"])
 
     assert rc == 0
-    assert metadata["pytest_tmpfs"] is False
-    assert "POLYLOGUE_PYTEST_TMPFS" not in run.call_args.kwargs["env"]
+    assert metadata["pytest_tmpfs"] is True
+    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_TMPFS"] == "1"
     assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] == "50000"
 
 
@@ -435,7 +447,8 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     )
 
     assert _testmon_seed_can_resume(identity) is True
-    assert _testmon_seed_can_resume({**identity, "git_head": "other", "worktree_fingerprint": "fixed"}) is True
+    assert _testmon_seed_can_resume({**identity, "git_head": "other"}) is True
+    assert _testmon_seed_can_resume({**identity, "worktree_fingerprint": "changed"}) is False
     assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
 
 
@@ -619,6 +632,68 @@ def test_pytest_basetemp_path_tracks_tmpfs_opt_in(tmp_path: Path) -> None:
         assert path.parent == Path("/realm/tmp/polylogue-pytest")
 
 
+def test_pytest_tmpfs_budget_is_shared_and_bounded() -> None:
+    assert pytest_tmpfs_budget_kb({"POLYLOGUE_PYTEST_TMPFS": "1"}) == 512 * 1024
+    assert (
+        pytest_tmpfs_budget_kb(
+            {
+                "POLYLOGUE_PYTEST_TMPFS": "1",
+                "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "4096",
+            }
+        )
+        == 2048 * 1024
+    )
+    assert (
+        pytest_tmpfs_budget_kb(
+            {
+                "POLYLOGUE_PYTEST_TMPFS": "1",
+                "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/custom",
+            }
+        )
+        is None
+    )
+
+
+def test_adaptive_pytest_policy_scales_workers_and_tmpfs() -> None:
+    policy = adaptive_pytest_runtime_policy(
+        available_kb=16 * 1024 * 1024,
+        memory_full_avg10=0.0,
+        cpu_count=24,
+        shm_free_kb=16 * 1024 * 1024,
+    )
+
+    assert policy.workers == 12
+    assert policy.tmpfs_budget_mb == 1638
+
+
+def test_adaptive_pytest_policy_reduces_workers_under_pressure() -> None:
+    policy = adaptive_pytest_runtime_policy(
+        available_kb=16 * 1024 * 1024,
+        memory_full_avg10=2.0,
+        cpu_count=24,
+        shm_free_kb=16 * 1024 * 1024,
+    )
+
+    assert policy.workers == 3
+
+
+def test_managed_pytest_policy_refuses_low_memory() -> None:
+    with pytest.raises(RuntimeError, match="requires at least 1.00 GiB"):
+        adaptive_pytest_runtime_policy(
+            available_kb=1024 * 1024 - 1,
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=16 * 1024 * 1024,
+        )
+
+
+def test_managed_pytest_policy_preserves_explicit_custom_root(tmp_path: Path) -> None:
+    env, policy = apply_managed_pytest_runtime_policy({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)})
+
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(tmp_path)
+    assert policy is None
+
+
 def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> None:
     env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
     basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-1", env=env)
@@ -717,7 +792,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(Path.cwd() / PYTEST_EVENTS_PATH)
 
 
-def test_verify_subprocess_env_replaces_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_subprocess_env_removes_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/tmp/polylogue-pytest")
     completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
 
@@ -725,7 +800,7 @@ def test_verify_subprocess_env_replaces_cloud_basetemp_in_local_worktree(monkeyp
         _run("render all", ["devtools", "render all", "--check"])
 
     env = run.call_args.kwargs["env"]
-    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/realm/tmp/polylogue-pytest"
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in env
 
 
 def test_run_reads_structured_pytest_report() -> None:
@@ -1111,6 +1186,20 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
     assert '"exit_code": 1' in payload
 
 
+def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
+    with (
+        patch("devtools.verify.build_verify_steps", side_effect=PytestResourceError("only 0.50 GiB available")),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify._run") as run,
+    ):
+        rc = main(["--json"])
+
+    assert rc == 125
+    run.assert_not_called()
+    assert "only 0.50 GiB available" in capsys.readouterr().err
+
+
 def test_verify_rejects_zero_testmon_selection_for_executable_change(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1126,6 +1215,7 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
         patch("devtools.verify._notify"),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._matching_testmon_coverage", return_value=None),
     ):
         rc = main(["--json"])
 
@@ -1134,6 +1224,62 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
     assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
     assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
+
+
+def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
+        del command, kwargs
+        return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._matching_testmon_coverage", return_value="successful_affected_run"),
+    ):
+        rc = main(["--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
+    assert pytest_step["zero_selection_coverage"] == "successful_affected_run"
+
+
+def test_testmon_coverage_receipts_are_content_exact() -> None:
+    paths = ("polylogue/example.py",)
+    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
+    TESTMON_SEED_STAMP.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "complete",
+                "identity": {"worktree_fingerprint": "covered"},
+            }
+        )
+    )
+
+    with patch("devtools.verify._worktree_fingerprint", return_value="covered"):
+        assert _matching_testmon_coverage(paths) == "complete_seed"
+
+    TESTMON_SEED_STAMP.unlink()
+    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
+        _record_testmon_affected_coverage(
+            executable_paths=paths,
+            selected_count=3,
+            run_id="run-1",
+        )
+        assert TESTMON_AFFECTED_STAMP.exists()
+        assert _matching_testmon_coverage(paths) == "successful_affected_run"
+        assert _matching_testmon_coverage(("polylogue/other.py",)) is None
+
+    with patch("devtools.verify._worktree_fingerprint", return_value="changed"):
+        assert _matching_testmon_coverage(paths) is None
 
 
 def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:

@@ -21,6 +21,7 @@ from devtools.pytest_supervisor import (
     CGROUP_MODE_ENV,
     SupervisorLaunch,
     build_supervisor_launch,
+    cleanup_managed_tmpfs_path,
     read_receipt,
     signal_process_identity,
     termination_request_path,
@@ -38,6 +39,19 @@ def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> None:
             return
         time.sleep(0.02)
     assert predicate()
+
+
+def test_cleanup_managed_tmpfs_path_removes_only_owned_run(tmp_path: Path) -> None:
+    run_root = Path("/dev/shm") / f"pytest-polylogue-cleanup-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        run_root.mkdir()
+        (run_root / "payload").write_text("temporary", encoding="utf-8")
+
+        assert cleanup_managed_tmpfs_path(run_root) is True
+        assert not run_root.exists()
+        assert cleanup_managed_tmpfs_path(tmp_path / "pytest-polylogue-not-tmpfs") is False
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
 
 
 def _wait_for_receipt(path: Path, *, status: str | None = None) -> dict[str, object]:
@@ -204,7 +218,7 @@ def test_repository_pytest_timeout_policy_is_bounded_and_installed() -> None:
     pytest_config = config["tool"]["pytest"]["ini_options"]
 
     assert any(dependency.startswith("pytest-timeout") for dependency in dev_dependencies)
-    assert pytest_config["timeout"] == 300
+    assert pytest_config["timeout"] == 120
     assert pytest_config["timeout_method"] == "signal"
 
 
@@ -850,8 +864,9 @@ def test_runner_bounds_post_supervisor_pipe_drain(
         receipt_path: Path,
         run_id: str | None,
         env: Mapping[str, str] | None = None,
+        cleanup_path: Path | None = None,
     ) -> SupervisorLaunch:
-        del controller_cmd, owner_pid, timeout_s, term_grace_s, run_id, env
+        del controller_cmd, owner_pid, timeout_s, term_grace_s, run_id, env, cleanup_path
         receipt_path = receipt_path.absolute()
         child_code = (
             "import json, os, signal, time\n"

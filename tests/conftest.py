@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -202,6 +202,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item,
+    call: pytest.CallInfo[None],
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """Retain the call outcome so passing test temp trees can be reclaimed."""
+    report = yield
+    setattr(item, f"rep_{report.when}", report)
+    return report
+
+
+@pytest.fixture(autouse=True)
+def _reclaim_passing_test_tmp_path(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+) -> Iterator[None]:
+    """Bound broad-run temp growth while preserving failed-test evidence."""
+    yield
+    report: pytest.TestReport | None = getattr(request.node, "rep_call", None)
+    if report is not None and report.passed:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
@@ -260,7 +283,10 @@ _TESTS_ROOT = str(Path(__file__).resolve().parent)
 
 
 @pytest.fixture(autouse=True)
-def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _close_test_opened_sqlite_connections(
+    monkeypatch: pytest.MonkeyPatch,
+    _reclaim_passing_test_tmp_path: None,
+) -> Iterator[None]:
     """Close sync ``sqlite3`` connections that *test code* opened but never closed.
 
     Many tests use ``with sqlite3.connect(...) as conn:`` which commits on exit
@@ -378,7 +404,11 @@ def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> It
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _clear_polylogue_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _reclaim_passing_test_tmp_path: None,
+) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.sqlite.connection import _clear_connection_cache
