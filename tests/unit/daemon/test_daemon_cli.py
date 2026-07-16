@@ -21,6 +21,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -571,17 +572,12 @@ def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pyte
     from polylogue.daemon import cli as daemon_cli
 
     events: list[tuple[str, dict[str, object]]] = []
-    outcome = SimpleNamespace(
-        status=SimpleNamespace(value="executed"),
+    outcome = RawReplayPlanOutcome(
         plan_id="raw-replay:stable",
+        input_raw_ids=("raw-a",),
+        status=RawReplayPlanStatus.EXECUTED,
         reason="applied",
-        to_dict=lambda: {
-            "plan_id": "raw-replay:stable",
-            "input_raw_ids": ["raw-a"],
-            "status": "executed",
-            "reason": "applied",
-            "next_action": "none",
-        },
+        next_action="none",
     )
     monkeypatch.setattr(
         "polylogue.daemon.events.emit_daemon_event",
@@ -614,7 +610,9 @@ def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pyte
                     "raw_materialization_candidate_count": 1.0,
                     "raw_materialization_remaining_candidate_count": 0.0,
                 },
-                "plan_outcomes": [outcome.to_dict()],
+                "plan_outcome_count": 1,
+                "plan_outcome_sample": [outcome.to_summary_dict()],
+                "plan_outcome_sample_truncated": False,
             },
         )
     ]
@@ -641,7 +639,102 @@ def test_raw_materialization_pass_emits_zero_work_receipt(monkeypatch: pytest.Mo
     )
 
     assert events[0][1]["success"] is True
-    assert events[0][1]["plan_outcomes"] == []
+    assert events[0][1]["plan_outcome_count"] == 0
+    assert events[0][1]["plan_outcome_sample"] == []
+    assert events[0][1]["plan_outcome_sample_truncated"] is False
+
+
+def test_raw_materialization_pass_bounds_outcome_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    outcomes = tuple(
+        RawReplayPlanOutcome(
+            plan_id=f"plan:{index}",
+            input_raw_ids=(f"raw:{index}",),
+            status=RawReplayPlanStatus.CARRIED_FORWARD,
+            reason="not selected in bounded pass",
+            next_action="retry later",
+        )
+        for index in range(9)
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=outcomes,
+        )
+    )
+
+    assert events[0][1]["plan_outcome_count"] == 9
+    assert len(cast(list[object], events[0][1]["plan_outcome_sample"])) == 8
+    assert events[0][1]["plan_outcome_sample_truncated"] is True
+
+
+def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"c" * 16)
+    census = SimpleNamespace(
+        census_id="census:2:inventory:residual",
+        sequence_no=2,
+        inventory_digest="a" * 64,
+        residual_digest="b" * 64,
+        plan_count=3,
+        post_inventory_digest="c" * 64,
+        post_residual_digest="d" * 64,
+        post_plan_count=2,
+        executable_plan_count=1,
+        residual_plan_count=2,
+        predecessor_census_id="census:1:inventory:residual",
+        mode="apply",
+        lifecycle_status="completed",
+        quiescent=True,
+        fixed_point=False,
+        query_handle="polylogue://raw-authority-census/census:2:inventory:residual/0",
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=False,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=(),
+            census_receipt=census,
+        )
+    )
+
+    assert events[0][1]["census"] == {
+        "census_id": census.census_id,
+        "sequence_no": 2,
+        "inventory_digest": "a" * 64,
+        "residual_digest": "b" * 64,
+        "plan_count": 3,
+        "post_inventory_digest": "c" * 64,
+        "post_residual_digest": "d" * 64,
+        "post_plan_count": 2,
+        "executable_plan_count": 1,
+        "residual_plan_count": 2,
+        "predecessor_census_id": census.predecessor_census_id,
+        "mode": "apply",
+        "lifecycle_status": "completed",
+        "quiescent": True,
+        "fixed_point": False,
+        "query_handle": census.query_handle,
+    }
 
 
 def test_raw_materialization_closes_fts_on_cancellation(

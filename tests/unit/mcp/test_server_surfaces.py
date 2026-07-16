@@ -17,9 +17,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, BranchType, Provider
+from polylogue.core.json import json_document
 from polylogue.core.refs import EvidenceRef
 from polylogue.core.types import SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 from polylogue.surfaces.payloads import (
@@ -557,6 +559,92 @@ class TestResourceSurfaces:
         assert component_readiness["database"]["counts"] == {"count": 1}
         assert component_readiness["index"]["state"] == "degraded"
         assert component_readiness["index"]["caveats"] == ["messages_fts_row_mismatch"]
+
+    def test_raw_authority_census_query_handle_resolves_bounded_ledger(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root):
+            pass
+        receipt = record_raw_authority_census(
+            archive_root,
+            (),
+            selected_plan_ids=set(),
+            executable_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"origin": "codex-session"},
+            residual={},
+        )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://raw-authority-census/{census_id}/{offset}"].fn,
+                census_id=receipt.census_id,
+                offset="0",
+            )
+
+        payload = json.loads(result)
+        assert payload["query_handle"] == receipt.query_handle
+        assert payload["census"]["census_id"] == receipt.census_id
+        assert payload["plans"] == []
+
+    def test_raw_authority_mcp_bounds_oversized_plan_and_pages_detail(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root):
+            pass
+        raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
+        plan = RawReplayPlan(
+            "raw-replay:mcp-oversized",
+            "c" * 64,
+            raw_ids,
+            ("codex:oversized",),
+            json_document({"raw_ids": list(raw_ids)}),
+            json_document({"raw_ids": list(raw_ids)}),
+            json_document({"raw_ids": list(raw_ids)}),
+        )
+        receipt = record_raw_authority_census(
+            archive_root,
+            (plan,),
+            selected_plan_ids=set(),
+            executable_plan_ids={plan.plan_id},
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": "mcp-oversized"},
+            residual={},
+        )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            census_result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://raw-authority-census/{census_id}/{offset}"].fn,
+                census_id=receipt.census_id,
+                offset="0",
+            )
+            census_payload = json.loads(census_result)
+            item = census_payload["plans"][0]
+            assert len(census_result) < 8_000
+            assert item["plan"]["input_raw_count"] == 2_000
+            detail_result = invoke_surface(
+                mcp_server._resource_manager._templates[
+                    "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
+                ].fn,
+                census_id=receipt.census_id,
+                record_id=plan.plan_id,
+                revision="current",
+                offset="0",
+            )
+
+        detail_payload = json.loads(detail_result)
+        assert len(detail_payload["chunk"]) <= 16_384
+        assert detail_payload["next_query_handle"] is not None
 
 
 class TestArchiveGenericToolSurfaces:

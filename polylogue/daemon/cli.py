@@ -639,19 +639,46 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
 def _emit_raw_materialization_pass(result: Any) -> None:
     """Persist the conserved plan outcomes for one bounded daemon pass."""
     outcomes = tuple(getattr(result, "plan_outcomes", ()))
+    outcome_sample_limit = 8
     from polylogue.daemon.events import emit_daemon_event
 
     metrics = dict(getattr(result, "metrics", {}))
+    census = getattr(result, "census_receipt", None)
+    census_payload = None
+    if census is not None:
+        census_payload = {
+            "census_id": census.census_id,
+            "sequence_no": census.sequence_no,
+            "inventory_digest": census.inventory_digest,
+            "residual_digest": census.residual_digest,
+            "plan_count": census.plan_count,
+            "post_inventory_digest": census.post_inventory_digest,
+            "post_residual_digest": census.post_residual_digest,
+            "post_plan_count": census.post_plan_count,
+            "executable_plan_count": census.executable_plan_count,
+            "residual_plan_count": census.residual_plan_count,
+            "predecessor_census_id": census.predecessor_census_id,
+            "mode": census.mode,
+            "lifecycle_status": census.lifecycle_status,
+            "quiescent": census.quiescent,
+            "fixed_point": census.fixed_point,
+            "query_handle": census.query_handle,
+        }
+    payload = {
+        "pass_id": f"raw-materialization:{os.urandom(16).hex()}",
+        "success": bool(result.success),
+        "repaired_count": int(result.repaired_count),
+        "detail": str(result.detail),
+        "metrics": metrics,
+        "plan_outcome_count": len(outcomes),
+        "plan_outcome_sample": [outcome.to_summary_dict() for outcome in outcomes[:outcome_sample_limit]],
+        "plan_outcome_sample_truncated": len(outcomes) > outcome_sample_limit,
+    }
+    if census_payload is not None:
+        payload["census"] = census_payload
     emit_daemon_event(
         "raw_materialization_pass",
-        payload={
-            "pass_id": f"raw-materialization:{os.urandom(16).hex()}",
-            "success": bool(result.success),
-            "repaired_count": int(result.repaired_count),
-            "detail": str(result.detail),
-            "metrics": metrics,
-            "plan_outcomes": [outcome.to_dict() for outcome in outcomes],
-        },
+        payload=payload,
     )
 
 

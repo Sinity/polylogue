@@ -14,7 +14,6 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -57,12 +56,32 @@ from polylogue.storage.message_type_backfill import (
     count_messages_by_type_sync,
     count_unclassified_message_type_sync,
 )
+from polylogue.storage.raw_authority import (
+    RawAuthorityCensusReceipt,
+    RawReplayPlan,
+    RawReplayPlanOutcome,
+    RawReplayPlanStatus,
+    build_raw_replay_plans,
+    finalize_raw_authority_census,
+    raw_replay_application_receipt,
+    raw_replay_plan_last_attempts,
+    record_raw_authority_census,
+    record_raw_replay_outcome,
+    recover_interrupted_raw_authority_censuses,
+    reject_invalid_raw_replay_application,
+    reject_stale_raw_replay_plan,
+    unresolved_raw_authority_blockers,
+    validate_raw_replay_application_receipt,
+    validate_raw_replay_plan,
+)
 
 logger = get_logger(__name__)
 _MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
+RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
+RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
@@ -4578,6 +4597,12 @@ class RawMaterializationCandidates:
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = field(default_factory=dict)
     authority_components: tuple[tuple[str, ...], ...] = ()
+    missing_blob_raw_ids: tuple[str, ...] = ()
+    adoption_deferred_raw_ids: tuple[str, ...] = ()
+    authority_quarantined_raw_ids: tuple[str, ...] = ()
+    byte_authority_fragment_raw_ids: tuple[str, ...] = ()
+    byte_authority_quarantined_raw_ids: tuple[str, ...] = ()
+    byte_authority_pending_raw_ids: tuple[str, ...] = ()
 
     @property
     def total_blob_bytes(self) -> int:
@@ -4586,34 +4611,6 @@ class RawMaterializationCandidates:
     @property
     def max_blob_bytes(self) -> int:
         return max((self.raw_blob_bytes.get(raw_id, 0) for raw_id in self.raw_ids), default=0)
-
-
-class RawReplayPlanStatus(StrEnum):
-    EXECUTED = "executed"
-    RETRYABLE = "retryable"
-    DEFERRED = "deferred"
-    TERMINAL = "terminal"
-    REJECTED_STALE = "rejected_stale"
-
-
-@dataclass(frozen=True, slots=True)
-class RawReplayPlanOutcome:
-    plan_id: str
-    input_raw_ids: tuple[str, ...]
-    status: RawReplayPlanStatus
-    reason: str
-    next_action: str
-
-    def to_dict(self) -> JSONDocument:
-        return json_document(
-            {
-                "plan_id": self.plan_id,
-                "input_raw_ids": list(self.input_raw_ids),
-                "status": self.status.value,
-                "reason": self.reason,
-                "next_action": self.next_action,
-            }
-        )
 
 
 def _raw_materialization_origin_from_provider(provider: str | None) -> str | None:
@@ -4672,6 +4669,12 @@ def _raw_materialization_candidate_ids(
     missing_blob_source_available = 0
     missing_blob_source_missing = 0
     already_parsed = 0
+    missing_blob_raw_ids: list[str] = []
+    adoption_deferred_raw_ids: list[str] = []
+    authority_quarantined_raw_ids: list[str] = []
+    byte_authority_fragment_raw_ids: list[str] = []
+    byte_authority_quarantined_raw_ids: list[str] = []
+    byte_authority_pending_raw_ids: list[str] = []
     expanded_raw_ids: tuple[str, ...] = ()
     expanded_blob_bytes: dict[str, int] = {}
     authority_components: tuple[tuple[str, ...], ...] = ()
@@ -4796,8 +4799,10 @@ def _raw_materialization_candidate_ids(
         byte_authority_quarantined = 0
         byte_authority_pending = 0
         for row in rows:
+            row_raw_id = str(row["raw_id"])
             if bool(row["adoption_deferred"]):
                 adoption_deferred += 1
+                adoption_deferred_raw_ids.append(row_raw_id)
                 continue
             if bool(row["application_terminal"]):
                 continue
@@ -4805,15 +4810,19 @@ def _raw_materialization_candidate_ids(
                 continue
             if bool(row["membership_authority_quarantined"]):
                 authority_quarantined += 1
+                authority_quarantined_raw_ids.append(row_raw_id)
                 continue
             if bool(row["byte_authority_fragment"]):
                 byte_authority_fragments += 1
+                byte_authority_fragment_raw_ids.append(row_raw_id)
                 continue
             if bool(row["byte_authority_quarantined"]):
                 byte_authority_quarantined += 1
+                byte_authority_quarantined_raw_ids.append(row_raw_id)
                 continue
             if bool(row["byte_authority_pending"]):
                 byte_authority_pending += 1
+                byte_authority_pending_raw_ids.append(row_raw_id)
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
@@ -4835,6 +4844,7 @@ def _raw_materialization_candidate_ids(
                     already_parsed += 1
             else:
                 missing_blobs += 1
+                missing_blob_raw_ids.append(row_raw_id)
                 if _raw_materialization_source_available(str(row["source_path"] or "")):
                     missing_blob_source_available += 1
                 else:
@@ -4870,6 +4880,12 @@ def _raw_materialization_candidate_ids(
         expanded_raw_ids=expanded_raw_ids,
         expanded_blob_bytes=expanded_blob_bytes,
         authority_components=authority_components,
+        missing_blob_raw_ids=tuple(sorted(missing_blob_raw_ids)),
+        adoption_deferred_raw_ids=tuple(sorted(adoption_deferred_raw_ids)),
+        authority_quarantined_raw_ids=tuple(sorted(authority_quarantined_raw_ids)),
+        byte_authority_fragment_raw_ids=tuple(sorted(byte_authority_fragment_raw_ids)),
+        byte_authority_quarantined_raw_ids=tuple(sorted(byte_authority_quarantined_raw_ids)),
+        byte_authority_pending_raw_ids=tuple(sorted(byte_authority_pending_raw_ids)),
     )
 
 
@@ -4896,7 +4912,9 @@ def _raw_materialization_ordered_components(
     candidate_ids = set(candidates.raw_ids)
     source_components = candidates.authority_components or tuple((raw_id,) for raw_id in candidates.raw_ids)
     components = [component for component in source_components if candidate_ids.intersection(component)]
-    last_attempts = _raw_replay_plan_last_attempts(archive_root)
+    plans = build_raw_replay_plans(archive_root, components)
+    plan_ids = {plan.input_raw_ids: plan.plan_id for plan in plans}
+    last_attempts = raw_replay_plan_last_attempts(archive_root)
 
     def candidate_order(raw_id: str) -> tuple[int, int, str]:
         if raw_id in candidates.raw_acquired_at_ms:
@@ -4906,8 +4924,8 @@ def _raw_materialization_ordered_components(
     return sorted(
         components,
         key=lambda component: (
-            _raw_replay_plan_id(component) in last_attempts,
-            last_attempts.get(_raw_replay_plan_id(component), 0),
+            plan_ids[component] in last_attempts,
+            last_attempts.get(plan_ids[component], 0),
             min(candidate_order(raw_id) for raw_id in component if raw_id in candidate_ids),
             component,
         ),
@@ -4933,50 +4951,114 @@ def _raw_materialization_component_blob_bytes(candidates: RawMaterializationCand
     return candidates.expanded_blob_bytes.get(raw_id, candidates.raw_blob_bytes.get(raw_id, 0))
 
 
-def _raw_replay_plan_id(component: tuple[str, ...]) -> str:
-    digest = hashlib.sha256()
-    digest.update(b"polylogue.raw-replay-plan.v1\0")
-    for raw_id in sorted(component):
-        digest.update(raw_id.encode("utf-8"))
-        digest.update(b"\0")
-    return f"raw-replay:{digest.hexdigest()}"
+def _raw_authority_scope(
+    *,
+    raw_artifact_id: str | None,
+    provider: str | None,
+    source_family: str | None,
+    source_root: Path | None,
+    raw_artifact_limit: int | None,
+) -> dict[str, object]:
+    return {
+        "raw_artifact_id": raw_artifact_id,
+        "provider": provider,
+        "source_family": source_family,
+        "source_root": str(source_root) if source_root is not None else None,
+        "raw_artifact_limit": raw_artifact_limit,
+    }
 
 
-def _raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
-    """Read disposable daemon receipts to rotate retryable plans fairly."""
-    ops_db = archive_root / "ops.db"
-    if not ops_db.is_file():
-        return {}
-    try:
-        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
-            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daemon_events'").fetchone()
-            if exists is None:
-                return {}
-            rows = conn.execute(
-                """
-                SELECT json_extract(outcome.value, '$.plan_id'), MAX(event.id)
-                FROM daemon_events AS event,
-                     json_each(event.payload_json, '$.plan_outcomes') AS outcome
-                WHERE event.kind = 'raw_materialization_pass'
-                  AND json_valid(event.payload_json)
-                  AND json_extract(outcome.value, '$.plan_id') IS NOT NULL
-                GROUP BY json_extract(outcome.value, '$.plan_id')
-                """
-            )
-            return {str(row[0]): int(row[1]) for row in rows}
-    except sqlite3.Error:
-        logger.warning("raw replay: failed to read prior plan attempts", exc_info=True)
-        return {}
+def _raw_authority_residual(
+    candidates: RawMaterializationCandidates,
+    *,
+    census_pending_raw_ids: tuple[str, ...] = (),
+    resource_blocked_plan_ids: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Return identity-sensitive residual debt for fixed-point comparison."""
+    census_pending_digest = hashlib.sha256(
+        json.dumps(list(census_pending_raw_ids), separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "missing_blob_raw_ids": list(candidates.missing_blob_raw_ids),
+        "adoption_deferred_raw_ids": list(candidates.adoption_deferred_raw_ids),
+        "authority_quarantined_raw_ids": list(candidates.authority_quarantined_raw_ids),
+        "byte_authority_fragment_raw_ids": list(candidates.byte_authority_fragment_raw_ids),
+        "byte_authority_quarantined_raw_ids": list(candidates.byte_authority_quarantined_raw_ids),
+        "byte_authority_pending_raw_ids": list(candidates.byte_authority_pending_raw_ids),
+        # A large initial catch-up may need hundreds of bounded census passes.
+        # Keep every progress receipt identity-sensitive without copying the
+        # entire shrinking raw-ID backlog into source.db on every pass.
+        "census_pending_raw_count": len(census_pending_raw_ids),
+        "census_pending_raw_digest": census_pending_digest,
+        "resource_blocked_plan_ids": list(resource_blocked_plan_ids),
+    }
+
+
+def _raw_authority_postflight_snapshot(
+    archive_root: Path,
+    candidates: RawMaterializationCandidates,
+) -> tuple[tuple[RawReplayPlan, ...], dict[str, object]]:
+    """Build the complete post-pass plan inventory and typed residual debt."""
+    components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+    plans = build_raw_replay_plans(archive_root, components)
+    blocked_plan_ids = tuple(
+        sorted(
+            plan.plan_id
+            for component, plan in zip(components, plans, strict=True)
+            if sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
+            > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        )
+    )
+    return plans, _raw_authority_residual(candidates, resource_blocked_plan_ids=blocked_plan_ids)
+
+
+def _raw_authority_candidates_for_scope(
+    config: Config,
+    scope: Mapping[str, object],
+) -> RawMaterializationCandidates:
+    source_root_value = scope.get("source_root")
+    return _raw_materialization_candidate_ids(
+        config,
+        raw_artifact_id=str(scope["raw_artifact_id"]) if scope.get("raw_artifact_id") is not None else None,
+        provider=str(scope["provider"]) if scope.get("provider") is not None else None,
+        source_family=str(scope["source_family"]) if scope.get("source_family") is not None else None,
+        source_root=Path(str(source_root_value)) if source_root_value is not None else None,
+    )
+
+
+def _raw_materialization_base_metrics(
+    candidates: RawMaterializationCandidates,
+    *,
+    recovered_census_count: int,
+) -> dict[str, float]:
+    metrics = {
+        "raw_materialization_candidate_count": float(len(candidates.raw_ids)),
+        "raw_materialization_missing_blob_count": float(candidates.missing_blobs),
+        "raw_materialization_missing_blob_source_available_count": float(candidates.missing_blob_source_available),
+        "raw_materialization_missing_blob_source_missing_count": float(candidates.missing_blob_source_missing),
+        "raw_materialization_already_parsed_count": float(candidates.already_parsed),
+        "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
+        "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
+        "raw_materialization_adoption_deferred_count": float(candidates.adoption_deferred),
+        "raw_materialization_authority_quarantined_count": float(candidates.authority_quarantined),
+        "raw_materialization_byte_authority_fragment_count": float(candidates.byte_authority_fragments),
+        "raw_materialization_byte_authority_quarantined_count": float(candidates.byte_authority_quarantined),
+        "raw_materialization_byte_authority_pending_count": float(candidates.byte_authority_pending),
+    }
+    if recovered_census_count:
+        metrics["raw_materialization_recovered_census_count"] = float(recovered_census_count)
+    return metrics
 
 
 def _raw_replay_plan_outcome(
     conn: sqlite3.Connection,
-    component: tuple[str, ...],
+    plan: RawReplayPlan,
     *,
     remaining: RawMaterializationCandidates,
 ) -> RawReplayPlanOutcome:
     """Conserve one selected component into an explicit post-pass state."""
-    plan_id = _raw_replay_plan_id(component)
+    plan_id = plan.plan_id
+    component = plan.input_raw_ids
     remaining_ids = set(remaining.expanded_raw_ids) | set(remaining.raw_ids)
     if remaining_ids.intersection(component):
         return RawReplayPlanOutcome(
@@ -5067,16 +5149,37 @@ def _raw_replay_plan_outcome(
 
 def _raw_replay_plan_outcomes(
     archive_root: Path,
-    components: Sequence[tuple[str, ...]],
+    plans: Sequence[RawReplayPlan],
     *,
     remaining: RawMaterializationCandidates,
 ) -> tuple[RawReplayPlanOutcome, ...]:
-    if not components:
+    if not plans:
         return ()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
-        return tuple(_raw_replay_plan_outcome(conn, component, remaining=remaining) for component in components)
+        return tuple(_raw_replay_plan_outcome(conn, plan, remaining=remaining) for plan in plans)
+
+
+def _raw_replay_conservation_metrics(
+    plans: Sequence[RawReplayPlan],
+    selected_plan_ids: set[str],
+    outcomes: Sequence[RawReplayPlanOutcome],
+) -> tuple[int, int, int]:
+    """Return total plans, all carried inventory, and exact algebra errors."""
+    outcome_ids = [outcome.plan_id for outcome in outcomes]
+    outcome_id_set = set(outcome_ids)
+    conservation_errors = (
+        len(selected_plan_ids - outcome_id_set)
+        + len(outcome_id_set - selected_plan_ids)
+        + (len(outcome_ids) - len(outcome_id_set))
+    )
+    carried_forward = (
+        len(plans)
+        - len(selected_plan_ids)
+        + sum(outcome.status is RawReplayPlanStatus.CARRIED_FORWARD for outcome in outcomes)
+    )
+    return len(plans), carried_forward, conservation_errors
 
 
 def _raw_materialization_bucket_summary(
@@ -5555,6 +5658,7 @@ class RepairResult:
     detail: str = ""
     metrics: dict[str, float] = field(default_factory=dict)
     plan_outcomes: tuple[RawReplayPlanOutcome, ...] = ()
+    census_receipt: RawAuthorityCensusReceipt | None = None
 
     def to_dict(self) -> JSONDocument:
         payload: dict[str, object] = {
@@ -5567,7 +5671,30 @@ class RepairResult:
             "metrics": dict(self.metrics),
         }
         if self.plan_outcomes:
-            payload["plan_outcomes"] = [outcome.to_dict() for outcome in self.plan_outcomes]
+            payload["plan_outcome_count"] = len(self.plan_outcomes)
+            payload["plan_outcomes"] = [
+                outcome.to_summary_dict() for outcome in self.plan_outcomes[:RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT]
+            ]
+            payload["plan_outcomes_truncated"] = len(self.plan_outcomes) > RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT
+        if self.census_receipt is not None:
+            payload["census"] = {
+                "census_id": self.census_receipt.census_id,
+                "sequence_no": self.census_receipt.sequence_no,
+                "inventory_digest": self.census_receipt.inventory_digest,
+                "residual_digest": self.census_receipt.residual_digest,
+                "plan_count": self.census_receipt.plan_count,
+                "post_inventory_digest": self.census_receipt.post_inventory_digest,
+                "post_residual_digest": self.census_receipt.post_residual_digest,
+                "post_plan_count": self.census_receipt.post_plan_count,
+                "executable_plan_count": self.census_receipt.executable_plan_count,
+                "residual_plan_count": self.census_receipt.residual_plan_count,
+                "predecessor_census_id": self.census_receipt.predecessor_census_id,
+                "mode": self.census_receipt.mode,
+                "lifecycle_status": self.census_receipt.lifecycle_status,
+                "quiescent": self.census_receipt.quiescent,
+                "fixed_point": self.census_receipt.fixed_point,
+                "query_handle": self.census_receipt.query_handle,
+            }
         return json_document(payload)
 
 
@@ -5766,6 +5893,7 @@ def _internal_derived_repair_result(
     detail: str,
     metrics: dict[str, float] | None = None,
     plan_outcomes: tuple[RawReplayPlanOutcome, ...] = (),
+    census_receipt: RawAuthorityCensusReceipt | None = None,
 ) -> RepairResult:
     return RepairResult(
         name=name,
@@ -5776,6 +5904,7 @@ def _internal_derived_repair_result(
         detail=detail,
         metrics=dict(metrics or {}),
         plan_outcomes=plan_outcomes,
+        census_receipt=census_receipt,
     )
 
 
@@ -6381,6 +6510,33 @@ def repair_raw_materialization(
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority."""
+    archive_root = _raw_materialization_archive_root(config)
+    recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
+    for recovered_census_id, recovered_scope in recovered_censuses:
+        recovered_candidates = _raw_authority_candidates_for_scope(config, recovered_scope)
+        recovered_post_plans, recovered_post_residual = _raw_authority_postflight_snapshot(
+            archive_root,
+            recovered_candidates,
+        )
+        finalize_raw_authority_census(
+            archive_root,
+            recovered_census_id,
+            post_plans=recovered_post_plans,
+            post_residual=recovered_post_residual,
+            interrupted=True,
+        )
+    recovered_census_count = len(recovered_censuses)
+    blocker_count = unresolved_raw_authority_blockers(archive_root)
+    if blocker_count:
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                f"Raw materialization is fail-closed behind {blocker_count:,} unresolved durable stale-plan blocker(s)"
+            ),
+            metrics={"raw_materialization_unresolved_blocker_count": float(blocker_count)},
+        )
     candidates = _raw_materialization_candidate_ids(
         config,
         raw_artifact_id=raw_artifact_id,
@@ -6388,9 +6544,131 @@ def repair_raw_materialization(
         source_family=source_family,
         source_root=source_root,
     )
+    from polylogue.sources.revision_backfill import (
+        RawRevisionReplayResourceBlockedError,
+        census_historical_revision_evidence,
+        uncensused_historical_revision_raw_ids,
+    )
+
+    relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
+    uncensused_raw_ids = set(uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids))
+    census_failed_raw_ids: set[str] = set()
+    census_resource_blocked_raw_ids: set[str] = set()
+    census_component_limit = (
+        raw_artifact_limit if raw_artifact_limit is not None else RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT
+    )
+    if census_component_limit < 1:
+        raise ValueError("raw_artifact_limit must be positive")
+    census_components_attempted = 0
+    if uncensused_raw_ids:
+        preliminary_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+        for component in preliminary_components:
+            if not uncensused_raw_ids.intersection(component):
+                continue
+            if census_components_attempted >= census_component_limit:
+                break
+            census_components_attempted += 1
+            seed = _raw_materialization_component_seed(candidates, component)
+            try:
+                census_historical_revision_evidence(
+                    archive_root,
+                    selected_raw_ids=[seed],
+                    max_payload_bytes=RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+                )
+            except RawRevisionReplayResourceBlockedError as exc:
+                logger.warning(
+                    "raw authority census resource-blocked for component containing %s: %s",
+                    seed,
+                    exc,
+                )
+                census_resource_blocked_raw_ids.update(component)
+            except Exception:
+                logger.exception("raw authority census failed for component containing %s", seed)
+                census_failed_raw_ids.update(component)
+        candidates = _raw_materialization_candidate_ids(
+            config,
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+        )
+        relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
+        uncensused_raw_ids = set(uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids))
+    census_pending_raw_ids = tuple(sorted(uncensused_raw_ids | census_failed_raw_ids))
+    if census_pending_raw_ids:
+        residual = _raw_authority_residual(candidates, census_pending_raw_ids=census_pending_raw_ids)
+        census_receipt = record_raw_authority_census(
+            archive_root,
+            (),
+            selected_plan_ids=set(),
+            executable_plan_ids=set(),
+            mode="census",
+            quiescent=False,
+            scope=_raw_authority_scope(
+                raw_artifact_id=raw_artifact_id,
+                provider=provider,
+                source_family=source_family,
+                source_root=source_root,
+                raw_artifact_limit=raw_artifact_limit,
+            ),
+            residual=residual,
+        )
+        metrics = _raw_materialization_base_metrics(
+            candidates,
+            recovered_census_count=recovered_census_count,
+        )
+        metrics.update(
+            {
+                "raw_materialization_selected_count": 0.0,
+                "raw_materialization_selected_total_blob_bytes": 0.0,
+                "raw_materialization_selected_max_blob_bytes": 0.0,
+                "raw_materialization_executed_count": 0.0,
+                "raw_materialization_census_incomplete_raw_count": float(len(census_pending_raw_ids)),
+                "raw_materialization_census_component_limit": float(census_component_limit),
+                "raw_materialization_census_components_attempted": float(census_components_attempted),
+                "raw_materialization_census_sequence": float(census_receipt.sequence_no),
+                "raw_materialization_census_fixed_point": 0.0,
+            }
+        )
+        if census_resource_blocked_raw_ids:
+            metrics["raw_materialization_resource_blocked_count"] = float(len(census_resource_blocked_raw_ids))
+            metrics["raw_materialization_execute_blob_limit_bytes"] = float(
+                RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+            )
+            oversized = {
+                raw_id
+                for raw_id in census_resource_blocked_raw_ids
+                if _raw_materialization_component_blob_bytes(candidates, raw_id)
+                > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+            }
+            if oversized:
+                metrics["raw_materialization_oversized_count"] = float(len(oversized))
+                stream_oversized = {
+                    raw_id for raw_id in oversized if _raw_materialization_stream_safe(candidates, raw_id)
+                }
+                if stream_oversized:
+                    metrics["raw_materialization_stream_oversized_count"] = float(len(stream_oversized))
+        detail = (
+            f"Raw replay planning paused until the persisted parser census completes for "
+            f"{len(census_pending_raw_ids):,} relevant raw(s)"
+        )
+        if census_resource_blocked_raw_ids:
+            detail += (
+                f"; {len(census_resource_blocked_raw_ids):,} raw(s) belong to authority components whose "
+                f"aggregate payload exceeds {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            )
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=detail,
+            metrics=metrics,
+            census_receipt=census_receipt,
+        )
     candidate_raw_ids = candidates.raw_ids
-    archive_root = _raw_materialization_archive_root(config)
     ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+    plans = build_raw_replay_plans(archive_root, ordered_components)
+    plan_by_component = {plan.input_raw_ids: plan for plan in plans}
     all_blocked_components = [
         component
         for component in ordered_components
@@ -6407,7 +6685,7 @@ def repair_raw_materialization(
     blocked_component_raw_ids = {raw_id for component in blocked_components for raw_id in component}
     blocked_plan_outcomes = tuple(
         RawReplayPlanOutcome(
-            _raw_replay_plan_id(component),
+            plan_by_component[component].plan_id,
             component,
             RawReplayPlanStatus.RETRYABLE,
             "authority component exceeds the bounded replay resource envelope",
@@ -6418,6 +6696,7 @@ def repair_raw_materialization(
     executable_components = [
         component for component in selected_components if not blocked_component_raw_ids.intersection(component)
     ]
+    executable_plans = [plan_by_component[component] for component in executable_components]
     raw_ids = [_raw_materialization_component_seed(candidates, component) for component in executable_components]
     selected_component_raw_ids = {raw_id for component in selected_components for raw_id in component}
     selected_candidate_raw_ids = selected_component_raw_ids.intersection(candidate_raw_ids)
@@ -6429,23 +6708,14 @@ def repair_raw_materialization(
         (_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in selected_component_raw_ids),
         default=0,
     )
-    metrics = {
-        "raw_materialization_candidate_count": float(len(candidate_raw_ids)),
-        "raw_materialization_selected_count": float(len(selected_candidate_raw_ids)),
-        "raw_materialization_missing_blob_count": float(missing_blobs),
-        "raw_materialization_missing_blob_source_available_count": float(candidates.missing_blob_source_available),
-        "raw_materialization_missing_blob_source_missing_count": float(candidates.missing_blob_source_missing),
-        "raw_materialization_already_parsed_count": float(candidates.already_parsed),
-        "raw_materialization_total_blob_bytes": float(candidates.total_blob_bytes),
-        "raw_materialization_max_blob_bytes": float(candidates.max_blob_bytes),
-        "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
-        "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
-        "raw_materialization_adoption_deferred_count": float(candidates.adoption_deferred),
-        "raw_materialization_authority_quarantined_count": float(candidates.authority_quarantined),
-        "raw_materialization_byte_authority_fragment_count": float(candidates.byte_authority_fragments),
-        "raw_materialization_byte_authority_quarantined_count": float(candidates.byte_authority_quarantined),
-        "raw_materialization_byte_authority_pending_count": float(candidates.byte_authority_pending),
-    }
+    metrics = _raw_materialization_base_metrics(candidates, recovered_census_count=recovered_census_count)
+    metrics.update(
+        {
+            "raw_materialization_selected_count": float(len(selected_candidate_raw_ids)),
+            "raw_materialization_selected_total_blob_bytes": float(selected_total_bytes),
+            "raw_materialization_selected_max_blob_bytes": float(selected_max_bytes),
+        }
+    )
     if raw_artifact_limit is not None:
         metrics["raw_materialization_limit"] = float(raw_artifact_limit)
         metrics["raw_materialization_selected_component_count"] = float(len(selected_components))
@@ -6476,6 +6746,36 @@ def repair_raw_materialization(
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
+    selected_plan_ids = {plan_by_component[component].plan_id for component in selected_components}
+    executable_plan_ids = {
+        plan_by_component[component].plan_id
+        for component in ordered_components
+        if not all_blocked_component_raw_ids.intersection(component)
+    }
+    residual = _raw_authority_residual(
+        candidates,
+        resource_blocked_plan_ids=tuple(
+            sorted(plan_by_component[component].plan_id for component in all_blocked_components)
+        ),
+    )
+    census_receipt = record_raw_authority_census(
+        archive_root,
+        plans,
+        selected_plan_ids=set() if dry_run else selected_plan_ids,
+        executable_plan_ids=executable_plan_ids,
+        mode="dry_run" if dry_run else "apply",
+        quiescent=True,
+        scope=_raw_authority_scope(
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+            raw_artifact_limit=raw_artifact_limit,
+        ),
+        residual=residual,
+    )
+    metrics["raw_materialization_census_sequence"] = float(census_receipt.sequence_no)
+    metrics["raw_materialization_census_fixed_point"] = float(census_receipt.fixed_point)
     if not candidate_raw_ids:
         detail = "Executable raw replay converged"
         if (
@@ -6515,12 +6815,13 @@ def repair_raw_materialization(
             ),
             detail=detail,
             metrics=metrics,
+            census_receipt=census_receipt,
         )
     if dry_run:
         plan_outcomes = (
             tuple(
                 RawReplayPlanOutcome(
-                    _raw_replay_plan_id(component),
+                    plan_by_component[component].plan_id,
                     component,
                     RawReplayPlanStatus.RETRYABLE,
                     "dry-run census selected this executable authority component",
@@ -6554,19 +6855,81 @@ def repair_raw_materialization(
             detail=detail,
             metrics=metrics,
             plan_outcomes=plan_outcomes,
+            census_receipt=census_receipt,
         )
 
-    from polylogue.sources.revision_backfill import (
-        RawRevisionReplayResourceBlockedError,
-        RevisionBackfillResult,
-        backfill_historical_revision_evidence,
-    )
+    for outcome in blocked_plan_outcomes:
+        record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+
+    stale_outcomes: list[RawReplayPlanOutcome] = []
+    validated_plans: list[RawReplayPlan] = []
+    for plan in executable_plans:
+        valid, observed = validate_raw_replay_plan(archive_root, plan)
+        if valid:
+            validated_plans.append(plan)
+        else:
+            stale_outcomes.append(reject_stale_raw_replay_plan(archive_root, census_receipt.census_id, plan, observed))
+    if stale_outcomes:
+        carried = [
+            RawReplayPlanOutcome(
+                plan.plan_id,
+                plan.input_raw_ids,
+                RawReplayPlanStatus.CARRIED_FORWARD,
+                "another selected plan failed immutable precondition validation",
+                "resolve the durable stale-plan blocker before retrying this unchanged plan",
+            )
+            for plan in validated_plans
+        ]
+        for outcome in carried:
+            record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+        stale_candidates = _raw_materialization_candidate_ids(
+            config,
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+        )
+        stale_post_plans, stale_post_residual = _raw_authority_postflight_snapshot(
+            archive_root,
+            stale_candidates,
+        )
+        census_receipt = finalize_raw_authority_census(
+            archive_root,
+            census_receipt.census_id,
+            post_plans=stale_post_plans,
+            post_residual=stale_post_residual,
+        )
+        plan_outcomes = tuple(stale_outcomes + carried) + blocked_plan_outcomes
+        plan_count, carried_forward_count, conservation_error_count = _raw_replay_conservation_metrics(
+            plans,
+            selected_plan_ids,
+            plan_outcomes,
+        )
+        metrics["raw_materialization_plan_rejected_stale_count"] = float(len(stale_outcomes))
+        metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
+        metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
+        metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=(
+                f"Rejected {len(stale_outcomes):,} stale immutable replay plan(s); "
+                "automatic convergence is now fail-closed behind durable blocker evidence"
+            ),
+            metrics=metrics,
+            plan_outcomes=plan_outcomes,
+            census_receipt=census_receipt,
+        )
+
+    from polylogue.sources.revision_backfill import RevisionBackfillResult, backfill_historical_revision_evidence
 
     executable_raw_ids = raw_ids
     metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
     replay_parts: list[RevisionBackfillResult] = []
     execution_outcomes: list[RawReplayPlanOutcome] = []
-    for component, raw_id in zip(executable_components, executable_raw_ids, strict=True):
+    for plan, raw_id in zip(executable_plans, executable_raw_ids, strict=True):
+        component = plan.input_raw_ids
         try:
             part = backfill_historical_revision_evidence(
                 archive_root,
@@ -6577,27 +6940,54 @@ def repair_raw_materialization(
             metrics["raw_materialization_resource_blocked_count"] = max(
                 metrics.get("raw_materialization_resource_blocked_count", 0.0), float(len(exc.raw_ids))
             )
-            execution_outcomes.append(
-                RawReplayPlanOutcome(
-                    _raw_replay_plan_id(component),
-                    component,
-                    RawReplayPlanStatus.RETRYABLE,
-                    "expanded authority component exceeded the bounded replay resource envelope",
-                    "retry the same plan after streaming/resource admission is available",
-                )
+            outcome = RawReplayPlanOutcome(
+                plan.plan_id,
+                component,
+                RawReplayPlanStatus.RETRYABLE,
+                "expanded authority component exceeded the bounded replay resource envelope",
+                "retry the same plan after streaming/resource admission is available",
             )
+            record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+            execution_outcomes.append(outcome)
             continue
         except Exception as exc:
-            logger.exception("raw replay plan %s failed", _raw_replay_plan_id(component))
-            execution_outcomes.append(
-                RawReplayPlanOutcome(
-                    _raw_replay_plan_id(component),
+            logger.exception("raw replay plan %s failed", plan.plan_id)
+            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)
+            if receipt_valid:
+                outcome = RawReplayPlanOutcome(
+                    plan.plan_id,
                     component,
-                    RawReplayPlanStatus.RETRYABLE,
-                    f"component execution raised {type(exc).__name__}: {exc}",
-                    "retry this plan after independent components have received a turn",
+                    RawReplayPlanStatus.EXECUTED,
+                    f"component reached exact durable postconditions before {type(exc).__name__}",
+                    "none",
+                    application_receipt,
                 )
-            )
+                record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+            else:
+                plan_still_valid, _ = validate_raw_replay_plan(archive_root, plan)
+                if plan_still_valid:
+                    outcome = RawReplayPlanOutcome(
+                        plan.plan_id,
+                        component,
+                        RawReplayPlanStatus.RETRYABLE,
+                        f"component execution raised {type(exc).__name__}: {exc}",
+                        "retry this unchanged plan after independent components have received a turn",
+                        application_receipt,
+                    )
+                    record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+                else:
+                    outcome = reject_invalid_raw_replay_application(
+                        archive_root,
+                        census_receipt.census_id,
+                        plan,
+                        application_receipt,
+                        (
+                            f"component execution raised {type(exc).__name__}: {exc}",
+                            *receipt_problems,
+                        ),
+                    )
+            execution_outcomes.append(outcome)
             continue
         replay_parts.append(part)
         current = _raw_materialization_candidate_ids(
@@ -6607,7 +6997,33 @@ def repair_raw_materialization(
             source_family=source_family,
             source_root=source_root,
         )
-        execution_outcomes.extend(_raw_replay_plan_outcomes(archive_root, [component], remaining=current))
+        component_outcomes = _raw_replay_plan_outcomes(archive_root, [plan], remaining=current)
+        for outcome in component_outcomes:
+            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            receipted = dataclasses.replace(outcome, application_receipt=application_receipt)
+            if outcome.status is RawReplayPlanStatus.EXECUTED:
+                receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)
+                if not receipt_valid:
+                    receipted = reject_invalid_raw_replay_application(
+                        archive_root,
+                        census_receipt.census_id,
+                        plan,
+                        application_receipt,
+                        receipt_problems,
+                    )
+                else:
+                    record_raw_replay_outcome(archive_root, census_receipt.census_id, receipted)
+            elif outcome.status is RawReplayPlanStatus.REJECTED_STALE:
+                receipted = reject_invalid_raw_replay_application(
+                    archive_root,
+                    census_receipt.census_id,
+                    plan,
+                    application_receipt,
+                    (outcome.reason,),
+                )
+            else:
+                record_raw_replay_outcome(archive_root, census_receipt.census_id, receipted)
+            execution_outcomes.append(receipted)
 
     replay = RevisionBackfillResult(
         scanned=sum(part.scanned for part in replay_parts),
@@ -6640,14 +7056,25 @@ def repair_raw_materialization(
         }
     )
     plan_outcomes = tuple(execution_outcomes) + blocked_plan_outcomes
+    post_plans, post_residual = _raw_authority_postflight_snapshot(archive_root, remaining)
+    census_receipt = finalize_raw_authority_census(
+        archive_root,
+        census_receipt.census_id,
+        post_plans=post_plans,
+        post_residual=post_residual,
+    )
     for status in RawReplayPlanStatus:
         metrics[f"raw_materialization_plan_{status.value}_count"] = float(
             sum(outcome.status is status for outcome in plan_outcomes)
         )
-    metrics["raw_materialization_plan_outcome_count"] = float(len(plan_outcomes))
-    metrics["raw_materialization_plan_conservation_error_count"] = float(
-        sum(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
+    plan_count, carried_forward_count, conservation_error_count = _raw_replay_conservation_metrics(
+        plans,
+        selected_plan_ids,
+        plan_outcomes,
     )
+    metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
+    metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
+    metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
     success = (
         not remaining.raw_ids
         and remaining.missing_blobs == 0
@@ -6713,6 +7140,7 @@ def repair_raw_materialization(
         detail=detail,
         metrics=metrics,
         plan_outcomes=plan_outcomes,
+        census_receipt=census_receipt,
     )
 
 

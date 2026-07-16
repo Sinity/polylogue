@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import sqlite3
@@ -36,12 +37,242 @@ class RevisionBackfillResult:
     adoption_deferred: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class RevisionCensusResult:
+    scanned: int
+    classified_full: int
+    quarantined: int
+    input_raw_ids: tuple[str, ...]
+    logical_keys: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class _RevisionCensusState:
+    scanned: int
+    classified: int
+    quarantined: int
+    censused: set[str]
+    membership_candidates: dict[str, set[str]]
+    provisional_full_raw_ids: dict[str, set[str]]
+
+
 class RawRevisionReplayResourceBlockedError(RuntimeError):
     def __init__(self, raw_ids: list[str], limit_bytes: int, total_bytes: int) -> None:
         self.raw_ids = tuple(raw_ids)
         self.limit_bytes = limit_bytes
         self.total_bytes = total_bytes
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
+
+
+def uncensused_historical_revision_raw_ids(archive_root: Path, raw_ids: list[str]) -> tuple[str, ...]:
+    """Return inputs whose current parser identity has not been persisted.
+
+    The dedicated receipt proves that the current parser actually observed
+    every relevant raw. Durable revision or membership rows alone may have
+    been produced by an older parser and therefore cannot establish current
+    quiescence.
+    """
+    if not raw_ids:
+        return ()
+    placeholders = ",".join("?" for _ in raw_ids)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT r.raw_id
+            FROM raw_sessions AS r
+            LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+            WHERE r.raw_id IN ({placeholders})
+              AND NOT COALESCE(
+                  c.parser_fingerprint = 'revision-membership-v1'
+                  AND c.status = 'complete',
+                  0
+              )
+            ORDER BY r.raw_id
+            """,
+            raw_ids,
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, ...]) -> None:
+    """Persist per-raw current-parser completion without changing governance."""
+    if not raw_ids:
+        return
+    with sqlite3.connect(archive_root / "source.db") as conn, conn:
+        for raw_id in raw_ids:
+            raw = conn.execute(
+                """
+                SELECT logical_source_key, revision_kind
+                FROM raw_sessions WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            membership_census = conn.execute(
+                """
+                SELECT status, detail FROM raw_membership_census
+                WHERE raw_id = ? AND parser_fingerprint = 'revision-membership-v1'
+                """,
+                (raw_id,),
+            ).fetchone()
+            membership_keys = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT logical_source_key FROM raw_session_memberships
+                    WHERE raw_id = ? ORDER BY logical_source_key
+                    """,
+                    (raw_id,),
+                )
+            ]
+            typed_key = (
+                str(raw[0])
+                if raw is not None and raw[0] is not None and str(raw[1]) != RawRevisionKind.UNKNOWN.value
+                else None
+            )
+            complete = typed_key is not None or (
+                membership_census is not None and str(membership_census[0]) in {"complete", "non_session"}
+            )
+            logical_keys = sorted(set(membership_keys) | ({typed_key} if typed_key is not None else set()))
+            detail = (
+                "current parser established durable authority identity"
+                if complete
+                else (
+                    str(membership_census[1])
+                    if membership_census is not None
+                    else "current parser produced no durable authority identity"
+                )
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census (
+                    raw_id, parser_fingerprint, status, logical_keys_json,
+                    detail, censused_at_ms
+                ) VALUES (?, 'revision-membership-v1', ?, ?, ?, 0)
+                ON CONFLICT(raw_id) DO UPDATE SET
+                    parser_fingerprint = excluded.parser_fingerprint,
+                    status = excluded.status,
+                    logical_keys_json = excluded.logical_keys_json,
+                    detail = excluded.detail,
+                    censused_at_ms = excluded.censused_at_ms
+                """,
+                (raw_id, "complete" if complete else "failed", json.dumps(logical_keys), detail),
+            )
+
+
+def _census_historical_revision_evidence(
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    *,
+    selected_raw_ids: list[str] | None,
+    max_payload_bytes: int | None,
+) -> _RevisionCensusState:
+    """Persist a complete bounded parser census without mutating index.db."""
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    census_selections: tuple[tuple[str, ...] | None, ...]
+    if selected_raw_ids is None:
+        census_selections = (None,)
+    else:
+        census_selections = archive.raw_membership_selection_components(selected_raw_ids)
+    for initial_selection in census_selections:
+        census_selection = initial_selection
+        while True:
+            rows = archive.raw_membership_census_rows(census_selection)
+            pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in state.censused]
+            if max_payload_bytes is not None:
+                payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
+                total_payload_bytes = sum(payload_sizes.values())
+                oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+                if oversized or total_payload_bytes > max_payload_bytes:
+                    blocked_ids = oversized or list(payload_sizes)
+                    raise RawRevisionReplayResourceBlockedError(
+                        sorted(blocked_ids), max_payload_bytes, total_payload_bytes
+                    )
+            for raw_id, source_index in pending_rows:
+                state.scanned += 1
+                state.censused.add(raw_id)
+                if source_index < 0:
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        None,
+                        parser_fingerprint="revision-membership-v1",
+                        censused_at_ms=0,
+                        detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                    )
+                    state.quarantined += 1
+                    continue
+                try:
+                    sessions, payload_bytes, revision_kind = _parse_retained_raw(archive, raw_id)
+                except Exception as exc:
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        None,
+                        parser_fingerprint="revision-membership-v1",
+                        censused_at_ms=0,
+                        detail=str(exc),
+                    )
+                    state.quarantined += 1
+                    continue
+                state.classified += int(len(sessions) == 1)
+                spill.add(raw_id, sessions, payload_bytes=payload_bytes)
+                if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
+                    session = sessions[0]
+                    logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    archive.bind_raw_revision(
+                        raw_id,
+                        RawRevisionEnvelope(
+                            logical_source_key=logical_key,
+                            kind=RawRevisionKind.FULL,
+                            source_revision=raw_id,
+                            acquisition_generation=0,
+                            authority=RawRevisionAuthority.QUARANTINED,
+                        ),
+                    )
+                    state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+                elif revision_kind is RawRevisionKind.UNKNOWN:
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        sessions,
+                        parser_fingerprint="revision-membership-v1",
+                        censused_at_ms=0,
+                    )
+                    for session in sessions:
+                        logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                        state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+            if census_selection is None:
+                break
+            expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
+            if set(expanded) == set(census_selection):
+                break
+            census_selection = expanded
+    return state
+
+
+def census_historical_revision_evidence(
+    archive_root: Path,
+    *,
+    selected_raw_ids: list[str] | None = None,
+    max_payload_bytes: int | None = None,
+) -> RevisionCensusResult:
+    """Complete the source-tier census stage without applying index changes."""
+    with (
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+        _ParsedSessionSpill(archive_root) as spill,
+    ):
+        state = _census_historical_revision_evidence(
+            archive,
+            spill,
+            selected_raw_ids=selected_raw_ids,
+            max_payload_bytes=max_payload_bytes,
+        )
+        expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+    _record_raw_authority_parser_census(archive_root, tuple(expanded))
+    return RevisionCensusResult(
+        state.scanned,
+        state.classified,
+        state.quarantined,
+        expanded,
+        logical_keys,
+    )
 
 
 def backfill_historical_revision_evidence(
@@ -58,13 +289,9 @@ def backfill_historical_revision_evidence(
     loaded one logical authority cohort at a time. Peak retained session trees
     therefore follow the largest raw/cohort, not the archive-wide raw count.
     """
-    scanned = 0
-    classified = 0
-    quarantined = 0
     adoption_deferred = 0
+    quarantined = 0
     logical_keys: set[str] = set()
-    membership_candidates: dict[str, set[str]] = {}
-    provisional_full_raw_ids: dict[str, set[str]] = {}
     archive_context = (
         ArchiveStore.open_owned_inactive_generation(
             archive_root,
@@ -75,83 +302,21 @@ def backfill_historical_revision_evidence(
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
     with archive_context as archive, _ParsedSessionSpill(archive_root) as spill:
-        census_selections: tuple[tuple[str, ...] | None, ...]
-        if selected_raw_ids is None:
-            census_selections = (None,)
-        else:
-            census_selections = archive.raw_membership_selection_components(selected_raw_ids)
-        censused: set[str] = set()
-        for initial_selection in census_selections:
-            census_selection = initial_selection
-            while True:
-                rows = archive.raw_membership_census_rows(census_selection)
-                pending_rows = [(raw_id, source_index) for raw_id, source_index in rows if raw_id not in censused]
-                if max_payload_bytes is not None:
-                    payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
-                    total_payload_bytes = sum(payload_sizes.values())
-                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                    if oversized or total_payload_bytes > max_payload_bytes:
-                        blocked_ids = oversized or list(payload_sizes)
-                        raise RawRevisionReplayResourceBlockedError(
-                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
-                        )
-                for raw_id, source_index in pending_rows:
-                    scanned += 1
-                    censused.add(raw_id)
-                    if source_index < 0:
-                        archive.replace_raw_membership_census(
-                            raw_id,
-                            None,
-                            parser_fingerprint="revision-membership-v1",
-                            censused_at_ms=0,
-                            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                        )
-                        quarantined += 1
-                        continue
-                    try:
-                        sessions, _payload_bytes, revision_kind = _parse_retained_raw(archive, raw_id)
-                    except Exception as exc:
-                        archive.replace_raw_membership_census(
-                            raw_id,
-                            None,
-                            parser_fingerprint="revision-membership-v1",
-                            censused_at_ms=0,
-                            detail=str(exc),
-                        )
-                        quarantined += 1
-                        continue
-                    classified += int(len(sessions) == 1)
-                    spill.add(raw_id, sessions, payload_bytes=_payload_bytes)
-                    if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
-                        session = sessions[0]
-                        logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                        archive.bind_raw_revision(
-                            raw_id,
-                            RawRevisionEnvelope(
-                                logical_source_key=logical_key,
-                                kind=RawRevisionKind.FULL,
-                                source_revision=raw_id,
-                                acquisition_generation=0,
-                                authority=RawRevisionAuthority.QUARANTINED,
-                            ),
-                        )
-                        provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
-                    elif revision_kind is RawRevisionKind.UNKNOWN:
-                        archive.replace_raw_membership_census(
-                            raw_id,
-                            sessions,
-                            parser_fingerprint="revision-membership-v1",
-                            censused_at_ms=0,
-                        )
-                        for session in sessions:
-                            logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                            membership_candidates.setdefault(logical_key, set()).add(raw_id)
-                if census_selection is None:
-                    break
-                expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
-                if set(expanded) == set(census_selection):
-                    break
-                census_selection = expanded
+        census = _census_historical_revision_evidence(
+            archive,
+            spill,
+            selected_raw_ids=selected_raw_ids,
+            max_payload_bytes=max_payload_bytes,
+        )
+        censused_raw_ids, _censused_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+        # The direct backfill entry point must publish the same current-parser
+        # receipt as the census-only entry point before it assigns or applies
+        # any index plan. Commit the source census first so the separate
+        # durable receipt writer observes one complete source snapshot.
+        archive.commit()
+        _record_raw_authority_parser_census(archive_root, tuple(censused_raw_ids))
+        membership_candidates = census.membership_candidates
+        provisional_full_raw_ids = census.provisional_full_raw_ids
 
         _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
         logical_keys.update(selected_keys)
@@ -245,7 +410,13 @@ def backfill_historical_revision_evidence(
             )
             if classification.accepted_raw_ids:
                 replayed += 1
-    return RevisionBackfillResult(scanned, classified, replayed, quarantined, adoption_deferred)
+    return RevisionBackfillResult(
+        census.scanned,
+        census.classified,
+        replayed,
+        census.quarantined + quarantined,
+        adoption_deferred,
+    )
 
 
 def _parse_retained_raw(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
@@ -334,4 +505,10 @@ def _parse_one(provider: Provider, payload: bytes, source_path: str) -> list[Par
     )
 
 
-__all__ = ["RawRevisionReplayResourceBlockedError", "RevisionBackfillResult", "backfill_historical_revision_evidence"]
+__all__ = [
+    "RawRevisionReplayResourceBlockedError",
+    "RevisionBackfillResult",
+    "RevisionCensusResult",
+    "backfill_historical_revision_evidence",
+    "census_historical_revision_evidence",
+]

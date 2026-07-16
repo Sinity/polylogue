@@ -228,6 +228,57 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 )
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
+            authority_census: dict[str, object] | None = None
+            authority_pending_census_count = 0
+            if _table_columns(conn, "source", "raw_authority_censuses"):
+                authority_pending_census_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM source.raw_authority_censuses
+                        WHERE lifecycle_status = 'planned'
+                        """
+                    ).fetchone()[0]
+                )
+                census_row = conn.execute(
+                    """
+                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
+                           plan_count, post_inventory_digest, post_residual_digest,
+                           post_plan_count, executable_plan_count, residual_plan_count,
+                           predecessor_census_id, mode, lifecycle_status, quiescent,
+                           fixed_point, completed_at_ms
+                    FROM source.raw_authority_censuses
+                    WHERE lifecycle_status IN ('completed', 'interrupted')
+                    ORDER BY sequence_no DESC LIMIT 1
+                    """
+                ).fetchone()
+                if census_row is not None:
+                    authority_census = {
+                        "census_id": str(census_row["census_id"]),
+                        "sequence_no": int(census_row["sequence_no"]),
+                        "inventory_digest": str(census_row["inventory_digest"]),
+                        "residual_digest": str(census_row["residual_digest"]),
+                        "plan_count": int(census_row["plan_count"]),
+                        "post_inventory_digest": str(census_row["post_inventory_digest"]),
+                        "post_residual_digest": str(census_row["post_residual_digest"]),
+                        "post_plan_count": int(census_row["post_plan_count"]),
+                        "executable_plan_count": int(census_row["executable_plan_count"]),
+                        "residual_plan_count": int(census_row["residual_plan_count"]),
+                        "predecessor_census_id": census_row["predecessor_census_id"],
+                        "mode": str(census_row["mode"]),
+                        "lifecycle_status": str(census_row["lifecycle_status"]),
+                        "quiescent": bool(census_row["quiescent"]),
+                        "fixed_point": bool(census_row["fixed_point"]),
+                        "completed_at_ms": int(census_row["completed_at_ms"]),
+                        "pending_census_count": authority_pending_census_count,
+                        "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
+                    }
+            authority_blocker_count = 0
+            if _table_columns(conn, "source", "raw_authority_blockers"):
+                authority_blocker_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
+                    ).fetchone()[0]
+                )
     except Exception as exc:
         return {
             "available": False,
@@ -286,6 +337,13 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "lost_source_evidence_samples": lost_source_evidence_samples,
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
+        "raw_authority_census": authority_census,
+        "raw_authority_blocker_count": authority_blocker_count,
+        "raw_authority_pending_census_count": authority_pending_census_count,
+        "raw_authority_ledger_counts": {
+            "unresolved_blockers": authority_blocker_count,
+            "pending_censuses": authority_pending_census_count,
+        },
     }
 
 

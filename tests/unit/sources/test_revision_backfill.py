@@ -106,6 +106,16 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
     assert result.classified_full == 2
     assert result.replayed_logical_sources == 1
     assert result.quarantined == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parser_census = conn.execute(
+            """
+            SELECT status, COUNT(*)
+            FROM raw_authority_parser_census
+            WHERE parser_fingerprint = 'revision-membership-v1'
+            GROUP BY status ORDER BY status
+            """
+        ).fetchall()
+    assert parser_census == [("complete", 2), ("failed", 1)]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
 
