@@ -131,13 +131,19 @@ def raw_authority_census_query_handle(census_id: str, *, offset: int = 0) -> str
     return f"{RAW_AUTHORITY_CENSUS_QUERY_PREFIX}{census_id}/{offset}"
 
 
-def raw_authority_detail_query_handle(census_id: str, record_id: str, *, offset: int = 0) -> str:
+def raw_authority_detail_query_handle(
+    census_id: str,
+    record_id: str,
+    *,
+    revision: str = "current",
+    offset: int = 0,
+) -> str:
     """Return a bounded-chunk URI for one complete census or plan document."""
-    if not census_id or "/" in census_id or not record_id or "/" in record_id:
+    if not census_id or "/" in census_id or not record_id or "/" in record_id or not revision or "/" in revision:
         raise ValueError("raw authority detail identifiers must be non-empty and contain no slash")
     if offset < 0:
         raise ValueError("raw authority detail offset must be non-negative")
-    return f"{RAW_AUTHORITY_DETAIL_QUERY_PREFIX}{census_id}/{record_id}/{offset}"
+    return f"{RAW_AUTHORITY_DETAIL_QUERY_PREFIX}{census_id}/{record_id}/{revision}/{offset}"
 
 
 def _raw_authority_census_ref(value: str, *, offset: int | None) -> tuple[str, int]:
@@ -166,20 +172,30 @@ def _decode_json_field(value: object) -> object:
     return json.loads(value)
 
 
-def _raw_authority_detail_ref(value: str, *, offset: int | None) -> tuple[str, str, int]:
+def _raw_authority_detail_ref(value: str, *, offset: int | None) -> tuple[str, str, str, int]:
     if not value.startswith(RAW_AUTHORITY_DETAIL_QUERY_PREFIX):
         raise ValueError("invalid raw authority detail query handle")
     suffix = value.removeprefix(RAW_AUTHORITY_DETAIL_QUERY_PREFIX)
     try:
         identifiers, encoded_offset = suffix.rsplit("/", 1)
-        census_id, record_id = identifiers.split("/", 1)
+        census_id, record_id, revision = identifiers.split("/", 2)
         embedded_offset = int(encoded_offset)
     except (ValueError, TypeError) as exc:
         raise ValueError("invalid raw authority detail query handle") from exc
     resolved_offset = embedded_offset if offset is None else offset
-    if not census_id or "/" in census_id or not record_id or "/" in record_id or resolved_offset < 0:
+    if (
+        not census_id
+        or "/" in census_id
+        or not record_id
+        or "/" in record_id
+        or not revision
+        or "/" in revision
+        or resolved_offset < 0
+    ):
         raise ValueError("invalid raw authority detail query handle")
-    return census_id, record_id, resolved_offset
+    if revision == "current" and resolved_offset != 0:
+        raise ValueError("unbound raw authority detail handles may only start at offset zero")
+    return census_id, record_id, revision, resolved_offset
 
 
 def _raw_authority_detail_document(conn: sqlite3.Connection, census_id: str, record_id: str) -> JSONDocument:
@@ -247,7 +263,7 @@ def _raw_authority_detail_document(conn: sqlite3.Connection, census_id: str, rec
             "observed": _decode_json_field(blocker["observed_json"]),
             "created_at_ms": int(blocker["created_at_ms"]),
             "resolved_at_ms": blocker["resolved_at_ms"],
-            "resolution": blocker["resolution"],
+            "resolution": (_decode_json_field(blocker["resolution"]) if blocker["resolution"] is not None else None),
         }
         for blocker in conn.execute(
             """
@@ -302,7 +318,7 @@ def read_raw_authority_detail(
     """Read one bounded text chunk of a complete census or plan document."""
     if not 256 <= chunk_chars <= 65_536:
         raise ValueError("raw authority detail chunk_chars must be between 256 and 65536")
-    census_id, record_id, resolved_offset = _raw_authority_detail_ref(query_handle, offset=offset)
+    census_id, record_id, requested_revision, resolved_offset = _raw_authority_detail_ref(query_handle, offset=offset)
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
@@ -310,20 +326,25 @@ def read_raw_authority_detail(
         conn.row_factory = sqlite3.Row
         document = _raw_authority_detail_document(conn, census_id, record_id)
     encoded = _canonical_json(document)
+    document_sha256 = hashlib.sha256(encoded.encode()).hexdigest()
+    if requested_revision != "current" and requested_revision != document_sha256:
+        raise RuntimeError("raw authority detail changed; restart from its current offset-zero handle")
     if resolved_offset > len(encoded):
         raise ValueError("raw authority detail offset exceeds document length")
     chunk = encoded[resolved_offset : resolved_offset + chunk_chars]
     next_offset = resolved_offset + len(chunk)
     return json_document(
         {
-            "query_handle": raw_authority_detail_query_handle(census_id, record_id, offset=resolved_offset),
+            "query_handle": raw_authority_detail_query_handle(
+                census_id, record_id, revision=document_sha256, offset=resolved_offset
+            ),
             "next_query_handle": (
-                raw_authority_detail_query_handle(census_id, record_id, offset=next_offset)
+                raw_authority_detail_query_handle(census_id, record_id, revision=document_sha256, offset=next_offset)
                 if next_offset < len(encoded)
                 else None
             ),
             "encoding": "canonical-json-text-v1",
-            "document_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+            "document_sha256": document_sha256,
             "document_char_count": len(encoded),
             "document_byte_count": len(encoded.encode()),
             "offset": resolved_offset,
@@ -1000,6 +1021,45 @@ def validate_raw_replay_application_receipt(
         problems.append("accepted head content hashes do not match materialized sessions")
     if any(str(row.get("accepted_raw_id")) not in input_raw_ids for row in head_rows):
         problems.append("accepted heads do not point into the immutable input component")
+    heads_by_key = {str(row.get("logical_source_key")): row for row in head_rows}
+    if len(heads_by_key) != len(head_rows):
+        problems.append("accepted head receipt contains duplicate logical authority keys")
+    sessions_by_id: dict[str, Mapping[str, object]] = {}
+    for session in session_rows:
+        session_id = str(session.get("session_id"))
+        previous = sessions_by_id.setdefault(session_id, session)
+        if previous != session:
+            problems.append(f"materialized session receipt conflicts for {session_id}")
+    application_keys: set[str] = set()
+    applications_matching_current_head: set[str] = set()
+    for application in application_rows:
+        key = str(application.get("logical_source_key"))
+        application_keys.add(key)
+        head = heads_by_key.get(key)
+        if head is None:
+            problems.append(f"application receipt has no accepted head for {key}")
+            continue
+        application_authority = (
+            str(application.get("session_id")),
+            str(application.get("accepted_raw_id")),
+            str(application.get("accepted_content_hash")),
+        )
+        head_authority = (
+            str(head.get("session_id")),
+            str(head.get("accepted_raw_id")),
+            str(head.get("accepted_content_hash")),
+        )
+        if application_authority == head_authority:
+            applications_matching_current_head.add(key)
+        session = sessions_by_id.get(str(head.get("session_id")))
+        if session is None:
+            continue
+        if str(session.get("raw_id")) != str(head.get("accepted_raw_id")) or str(session.get("content_hash")) != str(
+            head.get("accepted_content_hash")
+        ):
+            problems.append(f"materialized session authority does not match the head for {key}")
+    for key in sorted(application_keys - applications_matching_current_head):
+        problems.append(f"no application accepted authority matches the current head for {key}")
     return not problems, tuple(problems)
 
 
@@ -1262,7 +1322,7 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id, b.expected_json, p.input_raw_ids_json
+            SELECT b.blocker_id, b.plan_id, b.census_id, b.expected_json, p.input_raw_ids_json
             FROM raw_authority_blockers AS b
             JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
@@ -1275,7 +1335,7 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
         input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
         observed = build_raw_replay_plan(conn, input_raw_ids)
         now = int(time.time() * 1000)
-        receipt = json_document(
+        full_receipt = json_document(
             {
                 "schema": "polylogue.raw-authority-blocker-resolution.v1",
                 "blocker_id": blocker_id,
@@ -1291,13 +1351,28 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
             SET resolved_at_ms = ?, resolution = ?
             WHERE blocker_id = ? AND resolved_at_ms IS NULL
             """,
-            (now, _canonical_json(receipt), blocker_id),
+            (now, _canonical_json(full_receipt), blocker_id),
         ).rowcount
         if updated != 1:
             conn.rollback()
             raise RuntimeError(f"raw authority blocker changed during resolution: {blocker_id}")
         conn.commit()
-    return receipt
+    return json_document(
+        {
+            "schema": "polylogue.raw-authority-blocker-resolution-summary.v1",
+            "blocker_id": blocker_id,
+            "superseded_plan_id": str(row["plan_id"]),
+            "current_plan": {
+                "plan_id": observed.plan_id,
+                "input_digest": observed.input_digest,
+                "input_raw_count": len(observed.input_raw_ids),
+                "logical_key_count": len(observed.logical_keys),
+            },
+            "operator_resolution": resolution.strip(),
+            "resolved_at_ms": now,
+            "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
+        }
+    )
 
 
 def reject_stale_raw_replay_plan(

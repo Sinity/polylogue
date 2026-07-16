@@ -634,10 +634,11 @@ class TestResourceSurfaces:
             assert item["plan"]["input_raw_count"] == 2_000
             detail_result = invoke_surface(
                 mcp_server._resource_manager._templates[
-                    "polylogue://raw-authority-detail/{census_id}/{record_id}/{offset}"
+                    "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
                 ].fn,
                 census_id=receipt.census_id,
                 record_id=plan.plan_id,
+                revision="current",
                 offset="0",
             )
 

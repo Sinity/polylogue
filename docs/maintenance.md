@@ -358,10 +358,14 @@ Resolve a census or plan detail handle as bounded canonical-JSON text chunks:
 
 ```bash
 polylogue ops maintenance raw-authority-detail \
-  'polylogue://raw-authority-detail/census:42:.../raw-replay:.../0' \
+  'polylogue://raw-authority-detail/census:42:.../raw-replay:.../current/0' \
   --chunk-chars 16384 \
   --output-format json
 ```
+
+The first `current/0` read returns digest-bound continuation handles. If the
+underlying outcome or blocker changes between chunks, the old continuation
+fails closed; restart from the record's `current/0` handle.
 
 Concatenate `chunk` values by following `next_query_handle`, then verify the
 reconstructed document against `document_sha256`. The chunk size is bounded to

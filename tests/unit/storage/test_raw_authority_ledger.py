@@ -490,6 +490,23 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
         )
 
 
+@pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
+def test_application_receipt_requires_exact_application_authority(tmp_path: Path, field: str) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id=f"exact-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).success is True
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
+    application_rows = cast(list[dict[str, object]], receipt["application_rows"])
+    assert application_rows
+    application_rows[0][field] = f"wrong-{field}"
+
+    valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
+
+    assert valid is False
+    assert any("no application accepted authority matches" in problem for problem in problems)
+
+
 def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _write_codex_raw(
@@ -556,10 +573,30 @@ def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path:
     rejected = reject_stale_raw_replay_plan(tmp_path, census.census_id, plan, observed)
     blocker_id = cast(str, cast(dict[str, object], rejected.application_receipt)["blocker_id"])
 
+    census_page = read_raw_authority_census(tmp_path, census.query_handle)
+    plan_summary = cast(dict[str, object], cast(list[object], census_page["plans"])[0])
+    first_detail_page = read_raw_authority_detail(
+        tmp_path,
+        cast(str, plan_summary["detail_query_handle"]),
+        chunk_chars=256,
+    )
+    stale_continuation = cast(str, first_detail_page["next_query_handle"])
+
     resolution = resolve_raw_authority_blocker(tmp_path, blocker_id, resolution="current path is authoritative")
+    with pytest.raises(RuntimeError, match="raw authority detail changed"):
+        read_raw_authority_detail(tmp_path, stale_continuation, chunk_chars=256)
+    current_detail = _read_detail_document(tmp_path, cast(str, resolution["detail_query_handle"]))
     resumed = repair_raw_materialization(_config(tmp_path))
 
     assert resolution["blocker_id"] == blocker_id
+    resolution_plan = cast(dict[str, object], resolution["current_plan"])
+    assert resolution_plan["input_raw_count"] == 1
+    assert "input_raw_ids" not in resolution_plan
+    stored_resolution = cast(
+        dict[str, object],
+        cast(dict[str, object], cast(list[object], current_detail["blockers"])[0])["resolution"],
+    )
+    assert cast(dict[str, object], stored_resolution["current_plan"])["input_raw_ids"] == [raw_id]
     assert resumed.success is True
     assert resumed.repaired_count == 1
     assert "raw_materialization_unresolved_blocker_count" not in resumed.metrics
