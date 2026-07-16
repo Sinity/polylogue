@@ -22,6 +22,7 @@ from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
@@ -150,7 +151,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     ):
         initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
         conn.commit()
 
     with (
@@ -169,16 +170,16 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["archive_root"] == str(tmp_path)
     assert storage["configured_archive_root"] == str(tmp_path)
     assert storage["archive_root_matches_configured"] is True
-    assert storage["archive_ready"] is True
     assert storage["final_shape_ready"] is True
-    assert storage["archive_schema_ready"] is True
     assert storage["schema_mismatches"] == []
+    assert storage["archive_schema_ready"] is True
+    assert storage["archive_ready"] is True
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": SOURCE_SCHEMA_VERSION,
         "index": INDEX_SCHEMA_VERSION,
-        "embeddings": 1,
+        "embeddings": EMBEDDINGS_SCHEMA_VERSION,
         "user": USER_SCHEMA_VERSION,
         "ops": 1,
     }
@@ -486,11 +487,15 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -842,13 +847,17 @@ def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
 
     calls: list[str] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         task = asyncio.create_task(
             daemon_cli._periodic_session_insight_convergence_after(catch_up_complete=catch_up_complete)
         )
@@ -871,7 +880,7 @@ def test_periodic_session_insight_convergence_bursts_successful_backlog(
     drains: list[int] = []
     sleeps: list[float] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> int:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
         drains.append(len(drains))
         return 100 if len(drains) <= 2 else 0
 
@@ -882,7 +891,11 @@ def test_periodic_session_insight_convergence_bursts_successful_backlog(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
@@ -903,12 +916,16 @@ def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
     async def fake_sleep(_seconds: float) -> None:
         raise asyncio.CancelledError
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
         pytest.raises(asyncio.CancelledError),
@@ -932,7 +949,8 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     async def fake_sleep(_seconds: float) -> None:
         return None
 
-    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+    async def fake_run_sync(actor: str, func: object, *args: object, **kwargs: object) -> object:
+        assert actor == "maintenance.wal_checkpoint"
         calls.append((func, args, kwargs))
         raise asyncio.CancelledError
 
@@ -940,7 +958,11 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_wal_checkpoint())
@@ -959,7 +981,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     calls: list[str] = []
     drained = asyncio.Event()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         drained.set()
         return 0
@@ -967,7 +989,11 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 60)
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
@@ -989,11 +1015,15 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
     with (
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -2216,7 +2246,8 @@ def test_periodic_db_optimize_targets_archive_root_tiers(
     async def fake_sleep(_seconds: float) -> None:
         return None
 
-    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+    async def fake_run_sync(actor: str, func: object, *args: object, **kwargs: object) -> object:
+        assert actor == "maintenance.db_optimize"
         calls.append((func, args, kwargs))
         raise asyncio.CancelledError
 
@@ -2224,7 +2255,11 @@ def test_periodic_db_optimize_targets_archive_root_tiers(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_db_optimize())
