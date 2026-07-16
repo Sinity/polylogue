@@ -1,7 +1,6 @@
 Title: "[research 06] Browser-native AI generation lifecycle evidence"
 
 Job ID: `deep-research-06`
-Result ZIP: `deep-research-06-browser-capture-lifecycle-r01.zip`
 
 Research public/officially documented browser and web-platform techniques for
 capturing authenticated AI conversation state and generation lifecycle from a

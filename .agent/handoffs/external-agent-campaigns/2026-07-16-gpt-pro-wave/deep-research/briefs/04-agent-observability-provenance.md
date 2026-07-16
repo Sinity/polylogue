@@ -1,7 +1,6 @@
 Title: "[research 04] MCP, GenAI telemetry, and provenance interoperability"
 
 Job ID: `deep-research-04`
-Result ZIP: `deep-research-04-agent-observability-provenance-r01.zip`
 
 Research the latest MCP Tasks/resources/prompts/sampling/elicitation and
 authorization specifications, OpenTelemetry GenAI semantic conventions, W3C

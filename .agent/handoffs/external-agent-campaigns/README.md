@@ -34,11 +34,13 @@ artifact; a launcher never needs to understand prompt fragments.
 - Job: `<workload>-NN`, with a fixed two-digit number and readable slug.
 - Attempt: `aNN`; a retry or same-chat repair is a new attempt, not an
   overwrite.
-- Package revision: `rNN`; the exact output filename is declared in the job.
+- Package revision: `rNN` for workloads whose executor returns a package.
 
 An orchestrator may add provider conversation IDs, Polylogue ObjectRefs,
 content hashes, Beads, worktrees, agents, PRs, and merge outcomes to
-`results/index.json`. It must not infer completion from a filename alone.
+`results/index.json`. It assigns stable local filenames to conversation-native
+artifacts such as Deep Research responses and must not infer completion from a
+filename alone.
 
 ## Result path
 
