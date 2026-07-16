@@ -14,9 +14,11 @@ from typing import cast
 
 import pytest
 
+from polylogue.browser_capture import actions as browser_actions
 from polylogue.browser_capture.actions import (
     BrowserActionConflictError,
     BrowserActionLeaseError,
+    BrowserActionQuotaError,
     claim_action,
     enqueue_action,
     get_action,
@@ -138,6 +140,41 @@ def test_enqueue_rejects_receiver_reserved_action_identity(tmp_path: Path) -> No
         )
 
 
+def test_action_quota_bounds_active_work_without_discarding_terminal_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(browser_actions, "ACTION_MAX_ACTIVE", 1)
+    first = enqueue_action(_request(), receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    with pytest.raises(BrowserActionQuotaError, match="active"):
+        enqueue_action(
+            _request(action_id="action-2", idempotency_key="iteration-2"),
+            receiver_id=_RECEIVER_ID,
+            spool_path=tmp_path,
+        )
+
+    claimed = claim_action("extension-one", spool_path=tmp_path) or pytest.fail("action was not claimed")
+    completed = update_action(
+        first.action_id,
+        BrowserActionUpdateRequest(
+            owner_instance_id=claimed.lease_owner or "",
+            outcome="submitted",
+            phase="submitted",
+            receipt=_receipt(first.action_id),
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing completed action")
+    assert completed.receipt and completed.receipt.provider_turn_id == "turn-user-1"
+
+    second = enqueue_action(
+        _request(action_id="action-2", idempotency_key="iteration-2"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    assert second.status == "queued"
+    assert get_action(first.action_id, spool_path=tmp_path) == completed
+
+
 def test_capabilities_fail_closed_for_unsupported_presentation_and_target(tmp_path: Path) -> None:
     with pytest.raises(BrowserActionConflictError, match="presentation"):
         enqueue_action(
@@ -187,7 +224,7 @@ def test_pre_submit_lease_is_replaceable_but_submit_intent_is_quarantined(
     replacement = claim_action("extension-two", spool_path=tmp_path, lease_seconds=30)
     assert replacement is not None and replacement.lease_owner == "extension-two"
 
-    update_action(
+    submitted_intent = update_action(
         replacement.action_id,
         BrowserActionUpdateRequest(
             owner_instance_id="extension-two",
@@ -195,7 +232,22 @@ def test_pre_submit_lease_is_replaceable_but_submit_intent_is_quarantined(
             phase="submit_intent",
         ),
         spool_path=tmp_path,
-    )
+    ) or pytest.fail("missing submit intent")
+    original_intent_at = submitted_intent.submit_intent_at
+    original_expiry = submitted_intent.lease_expires_at
+    frozen_clock.advance(120)
+    renewed = update_action(
+        replacement.action_id,
+        BrowserActionUpdateRequest(
+            owner_instance_id="extension-two",
+            outcome="progress",
+            phase="submit_intent",
+            detail="lease heartbeat",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing renewed submit intent")
+    assert renewed.submit_intent_at == original_intent_at
+    assert renewed.lease_expires_at != original_expiry
     frozen_clock.advance(181)
     assert claim_action("extension-three", spool_path=tmp_path) is None
     quarantined = get_action(replacement.action_id, spool_path=tmp_path) or pytest.fail("missing action")

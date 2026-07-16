@@ -1377,6 +1377,80 @@ describe("provider-neutral browser action worker", () => {
     });
     expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99);
   });
+
+  it("renews the receiver lease while provider execution remains in flight", async () => {
+    const action = {
+      action_id: "action-slow",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Perform a slow provider operation.",
+      attachments: [],
+      presentation: {
+        surface: "chat",
+        model_slug: "gpt-5-6-pro",
+        model_label: "GPT-5.6 Sol",
+        effort_label: "Pro",
+      },
+      submit_policy: "submit_once",
+      status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    let heartbeat = null;
+    let finishExecution = null;
+    vi.spyOn(globalThis, "setInterval").mockImplementation((callback) => {
+      heartbeat = callback;
+      return 123;
+    });
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => undefined);
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-slow/events")) {
+        const update = JSON.parse(options.body);
+        updates.push(update);
+        return responseJson({ action: { ...action, ...update } });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (!details.func) return undefined;
+      return new Promise((resolve) => {
+        finishExecution = () => resolve([{ result: {
+          ok: true,
+          outcome: "submitted",
+          provider_conversation_id: "conversation-slow",
+          provider_conversation_url: "https://chatgpt.com/c/conversation-slow",
+          provider_turn_id: "user-turn-slow",
+          observed_surface: "Chat",
+          observed_model: "GPT-5.6 Sol",
+          observed_effort: "Pro",
+          observed_project_ref: null,
+          provider_evidence: { current_node: "assistant-running" },
+        } }]);
+      });
+    });
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(heartbeat).toBeTypeOf("function"));
+    heartbeat();
+    await vi.waitFor(() => expect(updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        outcome: "progress",
+        phase: "submit_intent",
+        detail: "renewed browser action lease during provider execution",
+      }),
+    ])));
+    expect(finishExecution).toBeTypeOf("function");
+    finishExecution();
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("submitted"));
+    expect(clearIntervalSpy).toHaveBeenCalledWith(123);
+  });
 });
 
 describe("ambient capture status", () => {

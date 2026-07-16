@@ -34,7 +34,7 @@ from polylogue.browser_capture.models import (
 from polylogue.paths import browser_capture_spool_root
 
 ACTION_DIRNAME = "browser-actions"
-ACTION_MAX_FILES = 5_000
+ACTION_MAX_ACTIVE = 5_000
 ACTION_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 ACTION_TOTAL_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 ACTION_LEASE_SECONDS = 180
@@ -272,8 +272,9 @@ def enqueue_action(
             if existing.request_sha256 == request_sha256:
                 return existing
             raise BrowserActionConflictError("browser action identity already exists with different input")
-    if sum(1 for _ in root.glob("*/action.json")) >= ACTION_MAX_FILES:
-        raise BrowserActionQuotaError("browser action file quota exceeded")
+    active_statuses = {"queued", "leased", "preparing", "submit_intent"}
+    if sum(action.status in active_statuses for action in list_actions(spool_path=spool_path)) >= ACTION_MAX_ACTIVE:
+        raise BrowserActionQuotaError("active browser action quota exceeded")
 
     attachments: list[BrowserActionAttachment] = []
     decoded: list[tuple[BrowserActionAttachment, bytes]] = []
@@ -452,7 +453,7 @@ def update_action(
         )
     if update.outcome == "progress":
         action.status = "submit_intent" if update.phase == "submit_intent" else "preparing"
-        if update.phase == "submit_intent":
+        if update.phase == "submit_intent" and action.submit_intent_at is None:
             action.submit_intent_at = _iso(now)
         action.lease_expires_at = _iso(now + timedelta(seconds=ACTION_LEASE_SECONDS))
     elif update.outcome in {"drafted", "submitted"}:

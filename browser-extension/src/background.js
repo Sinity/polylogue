@@ -1868,6 +1868,34 @@ async function prepareBrowserActionTransport(action) {
   return transport;
 }
 
+function startBrowserActionLeaseHeartbeat(action, ownerInstanceId, phase) {
+  let stopped = false;
+  let failure = null;
+  let inFlight = Promise.resolve();
+  const renew = () => {
+    inFlight = inFlight.then(async () => {
+      if (stopped) return;
+      await updateBrowserAction(action.action_id, ownerInstanceId, {
+        outcome: "progress",
+        phase,
+        detail: "renewed browser action lease during provider execution",
+      });
+    }).catch((error) => {
+      failure ||= error;
+    });
+    return inFlight;
+  };
+  const timer = globalThis.setInterval(() => {
+    void renew();
+  }, 60_000);
+  return async () => {
+    stopped = true;
+    globalThis.clearInterval(timer);
+    await inFlight;
+    if (failure) throw failure;
+  };
+}
+
 async function dispatchBrowserAction(action, ownerInstanceId) {
   let submitIntentRecorded = false;
   let pageExecutionStarted = false;
@@ -1886,13 +1914,22 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
       });
       submitIntentRecorded = action.submit_policy === "submit_once";
       pageExecutionStarted = true;
-      const [execution] = await chrome.scripting.executeScript({
-        target: { tabId: transport.tab.id },
-        world: "MAIN",
-        func: executeChatGptBrowserActionInPage,
-        args: [action, attachments],
-      });
-      return execution?.result;
+      const stopHeartbeat = startBrowserActionLeaseHeartbeat(
+        action,
+        ownerInstanceId,
+        action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+      );
+      try {
+        const [execution] = await chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeChatGptBrowserActionInPage,
+          args: [action, attachments],
+        });
+        return execution?.result;
+      } finally {
+        await stopHeartbeat();
+      }
     });
     if (!result?.ok) {
       const error = new Error(result?.detail || "protocol_browser_action_result_missing");

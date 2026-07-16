@@ -19,6 +19,7 @@
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
   let freshnessHintTimer = null;
+  let domFreshnessScanTimer = null;
   let lastDomFreshnessSignature = null;
 
   function rememberNativeAttempt(diagnostic) {
@@ -791,10 +792,14 @@
       .join("|");
     lastDomFreshnessSignature = domFreshnessSignature();
     const freshnessObserver = new MutationObserver(() => {
-      const signature = domFreshnessSignature();
-      if (!signature || signature === lastDomFreshnessSignature) return;
-      lastDomFreshnessSignature = signature;
-      queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+      if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
+      domFreshnessScanTimer = setTimeout(() => {
+        domFreshnessScanTimer = null;
+        const signature = domFreshnessSignature();
+        if (!signature || signature === lastDomFreshnessSignature) return;
+        lastDomFreshnessSignature = signature;
+        queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+      }, 750);
     });
     freshnessObserver.observe(document.documentElement, {
       childList: true,
