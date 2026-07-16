@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Final, Literal, cast
 from urllib.parse import quote
 
+from polylogue.core.dates import utc_now
+
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
 _REPLAY_PREVENTION_OWNER: Final = "polylogue-yla8"
 
@@ -407,7 +409,7 @@ def project_named_source_freshness(
     """
 
     resolved_limits = limits or ProjectionLimits()
-    observed = _as_utc(now or datetime.now(UTC))
+    observed = _as_utc(now or utc_now())
     source_key = os.fspath(source_path)
     receipt = _ReceiptBuilder()
     errors: list[str] = []

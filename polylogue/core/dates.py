@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 import dateparser
 
 
+def utc_now() -> datetime:
+    """Return the query-time UTC clock through one patchable seam."""
+    return datetime.now(tz=timezone.utc)
+
+
 def parse_date(date_str: str) -> datetime | None:
     """Parse a date string in various formats.
 
@@ -34,7 +39,7 @@ def parse_date(date_str: str) -> datetime | None:
         "PREFER_DATES_FROM": "past",  # Default to past dates for "last week"
         "RETURN_AS_TIMEZONE_AWARE": True,  # Return UTC-aware for comparison with timestamps
         "TIMEZONE": "UTC",  # Use UTC as default timezone
-        "RELATIVE_BASE": datetime.now(tz=timezone.utc),  # Base for relative dates
+        "RELATIVE_BASE": utc_now(),  # Base for relative dates
     }
 
     result: datetime | None = dateparser.parse(date_str, settings=settings)
