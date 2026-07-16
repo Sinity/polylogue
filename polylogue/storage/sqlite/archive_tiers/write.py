@@ -3225,12 +3225,12 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
     per ingest batch and invalidated whenever those rows change."""
     own_rows = conn.execute(
         """
-        SELECT m.message_id, m.position, m.role,
+        SELECT m.message_id, m.position, m.variant_index, m.role,
                b.block_type, b.text, b.tool_name, b.tool_input
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ? AND m.variant_index = 0
-        ORDER BY m.position, b.position
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
         """,
         (session_id,),
     ).fetchall()
@@ -3243,7 +3243,7 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
         if cur_id is not None:
             own.append((cur_id, _message_signature_from_blocks(cur_role, cur_blocks)))
 
-    for message_id, _position, role, block_type, text, tool_name, tool_input in own_rows:
+    for message_id, _position, _variant_index, role, block_type, text, tool_name, tool_input in own_rows:
         if message_id != cur_id:
             flush()
             cur_id = message_id
@@ -3330,11 +3330,18 @@ def _composed_db_signatures(
         _depth=_depth + 1,
     )
     prefix: list[tuple[str, str]] = []
+    found = False
     for entry in parent_composed:
         prefix.append(entry)
         if entry[0] == branch_point_message_id:
+            found = True
             break
-    composed = prefix + own
+    # A branch point that no longer exists in the composed parent is not a
+    # license to inherit a nearby or entire prefix.  The synchronous and async
+    # read paths both expose only the child's owned tail in this state; keep the
+    # writer-side alignment stream identical so a later re-ingest cannot turn a
+    # dangling edge into a fabricated complete lineage.
+    composed = (prefix if found else []) + own
     if composed_cache is not None:
         composed_cache[session_id] = composed
     return composed

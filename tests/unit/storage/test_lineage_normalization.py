@@ -53,13 +53,13 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
+def _msg(pid: str, role: Role, text: str, position: int, *, variant_index: int = 0) -> ParsedMessage:
     return ParsedMessage(
         provider_message_id=pid,
         role=role,
         text=text,
         position=position,
-        variant_index=0,
+        variant_index=variant_index,
         is_active_path=True,
         is_active_leaf=False,
         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
@@ -382,6 +382,149 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+
+
+@pytest.mark.parametrize("child_first", [False, True], ids=["parent-first", "child-first"])
+def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
+    tmp_path: Path, child_first: bool
+) -> None:
+    """The production write/read routes agree on every sibling variant.
+
+    This is the deterministic reduction of the state-machine order failure:
+    parent-first and child-first ingestion must leave the same child tail,
+    resolved link, and composed transcript.  Replacing the parent then proves
+    the child composes the latest accepted sibling values rather than retaining
+    a duplicate child-owned variant.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        updated_at="2027-01-01T00:00:01Z",
+        messages=[
+            _msg("p0", Role.USER, "root", 0),
+            _msg("p1", Role.ASSISTANT, "primary v1", 1),
+            _msg("p1-alt", Role.ASSISTANT, "sibling v1", 1, variant_index=1),
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        updated_at="2027-01-01T00:00:02Z",
+        messages=[
+            _msg("c0", Role.USER, "root", 0),
+            _msg("c1", Role.ASSISTANT, "primary v1", 1),
+            _msg("c1-alt", Role.ASSISTANT, "sibling v1", 1, variant_index=1),
+            _msg("c2", Role.USER, "child tail", 2),
+        ],
+    )
+
+    if child_first:
+        child_id = write_parsed_session_to_archive(conn, child)
+        parent_id = write_parsed_session_to_archive(conn, parent)
+    else:
+        parent_id = write_parsed_session_to_archive(conn, parent)
+        child_id = write_parsed_session_to_archive(conn, child)
+
+    physical = conn.execute(
+        "SELECT native_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+        (child_id,),
+    ).fetchall()
+    assert [tuple(row) for row in physical] == [("c2", 2, 0)]
+    link = conn.execute(
+        "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
+        "FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert tuple(link) == (parent_id, f"{parent_id}:p1-alt", "prefix-sharing", None)
+    assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v1", "sibling v1", "child tail"]
+
+    replacement = parent.model_copy(
+        update={
+            "updated_at": "2027-01-01T00:00:03Z",
+            "messages": [
+                _msg("p0", Role.USER, "root", 0),
+                _msg("p1", Role.ASSISTANT, "primary v2", 1),
+                _msg("p1-alt", Role.ASSISTANT, "sibling v2", 1, variant_index=1),
+            ],
+        }
+    )
+    write_parsed_session_to_archive(conn, replacement)
+
+    assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v2", "sibling v2", "child tail"]
+    assert (
+        conn.execute(
+            "SELECT native_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (child_id,),
+        ).fetchall()
+        == physical
+    )
+    assert (
+        conn.execute(
+            "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
+            "FROM session_links WHERE src_session_id = ?",
+            (child_id,),
+        ).fetchone()
+        == link
+    )
+    conn.close()
+
+
+def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path) -> None:
+    """A full parent replacement may not substitute a shorter sibling prefix."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        updated_at="2027-01-01T00:00:01Z",
+        messages=[
+            _msg("p0", Role.USER, "root", 0),
+            _msg("p1", Role.ASSISTANT, "primary", 1),
+            _msg("p1-alt", Role.ASSISTANT, "branch cut", 1, variant_index=1),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        updated_at="2027-01-01T00:00:02Z",
+        messages=[
+            _msg("c0", Role.USER, "root", 0),
+            _msg("c1", Role.ASSISTANT, "primary", 1),
+            _msg("c1-alt", Role.ASSISTANT, "branch cut", 1, variant_index=1),
+            _msg("c2", Role.USER, "child tail", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    write_parsed_session_to_archive(
+        conn,
+        parent.model_copy(
+            update={
+                "updated_at": "2027-01-01T00:00:03Z",
+                "messages": [
+                    _msg("p0", Role.USER, "root", 0),
+                    _msg("p1", Role.ASSISTANT, "primary", 1),
+                ],
+            }
+        ),
+    )
+
+    link = conn.execute(
+        "SELECT branch_point_message_id, inheritance, status FROM session_links WHERE src_session_id = ?", (child_id,)
+    ).fetchone()
+    assert tuple(link) == (f"{parent_id}:p1-alt", "prefix-sharing", None)
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert [message.blocks[0].text for message in envelope.messages] == ["child tail"]
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    conn.close()
 
 
 def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_path: Path) -> None:

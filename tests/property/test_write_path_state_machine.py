@@ -64,6 +64,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         self._pending_children: dict[str, tuple[str, list[str], int, list[str]]] = {}
         self._next_session = 0
         self._next_text = 0
+        self._next_fresh_version = 1
         self._deletion_done = False
 
     @initialize()
@@ -356,7 +357,9 @@ class WritePathStateMachine(RuleBasedStateMachine):
         return text
 
     def _fresh_timestamp(self) -> str:
-        return f"2027-01-{1 + (self._next_text % 27):02d}T00:00:00Z"
+        timestamp = f"2027-01-01T00:00:{self._next_fresh_version:02d}Z"
+        self._next_fresh_version += 1
+        return timestamp
 
     def _message_texts(self, session_id: str) -> list[str]:
         return self._texts_from_envelope(read_archive_session_envelope(self._conn, session_id))
