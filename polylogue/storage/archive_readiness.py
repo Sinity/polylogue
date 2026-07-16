@@ -228,6 +228,38 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 )
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
+            authority_census: dict[str, object] | None = None
+            if _table_columns(conn, "source", "raw_authority_censuses"):
+                census_row = conn.execute(
+                    """
+                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
+                           plan_count, executable_plan_count, residual_plan_count,
+                           predecessor_census_id, fixed_point, completed_at_ms
+                    FROM source.raw_authority_censuses
+                    ORDER BY sequence_no DESC LIMIT 1
+                    """
+                ).fetchone()
+                if census_row is not None:
+                    authority_census = {
+                        "census_id": str(census_row["census_id"]),
+                        "sequence_no": int(census_row["sequence_no"]),
+                        "inventory_digest": str(census_row["inventory_digest"]),
+                        "residual_digest": str(census_row["residual_digest"]),
+                        "plan_count": int(census_row["plan_count"]),
+                        "executable_plan_count": int(census_row["executable_plan_count"]),
+                        "residual_plan_count": int(census_row["residual_plan_count"]),
+                        "predecessor_census_id": census_row["predecessor_census_id"],
+                        "fixed_point": bool(census_row["fixed_point"]),
+                        "completed_at_ms": int(census_row["completed_at_ms"]),
+                        "query_handle": f"raw-authority-census:{census_row['census_id']}",
+                    }
+            authority_blocker_count = 0
+            if _table_columns(conn, "source", "raw_authority_blockers"):
+                authority_blocker_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
+                    ).fetchone()[0]
+                )
     except Exception as exc:
         return {
             "available": False,
@@ -258,6 +290,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     }
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
+    if authority_blocker_count:
+        category_counts["raw_authority_blocker"] = authority_blocker_count
     category_counts.update(
         {category: count for category, count in classified_counts.items() if category != "parse-failed"}
     )
@@ -273,12 +307,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "critical": critical,
         "warning": 0,
         "actionable": actionable,
-        "blocked": adoption_deferred_count,
+        "blocked": adoption_deferred_count + authority_blocker_count,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
         "affected_actionable": affected_actionable,
-        "affected_blocked": adoption_deferred_count,
+        "affected_blocked": adoption_deferred_count + authority_blocker_count,
         "affected_open": 0,
         "affected_classified": classified,
         "affected_unchecked": unchecked,
@@ -286,6 +320,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "lost_source_evidence_samples": lost_source_evidence_samples,
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
+        "raw_authority_census": authority_census,
+        "raw_authority_blocker_count": authority_blocker_count,
     }
 
 

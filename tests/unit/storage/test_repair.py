@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -1153,12 +1152,6 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_authority_before = source_conn.execute(
-            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone()
-
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
     assert result.success is False
@@ -1188,7 +1181,10 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
             "SELECT parsed_at_ms, parse_error, revision_authority FROM raw_sessions WHERE raw_id = ?",
             (raw_id,),
         ).fetchone()
-    assert raw_state == (None, None, source_authority_before[0])
+    # The source-only census now completes before replay planning.  It may
+    # establish byte-proven source authority, while the incomparable index
+    # state still remains untouched and receives a deferred application.
+    assert raw_state == (None, None, "byte_proven")
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         deferred = index_conn.execute(
             "SELECT decision, detail FROM raw_revision_applications WHERE raw_id = ?",
@@ -1213,24 +1209,27 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
 
 def test_raw_materialization_dry_run_reports_limited_selection(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    sizes = [512, 1024, 2048, 4096]
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"dry-{index}"}}}}\n'.encode(),
+                source_path=f"dry-{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index in range(4)
+        ]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", zip(sizes, raw_ids, strict=True))
+        conn.commit()
     config = _config(tmp_path)
-    monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
-            ["raw-slow", "raw-2", "raw-3", "raw-4"],
-            0,
-            4,
-            {
-                "raw-slow": 512,
-                "raw-2": 1024,
-                "raw-3": 2048,
-                "raw-4": 4096,
-            },
-        ),
-    )
 
     result = repair_mod.repair_raw_materialization(
         config,
@@ -1251,52 +1250,29 @@ def test_raw_materialization_dry_run_reports_limited_selection(
 
 def test_raw_materialization_execute_limits_authority_selection(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"execute-{index}"}}}}\n'.encode(),
+                source_path=f"execute-{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            for index in range(4)
+        ]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            zip((512, 1024, 2048, 4096), raw_ids, strict=True),
+        )
+        conn.commit()
     config = _config(tmp_path)
-    calls: dict[str, object] = {}
-
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            calls["db_path"] = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            calls["archive_root"] = archive_root
-
-        async def close(self) -> None:
-            calls["closed"] = True
-
-    class FakeParseResult:
-        processed_ids = {"session-2", "session-3"}
-        parse_failures = 0
-
-    class FakeParsingService:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
-            calls["parse_kwargs"] = kwargs
-            return FakeParseResult()
-
-    monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
-            ["raw-slow", "raw-2", "raw-3", "raw-4"],
-            0,
-            4,
-            {
-                "raw-slow": 512,
-                "raw-2": 1024,
-                "raw-3": 2048,
-                "raw-4": 4096,
-            },
-        ),
-    )
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
     result = repair_mod.repair_raw_materialization(
         config,
@@ -1304,8 +1280,7 @@ def test_raw_materialization_execute_limits_authority_selection(
     )
 
     assert result.success is False
-    assert result.repaired_count == 0
-    assert "parse_kwargs" not in calls
+    assert result.repaired_count == 2
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
     assert result.metrics["raw_materialization_selected_count"] == 2.0
     assert result.metrics["raw_materialization_executed_count"] == 2.0
@@ -1564,104 +1539,54 @@ def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"authority-substrate"}}\n',
+            source_path="authority-substrate.jsonl",
+            acquired_at_ms=1,
+        )
     config = _config(tmp_path)
-    calls: dict[str, object] = {}
 
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            calls["db_path"] = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            calls["archive_root"] = archive_root
-
-        async def close(self) -> None:
-            calls["closed"] = True
-
-    class FakeParseResult:
-        processed_ids = {"session-1", "session-2"}
-        parse_failures = 0
-
-    class FakeParsingService:
+    class UnexpectedParsingService:
         def __init__(self, **_kwargs: object) -> None:
-            pass
+            pytest.fail("raw authority repair must not construct the legacy ParsingService")
 
-        async def parse_from_raw(self, **kwargs: object) -> FakeParseResult:
-            calls["parse_kwargs"] = kwargs
-            return FakeParseResult()
-
-    def fake_candidate_ids(
-        _config: Config,
-        *,
-        raw_artifact_id: str | None = None,
-        provider: str | None = None,
-        source_family: str | None = None,
-        source_root: Path | None = None,
-    ) -> repair_mod.RawMaterializationCandidates:
-        calls["raw_artifact_id"] = raw_artifact_id
-        calls["provider"] = provider
-        calls["source_family"] = source_family
-        calls["source_root"] = source_root
-        return repair_mod.RawMaterializationCandidates(["raw-1"], 0, 0)
-
-    monkeypatch.setattr(repair_mod, "_raw_materialization_candidate_ids", fake_candidate_ids)
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 
-    assert result.success is False
-    assert result.repaired_count == 0
+    assert result.success is True
+    assert result.repaired_count == 1
     assert "typed revision authority" in result.detail
-    assert "parse_kwargs" not in calls
-    assert calls["raw_artifact_id"] is None
-    assert "closed" not in calls
 
 
 def test_raw_materialization_reports_authority_progress_and_payload_size(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"progress"}}\n',
+            source_path="progress.jsonl",
+            acquired_at_ms=1,
+        )
+    declared_size = 256 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (declared_size, raw_id))
+        conn.commit()
     config = _config(tmp_path)
     progress: list[str] = []
-
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            self.db_path = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            self.backend = backend
-            self.archive_root = archive_root
-
-        async def close(self) -> None:
-            pass
-
-    class FakeParseResult:
-        processed_ids = {"session-1"}
-        parse_failures = 0
-
-    class FakeParsingService:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
-            return FakeParseResult()
-
-    monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
-            ["raw-1"],
-            0,
-            0,
-            {"raw-1": 256 * 1024 * 1024},
-        ),
-    )
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
     result = repair_mod.repair_raw_materialization(
         config,
@@ -1669,11 +1594,11 @@ def test_raw_materialization_reports_authority_progress_and_payload_size(
         progress_callback=lambda _amount, desc=None: progress.append(desc or ""),
     )
 
-    assert result.success is False
+    assert result.success is True
     assert len(progress) == 1
     assert "typed revision authority" in progress[0]
-    assert result.metrics["raw_materialization_total_blob_bytes"] == float(256 * 1024 * 1024)
-    assert result.metrics["raw_materialization_max_blob_bytes"] == float(256 * 1024 * 1024)
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(declared_size)
+    assert result.metrics["raw_materialization_max_blob_bytes"] == float(declared_size)
     assert result.metrics["raw_materialization_selected_count"] == 1.0
 
 
@@ -1681,25 +1606,28 @@ def test_raw_materialization_blocks_oversized_actual_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"{}",
+            source_path="oversized.json",
+            acquired_at_ms=1,
+        )
+    oversized = 2 * 1024 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (oversized, raw_id))
+        conn.commit()
     config = _config(tmp_path)
 
     class UnexpectedParsingService:
         def __init__(self, **_kwargs: object) -> None:
             raise AssertionError("oversized raw rows should be blocked before parsing")
 
-    monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
-            ["raw-1"],
-            0,
-            0,
-            {"raw-1": 2 * 1024 * 1024 * 1024},
-            expanded_raw_ids=("raw-1",),
-            expanded_blob_bytes={"raw-1": 2 * 1024 * 1024 * 1024},
-            authority_components=(("raw-1",),),
-        ),
-    )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
@@ -1717,6 +1645,22 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"oversized-stream"}}\n',
+            source_path="/captures/codex/session.jsonl",
+            acquired_at_ms=1,
+        )
+    oversized = 2 * 1024 * 1024 * 1024
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (oversized, raw_id))
+        conn.commit()
     config = _config(tmp_path)
     calls: dict[str, object] = {}
 
@@ -1743,21 +1687,6 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
             calls["parse_kwargs"] = kwargs
             return FakeParseResult()
 
-    monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(
-            ["raw-1"],
-            0,
-            0,
-            {"raw-1": 2 * 1024 * 1024 * 1024},
-            {"raw-1": "claude-code-session"},
-            {"raw-1": "/captures/claude/session.jsonl"},
-            expanded_raw_ids=("raw-1",),
-            expanded_blob_bytes={"raw-1": 2 * 1024 * 1024 * 1024},
-            authority_components=(("raw-1",),),
-        ),
-    )
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
     monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
     monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
@@ -1959,8 +1888,8 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
     assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
 
 
-def test_raw_materialization_receipts_rotate_retryable_plan_behind_unattempted_work(tmp_path: Path) -> None:
-    """A retryable oldest component must not monopolize a bounded daemon slot."""
+def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(tmp_path: Path) -> None:
+    """A retryable oldest component must not monopolize a slot after ops reset."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1988,12 +1917,7 @@ def test_raw_materialization_receipts_rotate_retryable_plan_behind_unattempted_w
 
     first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert first.plan_outcomes[0].status.value == "retryable"
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            "INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (1, 'raw_materialization_pass', ?)",
-            (json.dumps({"plan_outcomes": [outcome.to_dict() for outcome in first.plan_outcomes]}),),
-        )
-        conn.commit()
+    (tmp_path / "ops.db").unlink()
 
     second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert second.repaired_count == 1
@@ -2101,7 +2025,8 @@ def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: P
 
     assert first.repaired_count == 3, (first.detail, first.metrics, after)
     assert first.metrics["raw_materialization_selected_component_count"] == 3.0
-    assert first.metrics["raw_materialization_plan_outcome_count"] == 3.0
+    assert first.metrics["raw_materialization_plan_outcome_count"] == 5.0
+    assert first.metrics["raw_materialization_plan_carried_forward_count"] == 2.0
     assert first.metrics["raw_materialization_plan_executed_count"] == 3.0
     assert {outcome.plan_id for outcome in first.plan_outcomes} == {
         outcome.plan_id for outcome in preview.plan_outcomes
@@ -2114,39 +2039,32 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"\xff\n",
+            source_path="broken.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parsed_at_ms = 1 WHERE raw_id = ?", (raw_id,))
+        conn.commit()
     config = _config(tmp_path)
 
-    class FakeBackend:
-        def __init__(self, *, db_path: Path) -> None:
-            self.db_path = db_path
-
-    class FakeRepository:
-        def __init__(self, *, backend: FakeBackend, archive_root: Path) -> None:
-            self.backend = backend
-            self.archive_root = archive_root
-
-        async def close(self) -> None:
-            pass
-
-    class FakeParseResult:
-        processed_ids: set[str] = set()
-        parse_failures = 1
-
-    class FakeParsingService:
+    class UnexpectedParsingService:
         def __init__(self, **_kwargs: object) -> None:
-            pass
+            pytest.fail("parse failures must remain inside the authority census route")
 
-        async def parse_from_raw(self, **_kwargs: object) -> FakeParseResult:
-            return FakeParseResult()
-
+    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
     monkeypatch.setattr(
-        repair_mod,
-        "_raw_materialization_candidate_ids",
-        lambda *_args, **_kwargs: repair_mod.RawMaterializationCandidates(["raw-1"], 0, 1),
+        "polylogue.sources.revision_backfill._parse_retained_raw",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("synthetic retained-byte decode failure")),
     )
-    monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", FakeParsingService)
-    monkeypatch.setattr("polylogue.storage.repository.SessionRepository", FakeRepository)
-    monkeypatch.setattr("polylogue.storage.sqlite.async_sqlite.SQLiteBackend", FakeBackend)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
 

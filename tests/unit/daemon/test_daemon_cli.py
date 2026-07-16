@@ -644,6 +644,53 @@ def test_raw_materialization_pass_emits_zero_work_receipt(monkeypatch: pytest.Mo
     assert events[0][1]["plan_outcomes"] == []
 
 
+def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"c" * 16)
+    census = SimpleNamespace(
+        census_id="census:2:inventory:residual",
+        sequence_no=2,
+        inventory_digest="a" * 64,
+        residual_digest="b" * 64,
+        plan_count=3,
+        executable_plan_count=1,
+        residual_plan_count=2,
+        predecessor_census_id="census:1:inventory:residual",
+        fixed_point=False,
+        query_handle="raw-authority-census:census:2:inventory:residual",
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=False,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=(),
+            census_receipt=census,
+        )
+    )
+
+    assert events[0][1]["census"] == {
+        "census_id": census.census_id,
+        "sequence_no": 2,
+        "inventory_digest": "a" * 64,
+        "residual_digest": "b" * 64,
+        "plan_count": 3,
+        "executable_plan_count": 1,
+        "residual_plan_count": 2,
+        "predecessor_census_id": census.predecessor_census_id,
+        "fixed_point": False,
+        "query_handle": census.query_handle,
+    }
+
+
 def test_raw_materialization_closes_fts_on_cancellation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

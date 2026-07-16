@@ -489,7 +489,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -553,6 +553,10 @@ def test_source_publication_backfill_requires_verified_backup(
 ) -> None:
     db_path = workspace_env["archive_root"] / "source.db"
     with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE raw_authority_blockers")
+        conn.execute("DROP TABLE raw_authority_census_plans")
+        conn.execute("DROP TABLE raw_authority_plans")
+        conn.execute("DROP TABLE raw_authority_censuses")
         conn.execute("DROP TABLE excised_content")
         conn.execute("DROP TABLE sinex_publication_segments")
         conn.execute("DROP TABLE sinex_publication_receipts")
@@ -569,8 +573,8 @@ def test_source_publication_backfill_requires_verified_backup(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 12
-        assert result.applied_versions == (10, 11, 12)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 13
+        assert result.applied_versions == (10, 11, 12, 13)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
@@ -579,6 +583,10 @@ def test_source_publication_backfill_requires_verified_backup(
             "sinex_publication_segments",
             "sinex_publication_receipts",
             "excised_content",
+            "raw_authority_censuses",
+            "raw_authority_plans",
+            "raw_authority_census_plans",
+            "raw_authority_blockers",
         } <= tables
 
 
@@ -643,6 +651,9 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))\n"
         "    ,predecessor_source_revision TEXT\n",
     )
+    authority_start = old_ddl.index("-- Durable authority reconciliation ledger.")
+    authority_end = old_ddl.index("CREATE TABLE IF NOT EXISTS blob_refs", authority_start)
+    old_ddl = old_ddl[:authority_start] + old_ddl[authority_end:]
     # Migration 010 adds `excised_content` (polylogue-27m) -- a v7 snapshot
     # predates it, same as it predates the beads-origin/capture_mode diffs
     # stripped above. Without this, the fixture (built from the CURRENT
@@ -715,8 +726,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 12
-        assert result.applied_versions == (8, 9, 10, 11, 12)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 13
+        assert result.applied_versions == (8, 9, 10, 11, 12, 13)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -877,7 +888,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -935,7 +946,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
