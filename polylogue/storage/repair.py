@@ -4975,6 +4975,9 @@ def _raw_authority_residual(
     resource_blocked_plan_ids: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Return identity-sensitive residual debt for fixed-point comparison."""
+    census_pending_digest = hashlib.sha256(
+        json.dumps(list(census_pending_raw_ids), separators=(",", ":")).encode()
+    ).hexdigest()
     return {
         "missing_blob_raw_ids": list(candidates.missing_blob_raw_ids),
         "adoption_deferred_raw_ids": list(candidates.adoption_deferred_raw_ids),
@@ -4982,7 +4985,11 @@ def _raw_authority_residual(
         "byte_authority_fragment_raw_ids": list(candidates.byte_authority_fragment_raw_ids),
         "byte_authority_quarantined_raw_ids": list(candidates.byte_authority_quarantined_raw_ids),
         "byte_authority_pending_raw_ids": list(candidates.byte_authority_pending_raw_ids),
-        "census_pending_raw_ids": list(census_pending_raw_ids),
+        # A large initial catch-up may need hundreds of bounded census passes.
+        # Keep every progress receipt identity-sensitive without copying the
+        # entire shrinking raw-ID backlog into source.db on every pass.
+        "census_pending_raw_count": len(census_pending_raw_ids),
+        "census_pending_raw_digest": census_pending_digest,
         "resource_blocked_plan_ids": list(resource_blocked_plan_ids),
     }
 

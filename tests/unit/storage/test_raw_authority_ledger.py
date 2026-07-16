@@ -366,6 +366,14 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
         assert incomplete.metrics["raw_materialization_census_components_attempted"] == 1.0
         incomplete_ledger = read_raw_authority_census(tmp_path, incomplete.census_receipt.query_handle)
         assert incomplete_ledger["plans"] == []
+        census_detail = _read_detail_document(
+            tmp_path,
+            cast(str, cast(dict[str, object], incomplete_ledger["census"])["detail_query_handle"]),
+        )
+        pending_residual = cast(dict[str, object], census_detail["residual"])
+        assert pending_residual["census_pending_raw_count"] >= 1
+        assert len(cast(str, pending_residual["census_pending_raw_digest"])) == 64
+        assert "census_pending_raw_ids" not in pending_residual
         incomplete_receipts.append(incomplete.census_receipt.census_id)
     assert len(set(incomplete_receipts)) == 2
 
