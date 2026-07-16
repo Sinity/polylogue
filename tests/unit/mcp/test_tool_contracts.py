@@ -745,7 +745,7 @@ class TestQueryTools:
         mock_poly.neighbor_candidates.assert_awaited_once_with(
             session_id="target",
             query=None,
-            provider="codex",
+            origin="codex-session",
             limit=3,
             window_hours=24,
         )
