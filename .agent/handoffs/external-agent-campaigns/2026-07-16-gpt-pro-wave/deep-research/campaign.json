@@ -4,6 +4,7 @@
   "workload_id":"deep-research",
   "prompt_profile":"polylogue-chatgpt-deep-research-v3",
   "prompt_contract":"../../contracts/chatgpt-deep-research.md",
+  "result_kind":"conversation_markdown",
   "jobs":[
     {"id":"deep-research-01","slug":"mv3-provider-automation","title":"MV3 lifecycle and provider automation policy","brief":"briefs/01-mv3-provider-automation.md","prompt":"prompts/01-mv3-provider-automation.md","result_prefix":"deep-research-01-mv3-provider-automation","depends_on":[]},
     {"id":"deep-research-02","slug":"sqlite-cancellation","title":"Cancellable resumable SQLite reads","brief":"briefs/02-sqlite-cancellation.md","prompt":"prompts/02-sqlite-cancellation.md","result_prefix":"deep-research-02-sqlite-cancellation","depends_on":[]},

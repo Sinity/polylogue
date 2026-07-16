@@ -1,7 +1,6 @@
 Title: "[research 05] Attachment acquisition and archival provenance"
 
 Job ID: `deep-research-05`
-Result ZIP: `deep-research-05-attachment-provenance-r01.zip`
 
 Research current archival, digital-preservation, HTTP/content-addressing, RO-
 Crate/BagIt/OCFL, PREMIS, provenance, and software-supply-chain practices

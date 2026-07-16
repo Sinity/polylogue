@@ -14,6 +14,7 @@ def render_workload(workload: Path, *, check: bool) -> list[str]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     contract_path = workload / manifest["prompt_contract"]
     contract = contract_path.read_text(encoding="utf-8").strip()
+    result_kind = manifest.get("result_kind", "package")
     errors: list[str] = []
 
     job_ids: set[str] = set()
@@ -33,9 +34,13 @@ def render_workload(workload: Path, *, check: bool) -> list[str]:
         if not brief.startswith('Title: "'):
             errors.append(f"{brief_path}: first line must be a literal Title")
             continue
-        expected_zip = f"Result ZIP: `{result_prefix}-r01.zip`"
-        if expected_zip not in brief:
-            errors.append(f"{brief_path}: expected {expected_zip}")
+        if result_kind == "package":
+            expected_zip = f"Result ZIP: `{result_prefix}-r01.zip`"
+            if expected_zip not in brief:
+                errors.append(f"{brief_path}: expected {expected_zip}")
+                continue
+        elif result_kind != "conversation_markdown":
+            errors.append(f"{manifest_path}: unsupported result kind {result_kind}")
             continue
         rendered = f"{brief}\n\n{contract}\n"
         if check:

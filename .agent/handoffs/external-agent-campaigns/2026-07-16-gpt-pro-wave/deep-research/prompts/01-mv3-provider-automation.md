@@ -1,7 +1,6 @@
 Title: "[research 01] MV3 lifecycle and provider automation policy"
 
 Job ID: `deep-research-01`
-Result ZIP: `deep-research-01-mv3-provider-automation-r01.zip`
 
 Research current Chrome Manifest V3 service-worker, offscreen document,
 background tab/window, alarms, notifications, downloads, storage, and lifecycle
@@ -28,20 +27,17 @@ decisions, but do not return speculative patches. Map each conclusion to the
 named Polylogue decision/Bead, state what should change, what should not change,
 and what local experiment would falsify the recommendation.
 
-Create the exact `Result ZIP` named near the top under `/mnt/data/`, containing
-`DECISION-MEMO.md`, `SOURCE-LEDGER.md`, `COUNTEREVIDENCE.md`, and
-`POLYLOGUE-MAPPING.md`. Do not copy attached project inputs into it. Attach the
-finished ZIP through a working user-clickable conversation link; an internal
-temporary path alone is not delivery. Reopen and validate the ZIP, report
-SHA-256/size/members, and provide a substantive direct answer covering
-conclusions, rationale, limitations, missing evidence, and the likely value of
-another iteration before the exact package link.
+Present a substantive, self-contained research report with conclusions,
+rationale, source-by-source support, counterevidence, limitations, missing
+evidence, Polylogue decision mappings, and the likely value of another
+iteration. It must remain useful to a reader who has not opened the attached
+project-state archive.
 
 Do not perform an adversarial review unless explicitly requested. On an
 ordinary **iterate/continue** request, extend the strongest unresolved research
-branch and regenerate the complete package. On an explicit **adversarial
+branch and return a revised complete report. On an explicit **adversarial
 review** request, try to falsify the prior memo with counterevidence, later or
 more authoritative sources, incompatible policies/standards, hidden product
 assumptions, and experiments that would overturn its recommendations. Repair
-legitimate findings, regenerate the cohesive package, and report what changed,
-what remains uncertain, and whether another pass is worthwhile.
+legitimate findings and report what changed, what remains uncertain, and
+whether another pass is worthwhile.

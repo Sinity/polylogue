@@ -1,7 +1,6 @@
 Title: "[research 07] AI-generated artifact supply-chain receipts"
 
 Job ID: `deep-research-07`
-Result ZIP: `deep-research-07-ai-artifact-supply-chain-r01.zip`
 
 Research practical provenance and supply-chain models for AI-generated code,
 patches, analysis packages, and iterative repairs: SLSA/in-toto attestations,

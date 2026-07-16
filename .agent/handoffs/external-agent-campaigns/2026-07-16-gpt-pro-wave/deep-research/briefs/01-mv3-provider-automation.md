@@ -1,7 +1,6 @@
 Title: "[research 01] MV3 lifecycle and provider automation policy"
 
 Job ID: `deep-research-01`
-Result ZIP: `deep-research-01-mv3-provider-automation-r01.zip`
 
 Research current Chrome Manifest V3 service-worker, offscreen document,
 background tab/window, alarms, notifications, downloads, storage, and lifecycle

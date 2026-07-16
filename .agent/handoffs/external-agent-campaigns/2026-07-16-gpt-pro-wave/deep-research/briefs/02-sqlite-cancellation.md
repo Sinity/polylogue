@@ -1,7 +1,6 @@
 Title: "[research 02] Cancellable resumable SQLite reads"
 
 Job ID: `deep-research-02`
-Result ZIP: `deep-research-02-sqlite-cancellation-r01.zip`
 
 Research current SQLite and Python sqlite3/aiosqlite mechanisms for bounding,
 interrupting, and resuming expensive read-only queries: progress handlers,
