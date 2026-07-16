@@ -189,6 +189,7 @@ export async function executeChatGptLaunchInPage(job, attachments) {
 export function inspectChatGptLaunchPage() {
   const textOf = (node) => String(node?.innerText || node?.textContent || "");
   const text = textOf(document.body);
+  const softWarning = /temporarily limited access to your conversations to protect your data/i.test(text);
   const busy = [...document.querySelectorAll("button")].some((button) =>
     /pro thinking|stop generating|stop responding|stop answering/i.test(
       button.getAttribute("aria-label") || textOf(button),
@@ -209,7 +210,8 @@ export function inspectChatGptLaunchPage() {
     assistant_turns: assistantTurns.length,
     handoff_name: handoffNode ? handoffName : null,
     handoff_href: handoffNode?.href || null,
-    rate_limited: /too many requests|rate.?limit/i.test(text),
-    safety_lock: /temporarily blocked|unusual activity|access to conversations/i.test(text),
+    soft_warning: softWarning,
+    rate_limited: !softWarning && /too many requests|rate.?limit/i.test(text),
+    safety_lock: !softWarning && /temporarily blocked|unusual activity|access to conversations/i.test(text),
   };
 }

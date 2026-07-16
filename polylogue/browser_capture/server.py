@@ -17,16 +17,15 @@ from pydantic import ValidationError
 
 from polylogue.browser_capture.launch_jobs import (
     BrowserLaunchConflictError,
-    BrowserLaunchHandoffError,
     BrowserLaunchLeaseError,
     BrowserLaunchQuotaError,
     BrowserLaunchStateError,
-    accept_launch_handoff,
     claim_due_launch_job,
     control_launch_job,
     enqueue_launch_job,
     list_launch_jobs,
     read_launch_attachment,
+    reconcile_launch_handoff_capture,
     update_launch_job,
 )
 from polylogue.browser_capture.models import (
@@ -38,8 +37,6 @@ from polylogue.browser_capture.models import (
     BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
-    BrowserLaunchHandoffAcceptedPayload,
-    BrowserLaunchHandoffRequest,
     BrowserLaunchJobControlRequest,
     BrowserLaunchJobEnqueuedPayload,
     BrowserLaunchJobListPayload,
@@ -392,10 +389,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             job_id = path[len("/v1/launch-jobs/") : -len("/control")]
             self._launch_job_control(job_id)
             return
-        if path.startswith("/v1/launch-jobs/") and path.endswith("/handoff"):
-            job_id = path[len("/v1/launch-jobs/") : -len("/handoff")]
-            self._launch_job_handoff(job_id)
-            return
         if path == "/v1/backfill-checkpoint":
             self._backfill_checkpoint_store()
             return
@@ -425,6 +418,20 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
+        try:
+            reconcile_launch_handoff_capture(
+                envelope,
+                result.artifact_ref,
+                spool_path=self.server.config.spool_path,
+            )
+        except (OSError, BrowserLaunchStateError) as exc:
+            # The canonical conversation capture is already durable. Launch
+            # projection failure must not reject or duplicate that capture.
+            logger.warning(
+                "browser_capture.launch_reconcile_failed",
+                request_id=self._request_id(),
+                error=repr(exc),
+            )
         logger.debug(
             "browser_capture.capture_accepted",
             request_id=self._request_id(),
@@ -569,38 +576,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
             return
         self._send_json(HTTPStatus.OK, BrowserLaunchJobEnqueuedPayload(job=job).model_dump(mode="json"))
-
-    def _launch_job_handoff(self, job_id: str) -> None:
-        payload = self._read_json_body()
-        if payload is None:
-            return
-        try:
-            request = BrowserLaunchHandoffRequest.model_validate(payload)
-            job = accept_launch_handoff(job_id, request, spool_path=self.server.config.spool_path)
-        except ValidationError:
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_handoff")
-            return
-        except BrowserLaunchLeaseError:
-            self._safe_error(HTTPStatus.CONFLICT, "launch_lease_owner_mismatch")
-            return
-        except BrowserLaunchConflictError:
-            self._safe_error(HTTPStatus.CONFLICT, "invalid_launch_job_state")
-            return
-        except BrowserLaunchQuotaError:
-            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "launch_handoff_quota_exceeded")
-            return
-        except BrowserLaunchHandoffError as exc:
-            logger.warning("browser_capture.launch_handoff_invalid", request_id=self._request_id(), error=str(exc))
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_launch_handoff_archive")
-            return
-        except (OSError, BrowserLaunchStateError) as exc:
-            logger.warning("browser_capture.launch_handoff_failed", request_id=self._request_id(), error=repr(exc))
-            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-            return
-        if job is None:
-            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_launch_job")
-            return
-        self._send_json(HTTPStatus.OK, BrowserLaunchHandoffAcceptedPayload(job=job).model_dump(mode="json"))
 
     def _post_command_ack(self, command_id: str) -> None:
         payload = self._read_json_body()

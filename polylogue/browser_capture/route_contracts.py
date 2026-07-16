@@ -181,15 +181,6 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserLaunchJobEnqueuedPayload | BrowserCaptureErrorPayload",
         "Operator pause/resume/cancel/retry and ambiguous-submit reconciliation; terminal completion cannot be reopened.",
     ),
-    BrowserCaptureRouteContract(
-        "POST",
-        "/v1/launch-jobs/{job_id}/handoff",
-        "launch_job_handoff",
-        "bearer_if_web_origin",
-        "BrowserLaunchHandoffRequest",
-        "BrowserLaunchHandoffAcceptedPayload | BrowserCaptureErrorPayload",
-        "Stores and checksum-validates the cohesive ZIP before marking the job complete.",
-    ),
 )
 
 
