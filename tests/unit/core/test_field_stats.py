@@ -63,6 +63,18 @@ class TestIsDynamicKey:
     @pytest.mark.parametrize(
         "key",
         [
+            "What should happen after the plan is approved?",
+            '<source path="/realm/project/polylogue">\nfragment</source>',
+            "field\x00name",
+            "x" * 129,
+        ],
+    )
+    def test_content_shaped_property_names_detected(self, key: str) -> None:
+        assert is_dynamic_key(key)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
             "mapping",
             "title",
             "content",
@@ -71,6 +83,9 @@ class TestIsDynamicKey:
             "abc",
             "my-field",
             "status_code",
+            "text/html",
+            "application/vnd.ant.code",
+            "claude/phase_3",
         ],
     )
     def test_static_keys_not_dynamic(self, key: str) -> None:

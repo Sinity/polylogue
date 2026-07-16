@@ -207,6 +207,7 @@ def _collect_field_stats(
 
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             fval = float(value)
+            stats.numeric_distribution.observe(fval)
             if not (math.isnan(fval) or math.isinf(fval)):
                 if stats.num_min is None or fval < stats.num_min:
                     stats.num_min = fval
@@ -216,7 +217,6 @@ def _collect_field_stats(
                     stats.numeric_values.append(fval)
                 else:
                     stats.truncated_evidence["numeric_samples"] += 1
-                stats.numeric_distribution.observe(fval)
                 fmt = _detect_numeric_format(value)
                 if fmt:
                     stats.detected_formats[fmt] += 1

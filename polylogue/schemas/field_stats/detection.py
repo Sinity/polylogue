@@ -22,8 +22,17 @@ FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("email", re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")),
 ]
 
+_MAX_STRUCTURAL_KEY_LENGTH = 128
+_CONTENT_KEY_MARKERS = frozenset("?<>")
+
 
 def is_dynamic_key(key: str) -> bool:
+    if len(key) > _MAX_STRUCTURAL_KEY_LENGTH:
+        return True
+    if any(ord(character) < 32 or ord(character) == 127 for character in key):
+        return True
+    if any(marker in key for marker in _CONTENT_KEY_MARKERS):
+        return True
     if UUID_PATTERN.match(key):
         return True
     if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):

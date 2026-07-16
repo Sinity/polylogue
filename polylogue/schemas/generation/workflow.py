@@ -84,7 +84,7 @@ def generate_all_schemas(
 
     provider_list = providers or list(PROVIDERS.keys())
     results = []
-    package_mix: dict[str, dict[str, int]] = {}
+    package_bundle_scope_counts: dict[str, dict[str, int]] = {}
     for provider in provider_list:
         bundle = _build_provider_bundle(
             provider,
@@ -95,12 +95,14 @@ def generate_all_schemas(
         results.append(bundle.result)
         persist_generated_provider_bundle(output_dir, provider, bundle)
         if bundle.catalog is not None:
-            package_mix[provider] = {package.version: package.bundle_scope_count for package in bundle.catalog.packages}
+            package_bundle_scope_counts[provider] = {
+                package.version: package.bundle_scope_count for package in bundle.catalog.packages
+            }
 
     if include_archive_workload_profile:
         archive_profile = build_archive_workload_profile(
             db_path,
-            package_mix=package_mix,
+            package_bundle_scope_counts=package_bundle_scope_counts,
             privacy_policy=privacy_config.level if privacy_config is not None else "standard",
         )
         if archive_profile is not None:

@@ -119,7 +119,7 @@ class FieldStats:
         """
         if not self.total_samples:
             return 0.0
-        documents_seen = self.document_non_null_count or (
+        documents_seen = self.document_encountered_count or (
             len(self.documents_present) if self.documents_present else min(self.present_count, self.total_samples)
         )
         return documents_seen / self.total_samples

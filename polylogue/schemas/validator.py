@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
@@ -17,6 +16,7 @@ except ImportError:
 from polylogue.archive.raw_payload import extract_payload_samples
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
+from polylogue.schemas.field_stats.detection import is_dynamic_key
 from polylogue.schemas.runtime_registry import SchemaRegistry
 
 from .validator_resolution import (
@@ -69,11 +69,6 @@ class ValidationResult:
 # ---------------------------------------------------------------------------
 
 _RECORD_VALIDATION_PROVIDERS = {Provider.CLAUDE_CODE, Provider.CODEX}
-
-_UUID_KEY_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
 
 
 def _schema_type_values(schema: object) -> set[str]:
@@ -264,12 +259,8 @@ def detect_drift(
 
 
 def looks_dynamic_key(key: str) -> bool:
-    """Detect dynamic identifier keys (UUIDs, hashes, generated IDs)."""
-    if _UUID_KEY_RE.match(key):
-        return True
-    if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
-        return True
-    return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
+    """Apply the inference contract for non-structural property names."""
+    return is_dynamic_key(key)
 
 
 class SchemaValidator:

@@ -26,6 +26,7 @@ def _package(
     bundle_scopes: list[str] | None = None,
     profile_tokens: list[str] | None = None,
     schema_file: str | None = "session_document.schema.json.gz",
+    workload_profile_file: str | None = None,
 ) -> SchemaVersionPackage:
     return SchemaVersionPackage(
         provider="chatgpt",
@@ -36,6 +37,7 @@ def _package(
         last_seen="2026-04-02T00:00:00Z",
         bundle_scope_count=1,
         sample_count=1,
+        workload_profile_file=workload_profile_file,
         bundle_scopes=bundle_scopes or [],
         elements=[
             SchemaElementManifest(
@@ -128,6 +130,28 @@ def test_write_and_replace_provider_packages_remove_stale_versions(tmp_path: Pat
     assert not old_manifest.exists()
     assert registry._package_manifest_path("chatgpt", "v2").exists()
     assert "chatgpt" in registry.list_providers()
+
+
+def test_replace_provider_packages_preflights_every_package_before_deleting_versions(tmp_path: Path) -> None:
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    old_catalog = _catalog(_package("v1"))
+    registry.replace_provider_packages(
+        "chatgpt",
+        old_catalog,
+        {"v1": {"session_document": {"type": "object"}}},
+    )
+    old_manifest = registry._package_manifest_path("chatgpt", "v1")
+
+    invalid_catalog = _catalog(_package("v2", workload_profile_file="workload-profile.json.gz"))
+    with pytest.raises(ValueError, match="no workload profile"):
+        registry.replace_provider_packages(
+            "chatgpt",
+            invalid_catalog,
+            {"v2": {"session_document": {"type": "object"}}},
+        )
+
+    assert old_manifest.exists()
+    assert not registry._package_dir("chatgpt", "v2").exists()
 
 
 def test_get_element_schema_handles_missing_elements_and_files(tmp_path: Path) -> None:

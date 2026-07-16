@@ -153,7 +153,22 @@ def _tool_pairing_profile(conn: sqlite3.Connection) -> JSONDocument:
         "orphan_results": 0,
         "duplicate_calls": 0,
         "duplicate_results": 0,
+        "unknown_identity_uses": 0,
+        "unknown_identity_results": 0,
     }
+    unknown_row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END)
+        FROM blocks
+        WHERE (tool_id IS NULL OR tool_id = '')
+          AND block_type IN ('tool_use', 'tool_result')
+        """
+    ).fetchone()
+    if unknown_row is not None:
+        totals["unknown_identity_uses"] = int(unknown_row[0] or 0)
+        totals["unknown_identity_results"] = int(unknown_row[1] or 0)
     query = """
         SELECT
             SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END) AS uses,
@@ -417,7 +432,7 @@ def _tier_file_sizes(index_path: Path) -> JSONDocument:
 def build_archive_workload_profile(
     index_path: Path,
     *,
-    package_mix: Mapping[str, Mapping[str, int]] | None = None,
+    package_bundle_scope_counts: Mapping[str, Mapping[str, int]] | None = None,
     privacy_policy: str = "standard",
 ) -> JSONDocument | None:
     """Build a content-free profile of archive composition and activation shapes."""
@@ -456,8 +471,8 @@ def build_archive_workload_profile(
             },
         },
         "archive_mix": {
-            "package_artifact_counts": json_document(
-                {provider: dict(versions) for provider, versions in sorted((package_mix or {}).items())}
+            "package_bundle_scope_counts": json_document(
+                {provider: dict(versions) for provider, versions in sorted((package_bundle_scope_counts or {}).items())}
             ),
             "tier_file_sizes": _tier_file_sizes(index_path),
         },

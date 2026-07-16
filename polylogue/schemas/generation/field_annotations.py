@@ -171,7 +171,12 @@ def annotate_schema(
         if field_stats.num_min is not None and field_stats.num_max is not None:
             schema_node["x-polylogue-range"] = [field_stats.num_min, field_stats.num_max]
 
-        if field_stats.array_lengths:
+        if field_stats.array_length_distribution.count:
+            minimum = field_stats.array_length_distribution.minimum
+            maximum = field_stats.array_length_distribution.maximum
+            if minimum is not None and maximum is not None:
+                schema_node["x-polylogue-array-lengths"] = [int(minimum), int(maximum)]
+        elif field_stats.array_lengths:
             schema_node["x-polylogue-array-lengths"] = [
                 min(field_stats.array_lengths),
                 max(field_stats.array_lengths),

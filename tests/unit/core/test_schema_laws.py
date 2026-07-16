@@ -141,6 +141,25 @@ def test_collapse_dynamic_keys_preserves_static_fields_and_rehomes_dynamic_maps(
     assert set(_required_fields(collapsed)) == set(static_keys)
 
 
+def test_collapse_dynamic_keys_rehomes_content_shaped_property_names() -> None:
+    schema = {
+        "type": "object",
+        "required": ["title", "What should happen next?", "<source>\n/path</source>"],
+        "properties": {
+            "title": {"type": "string"},
+            "What should happen next?": {"type": "string"},
+            "<source>\n/path</source>": {"type": "object"},
+        },
+    }
+
+    collapsed = collapse_dynamic_keys(json_document(schema))
+
+    assert schema_properties(collapsed) == {"title": {"type": "string"}}
+    assert _required_fields(collapsed) == ["title"]
+    assert schema_node(collapsed).get("x-polylogue-dynamic-keys") is True
+    assert "additionalProperties" in schema_node(collapsed)
+
+
 @settings(max_examples=30)
 @given(st.lists(static_key_strategy(), min_size=1, max_size=4, unique=True))
 def test_collapse_dynamic_keys_leaves_static_only_objects_explicit(static_keys: list[str]) -> None:
@@ -283,11 +302,16 @@ def test_load_samples_from_sessions_preserves_record_families_when_capped(
 def test_generate_schema_from_samples_exposes_union_of_observed_top_level_fields(
     samples: list[dict[str, object]],
 ) -> None:
-    """Schema generation should include every observed top-level field from the corpus."""
+    """Schema generation should expose structural fields and rehome dynamic ones."""
     pytest.importorskip("genson")
     schema = generate_schema_from_samples(samples)
     observed_keys = {key for sample in samples for key in sample}
+    structural_keys = {key for key in observed_keys if not is_dynamic_key(key)}
+    dynamic_keys = observed_keys - structural_keys
 
-    assert observed_keys.issubset(schema_properties(schema).keys())
+    assert structural_keys.issubset(schema_properties(schema).keys())
+    if dynamic_keys:
+        assert schema_node(schema).get("x-polylogue-dynamic-keys") is True
+        assert "additionalProperties" in schema_node(schema)
     assert _schema_string(schema, "type") == "object"
     assert _schema_string(schema, "$schema") == "https://json-schema.org/draft/2020-12/schema"

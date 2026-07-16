@@ -20,7 +20,7 @@ from polylogue.schemas.generation.archive_workload_profile import (
 )
 from polylogue.schemas.generation.field_annotations import annotate_schema
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
-from polylogue.schemas.generation.workload_profiles import build_package_workload_profile
+from polylogue.schemas.generation.workload_profiles import build_package_workload_profile, workload_profile_identity
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -50,6 +50,23 @@ def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
     upper_quantile = left.quantile(0.99)
     assert upper_quantile is not None
     assert upper_quantile >= 100_000
+
+
+def test_workload_profile_identity_normalizes_unicode_content() -> None:
+    composed = {
+        "label": "caf\N{LATIN SMALL LETTER E WITH ACUTE}",
+        "nested": {
+            "r\N{LATIN SMALL LETTER E WITH ACUTE}sum\N{LATIN SMALL LETTER E WITH ACUTE}": [
+                "na\N{LATIN SMALL LETTER I WITH DIAERESIS}ve"
+            ]
+        },
+    }
+    decomposed = {
+        "label": "cafe\N{COMBINING ACUTE ACCENT}",
+        "nested": {"re\N{COMBINING ACUTE ACCENT}sume\N{COMBINING ACUTE ACCENT}": ["nai\N{COMBINING DIAERESIS}ve"]},
+    }
+
+    assert workload_profile_identity(composed) == workload_profile_identity(decomposed)
 
 
 def test_categorical_sketch_retains_every_observation_without_values() -> None:
@@ -90,6 +107,25 @@ def test_field_collection_retains_full_counts_while_bounding_legacy_evidence() -
     assert stats["$.nullable"].document_non_null_count == 3_333
     assert stats["$.nullable"].null_count == 1_667
     assert len(stats["$.nullable"].documents_present) == 2_000
+    assert stats["$.nullable"].document_frequency == 1.0
+
+    numeric_stats = _collect_field_stats([{"value": 1.0}, {"value": float("inf")}, {"value": float("nan")}])
+    assert numeric_stats["$.value"].numeric_distribution.count == 1
+    assert numeric_stats["$.value"].numeric_distribution.non_finite_count == 2
+
+
+def test_array_annotations_use_full_sketch_extrema_after_sample_cap() -> None:
+    samples: list[JSONDocument] = [{"items": []} for _ in range(2_000)]
+    samples.append({"items": list(range(2_500))})
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {"items": {"type": "array", "items": {"type": "integer"}}},
+    }
+
+    annotated = annotate_schema(schema, _collect_field_stats(samples))
+    items = cast(dict[str, JSONValue], cast(dict[str, JSONValue], annotated["properties"])["items"])
+
+    assert items["x-polylogue-array-lengths"] == [0, 2_500]
 
 
 def test_annotations_drive_synthetic_numeric_and_array_distributions() -> None:
@@ -292,7 +328,9 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
                  NULL, '{"command":"private command"}'),
                 ('s1', 'private-tool-id', 'tool_result', 'private_tool_name',
                  'private output', NULL),
-                ('s2', NULL, 'thinking', NULL, 'private reasoning', NULL);
+                ('s2', NULL, 'thinking', NULL, 'private reasoning', NULL),
+                ('s2', NULL, 'tool_use', 'private-unidentified-tool', NULL, NULL),
+                ('s2', '', 'tool_result', NULL, 'private unidentified output', NULL);
             INSERT INTO session_links VALUES ('s2', 's1', 'subagent', 'spawned-fresh', NULL);
             """
         )
@@ -338,11 +376,11 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
 
     profile = build_archive_workload_profile(
         index_path,
-        package_mix={"codex": {"v1": 2}},
+        package_bundle_scope_counts={"codex": {"v1": 2}},
     )
     repeated = build_archive_workload_profile(
         index_path,
-        package_mix={"codex": {"v1": 2}},
+        package_bundle_scope_counts={"codex": {"v1": 2}},
     )
 
     assert profile is not None
@@ -351,19 +389,29 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     row_counts = cast(dict[str, JSONValue], index["row_counts"])
     action_shapes = cast(dict[str, JSONValue], index["action_shapes"])
     pairing = cast(dict[str, JSONValue], action_shapes["tool_pairing"])
-    assert row_counts == {"sessions": 2, "messages": 3, "blocks": 3}
+    archive_mix = cast(dict[str, JSONValue], profile["archive_mix"])
+    assert row_counts == {"sessions": 2, "messages": 3, "blocks": 5}
     assert pairing["paired"] == 1
+    assert pairing["unknown_identity_uses"] == 1
+    assert pairing["unknown_identity_results"] == 1
+    assert archive_mix["package_bundle_scope_counts"] == {"codex": {"v1": 2}}
     assert profile["profile_id"] == repeated["profile_id"]
 
     serialized = json.dumps(profile, sort_keys=True)
     for private_value in (
         "secret title",
+        "secret instructions",
         "private-branch",
         "ssh://private/repo",
+        "private-project",
         "private-model-name",
+        "private context",
         "private_tool_name",
         "private command",
         "private-tool-id",
+        "private output",
+        "private reasoning",
+        "private unidentified output",
         "/private/source/path",
         "private-stage",
         "private-target",

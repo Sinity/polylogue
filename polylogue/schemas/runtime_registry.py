@@ -424,6 +424,11 @@ class SchemaRegistry:
         workload_profile: Mapping[str, object] | None = None,
     ) -> Path:
         provider_token = _provider_token(package.provider)
+        self._preflight_package_write(
+            package,
+            element_schemas=element_schemas,
+            workload_profile=workload_profile,
+        )
         package_dir = self._package_dir(provider_token, package.version)
         elements_dir = package_dir / "elements"
         elements_dir.mkdir(parents=True, exist_ok=True)
@@ -450,13 +455,45 @@ class SchemaRegistry:
                 )
             profile_path = package_dir / package.workload_profile_file
             profile_path.write_bytes(
-                gzip.compress(json.dumps(dict(workload_profile), indent=2).encode("utf-8"), mtime=0)
+                gzip.compress(
+                    json.dumps(dict(workload_profile), indent=2, sort_keys=True).encode("utf-8"),
+                    mtime=0,
+                )
             )
 
         manifest_path = self._package_manifest_path(provider_token, package.version)
         manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
         self.clear_cache()
         return manifest_path
+
+    @staticmethod
+    def _preflight_package_write(
+        package: SchemaVersionPackage,
+        *,
+        element_schemas: ElementSchemaMap,
+        workload_profile: Mapping[str, object] | None,
+    ) -> None:
+        missing_elements = sorted(
+            element.element_kind
+            for element in package.elements
+            if element.schema_file is not None and element.element_kind not in element_schemas
+        )
+        if missing_elements:
+            raise ValueError(
+                f"Package {package.provider}/{package.version} is missing schemas for: {', '.join(missing_elements)}"
+            )
+        if package.workload_profile_file is not None and workload_profile is None:
+            raise ValueError(
+                f"Package {package.provider}/{package.version} declares "
+                f"{package.workload_profile_file} but no workload profile was supplied"
+            )
+        if workload_profile is not None:
+            try:
+                json.dumps(dict(workload_profile), sort_keys=True)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Package {package.provider}/{package.version} has a non-JSON workload profile"
+                ) from exc
 
     def replace_provider_packages(
         self,
@@ -467,6 +504,21 @@ class SchemaRegistry:
         package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         provider_token = _provider_token(provider)
+        prepared_packages: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
+        for package in catalog.packages:
+            element_schemas = package_schemas.get(package.version)
+            if element_schemas is None:
+                raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
+            workload_profile = (
+                package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
+            )
+            self._preflight_package_write(
+                package,
+                element_schemas=element_schemas,
+                workload_profile=workload_profile,
+            )
+            prepared_packages.append((package, element_schemas, workload_profile))
+
         provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)
         versions_dir = provider_dir / "versions"
@@ -479,13 +531,10 @@ class SchemaRegistry:
                     path.rmdir()
         versions_dir.mkdir(parents=True, exist_ok=True)
 
-        for package in catalog.packages:
-            workload_profile = (
-                package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
-            )
+        for package, element_schemas, workload_profile in prepared_packages:
             self.write_package(
                 package,
-                element_schemas=package_schemas[package.version],
+                element_schemas=element_schemas,
                 workload_profile=workload_profile,
             )
         self.save_package_catalog(catalog)
