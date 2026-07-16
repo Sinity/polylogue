@@ -18,11 +18,12 @@ from urllib.error import HTTPError
 
 import pytest
 
-from polylogue.config import load_polylogue_config
+from polylogue.config import PolylogueConfig, load_polylogue_config
 from polylogue.mcp.call_log import (
     McpCallLogEvent,
     _Delivery,
     _McpCallLogDispatcher,
+    _outbox_root,
     _persist_delivery,
     _post_call_log,
     flush_mcp_call_log,
@@ -281,6 +282,45 @@ def test_wake_queue_pressure_never_discards_spooled_events(
     assert status.oldest_started_at_ms == 1_700_000_000_000
     assert status.wake_queue_depth == 1
     assert status.wakeups_dropped == 2
+
+
+def test_live_wake_preempts_stale_roots_and_drained_root_is_released(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A current daemon must not wait behind every historical archive root."""
+    base_config = load_polylogue_config()
+    dispatcher = _McpCallLogDispatcher()
+    stale_roots: set[Path] = set()
+    for index in range(12):
+        stale_config = replace(
+            base_config,
+            _data={**base_config.raw, "archive_root": str(tmp_path / f"stale-{index}")},
+        )
+        stale_root = _persist_delivery(stale_config, _event(f"stale-{index}")).parent
+        stale_roots.add(stale_root)
+        dispatcher._roots[stale_root] = stale_config
+
+    original_drain = dispatcher._drain_root_once
+
+    def slow_stale_root(root: Path, config: object) -> None:
+        if root in stale_roots:
+            time.sleep(0.1)
+            return
+        original_drain(root, cast(PolylogueConfig, config))
+
+    monkeypatch.setattr(dispatcher, "_drain_root_once", slow_stale_root)
+    with _running_daemon() as daemon_url:
+        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
+        live_config = load_polylogue_config()
+        live_root = _outbox_root(live_config)
+        try:
+            dispatcher.submit(live_config, _event("live-call"))
+            assert dispatcher.flush(live_config, timeout=0.75)
+            _wait_until(lambda: live_root not in dispatcher._roots, timeout=1.0)
+        finally:
+            dispatcher.shutdown()
+
+    assert [entry.call_id for entry in _read_calls(workspace_env["archive_root"])] == ["live-call"]
 
 
 def test_duplicate_daemon_delivery_is_idempotent(
