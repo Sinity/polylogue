@@ -135,9 +135,12 @@ def test_production_adapter_runs_real_encoder_verifier_decoder_and_preserves_wir
 def test_naive_timestamps_are_utc_and_unordered_metadata_is_deterministic() -> None:
     parsed = _parsed_session()
     parsed.created_at = datetime(2026, 7, 16, 3, 0, 0).isoformat()
+    parsed.messages[0].occurred_at_ms = 0
     parsed.messages[0].blocks[0].metadata = {"unordered": {"z", "a"}}
+    material = session_material_from_parsed_session(parsed, session_id="claude-code-session:s1")
     first = encode_parsed_session_publication(parsed, session_id="claude-code-session:s1")
     second = encode_parsed_session_publication(parsed, session_id="claude-code-session:s1")
+    assert material.messages[0].occurred_at_ms == 0
     assert first.manifest_bytes == second.manifest_bytes
     assert first.segments == second.segments
 

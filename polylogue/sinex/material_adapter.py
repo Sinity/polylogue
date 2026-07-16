@@ -504,7 +504,9 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 variant_index=message.variant_index or 0,
                 message_type=message.message_type,
                 material_origin=message.material_origin,
-                occurred_at_ms=message.occurred_at_ms or _timestamp_ms(message.timestamp),
+                occurred_at_ms=(
+                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp)
+                ),
                 model_name=message.model_name,
                 parent_native_id=message.parent_message_provider_id,
                 input_tokens=message.input_tokens,

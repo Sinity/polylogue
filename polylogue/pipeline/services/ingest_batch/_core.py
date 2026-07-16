@@ -1078,8 +1078,6 @@ def _drain_ingest_result(
         primary_publication_service.drain_once(object_ids=object_ids, limit=len(object_ids))
         if primary_publication_service.projection_blocked(object_ids):
             summary.publication_deferred_raw_ids.add(ir.raw_id)
-            summary.publication_payloads_by_raw_id[ir.raw_id] = list(publication_payloads)
-            summary.publication_payload_bytes += sum(payload.size_bytes for payload in publication_payloads)
             logger.info(
                 "Sinex primary receipt deferred index projection",
                 raw_id=ir.raw_id,
@@ -1253,10 +1251,6 @@ def _process_ingest_batch_sync(
         measure_ingest_result_size=measure_ingest_result_size,
     )
     t_start = time.perf_counter()
-    setup_started = time.perf_counter()
-    conn = _open_sync_connection(db_path)
-    summary.setup_elapsed_s = time.perf_counter() - setup_started
-    materialized_ids: set[str] = set()
     archive_root = Path(archive_root_str)
     primary_publication_service = (
         PublicationService(
@@ -1267,6 +1261,10 @@ def _process_ingest_batch_sync(
         if publication_mode is PublicationMode.PRIMARY
         else None
     )
+    setup_started = time.perf_counter()
+    conn = _open_sync_connection(db_path)
+    summary.setup_elapsed_s = time.perf_counter() - setup_started
+    materialized_ids: set[str] = set()
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     pending_attachment_receipts: list[tuple[str, bytes]] = []
     _observe_current_rss(summary)

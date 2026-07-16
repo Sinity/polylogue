@@ -36,7 +36,7 @@ class UnsafeDetailTransport:
         return PublicationReceipt(
             request_id=request_id,
             state=ReceiptState.RAW_ACCEPTED,
-            detail="authorization=Bearer bearer-secret token=top-secret endpoint=local",
+            detail="authorization=Bearer bearer-secret, password: my secret phrase; token=top-secret endpoint=local",
         )
 
 
@@ -148,8 +148,10 @@ def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     conn.close()
     assert "top-secret" not in detail
     assert "bearer-secret" not in detail
+    assert "my secret phrase" not in detail
     assert "<redacted>" in detail
     assert "top-secret" not in json.dumps(service.status().as_dict())
+    assert "my secret phrase" not in json.dumps(service.status().as_dict())
 
     nonexistent = tmp_path / "off-does-not-exist.db"
     off = PublicationService(nonexistent, PublicationMode.OFF)

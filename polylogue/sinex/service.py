@@ -33,7 +33,7 @@ _DEFAULT_CLOCK: Callable[[], int] = lambda: int(time.time() * 1000)  # noqa: E73
 _SAFE_CODE_RE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 _SECRET_RE = re.compile(
     r"(?i)\b(token|secret|password|authorization|api[-_]?key)\b"
-    r"\s*[:=]\s*(?:(?:bearer|basic)\s+)?[^\s,;]+"
+    r"\s*[:=]\s*[^\r\n,;]*"
 )
 
 

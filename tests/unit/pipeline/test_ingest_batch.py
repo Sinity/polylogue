@@ -193,6 +193,43 @@ def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
     with sqlite3.connect(archive_root / "source.db") as source_conn:
         assert source_conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone() == (1,)
     assert summary.publication_deferred_raw_ids == {raw_record.raw_id}
+    assert summary.publication_payloads_by_raw_id == {}
+    assert summary.publication_payload_bytes == 0
+
+
+def test_primary_transport_resolution_precedes_index_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingTransportError(RuntimeError):
+        pass
+
+    opened = False
+
+    def missing_transport() -> NoReturn:
+        raise MissingTransportError("primary transport is not configured")
+
+    def unexpected_open(_path: Path) -> sqlite3.Connection:
+        nonlocal opened
+        opened = True
+        raise AssertionError("index connection must not open before transport resolution")
+
+    monkeypatch.setattr(ingest_batch_core, "resolve_configured_transport", missing_transport)
+    monkeypatch.setattr(ingest_batch_core, "_open_sync_connection", unexpected_open)
+
+    with pytest.raises(MissingTransportError, match="not configured"):
+        _process_ingest_batch_sync(
+            [],
+            db_path=tmp_path / "archive" / "index.db",
+            archive_root_str=str(tmp_path / "archive"),
+            blob_root_str=str(tmp_path / "archive" / "blob"),
+            validation_mode="advisory",
+            ingest_workers=1,
+            measure_ingest_result_size=False,
+            publication_mode=PublicationMode.PRIMARY,
+        )
+
+    assert not opened
 
 
 def test_primary_mode_projects_revision_after_allowed_durable_receipt(
