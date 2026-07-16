@@ -63,6 +63,7 @@ EXPECTED_TOOL_NAMES = {
     "explain_query_expression",
     "query_completions",
     "readiness_check",
+    "named_source_freshness",
     "rebuild_index",
     "update_index",
     "get_postmortem_bundle",

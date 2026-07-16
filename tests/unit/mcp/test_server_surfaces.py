@@ -185,6 +185,13 @@ class TestServerSurfaceRegistration:
         assert "limit" in signature.parameters
         assert not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
 
+    def test_named_source_freshness_accepts_only_the_exact_source_path(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        signature = inspect.signature(mcp_server._tool_manager._tools["named_source_freshness"].fn)
+
+        assert tuple(signature.parameters) == ("source_path",)
+
     @pytest.mark.parametrize(
         ("surface_attr", "actual_getter", "expected"),
         [

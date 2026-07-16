@@ -229,9 +229,8 @@ def test_cursor_lag_summary_classifies_failing_cursor_as_stuck(tmp_path: Path) -
     assert summary.max_lag_s == 60.0
 
 
-def test_cursor_lag_summary_treats_excluded_cursor_as_idle(tmp_path: Path) -> None:
-    # Quarantined cursors live under the raw-failures alert surface, not the
-    # SLO alert surface. They must not raise cursor-lag alerts.
+def test_cursor_lag_summary_reports_excluded_cursor_as_degraded_not_idle(tmp_path: Path) -> None:
+    # Quarantine is outside the lag SLO, but must never look healthy/idle.
     db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
     _seed_cursor(
@@ -242,7 +241,34 @@ def test_cursor_lag_summary_treats_excluded_cursor_as_idle(tmp_path: Path) -> No
     )
     summary = cursor_lag_summary_info(db, now=now)
     assert summary.stuck_file_count == 0
-    assert summary.idle_file_count == 1
+    assert summary.degraded_file_count == 1
+    assert summary.idle_file_count == 0
+    assert summary.max_degraded_lag_s == 7200.0
+    assert summary.degraded[0].source_path == "/a/quarantined.jsonl"
+    assert summary.degraded[0].classification == "degraded"
+    assert summary.degraded[0].degradation_reason == "excluded"
+    assert summary.degraded[0].excluded is True
+
+
+def test_cursor_lag_summary_reports_cursor_ahead_as_degraded_not_idle(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
+    _seed_cursor(
+        db,
+        rows=[
+            ("/a/ahead.jsonl", 1_000, 1_200, 0, 0, (now - timedelta(minutes=30)).isoformat()),
+        ],
+    )
+
+    summary = cursor_lag_summary_info(db, now=now)
+
+    assert summary.stuck_file_count == 0
+    assert summary.degraded_file_count == 1
+    assert summary.idle_file_count == 0
+    assert summary.degraded[0].degradation_reason == "cursor-ahead"
+    assert summary.degraded[0].excluded is False
+    assert summary.degraded[0].byte_offset == 1_200
+    assert summary.degraded[0].byte_size == 1_000
 
 
 def test_cursor_lag_summary_buckets_by_family_unknown_for_arbitrary_path(tmp_path: Path) -> None:

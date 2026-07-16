@@ -17,6 +17,7 @@ from polylogue.readiness import VerifyStatus, get_readiness
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.source_freshness import NamedSourceFreshness
     from polylogue.config import Config
 
 Severity = Literal["info", "warning", "error"]
@@ -266,8 +267,95 @@ async def diagnose_query_miss(
     )
 
 
+_NAMED_SOURCE_MISS_COPY: dict[str, tuple[str, Severity, str]] = {
+    "unseen": (
+        "named_source_unseen",
+        "info",
+        "The named source has not been acquired into the raw archive.",
+    ),
+    "acquired-unparsed": (
+        "named_source_acquired_unparsed",
+        "warning",
+        "The named source was acquired, but its accepted raw revision is not parsed.",
+    ),
+    "parsed-unindexed": (
+        "named_source_parsed_unindexed",
+        "warning",
+        "The named source was parsed, but its accepted raw revision is not indexed.",
+    ),
+    "indexed-unconverged": (
+        "named_source_indexed_unconverged",
+        "warning",
+        "The named source is indexed, but FTS or insight evidence has not converged.",
+    ),
+    "searchable": (
+        "named_source_searchable",
+        "info",
+        "The named source is searchable; the miss is downstream of source freshness.",
+    ),
+}
+
+
+def diagnose_named_source_miss(freshness: NamedSourceFreshness) -> QueryMissDiagnostics:
+    """Translate one exact-source projection into the shared miss envelope."""
+    stage_object = freshness.stage
+    stage = str(getattr(stage_object, "value", stage_object))
+    code, severity, summary = _NAMED_SOURCE_MISS_COPY.get(
+        stage,
+        (
+            "named_source_unknown",
+            "warning",
+            "The named source freshness stage is unavailable.",
+        ),
+    )
+    operational_object = freshness.operational_state
+    operational = str(getattr(operational_object, "value", operational_object))
+    operational_reason_object = getattr(freshness, "operational_reason", None)
+    operational_reason = getattr(operational_reason_object, "value", operational_reason_object)
+    detail_parts = [
+        f"source_path={freshness.source_path}",
+        f"stage={stage}",
+        f"operational_state={operational}",
+    ]
+    if operational_reason is not None:
+        detail_parts.append(f"operational_reason={operational_reason}")
+    source_stat = getattr(freshness, "source_stat", None)
+    if source_stat is not None:
+        detail_parts.append(f"source_exists={getattr(source_stat, 'exists', None)}")
+        stat_error = getattr(source_stat, "error", None)
+        if stat_error:
+            detail_parts.append(f"source_stat_error={stat_error}")
+    if freshness.cursor.excluded:
+        detail_parts.append("cursor_excluded=true")
+    if freshness.cursor.pending_bytes is not None:
+        detail_parts.append(f"pending_bytes={freshness.cursor.pending_bytes}")
+    cursor_ahead = getattr(freshness.cursor, "cursor_ahead_bytes", None)
+    if cursor_ahead:
+        detail_parts.append(f"cursor_ahead_bytes={cursor_ahead}")
+    if freshness.index.broken_head:
+        detail_parts.append("broken_head=true")
+    source_session_count = freshness.index.session_count_lower_bound
+    raw_sample_count = len(freshness.raw_revisions)
+    detail_parts.append(f"source_indexed_session_lower_bound={source_session_count}")
+    detail_parts.append(f"source_raw_revision_sample_count={raw_sample_count}")
+    if freshness.retry.reason:
+        detail_parts.append(f"reason={freshness.retry.reason}")
+    reason = QueryMissReason(
+        code=code,
+        severity=severity,
+        summary=summary,
+        detail="; ".join(detail_parts),
+    )
+    return QueryMissDiagnostics(
+        message="No session matched the named source.",
+        filters=(f"source_path:{freshness.source_path}",),
+        reasons=(reason,),
+    )
+
+
 __all__ = [
     "QueryMissDiagnostics",
     "QueryMissReason",
+    "diagnose_named_source_miss",
     "diagnose_query_miss",
 ]

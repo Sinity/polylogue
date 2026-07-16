@@ -779,6 +779,19 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
 
 
 def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+    # Exact source freshness is a read-only diagnostic. Configuration chooses
+    # the archive; callers can supply only the exact source path and cannot
+    # turn this into an arbitrary local-file inspection route.
+    from polylogue.archive.query.source_freshness_surfaces import (
+        make_source_freshness_mcp_handler,
+        register_source_freshness_mcp_tool,
+    )
+
+    register_source_freshness_mcp_tool(
+        mcp,
+        make_source_freshness_mcp_handler(lambda: mcp_archive_root(hooks.get_config())),
+    )
+
     compact_coordination_cache = _CompactCoordinationCache()
 
     @mcp.tool()
