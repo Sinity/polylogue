@@ -346,7 +346,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             except ValueError:
                 protocol = -1
             try:
-                result = registry_for_receiver(self.server.config.spool_path, self.server.config.auth_token).get(
+                capture_job_payload = registry_for_receiver(
+                    self.server.config.spool_path, self.server.config.auth_token
+                ).get(
                     job_id,
                     {
                         "provider": params.get("provider", [""])[0],
@@ -357,7 +359,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             except CaptureJobError as exc:
                 self._capture_job_error(exc)
                 return
-            self._send_json(HTTPStatus.OK, result)
+            self._send_json(HTTPStatus.OK, capture_job_payload)
             return
         if parsed.path == "/v1/backfill-checkpoint":
             params = parse_qs(parsed.query)
