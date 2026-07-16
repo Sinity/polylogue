@@ -181,7 +181,7 @@ export async function executeProviderPageRequest(request) {
       });
     } else if (request.operation === "conversation") {
       url = new URL(`/backend-api/conversation/${encodeURIComponent(nativeId(request.params?.nativeId))}`, currentOrigin);
-    } else {
+    } else if (request.operation !== "identity") {
       throw new Error("backfill_bridge_operation_not_allowed");
     }
     const session = await fetchBounded(new URL("/api/auth/session", currentOrigin).href, { credentials: "include", cache: "no-store" });
@@ -193,6 +193,7 @@ export async function executeProviderPageRequest(request) {
     if (typeof accessToken !== "string" || !accessToken || typeof accountId !== "string" || !accountId) {
       throw new Error("backfill_bridge_auth_context_unavailable");
     }
+    if (request.operation === "identity") return { accountHandle: accountId };
     const response = await fetchBounded(url.href, {
       credentials: "include",
       cache: "no-store",
@@ -215,6 +216,7 @@ export async function executeProviderPageRequest(request) {
 
   async function claudeRequest() {
     const selected = selectedClaudeOrganizationId();
+    if (request.operation === "identity") return { accountHandle: selected };
     if (request.operation === "organizations") {
       const result = await fetchBounded(new URL("/api/organizations", currentOrigin).href, { credentials: "include", cache: "no-store" });
       if (!result.ok) return result;

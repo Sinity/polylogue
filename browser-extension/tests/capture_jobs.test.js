@@ -18,5 +18,8 @@ describe("CaptureJob extension recovery", () => {
     expect(adopted.job.job_id).toBe("receiver-job");
     expect(cache.set).toHaveBeenCalled();
     expect(canonicalJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+    const serializedRequests = fetchImpl.mock.calls.map(([, options]) => options.body).join("\n");
+    expect(serializedRequests).not.toContain("account@example.test");
+    expect(JSON.stringify(cache.values)).not.toContain("account@example.test");
   });
 });

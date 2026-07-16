@@ -84,11 +84,18 @@ export class CaptureJobClient {
     return result.jobs.filter((job) => job.checkpoint?.payload).sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
   }
 
-  async checkpoint(adopted, checkpointPayload, sequence) {
+  async checkpoint(adopted, checkpointPayload) {
+    const checkpointDigest = await digest(checkpointPayload);
+    if (adopted.job.checkpoint_digest === checkpointDigest) {
+      return { job: adopted.job, receipt: null, duplicate: true };
+    }
+    const sequence = Number.isSafeInteger(adopted.job.checkpoint_sequence)
+      ? adopted.job.checkpoint_sequence + 1
+      : 0;
     return this.request("PUT", `/v1/capture-jobs/${adopted.job.job_id}/checkpoint`, {
       provider: adopted.job.provider, account_scope: adopted.account_scope, request_id: crypto.randomUUID(),
       expected_revision: adopted.job.revision, lease_id: adopted.lease.lease_id, generation: adopted.lease.generation,
-      proof: adopted.lease.proof, checkpoint: { sequence, payload: checkpointPayload, digest: await digest(checkpointPayload) },
+      proof: adopted.lease.proof, checkpoint: { sequence, payload: checkpointPayload, digest: checkpointDigest },
     });
   }
 }

@@ -22,6 +22,43 @@ afterEach(() => {
 });
 
 describe("first-party provider page transport", () => {
+  it("returns only the stable ChatGPT account handle for an identity request", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "account-stable-id";
+    const fetchImpl = vi.fn(async (input) => {
+      expect(new URL(input).pathname).toBe("/api/auth/session");
+      return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({
+      provider: "chatgpt",
+      operation: "identity",
+      params: {},
+    });
+
+    expect(result).toEqual({ ok: true, response: { accountHandle: accountId } });
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the exact selected Claude organization as its stable identity", async () => {
+    const selected = "22222222-2222-4222-8222-222222222222";
+    const fetchImpl = vi.fn();
+    installWindow("https://claude.ai/new", fetchImpl, {
+      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
+    });
+
+    const result = await executeProviderPageRequest({
+      provider: "claude-ai",
+      operation: "identity",
+      params: {},
+    });
+
+    expect(result).toEqual({ ok: true, response: { accountHandle: selected } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("keeps ChatGPT bearer and selected account inside MAIN-world execution", async () => {
     const calls = [];
     const token = "synthetic-bearer-secret";

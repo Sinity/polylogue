@@ -223,6 +223,26 @@ describe("build.mjs full archive emission", () => {
         }
         return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({ ok: false, error: "checkpoint_not_found" }) };
       }
+      const receiverPath = new URL(url).pathname;
+      if (receiverPath === "/v1/capture-jobs/discover") {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ jobs: [] }) };
+      }
+      if (receiverPath === "/v1/capture-jobs") {
+        return { ok: true, status: 201, headers: { get: () => null }, json: async () => ({ job: {
+          job_id: "packaged-capture-job", provider: "chatgpt", revision: 0, lease_generation: 0,
+        } }) };
+      }
+      if (receiverPath.endsWith("/adopt")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
+          job: { job_id: "packaged-capture-job", provider: "chatgpt", revision: 1, lease_generation: 1 },
+          lease: { lease_id: "packaged-lease", generation: 1, proof: "packaged-proof" },
+        }) };
+      }
+      if (receiverPath.endsWith("/checkpoint")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
+          job: { job_id: "packaged-capture-job", provider: "chatgpt", revision: 2 }, receipt: {},
+        }) };
+      }
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");
       receiverPosts += 1;
       body = receiverPosts === 1
@@ -256,8 +276,9 @@ describe("build.mjs full archive emission", () => {
     expect(pageRequests.filter((message) => message.operation === "conversation")).toHaveLength(1);
     expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(tabs.update).not.toHaveBeenCalled();
-    expect(pageRequests.map((message) => message.operation)).toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);
-    expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(5);
+    expect(pageRequests.filter((message) => message.operation !== "identity").map((message) => message.operation))
+      .toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);
+    expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session").length).toBeGreaterThanOrEqual(5);
     expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
     expect(tabs.sendMessage).toHaveBeenCalledWith(77, expect.objectContaining({
@@ -284,7 +305,7 @@ describe("build.mjs full archive emission", () => {
         revisions: [],
       },
     };
-    const pageRequestCount = pageRequests.length;
+    const pageWorkCount = pageRequests.filter((request) => request.operation !== "identity").length;
     const recoveredWorkerUrl = `${pathToFileURL(join(unpacked, "src", "background.js")).href}?recovery=${Date.now()}`;
     await import(/* @vite-ignore */ recoveredWorkerUrl);
     const recoveredStatus = await send({ type: "polylogue.backfill.status" });
@@ -294,7 +315,7 @@ describe("build.mjs full archive emission", () => {
     });
     alarmListener({ name: "polylogueBackfillWake:packaged-recovered" });
     await Promise.resolve();
-    expect(pageRequests).toHaveLength(pageRequestCount);
+    expect(pageRequests.filter((request) => request.operation !== "identity")).toHaveLength(pageWorkCount);
     rmSync(smokeRoot, { recursive: true, force: true });
   }, 15_000);
 });

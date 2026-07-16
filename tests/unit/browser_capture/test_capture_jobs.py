@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
 from typing import Any, cast
 
+import polylogue.browser_capture.capture_jobs as capture_jobs
 from polylogue.browser_capture.capture_jobs import canonical_digest
 from polylogue.browser_capture.server import make_server
 
@@ -128,6 +130,16 @@ def test_profile_loss_discovers_exact_scope_and_receiver_checkpoint(tmp_path: Pa
         )
         assert status == 200 and hidden["jobs"] == []
 
+        status, exact = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert exact["job"] == acknowledged["job"]
+
 
 def test_adoption_and_checkpoint_conflicts_are_real_route_guards(tmp_path: Path) -> None:
     with receiver(tmp_path) as (host, port):
@@ -212,3 +224,57 @@ def test_adoption_and_checkpoint_conflicts_are_real_route_guards(tmp_path: Path)
             {"provider": "chatgpt", "account_scope": SCOPE, "client_protocol": 99},
         )
         assert status == 426 and incompatible["error"]["code"] == "incompatible_client"
+
+
+def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Path, monkeypatch: Any) -> None:
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        status, first = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/adopt",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "request_id": "old-profile",
+                "session_id": "destroyed-profile",
+                "expected_revision": job["revision"],
+                "expected_lease_generation": job["lease_generation"],
+                "lease_ttl_seconds": 1,
+            },
+        )
+        assert status == 200
+        status, held = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/adopt",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "request_id": "new-profile",
+                "session_id": "replacement-profile",
+                "expected_revision": first["job"]["revision"],
+                "expected_lease_generation": first["lease"]["generation"],
+            },
+        )
+        assert status == 409 and held["error"]["code"] == "lease_held"
+
+        monkeypatch.setattr(capture_jobs, "_now", lambda: datetime.now(UTC) + timedelta(seconds=2))
+        status, replacement = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/adopt",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "request_id": "new-profile",
+                "session_id": "replacement-profile",
+                "expected_revision": first["job"]["revision"],
+                "expected_lease_generation": first["lease"]["generation"],
+            },
+        )
+        assert status == 200
+        assert replacement["lease"]["generation"] == first["lease"]["generation"] + 1

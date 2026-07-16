@@ -144,15 +144,32 @@ async function mirrorCaptureJobsToReceiver(instanceId, checkpoint) {
   const settings = await receiverSettings();
   if (!settings.authToken || !Array.isArray(checkpoint?.jobs)) return;
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
+  const handles = new Map();
+  await Promise.all([...new Set(checkpoint.jobs.map((job) => job.provider))].map(async (provider) => {
+    try {
+      handles.set(provider, await providerAccountHandle(provider));
+    } catch (error) {
+      await appendDebugLog({
+        stage: "capture_job_identity_unavailable",
+        provider,
+        error: String(error.message || error),
+      });
+    }
+  }));
   await Promise.all(checkpoint.jobs.map(async (job) => {
-    // Provider adapters may supply a stable non-secret account handle (for
-    // Claude the organization id).  The fallback is deliberately scoped to
-    // this paired local receiver/provider and is never sent in raw form.
-    const accountHandle = job.provider_options?.account_id || job.provider_options?.claudeOrganizationId || `paired:${job.provider}`;
-    const payload = { version: checkpoint.version, job: { id: job.id, provider: job.provider, cutoff: job.cutoff, inventory_cursor: job.inventory_cursor, status: job.status }, queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [] };
+    const accountHandle = handles.get(job.provider);
+    // Exact authenticated provider identity is mandatory. Guessing from the
+    // receiver pairing or extension profile can adopt another account's job.
+    if (!accountHandle) return;
+    const payload = {
+      version: checkpoint.version,
+      jobs: [job],
+      queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
+      revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
+    };
     try {
       const adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
-      await client.checkpoint(adopted, payload, Number.isSafeInteger(job.execution_generation) ? job.execution_generation : 0);
+      await client.checkpoint(adopted, payload);
     } catch (error) {
       await appendDebugLog({ stage: "capture_job_mirror_error", provider: job.provider, error: String(error.message || error) });
     }
@@ -180,15 +197,30 @@ async function restoreBackfillCheckpointFromCaptureJobs(store) {
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
   for (const provider of ["chatgpt", "claude-ai"]) {
     try {
-      const jobs = await client.discoverRecovery(provider, `paired:${provider}`);
-      const checkpoint = jobs[0]?.checkpoint?.payload;
-      if (checkpoint?.version) return store.restoreRecoveryCheckpoint(checkpoint);
+      const accountHandle = await providerAccountHandle(provider);
+      const jobs = await client.discoverRecovery(provider, accountHandle);
+      const checkpoint = mergeCaptureJobRecoveryCheckpoints(jobs);
+      if (checkpoint) return store.restoreRecoveryCheckpoint(checkpoint);
     } catch {
       // Exact-scope discovery is intentionally best effort. A provider with a
       // different account handle does not disclose any other account's jobs.
     }
   }
   return { restored: 0, reason: "checkpoint_unavailable" };
+}
+
+function mergeCaptureJobRecoveryCheckpoints(jobs) {
+  const checkpoints = jobs
+    .map((job) => job.checkpoint?.payload)
+    .filter((checkpoint) => checkpoint?.version === 1 && Array.isArray(checkpoint.jobs));
+  if (!checkpoints.length) return null;
+  const byId = (items) => [...new Map(items.filter((item) => item?.id).map((item) => [item.id, item])).values()];
+  return {
+    version: 1,
+    jobs: byId(checkpoints.flatMap((checkpoint) => checkpoint.jobs || [])),
+    queue: byId(checkpoints.flatMap((checkpoint) => checkpoint.queue || [])),
+    revisions: byId(checkpoints.flatMap((checkpoint) => checkpoint.revisions || [])),
+  };
 }
 
 async function backfillCoordinator() {
@@ -220,7 +252,7 @@ async function backfillCoordinator() {
         checkpoint: async (checkpoint) => {
           await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
-          void mirrorCaptureJobsToReceiver(instanceId, checkpoint);
+          await mirrorCaptureJobsToReceiver(instanceId, checkpoint);
         },
         captureOverride: async ({ provider, nativeId, response }) => {
           if (provider !== "chatgpt") return null;
@@ -1429,6 +1461,39 @@ async function providerPageFetch(url, options = {}) {
       throw new Error(error);
     }
     return pageContextResponse(result.response);
+  });
+}
+
+async function providerAccountHandle(provider) {
+  return withProviderTransportOperation(provider, async () => {
+    const transport = await providerTab(provider);
+    let result;
+    try {
+      const executions = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeProviderPageRequest,
+          args: [{ provider, operation: "identity", params: {} }],
+        }),
+        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+        "backfill_provider_identity",
+      );
+      result = executions?.[0]?.result;
+    } catch (error) {
+      if (transport.owned) {
+        await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+        if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+        await forgetProviderTransport(provider, transport.tab.id);
+      }
+      throw error;
+    }
+    if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
+    const accountHandle = result.response?.accountHandle;
+    if (typeof accountHandle !== "string" || !accountHandle.trim()) {
+      throw new Error("backfill_provider_identity_unavailable");
+    }
+    return accountHandle;
   });
 }
 
