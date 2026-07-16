@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
@@ -56,6 +56,48 @@ class ProviderCatalogArtifacts:
     package_reports: dict[str, dict[str, SchemaReport | None]]
     package_workload_profiles: dict[str, JSONDocument]
     manifest: ClusterManifest
+
+
+def _coverage_rank(package: SchemaVersionPackage) -> tuple[int, int, str, str]:
+    """Rank fallback fitness without letting one long transcript dominate."""
+    return (
+        package.bundle_scope_count,
+        package.sample_count,
+        package.last_seen,
+        package.version,
+    )
+
+
+def _select_catalog_versions(
+    packages: Sequence[SchemaVersionPackage],
+) -> tuple[str | None, str | None, str | None, JSONDocument]:
+    """Keep temporal and coverage semantics distinct and explain the choice."""
+    if not packages:
+        return None, None, None, {}
+
+    latest = packages[-1]
+    recommended = max(packages, key=_coverage_rank)
+    rationale = json_document(
+        {
+            "latest": {
+                "version": latest.version,
+                "strategy": "latest_first_observed_family",
+                "first_seen": latest.first_seen,
+            },
+            "recommended": {
+                "version": recommended.version,
+                "strategy": "coverage_first",
+                "rank_fields": ["bundle_scope_count", "sample_count", "last_seen", "version"],
+                "bundle_scope_count": recommended.bundle_scope_count,
+                "sample_count": recommended.sample_count,
+            },
+            "default": {
+                "version": recommended.version,
+                "strategy": "recommended_fallback",
+            },
+        }
+    )
+    return latest.version, recommended.version, recommended.version, rationale
 
 
 def _json_text_values(values: Iterable[str]) -> list[JSONValue]:
@@ -191,14 +233,17 @@ def build_provider_catalog_artifacts(
         for cluster_id in package.profile_family_ids:
             cluster_to_package_version[cluster_id] = version
 
-    latest_version = catalog_packages[-1].version if catalog_packages else None
+    latest_version, default_version, recommended_version, selection_rationale = _select_catalog_versions(
+        catalog_packages
+    )
     catalog = SchemaPackageCatalog(
         provider=provider_token,
         packages=catalog_packages,
         latest_version=latest_version,
-        default_version=latest_version,
-        recommended_version=latest_version,
+        default_version=default_version,
+        recommended_version=recommended_version,
         orphan_adjunct_counts=orphan_adjunct_counts,
+        selection_rationale=selection_rationale,
     )
     manifest_clusters: list[SchemaCluster] = []
     for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True):

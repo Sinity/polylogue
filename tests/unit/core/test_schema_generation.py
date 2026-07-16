@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.schemas.generation.cluster_collection import _collect_cluster_accumulators
+from polylogue.schemas.generation.provider_bundle_packages import _select_catalog_versions
 from polylogue.schemas.generation.workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.operator.schema_inference import (
@@ -60,6 +61,35 @@ class TestProviderSchemaGeneration:
 
         failure = GenerationResult(provider="test", schema=None, sample_count=0, error="no data")
         assert not failure.success
+
+
+def test_catalog_selection_preserves_latest_without_defaulting_to_rare_family() -> None:
+    def package(version: str, *, scopes: int, samples: int, first_seen: str) -> SchemaVersionPackage:
+        return SchemaVersionPackage(
+            provider="claude-code",
+            version=version,
+            anchor_kind="session_record_stream",
+            default_element_kind="session_record_stream",
+            first_seen=first_seen,
+            last_seen=first_seen,
+            bundle_scope_count=scopes,
+            sample_count=samples,
+        )
+
+    dominant = package("v1", scopes=943, samples=28_602, first_seen="2026-06-29T00:00:00+00:00")
+    rare_latest = package("v2", scopes=1, samples=45, first_seen="2026-07-14T00:00:00+00:00")
+
+    latest, default, recommended, rationale = _select_catalog_versions([dominant, rare_latest])
+
+    assert latest == "v2"
+    assert default == recommended == "v1"
+    assert rationale["recommended"] == {
+        "version": "v1",
+        "strategy": "coverage_first",
+        "rank_fields": ["bundle_scope_count", "sample_count", "last_seen", "version"],
+        "bundle_scope_count": 943,
+        "sample_count": 28_602,
+    }
 
 
 class TestLoadSamples:

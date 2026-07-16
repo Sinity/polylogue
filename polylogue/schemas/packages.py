@@ -164,13 +164,14 @@ class SchemaPackageCatalog:
     default_version: str | None = None
     recommended_version: str | None = None
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
+    selection_rationale: JSONDocument = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.generated_at:
             self.generated_at = datetime.now(tz=timezone.utc).isoformat()
 
     def to_dict(self) -> JSONDocument:
-        return json_document(
+        data = json_document(
             {
                 "provider": _provider_value(self.provider),
                 "generated_at": self.generated_at,
@@ -181,6 +182,9 @@ class SchemaPackageCatalog:
                 "packages": [package.to_dict() for package in self.packages],
             }
         )
+        if self.selection_rationale:
+            data["selection_rationale"] = self.selection_rationale
+        return json_document(data)
 
     @classmethod
     def from_dict(cls, data: JSONDocument) -> SchemaPackageCatalog:
@@ -191,6 +195,7 @@ class SchemaPackageCatalog:
             default_version=_string_or_none(data.get("default_version")),
             recommended_version=_string_or_none(data.get("recommended_version")),
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
+            selection_rationale=json_document(data.get("selection_rationale")),
             packages=[SchemaVersionPackage.from_dict(item) for item in json_document_list(data.get("packages"))],
         )
 
