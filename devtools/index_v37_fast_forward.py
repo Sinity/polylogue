@@ -224,6 +224,14 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         changes_before = conn.total_changes
         conn.execute("BEGIN IMMEDIATE")
         try:
+            repaired_orphan_native_ids = conn.execute(
+                """
+                DELETE FROM attachment_native_ids
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM attachment_refs WHERE attachment_refs.ref_id = attachment_native_ids.ref_id
+                )
+                """
+            ).rowcount
             for table in RETIRED_TABLES:
                 conn.execute(f'DROP TABLE "{table}"')
             conn.execute(f"PRAGMA user_version = {TO_VERSION}")
@@ -231,8 +239,8 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         except Exception:
             conn.rollback()
             raise
-        if conn.total_changes != changes_before:
-            raise IndexV37FastForwardError("v37 clone transformation unexpectedly changed table rows")
+        if conn.total_changes - changes_before != repaired_orphan_native_ids:
+            raise IndexV37FastForwardError("v37 clone transformation changed rows outside the declared repair")
     _checkpoint_stopped_database(path, label="prepared clone")
     with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
         checks = _checks(conn)
@@ -253,7 +261,12 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         raise IndexV37FastForwardError("clone schema does not exactly match canonical v37 DDL")
     if after_rootpages != expected_rootpages:
         raise IndexV37FastForwardError("one or more surviving schema root pages changed in the clone")
-    return {"checks": checks, "schema_rootpages": after_rootpages, "schema_object_count": len(after_schema)}
+    return {
+        "checks": checks,
+        "repaired_orphan_attachment_native_ids": repaired_orphan_native_ids,
+        "schema_rootpages": after_rootpages,
+        "schema_object_count": len(after_schema),
+    }
 
 
 def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, object]:

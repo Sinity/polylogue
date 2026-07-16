@@ -102,6 +102,28 @@ def test_prepare_refuses_unexpected_v36_schema_surplus(tmp_path: Path, monkeypat
     assert not [path for path in generations.iterdir() if path.name != "v36"]
 
 
+def test_prepare_repairs_preexisting_orphan_attachment_native_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _archive(tmp_path)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO attachment_native_ids(ref_id, id_kind, native_id) VALUES ('missing', 'file', 'stale')"
+        )
+        conn.commit()
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+
+    prepared = prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
+
+    postflight = prepared["postflight"]
+    assert isinstance(postflight, dict)
+    assert postflight["repaired_orphan_attachment_native_ids"] == 1
+    generation = prepared["generation"]
+    assert isinstance(generation, dict)
+    with sqlite3.connect(str(generation["index_path"])) as conn:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _archive(tmp_path)
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: 1234)
