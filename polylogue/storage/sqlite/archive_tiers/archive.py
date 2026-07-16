@@ -2359,6 +2359,20 @@ class ArchiveStore:
         )
         return tuple(str(row[0]) for row in rows)
 
+    def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
+        """Return the durable acquisition order for one retained raw revision."""
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                "SELECT acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise KeyError(f"unknown raw revision {raw_id}")
+        return int(row[0])
+
     def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         """Return census candidates excluding quarantined full rows with another authority key."""
         rows = (

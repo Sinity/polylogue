@@ -1194,6 +1194,86 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
         await archive.close()
 
 
+@pytest.mark.asyncio
+async def test_browser_capture_provider_timestamp_advances_reordered_native_snapshot(tmp_path: Path) -> None:
+    """Provider-native snapshots may insert work before an existing context node."""
+    from polylogue.api import Polylogue
+
+    root = tmp_path / "browser-capture"
+    root.mkdir()
+    path = root / "capture.json"
+
+    def capture(turns: list[dict[str, object]], *, updated_at: str) -> dict[str, object]:
+        return {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "capture_id": "chatgpt:provider-ordered-replacement",
+            "provenance": {
+                "source_url": "https://chatgpt.com/c/provider-ordered-replacement",
+                "captured_at": updated_at,
+                "adapter_name": "chatgpt-native-v1",
+                "capture_mode": "snapshot",
+            },
+            "session": {
+                "provider": "chatgpt",
+                "provider_session_id": "provider-ordered-replacement",
+                "title": "Provider ordered replacement",
+                "updated_at": updated_at,
+                "turns": turns,
+                "provider_meta": {"capture_fidelity": "native_compact"},
+            },
+            "raw_provider_payload": {
+                "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+                "mapping": {},
+            },
+        }
+
+    prompt = {"provider_turn_id": "prompt", "role": "user", "text": "do work", "ordinal": 0}
+    context = {
+        "provider_turn_id": "attachment-context",
+        "role": "user",
+        "text": "The user provided an attachment",
+        "ordinal": 1,
+    }
+    tool = {"provider_turn_id": "tool", "role": "assistant", "text": "tool output", "ordinal": 1}
+    path.write_text(json.dumps(capture([prompt, context], updated_at="2026-07-16T00:00:00Z")), encoding="utf-8")
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(archive.backend.db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    try:
+        first = await processor.ingest_files([path], emit_event=False)
+        path.write_text(
+            json.dumps(capture([prompt, tool, context], updated_at="2026-07-16T00:01:00Z")),
+            encoding="utf-8",
+        )
+        second = await processor.ingest_files([path], emit_event=False)
+
+        with sqlite3.connect(archive.archive_root / "index.db") as conn:
+            row = conn.execute(
+                "SELECT message_count, title FROM sessions WHERE session_id = ?",
+                ("chatgpt-export:provider-ordered-replacement",),
+            ).fetchone()
+        with sqlite3.connect(archive.archive_root / "source.db") as conn:
+            decisions = conn.execute(
+                """
+                SELECT decision FROM raw_session_memberships
+                WHERE logical_source_key = 'chatgpt:provider-ordered-replacement'
+                ORDER BY acquisition_generation
+                """
+            ).fetchall()
+
+        assert first.succeeded_file_count == second.succeeded_file_count == 1
+        assert row == (3, "Provider ordered replacement")
+        assert {decision for (decision,) in decisions} == {"superseded_prefix", "applied"}
+    finally:
+        await archive.close()
+
+
 def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()

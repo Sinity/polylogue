@@ -633,7 +633,21 @@ class LiveWatcher:
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
         if cursor.excluded:
-            return False
+            if (
+                cursor.byte_size,
+                cursor.st_dev,
+                cursor.st_ino,
+                cursor.mtime_ns,
+            ) == (size, stat.st_dev, stat.st_ino, stat.st_mtime_ns):
+                return False
+            self._cursor.revive_replaced_exclusion(
+                path,
+                byte_size=size,
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            return True
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False

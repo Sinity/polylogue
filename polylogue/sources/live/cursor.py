@@ -1124,6 +1124,42 @@ class CursorStore:
 
         self._read_modify_write_cursor_record(path, mutate)
 
+    def revive_replaced_exclusion(
+        self,
+        path: Path,
+        *,
+        byte_size: int,
+        st_dev: int,
+        st_ino: int,
+        mtime_ns: int,
+    ) -> None:
+        """Clear a path quarantine only after the observed file was replaced.
+
+        Exclusion belongs to the exact failed file observation, not forever to
+        its pathname.  Keep the prior cursor observation intact so the caller
+        still routes the replacement through full acquisition.
+        """
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None or not current.excluded:
+                return None
+            if (
+                current.byte_size,
+                current.st_dev,
+                current.st_ino,
+                current.mtime_ns,
+            ) == (byte_size, st_dev, st_ino, mtime_ns):
+                return None
+            return replace(
+                current,
+                updated_at=datetime.now(UTC).isoformat(),
+                failure_count=0,
+                next_retry_at=None,
+                excluded=False,
+            )
+
+        self._read_modify_write_cursor_record(path, mutate)
+
     def reset_failures(self, path: Path) -> None:
         """Clear failure count and backoff after a successful parse."""
 

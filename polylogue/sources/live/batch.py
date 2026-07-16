@@ -18,6 +18,11 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
+from polylogue.archive.ingest_flags import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
+    DOM_FALLBACK_INGEST_FLAG,
+    NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
+)
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -1877,7 +1882,31 @@ class LiveBatchProcessor:
                 projection = session_revision_projection(matches[0])
                 member_sessions[member_raw_id] = matches[0]
                 projections[member_raw_id] = projection
-                revisions.append(MembershipRevision(member_raw_id, projection, matches[0].updated_at))
+                retained_session = matches[0]
+                browser_snapshot_fidelity: Literal["dom", "native"] | None = None
+                if NATIVE_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags or (
+                    COMPACT_BROWSER_CAPTURE_INGEST_FLAG in retained_session.ingest_flags
+                ):
+                    browser_snapshot_fidelity = "native"
+                elif DOM_FALLBACK_INGEST_FLAG in retained_session.ingest_flags:
+                    browser_snapshot_fidelity = "dom"
+                revisions.append(
+                    MembershipRevision(
+                        member_raw_id,
+                        projection,
+                        retained_session.updated_at,
+                        observed_at_ms=archive.raw_revision_acquired_at_ms(member_raw_id),
+                        browser_snapshot_fidelity=browser_snapshot_fidelity,
+                        provider_message_ids=frozenset(
+                            message.provider_message_id
+                            for message in retained_session.messages
+                            if message.provider_message_id is not None
+                        ),
+                        provider_attachment_ids=frozenset(
+                            attachment.provider_attachment_id for attachment in retained_session.attachments
+                        ),
+                    )
+                )
             classification = classify_membership_revisions(revisions)
             membership_session_id = archive.apply_raw_membership_classification(
                 logical_source_key,

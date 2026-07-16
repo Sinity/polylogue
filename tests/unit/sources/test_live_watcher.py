@@ -912,6 +912,39 @@ def test_parser_version_change_needs_work_without_prefingerprint_read(
     assert watcher._needs_work(f) is True
 
 
+def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "capture.json"
+    path.write_text('{"broken":true}', encoding="utf-8")
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="broken",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=5,
+        excluded=True,
+    )
+
+    assert watcher._needs_work(path) is False
+
+    replacement = root / "replacement.json"
+    replacement.write_text('{"valid":"new capture"}', encoding="utf-8")
+    replacement.replace(path)
+
+    assert watcher._needs_work(path) is True
+    revived = watcher._cursor.get_record(path)
+    assert revived is not None
+    assert revived.excluded is False
+    assert revived.failure_count == 0
+    assert revived.next_retry_at is None
+
+
 def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
