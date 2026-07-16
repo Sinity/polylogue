@@ -1751,18 +1751,42 @@ def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
+    """Recover the seed ledger, including after an abrupt outer-run exit."""
+    expected = attempt.get("expected_nodeids")
+    if isinstance(expected, list) and expected and all(isinstance(nodeid, str) for nodeid in expected):
+        return list(expected)
+
+    artifact_dir_raw = attempt.get("artifact_dir")
+    if not isinstance(artifact_dir_raw, str):
+        return []
+    artifact_dir = Path(artifact_dir_raw)
+    for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
+        selection = _read_json_artifact(selection_path)
+        if not isinstance(selection, dict) or int(selection.get("selected_nodeids_omitted") or 0) != 0:
+            continue
+        selected = selection.get("selected_nodeids")
+        if isinstance(selected, list) and selected and all(isinstance(nodeid, str) for nodeid in selected):
+            return list(selected)
+    return []
+
+
+def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Return inputs that change which corpus a seed promises to cover."""
+    return {key: identity.get(key) for key in ("python", "skip_slow", "lab")}
+
+
 def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
     attempt = _read_testmon_seed_attempt()
     if attempt is None or not TESTMON_DATA.exists():
         return False
-    expected = attempt.get("expected_nodeids")
+    prior_identity = attempt.get("identity")
     return (
         attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
         and attempt.get("status") in {"running", "incomplete"}
-        and attempt.get("identity") == dict(identity)
-        and isinstance(expected, list)
-        and bool(expected)
-        and all(isinstance(nodeid, str) for nodeid in expected)
+        and isinstance(prior_identity, dict)
+        and _testmon_seed_resume_contract(prior_identity) == _testmon_seed_resume_contract(identity)
+        and bool(_testmon_seed_expected_nodeids(attempt))
     )
 
 
@@ -1773,7 +1797,7 @@ def _prepare_testmon_seed_attempt(
     resume: bool,
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
-    expected = prior.get("expected_nodeids", []) if prior is not None else []
+    expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
         "status": "running",

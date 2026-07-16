@@ -58,8 +58,12 @@ seed command records `.cache/testmon/testmondata` plus
 `.cache/testmon/seed.json`; those files are local generated state and are not
 committed. If the seed is missing, the default command fails with setup
 guidance instead of silently running the whole suite. Every seed writes
-`.cache/testmon/seed-attempt.json` before work begins. A matching interrupted
-attempt resumes only its unseen, failed, or changed tests; `.cache/testmon/seed.json`
+`.cache/testmon/seed-attempt.json` before work begins. An interrupted attempt
+recovers its node ledger from the immutable run artifact when the outer process
+could not finalize the receipt, then resumes only its unseen, failed, or changed
+tests. Corrective code commits do not invalidate that attempt: pytest-testmon
+owns dependency-change selection, while the Python and marker-policy identity
+still prevents resuming against a different test corpus. `.cache/testmon/seed.json`
 is published only after every originally selected node has a failure-free row
 in the dependency database.
 

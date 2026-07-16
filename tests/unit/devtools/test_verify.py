@@ -25,6 +25,7 @@ from devtools.verify import (
     _finalize_testmon_seed_attempt,
     _format_completion_notification,
     _parse_pytest_test_count,
+    _prepare_testmon_seed_attempt,
     _pytest_command_metadata,
     _pytest_metadata_from_report,
     _pytest_stall_timeout_s,
@@ -415,7 +416,13 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     monkeypatch.chdir(tmp_path)
     TESTMON_DATA.parent.mkdir(parents=True)
     TESTMON_DATA.write_text("partial")
-    identity = {"git_head": "head", "worktree_fingerprint": "tree"}
+    identity = {
+        "git_head": "head",
+        "worktree_fingerprint": "tree",
+        "python": "3.13",
+        "skip_slow": True,
+        "lab": False,
+    }
     TESTMON_SEED_ATTEMPT.write_text(
         json.dumps(
             {
@@ -428,7 +435,45 @@ def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pyte
     )
 
     assert _testmon_seed_can_resume(identity) is True
-    assert _testmon_seed_can_resume({**identity, "git_head": "other"}) is False
+    assert _testmon_seed_can_resume({**identity, "git_head": "other", "worktree_fingerprint": "fixed"}) is True
+    assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
+
+
+def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
+    artifact_dir = tmp_path / ".cache" / "verify" / "runs" / "interrupted"
+    step_dir = artifact_dir / "steps" / "17-pytest-seed-testmon"
+    step_dir.mkdir(parents=True)
+    expected = ["tests/unit/test_example.py::test_one"]
+    (step_dir / "selection.json").write_text(json.dumps({"selected_nodeids": expected, "selected_nodeids_omitted": 0}))
+    identity = {
+        "git_head": "head",
+        "worktree_fingerprint": "tree",
+        "python": "3.13",
+        "skip_slow": True,
+        "lab": False,
+    }
+    TESTMON_SEED_ATTEMPT.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "running",
+                "identity": identity,
+                "expected_nodeids": [],
+                "artifact_dir": str(artifact_dir),
+            }
+        )
+    )
+
+    assert _testmon_seed_can_resume({**identity, "git_head": "fixed"}) is True
+
+    run = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="fixed")
+    prepared = _prepare_testmon_seed_attempt(identity={**identity, "git_head": "fixed"}, run=run, resume=True)
+
+    assert prepared["expected_nodeids"] == expected
+    assert prepared["expected_count"] == 1
 
 
 def test_testmon_database_state_reports_missing_and_failed_nodes(
