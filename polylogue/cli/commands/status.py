@@ -1871,6 +1871,7 @@ def _component_computation_failure(component: str, exc: Exception, *, scope: str
             state=CapabilityReadinessState.UNKNOWN,
             summary=f"status computation failed: {type(exc).__name__}: {exc}",
             caveats=("component readiness could not be computed; unknown is not healthy",),
+            metadata={"computation_failed": True},
         ).to_dict()
     )
 
@@ -1892,6 +1893,15 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
     for component, readiness in component_readiness.items():
         if not isinstance(readiness, dict):
             continue
+        metadata = readiness.get("metadata")
+        if (
+            component in required_known_components | required_missing_components
+            and isinstance(metadata, dict)
+            and metadata.get("computation_failed")
+        ):
+            # A required component whose readiness could not even be computed
+            # must not read as healthy (polylogue-feqr review follow-up).
+            return False
         state = str(readiness.get("state") or "unknown")
         if state in hard_failure_states:
             return False
@@ -1950,17 +1960,17 @@ def _direct_component_readiness(
         embedding = component_from_embedding_payload(embedding_payload)
         components[embedding.component] = embedding.to_dict()
     except Exception as exc:
-        components["embeddings"] = _component_computation_failure("embeddings", exc)
+        components["embeddings"] = _component_computation_failure("embeddings", exc, scope="semantic")
     try:
         assertions = _direct_assertion_component(active_root)
         components[assertions["component"]] = assertions
     except Exception as exc:
-        components["assertions"] = _component_computation_failure("assertions", exc)
+        components["assertions"] = _component_computation_failure("assertions", exc, scope="user")
     try:
         transforms = _direct_transform_component(archive_readiness)
         components[transforms["component"]] = transforms
     except Exception as exc:
-        components["transforms"] = _component_computation_failure("transforms", exc)
+        components["transforms"] = _component_computation_failure("transforms", exc, scope="session-analysis")
     return components
 
 
