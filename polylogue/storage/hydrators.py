@@ -20,9 +20,8 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.archive.session.events import SessionEvent
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin
 from polylogue.core.json import loads
-from polylogue.core.sources import provider_from_origin
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import MessageId
 from polylogue.storage.runtime import (
@@ -78,7 +77,7 @@ def message_from_record(
     record: MessageRecord,
     attachments: list[AttachmentRecord],
     *,
-    provider: Provider | str | None = None,
+    origin: Origin | str | None = None,
 ) -> Message:
     """Hydrate a Message domain model from a MessageRecord and attachment records."""
     # Reconstruct timestamp from sort_key (numeric epoch seconds)
@@ -114,16 +113,16 @@ def message_from_record(
             }
         )
 
-    normalized_provider = None
-    if provider is not None:
-        normalized_provider = provider if isinstance(provider, Provider) else Provider.from_string(provider)
+    normalized_origin = None
+    if origin is not None:
+        normalized_origin = origin if isinstance(origin, Origin) else Origin.from_string(origin)
 
     return Message(
         id=record.message_id,
         role=Role.normalize((record.role or "").strip() or "unknown"),
         text=record.text,
         timestamp=ts,
-        provider=normalized_provider,
+        origin=normalized_origin,
         attachments=[attachment_from_record(a) for a in attachments],
         blocks=blocks,
         message_type=record.message_type,
@@ -212,12 +211,11 @@ def session_from_records(
             att_map.setdefault(att.message_id, []).append(att)
 
     conv_origin = session.origin
-    conv_provider = provider_from_origin(conv_origin)
     rich_messages = [
         message_from_record(
             msg,
             att_map.get(msg.message_id, []),
-            provider=conv_provider,
+            origin=conv_origin,
         )
         for msg in messages
     ]

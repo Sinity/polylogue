@@ -62,7 +62,7 @@ def _profile(
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
-        source_name=source_name,
+        origin=source_name,
         title=f"Session {session_id}",
         provenance=_provenance(),
         semantic_tier="merged",
@@ -94,7 +94,7 @@ def _latency(
 ) -> SessionLatencyProfileInsight:
     return SessionLatencyProfileInsight(
         session_id=session_id,
-        source_name="claude-code",
+        origin="claude-code",
         title=session_id,
         provenance=_provenance(),
         latency=SessionLatencyProfilePayload(
@@ -173,8 +173,8 @@ def test_aggregate_empty_profiles_returns_empty_buckets() -> None:
 def test_cost_rollup_confidence_is_none_without_priced_sessions() -> None:
     unavailable = SessionCostInsight(
         session_id="c1",
-        source_name="claude-code",
-        estimate=CostEstimatePayload(source_name="claude-code", status="unavailable"),
+        origin="claude-code",
+        estimate=CostEstimatePayload(origin="claude-code-session", status="unavailable"),
         provenance=_provenance(),
     )
 

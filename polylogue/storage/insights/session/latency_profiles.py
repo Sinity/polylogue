@@ -8,7 +8,6 @@ from datetime import datetime
 from polylogue.archive.models import Session
 from polylogue.archive.semantic.timing import SessionLatencyProfileFacts, compute_session_latency_profile
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.core.sources import provider_from_origin
 from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -54,7 +53,7 @@ def build_session_latency_profile_record(
         part
         for part in (
             str(session.id),
-            provider_from_origin(session.origin).value,
+            session.origin.value,
             session.title or "",
             profile.workflow_shape,
             profile.terminal_state,
@@ -70,7 +69,7 @@ def build_session_latency_profile_record(
         input_high_water_mark=input_high_water_mark,
         input_high_water_mark_source=input_high_water_mark_source,
         input_row_count=input_row_count,
-        source_name=provider_from_origin(session.origin).value,
+        source_name=session.origin.value,
         title=session.title,
         first_message_at=_iso_datetime(profile.first_message_at),
         last_message_at=_iso_datetime(profile.last_message_at),

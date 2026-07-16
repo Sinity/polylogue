@@ -10,7 +10,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -1049,7 +1049,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     assert [summary.session_id for summary in dated_summaries] == [first_id]
     assert len(sampled_summaries) == 1
     assert sampled_summaries[0].session_id in {first_id, second_id}
-    assert codex_summaries[0].provider is Provider.CODEX
+    assert codex_summaries[0].origin == Origin.CODEX_SESSION.value
     assert codex_summaries[0].created_at == "2026-01-02T03:04:05Z"
     assert codex_summaries[0].updated_at == "2026-01-02T03:04:07Z"
     assert codex_summaries[0].message_count == 1
@@ -1096,7 +1096,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     assert titled_hits[0].session_id == first_id
     assert dated_hits[0].session_id == first_id
     assert hits[0].block_id == "codex-session:codex-read-1:m1:0"
-    assert hits[0].provider is Provider.CODEX
+    assert hits[0].origin == Origin.CODEX_SESSION.value
     assert "[alpha]" in hits[0].snippet
 
 

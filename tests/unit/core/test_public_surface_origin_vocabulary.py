@@ -13,8 +13,8 @@ def test_source_name_to_origin_projects_provider_tokens_to_origin() -> None:
     # A value that is already a canonical origin passes through unchanged.
     assert source_name_to_origin("chatgpt-export") == "chatgpt-export"
     # Empty input degrades to the neutral "unknown" token.
-    assert source_name_to_origin("") == "unknown"
-    assert source_name_to_origin(None) == "unknown"
+    assert source_name_to_origin("") == "unknown-export"
+    assert source_name_to_origin(None) == "unknown-export"
 
 
 def test_origin_from_provider_accepts_canonical_origin_tokens() -> None:

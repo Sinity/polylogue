@@ -5,7 +5,7 @@
     Health check with optional maintenance and cleanup previews.
   Options:
     -f, --format [json]             Output format
-    -v, --verbose                   Show breakdown by provider
+    -v, --verbose                   Show breakdown by origin
     --repair                        Run safe derived-data maintenance repairs
     --cleanup                       Run destructive archive cleanup for orphaned
                                     or empty persisted data
@@ -34,10 +34,10 @@
     --artifact-coverage             Inspect durable artifact coverage
     --artifacts                     List durable artifact observations
     --cohorts                       Summarize durable artifact cohorts
-    --schema-provider TEXT          Limit schema verification to DB provider
-                                    name (repeatable)
-    --artifact-provider TEXT        Limit artifact coverage<PATH> to
-                                    effective provider (repeatable)
+    --schema-origin TEXT            Limit schema verification to archive origin
+                                    (repeatable)
+    --artifact-origin TEXT          Limit artifact coverage<PATH> to
+                                    effective origin (repeatable)
     --artifact-status TEXT          Limit artifact listing<PATH> to support
                                     status (repeatable)
     --artifact-kind TEXT            Limit artifact listing<PATH> to artifact
@@ -201,6 +201,8 @@
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
+    --no-daemon                     Run archive reads in-process instead of
+                                    using the local daemon.
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser decisions on stderr
                                     before running. Useful when query-first
@@ -215,10 +217,11 @@
       read      Read matched sessions (route to view<PATH>).
       select    Select one matched session or print candidate identities.
       mark      Mark selected sessions; review candidates under mark candidates.
+      note      Capture a terminal memory candidate.
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
-      continue  Compile a successor-agent continuation report.
+      continue  Resume a session or compile successor context as JSON.
       Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
       command.
     Setup, import, and evidence:
@@ -242,6 +245,7 @@
       maintenance stays under `ops`.
     Other commands:
       annotations  Import typed annotation batches.
+      judge        Interactively triage candidate assertions.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -440,6 +444,9 @@
                                     separated)
     --plain                         Force non-interactive
                                     plain output
+    --no-daemon                     Run archive reads in-
+                                    process instead of using
+                                    the local daemon.
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser
                                     decisions on stderr
@@ -464,11 +471,13 @@
                 identities.
       mark      Mark selected sessions; review candidates
                 under mark candidates.
+      note      Capture a terminal memory candidate.
       analyze   Analyze matched sessions and named facet
                 families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
-      continue  Compile a successor-agent continuation report.
+      continue  Resume a session or compile successor context
+                as JSON.
       Use `find QUERY then ACTION`; `facets` is the direct
       archive aggregate command.
     Setup, import, and evidence:
@@ -494,6 +503,7 @@
       ops status`; deeper maintenance stays under `ops`.
     Other commands:
       annotations  Import typed annotation batches.
+      judge        Interactively triage candidate assertions.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -622,6 +632,8 @@
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
+    --no-daemon                     Run archive reads in-process instead of
+                                    using the local daemon.
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser decisions on stderr
                                     before running. Useful when query-first
@@ -636,10 +648,11 @@
       read      Read matched sessions (route to view<PATH>).
       select    Select one matched session or print candidate identities.
       mark      Mark selected sessions; review candidates under mark candidates.
+      note      Capture a terminal memory candidate.
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
-      continue  Compile a successor-agent continuation report.
+      continue  Resume a session or compile successor context as JSON.
       Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
       command.
     Setup, import, and evidence:
@@ -663,5 +676,6 @@
       maintenance stays under `ops`.
     Other commands:
       annotations  Import typed annotation batches.
+      judge        Interactively triage candidate assertions.
   '''
 # ---

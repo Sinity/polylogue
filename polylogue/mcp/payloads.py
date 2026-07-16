@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 
 from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import source_name_to_origin
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
@@ -265,7 +266,7 @@ class MCPSessionRefPayload(SurfacePayloadModel):
     """One session reference inside a topology payload (#1261)."""
 
     session_id: str
-    source_name: str = ""
+    origin: str = ""
     title: str | None = None
     depth: int = 0
 
@@ -540,7 +541,7 @@ def _ref_payload(ref: object) -> MCPSessionRefPayload:
     assert isinstance(ref, SessionRef)
     return MCPSessionRefPayload(
         session_id=str(ref.session_id),
-        source_name=ref.source_name,
+        origin=ref.origin,
         title=ref.title,
         depth=ref.depth,
     )
@@ -869,7 +870,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     """One raw archive artifact for the raw_artifacts tool."""
 
     raw_id: str
-    source_name: str | None = None
+    origin: str | None = None
     source_path: str
     blob_size: int
     acquired_at: str
@@ -883,7 +884,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     def from_record(cls, record: RawSessionRecord) -> MCPRawArtifactPayload:
         return cls(
             raw_id=record.raw_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             source_path=record.source_path,
             blob_size=record.blob_size,
             acquired_at=record.acquired_at,

@@ -498,7 +498,7 @@ def complete_session_ids(
         for summary in summaries:
             cid = str(summary.session_id)
             title = summary.title or ""
-            source_name = summary.provider.value
+            source_name = summary.origin
             display = title or cid
             if current and not (
                 cid.startswith(current) or (":" in cid and current in cid) or (title and current_lower in title.lower())

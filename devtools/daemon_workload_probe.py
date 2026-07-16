@@ -748,6 +748,7 @@ def _raw_replay_backlog(root: Path, *, limit: int) -> dict[str, object]:
             archive_root=root,
             render_root=root / "render",
             sources=[],
+            db_path=root / "index.db",
         ),
         limit=limit,
     )

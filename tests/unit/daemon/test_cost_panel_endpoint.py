@@ -145,7 +145,7 @@ class TestCostPayloadShape:
         confidence: float = 0.95,
     ) -> SessionCostInsight:
         estimate = CostEstimatePayload(
-            source_name="claude-code",
+            origin="claude-code-session",
             session_id="c1",
             model_name="claude-sonnet-4-6",
             normalized_model="claude-sonnet-4-6",
@@ -157,7 +157,7 @@ class TestCostPayloadShape:
         )
         return SessionCostInsight(
             session_id="c1",
-            source_name="claude-code",
+            origin="claude-code",
             estimate=estimate,
             provenance=ArchiveInsightProvenance(
                 materializer_version=1,

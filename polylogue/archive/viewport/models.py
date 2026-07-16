@@ -14,24 +14,24 @@ from polylogue.archive.viewport.tools import (
     clean_metadata_path_candidate,
     clean_shell_path_candidate,
 )
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 
 
 class ReasoningTrace(BaseModel):
     text: str
     duration_ms: int | None = None
     token_count: int | None = None
-    provider: Provider | None = None
+    origin: Origin | None = None
     raw: Mapping[str, object] = Field(default_factory=dict)
 
-    @field_validator("provider", mode="before")
+    @field_validator("origin", mode="before")
     @classmethod
-    def coerce_provider(cls, value: object) -> Provider | None:
+    def coerce_origin(cls, value: object) -> Origin | None:
         if value is None:
             return None
-        if isinstance(value, Provider):
+        if isinstance(value, Origin):
             return value
-        return Provider.from_string(str(value))
+        return Origin.from_string(str(value))
 
 
 class ToolCall(BaseModel):
@@ -41,17 +41,17 @@ class ToolCall(BaseModel):
     output: str | None = None
     success: bool | None = None
     category: ToolCategory = ToolCategory.OTHER
-    provider: Provider | None = None
+    origin: Origin | None = None
     raw: Mapping[str, object] = Field(default_factory=dict)
 
-    @field_validator("provider", mode="before")
+    @field_validator("origin", mode="before")
     @classmethod
-    def coerce_provider(cls, value: object) -> Provider | None:
+    def coerce_origin(cls, value: object) -> Origin | None:
         if value is None:
             return None
-        if isinstance(value, Provider):
+        if isinstance(value, Origin):
             return value
-        return Provider.from_string(str(value))
+        return Origin.from_string(str(value))
 
     @property
     def is_file_operation(self) -> bool:
@@ -138,7 +138,7 @@ class MessageMeta(BaseModel):
     tokens: TokenUsage | None = None
     cost: CostInfo | None = None
     duration_ms: int | None = None
-    provider: Provider | None = None
+    origin: Origin | None = None
 
     @field_validator("role", mode="before")
     @classmethod
@@ -148,14 +148,14 @@ class MessageMeta(BaseModel):
         raw = str(value).strip() if value is not None else ""
         return Role.normalize(raw) if raw else Role.UNKNOWN
 
-    @field_validator("provider", mode="before")
+    @field_validator("origin", mode="before")
     @classmethod
-    def coerce_provider(cls, value: object) -> Provider | None:
+    def coerce_origin(cls, value: object) -> Origin | None:
         if value is None:
             return None
-        if isinstance(value, Provider):
+        if isinstance(value, Origin):
             return value
-        return Provider.from_string(str(value))
+        return Origin.from_string(str(value))
 
 
 __all__ = [

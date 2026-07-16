@@ -74,11 +74,11 @@ from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
-    ProviderMetricsRow,
-    ProviderSessionCountRow,
+    OriginMetricsRow,
+    OriginSessionCountRow,
 )
 from polylogue.storage.sqlite.queries.tool_usage import (
-    ToolUsageProviderCoverageRow,
+    ToolUsageOriginCoverageRow,
     ToolUsageRow,
 )
 
@@ -299,23 +299,23 @@ class SQLiteArchiveMixin:
         """Get session counts grouped by origin, month, or year."""
         return await self.queries.get_stats_by(group_by)
 
-    async def get_provider_session_counts(self) -> list[ProviderSessionCountRow]:
-        """Return session counts per provider."""
-        return await self.queries.get_provider_session_counts()
+    async def get_origin_session_counts(self) -> list[OriginSessionCountRow]:
+        """Return session counts per origin."""
+        return await self.queries.get_origin_session_counts()
 
-    async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
-        """Return raw provider aggregation rows for analytics reporting."""
-        return await self.queries.get_provider_metrics_rows()
+    async def get_origin_metrics_rows(self) -> list[OriginMetricsRow]:
+        """Return raw origin aggregation rows for analytics reporting."""
+        return await self.queries.get_origin_metrics_rows()
 
     async def get_tool_usage_rows(self) -> list[ToolUsageRow]:
         """Return per-(provider, tool, action_kind) tool usage rows."""
         return await self.queries.get_tool_usage_rows()
 
-    async def get_tool_usage_provider_coverage_rows(
+    async def get_tool_usage_origin_coverage_rows(
         self,
-    ) -> list[ToolUsageProviderCoverageRow]:
-        """Return per-provider tool-data coverage signals."""
-        return await self.queries.get_tool_usage_provider_coverage_rows()
+    ) -> list[ToolUsageOriginCoverageRow]:
+        """Return per-origin tool-data coverage signals."""
+        return await self.queries.get_tool_usage_origin_coverage_rows()
 
 
 __all__ = ["SQLiteArchiveMixin"]

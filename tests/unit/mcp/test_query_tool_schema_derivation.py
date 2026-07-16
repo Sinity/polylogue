@@ -20,7 +20,6 @@ from mcp.server.fastmcp import FastMCP
 
 from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.archive.query.plan import SessionQueryPlan
-from polylogue.core.enums import Provider
 from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.mcp.server_tools import register_query_tools
@@ -153,7 +152,6 @@ def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
             session_id="codex-session:first",
             native_id="first",
             origin="codex-session",
-            provider=Provider.CODEX,
             title="First",
             created_at=None,
             updated_at=None,
@@ -165,7 +163,6 @@ def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
             session_id="codex-session:second",
             native_id="second",
             origin="codex-session",
-            provider=Provider.CODEX,
             title="Second",
             created_at=None,
             updated_at=None,
@@ -182,7 +179,6 @@ def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
             block_id=f"{session_id}:block",
             message_id=f"{session_id}:message",
             origin="codex-session",
-            provider=Provider.CODEX,
             title=summaries[session_id].title,
             snippet="needle",
         )
@@ -208,7 +204,6 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
         session_id="codex-session:near-result",
         native_id="near-result",
         origin="codex-session",
-        provider=Provider.CODEX,
         title="Nearby",
         created_at=None,
         updated_at=None,
@@ -222,7 +217,6 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
         block_id="block-1",
         message_id="message-1",
         origin=summary.origin,
-        provider=Provider.CODEX,
         title=summary.title,
         snippet="nearby match",
     )

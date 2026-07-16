@@ -403,7 +403,13 @@ def _check_raw_materialization_backlog(root: Path) -> ScaleRegressionCheck:
     config = Config(archive_root=raw_root, render_root=raw_root, sources=[], db_path=raw_root / "index.db")
     preview = repair_mod.raw_materialization_replay_backlog(config, limit=5)
     dry_run = repair_mod.repair_raw_materialization(config, dry_run=True)
-    ok = preview["candidate_count"] == 1 and dry_run.repaired_count == 1 and dry_run.success is True
+    selected_plan_count = len(dry_run.plan_outcomes)
+    ok = (
+        preview["candidate_count"] == 1
+        and dry_run.repaired_count == 0
+        and dry_run.success is False
+        and selected_plan_count == 1
+    )
     return ScaleRegressionCheck(
         "raw_materialization_debt_detected",
         ok,
@@ -411,6 +417,7 @@ def _check_raw_materialization_backlog(root: Path) -> ScaleRegressionCheck:
             "candidate_count": preview["candidate_count"],
             "dry_run_repaired_count": dry_run.repaired_count,
             "dry_run_success": dry_run.success,
+            "dry_run_plan_count": selected_plan_count,
             "blob_size": blob_size,
         },
     )

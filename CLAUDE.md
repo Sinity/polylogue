@@ -215,8 +215,8 @@ commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`
 - **Insights** (`insights/registry.py`): descriptor-driven — one
   `INSIGHT_REGISTRY` where each `InsightType` declares field accessors + a
   Pydantic query model + operations method + CLI/MCP metadata, driving
-  plaintext, JSON, and MCP from one place. `project_origin_payload` renames
-  provider-token keys → origin at the output boundary (see Vocabulary).
+  plaintext, JSON, and MCP from one place. Insight models carry canonical
+  `origin` fields directly; surfaces serialize them without a vocabulary shim.
 - **`SessionFilter`** (`archive/filter/filters.py`) is a fluent shell over an
   immutable `SessionQueryPlan` that separates SQL-pushdown from post-filters and
   summaries-from-full loading, plus the `with_units` projection.
@@ -239,14 +239,20 @@ Three origin-related vocabularies with different scopes (`core/enums.py`,
   public surfaces.
 - **`Source`** — richer identity (`family`, `runtime_root`, `originating_lab`).
 
-The provider→origin retirement is **in progress**, not a done rename.
-`project_origin_payload` is a transitional shim: internal storage columns
-(`session_profiles.source_name`, cost keys) and insight models still speak
-provider vocabulary, so public surfaces project to `origin` at the boundary. A
-naive rename is unsafe because `GEMINI` **and** `DRIVE` both collapse to
-`AISTUDIO_DRIVE` (non-injective). Tracked in Beads **polylogue-9e5.8**
-(retirement plan), **polylogue-jnj.7** (CLI help leakage), **polylogue-2qx**
-(OriginSpec). Anti-goal: provider wording on source-origin public filters/payloads.
+The provider→origin retirement is complete for normalized archive identity:
+sessions, messages, actions, insights, query filters, CLI/API/MCP/daemon read
+payloads, and topology/resume models carry `Origin` natively. There is no
+payload-rewrite shim. Older `source_name` columns in rebuildable storage rows
+are persistence details and are converted while hydrating their typed models,
+not exposed as a second public identity vocabulary.
+
+`Provider` deliberately remains at raw acquisition/parser/schema boundaries
+and in genuinely provider-scoped concepts such as embedding backends, pricing
+catalog vendors, provider-reported cost, and provider-usage billing. The
+`GEMINI` + `DRIVE` → `AISTUDIO_DRIVE` mapping is non-injective, so normalized
+code must not reverse an `Origin` into a guessed `Provider`; raw-wire code uses
+its original acquisition evidence. Anti-goal: provider wording on
+source-origin public filters or payloads.
 
 ---
 

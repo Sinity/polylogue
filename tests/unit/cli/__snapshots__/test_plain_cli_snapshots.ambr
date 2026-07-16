@@ -872,6 +872,50 @@
                 "deleted_count": 0,
                 "candidate_count": 0,
                 "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "secret_candidates",
+                "storage": "assertions",
+                "assertion_kind": "secret_candidate",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "excision_records",
+                "storage": "assertions",
+                "assertion_kind": "excision_record",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "excision_requests",
+                "storage": "assertions",
+                "assertion_kind": "excision_request",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
+              },
+              {
+                "name": "comparative_judgments",
+                "storage": "assertions",
+                "assertion_kind": "comparative_judgment",
+                "table": "assertions",
+                "total_count": 0,
+                "active_count": 0,
+                "deleted_count": 0,
+                "candidate_count": 0,
+                "rationale": "assertion lifecycle claim"
               }
             ]
           }
@@ -928,8 +972,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 11,
-        "user_version": 11,
+        "expected_user_version": 12,
+        "user_version": 12,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
@@ -952,8 +996,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 36,
-        "user_version": 36,
+        "expected_user_version": 37,
+        "user_version": 37,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,

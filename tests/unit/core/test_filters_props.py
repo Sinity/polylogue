@@ -463,20 +463,20 @@ async def test_equivalent_filter_order_list_count_and_first_law(filter_repo: Pat
 # =============================================================================
 
 
-def test_sql_pushdown_provider() -> None:
-    """SQL pushdown includes provider when set."""
+def test_sql_pushdown_origin() -> None:
+    """SQL pushdown includes origin when set."""
     f = SessionFilter(archive_root=Path("/nonexistent-archive-for-plan"))
     f.origin("claude-ai-export")
     params = f._sql_pushdown_params()
-    assert params["provider"] == "claude-ai"
+    assert params["origin"] == "claude-ai-export"
 
 
-def test_sql_pushdown_multi_provider() -> None:
-    """SQL pushdown includes providers list when multiple set."""
+def test_sql_pushdown_multi_origin() -> None:
+    """SQL pushdown includes origins list when multiple are set."""
     f = SessionFilter(archive_root=Path("/nonexistent-archive-for-plan"))
     f.origin("claude-ai-export", "chatgpt-export")
     params = f._sql_pushdown_params()
-    assert params["providers"] == ["claude-ai", "chatgpt"]
+    assert params["origins"] == ["claude-ai-export", "chatgpt-export"]
 
 
 def test_sql_pushdown_date_range() -> None:

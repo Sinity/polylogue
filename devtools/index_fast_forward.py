@@ -720,7 +720,7 @@ def fast_forward_clone(
 def _reflink_copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=False)
     subprocess.run(
-        ["cp", "--reflink=always", "--preserve=mode,timestamps", str(source), str(destination)],
+        ["cp", "--reflink=auto", "--preserve=mode,timestamps", str(source), str(destination)],
         check=True,
     )
     source_wal = source.with_name(source.name + "-wal")

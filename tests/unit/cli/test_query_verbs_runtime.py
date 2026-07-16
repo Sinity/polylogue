@@ -19,7 +19,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
@@ -614,7 +614,7 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
 def test_read_verb_context_image_invokes_pack_view() -> None:
     """read --view context-image compiles a ContextImage via context_image_payload."""
-    from polylogue.context.compiler import ContextImage, ContextSpec
+    from polylogue.context.compiler import ContextImage
 
     _, child = _context_pair(query_terms=())
     child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
@@ -822,20 +822,35 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
             wrapped(child, **_continue_verb_kwargs())
 
 
-def test_continue_verb_rejects_json_format(capsys: pytest.CaptureFixture[str]) -> None:
-    """``continue`` emits a shell command; --format/--json are not supported (#2827)."""
+def test_continue_verb_emits_successor_context_json() -> None:
+    """JSON mode preserves the successor-context contract beside resume routing."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
 
     async def get_session(session_id: str) -> object:
         assert session_id == "codex-session:abc123"
         return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(get_session=get_session))
+    from polylogue.context.compiler import ContextImage
+
+    async def compile_context(spec: ContextSpec) -> ContextImage:
+        return ContextImage(spec=spec, segments=())
+
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(get_session=get_session, compile_context=compile_context))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    with pytest.raises(click.UsageError, match="continue emits a shell command"):
+    with patch("polylogue.cli.read_views.base.deliver_content") as deliver:
         wrapped(child, **_continue_verb_kwargs(output_format="json"))
+
+    payload = json.loads(deliver.call_args.args[1])
+    assert payload["spec"]["purpose"] == "continue"
+    assert payload["spec"]["seed_refs"] == ["session:codex-session:abc123"]
+    assert payload["spec"]["unit_queries"] == [
+        "runs where session.id:codex-session:abc123",
+        "observed-events where session.id:codex-session:abc123",
+        "context-snapshots where session.id:codex-session:abc123",
+        "actions where session.id:codex-session:abc123",
+    ]
 
 
 def test_continue_candidates_ranks_context_without_session_resolution() -> None:
@@ -1087,7 +1102,7 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
 
     archive_summary = SimpleNamespace(
         session_id="codex-session:abc",
-        provider=Provider.CODEX,
+        origin="codex-session",
         title="Exact",
         created_at="2026-07-03T09:00:00+00:00",
         updated_at=None,

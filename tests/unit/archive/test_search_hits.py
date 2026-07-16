@@ -16,7 +16,7 @@ from polylogue.archive.query.search_hits import (
     session_search_hit_from_summary,
 )
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
 
 
@@ -28,8 +28,13 @@ def _session() -> Session:
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         messages=MessageCollection(
             messages=[
-                Message(id="m1", role=Role.USER, text="intro text", provider=Provider.CHATGPT),
-                Message(id="m2", role=Role.ASSISTANT, text="the exact Needle appears here", provider=Provider.CHATGPT),
+                Message(id="m1", role=Role.USER, text="intro text", origin=Origin.CHATGPT_EXPORT),
+                Message(
+                    id="m2",
+                    role=Role.ASSISTANT,
+                    text="the exact Needle appears here",
+                    origin=Origin.CHATGPT_EXPORT,
+                ),
             ]
         ),
     )

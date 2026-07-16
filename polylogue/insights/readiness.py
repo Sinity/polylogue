@@ -27,12 +27,6 @@ def _origin_value(origin: str | None) -> str | None:
     return _impl(origin)
 
 
-def _provider_for_origin_value(origin: str) -> str:
-    from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
-
-    return _provider_for_origin(origin).value
-
-
 def _readiness_query_ms(field: str, value: str | None) -> int | None:
     parsed = parse_query_date(field, value)
     if parsed is None:
@@ -67,8 +61,8 @@ class InsightVersionCoverage(ArchiveInsightModel):
     incompatible_count: int = 0
 
 
-class InsightProviderCoverage(ArchiveInsightModel):
-    source_name: str
+class InsightOriginCoverage(ArchiveInsightModel):
+    origin: str
     row_count: int
     min_time: str | None = None
     max_time: str | None = None
@@ -89,7 +83,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
     fallback_reason_counts: dict[str, int] = Field(default_factory=dict)
     storage_artifacts: tuple[InsightStorageArtifact, ...] = ()
     ready_flags: dict[str, bool] = Field(default_factory=dict)
-    provider_coverage: tuple[InsightProviderCoverage, ...] = ()
+    origin_coverage: tuple[InsightOriginCoverage, ...] = ()
     version_coverage: tuple[InsightVersionCoverage, ...] = ()
     schema_contract_issues: tuple[str, ...] = ()
     min_time: str | None = None
@@ -385,13 +379,13 @@ def _where_clause(
     return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", params)
 
 
-async def _provider_coverage(
+async def _origin_coverage(
     conn: aiosqlite.Connection,
     spec: InsightReadinessSpec,
     query: InsightReadinessQuery,
     *,
     table_present: bool,
-) -> tuple[InsightProviderCoverage, ...]:
+) -> tuple[InsightOriginCoverage, ...]:
     if not table_present or spec.table_name is None or not spec.provider_via_session:
         return ()
     where, params = _where_clause(spec, query)
@@ -404,8 +398,8 @@ async def _provider_coverage(
     )
     rows = await (await conn.execute(sql, tuple(params))).fetchall()
     return tuple(
-        InsightProviderCoverage(
-            source_name=_provider_for_origin_value(str(row["origin"])) if row["origin"] is not None else "unknown",
+        InsightOriginCoverage(
+            origin=str(row["origin"]) if row["origin"] is not None else "unknown",
             row_count=int(row["row_count"]),
             min_time=_iso_from_ms(row["min_time_ms"]),
             max_time=_iso_from_ms(row["max_time_ms"]),
@@ -520,7 +514,7 @@ async def _entry(
     schema_contract_issues = _schema_contract_issues(spec, columns) if table_present else ()
     version_coverage: tuple[InsightVersionCoverage, ...] = ()
     incompatible_count = row_count if schema_contract_issues else 0
-    provider_coverage = await _provider_coverage(conn, spec, query, table_present=table_present)
+    origin_coverage = await _origin_coverage(conn, spec, query, table_present=table_present)
     degraded_count, fallback_reason_counts = await _fallback_coverage(
         conn, spec, table_present=table_present, columns=columns
     )
@@ -533,8 +527,8 @@ async def _entry(
                 ready=_artifact_ready(status, artifact),
             )
         )
-    min_time = min((item.min_time for item in provider_coverage if item.min_time), default=None)
-    max_time = max((item.max_time for item in provider_coverage if item.max_time), default=None)
+    min_time = min((item.min_time for item in origin_coverage if item.min_time), default=None)
+    max_time = max((item.max_time for item in origin_coverage if item.max_time), default=None)
     verdict = _entry_verdict(
         table_present=table_present,
         row_count=row_count,
@@ -561,7 +555,7 @@ async def _entry(
         fallback_reason_counts=fallback_reason_counts,
         storage_artifacts=tuple(artifacts),
         ready_flags=ready_flags,
-        provider_coverage=provider_coverage,
+        origin_coverage=origin_coverage,
         version_coverage=version_coverage,
         schema_contract_issues=schema_contract_issues,
         min_time=min_time,
@@ -605,7 +599,7 @@ async def build_insight_readiness_report(
 
 
 __all__ = [
-    "InsightProviderCoverage",
+    "InsightOriginCoverage",
     "InsightReadinessEntry",
     "InsightReadinessQuery",
     "InsightReadinessReport",

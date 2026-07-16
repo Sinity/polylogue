@@ -539,6 +539,7 @@ def _browser_capture_smoke_payload() -> dict[str, object]:
             "page_title": "Polylogue dev-loop smoke",
             "captured_at": "2026-06-20T00:00:00+00:00",
             "adapter_name": "dev-loop-smoke",
+            "extension_instance_id": "dev-loop-smoke-instance",
         },
         "session": {
             "provider": "chatgpt",

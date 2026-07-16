@@ -28,11 +28,11 @@ from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
 from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
-    ProviderMetricsRow,
-    ProviderSessionCountRow,
+    OriginMetricsRow,
+    OriginSessionCountRow,
 )
 from polylogue.storage.sqlite.queries.tool_usage import (
-    ToolUsageProviderCoverageRow,
+    ToolUsageOriginCoverageRow,
     ToolUsageRow,
 )
 
@@ -286,23 +286,23 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await stats_q.get_stats_by(conn, group_by)
 
-    async def get_provider_session_counts(self) -> list[ProviderSessionCountRow]:
+    async def get_origin_session_counts(self) -> list[OriginSessionCountRow]:
         async with self._connection_factory() as conn:
-            return await stats_q.get_provider_session_counts(conn)
+            return await stats_q.get_origin_session_counts(conn)
 
-    async def get_provider_metrics_rows(self) -> list[ProviderMetricsRow]:
+    async def get_origin_metrics_rows(self) -> list[OriginMetricsRow]:
         async with self._connection_factory() as conn:
-            return await stats_q.get_provider_metrics_rows(conn)
+            return await stats_q.get_origin_metrics_rows(conn)
 
     async def get_tool_usage_rows(self) -> list[ToolUsageRow]:
         async with self._connection_factory() as conn:
             return await tool_usage_q.get_tool_usage_rows(conn)
 
-    async def get_tool_usage_provider_coverage_rows(
+    async def get_tool_usage_origin_coverage_rows(
         self,
-    ) -> list[ToolUsageProviderCoverageRow]:
+    ) -> list[ToolUsageOriginCoverageRow]:
         async with self._connection_factory() as conn:
-            return await tool_usage_q.get_tool_usage_provider_coverage_rows(conn)
+            return await tool_usage_q.get_tool_usage_origin_coverage_rows(conn)
 
     async def get_last_sync_timestamp(self) -> str | None:
         async with self._connection_factory() as conn:

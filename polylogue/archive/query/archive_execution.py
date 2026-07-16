@@ -19,8 +19,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Origin, Provider
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 
@@ -40,37 +39,6 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
-
-
-def _provider_for_origin(origin: str, *, family_hint: Provider | str | None = None) -> Provider:
-    """Return the canonical provider-wire ``Provider`` for an origin token.
-
-    Delegates to :func:`polylogue.core.sources.provider_from_origin`, the
-    single source of truth for this reverse mapping, instead of a hand-copied
-    dict. Three independent hand-copies of this exact table used to live in
-    this module, ``storage/sqlite/archive_tiers/archive.py``, and
-    ``storage/sqlite/queries/tool_usage.py`` -- none delegating to the
-    canonical one in ``core/sources.py`` -- and had already silently drifted
-    (all three were missing a ``grok-export`` entry, falling back to
-    ``Provider.UNKNOWN`` instead of ``Provider.GROK``). Delegating fixes that
-    drift and makes future drift structurally impossible (polylogue-9e5.8).
-
-    ``Origin.AISTUDIO_DRIVE`` still canonically resolves to ``Provider.GEMINI``
-    by default -- that collapse is a deliberate, documented, non-injective
-    design choice (see ``core/sources.py``'s ``_ORIGIN_TO_PROVIDER`` comment),
-    not a bug this delegation fixes on its own. ``family_hint`` threads
-    through to :func:`provider_from_origin`'s Source-family disambiguator
-    (polylogue-9e5.8 Step 5 / polylogue-4rrv) for callers that already know,
-    independently of the stored ``origin``, which fiber member (e.g.
-    ``Provider.DRIVE`` vs ``Provider.GEMINI``) applies. This module's own
-    call site (``_session_to_session``) currently has no such independent
-    knowledge -- ``ArchiveSessionEnvelope`` only carries the already-collapsed
-    ``origin`` column, so it omits the hint and gets the canonical default,
-    same as before. Recovering it there for good needs a durable
-    acquisition-time field on ``sessions``/``raw_sessions`` (tracked as a
-    follow-up bead), not something this reverse lookup can invent.
-    """
-    return provider_from_origin(Origin.from_string(origin), family_hint=family_hint)
 
 
 def _session_seed_scored(
@@ -206,7 +174,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
 def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
@@ -232,7 +200,7 @@ def _maybe_parse_json_object(value: str | None) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Message:
+def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
     from polylogue.archive.message.models import Message
 
     text = "\n\n".join(block.text for block in message.blocks if block.text) or None
@@ -260,7 +228,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         role=Role.normalize(message.role),
         text=text,
         timestamp=parse_archive_datetime(message.occurred_at),
-        provider=provider,
+        origin=origin,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         material_origin=MaterialOrigin.normalize(message.material_origin),
@@ -277,12 +245,12 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
 def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
     from polylogue.archive.session.branch_type import BranchType
 
-    provider = _provider_for_origin(session.origin)
-    messages = [_message_to_domain(message, provider=provider) for message in session.messages]
+    origin = Origin.from_string(session.origin)
+    messages = [_message_to_domain(message, origin=origin) for message in session.messages]
     timestamps = [message.timestamp for message in messages if message.timestamp is not None]
     return Session(
         id=SessionId(session.session_id),
-        origin=origin_from_provider(provider),
+        origin=origin,
         title=session.title,
         messages=MessageCollection(messages=messages),
         created_at=min(timestamps) if timestamps else None,

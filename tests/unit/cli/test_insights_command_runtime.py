@@ -19,7 +19,7 @@ from polylogue.insights.export_bundles import (
     InsightExportFileSummary,
 )
 from polylogue.insights.readiness import (
-    InsightProviderCoverage,
+    InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessReport,
     InsightVersionCoverage,
@@ -102,7 +102,7 @@ def _status_report() -> InsightReadinessReport:
                 orphan_count=3,
                 incompatible_count=4,
                 ready_flags={"fts": True},
-                provider_coverage=(InsightProviderCoverage(source_name="codex", row_count=7),),
+                origin_coverage=(InsightOriginCoverage(origin="codex-session", row_count=7),),
                 version_coverage=(
                     InsightVersionCoverage(field="materializer_version", current_version=4, versions={"4": 7}),
                 ),
@@ -198,7 +198,7 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
     assert "session_profiles: partial rows=7 expected=10" in output
     assert "missing=1 stale=2 orphan=3 incompatible=4" in output
     assert "flags: fts=True" in output
-    assert "origins: codex=7" in output
+    assert "origins: codex-session=7" in output
     assert "versions: materializer_version={'4': 7}" in output
     assert "schema: missing field" in output
     assert "Insight export bundle:" in output

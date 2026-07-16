@@ -115,7 +115,7 @@ def _action(
         kind=kind,
         tool_name=tool_name,
         tool_id=None,
-        provider=Provider.CLAUDE_CODE,
+        origin=origin_from_provider(Provider.CLAUDE_CODE),
         affected_paths=affected_paths,
         cwd_path="/tmp",
         branch_names=(),

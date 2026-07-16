@@ -18,6 +18,7 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
@@ -142,7 +143,7 @@ class GeminiMessage(BaseModel):
             timestamp=self.parsed_timestamp,
             role=self.role_normalized,
             tokens=tokens,
-            provider=Provider.GEMINI,
+            origin=origin_from_provider(Provider.GEMINI),
         )
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
@@ -159,7 +160,7 @@ class GeminiMessage(BaseModel):
                 ReasoningTrace(
                     text=self.text,
                     token_count=self.thinkingBudget,
-                    provider=Provider.GEMINI,
+                    origin=origin_from_provider(Provider.GEMINI),
                     raw={
                         "isThought": True,
                         "thinkingBudget": self.thinkingBudget,

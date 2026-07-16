@@ -168,7 +168,7 @@ API.
   rows are direct evidence. Inspect `explicit_count` vs `auto_count`
   for rigor.
 - Consumer-facing fields: `tag`, `session_count`,
-  `explicit_count`, `auto_count`, `provider_breakdown`,
+  `explicit_count`, `auto_count`, `origin_breakdown`,
   `repo_breakdown`.
 
 ### `archive_coverage` — Archive Coverage
@@ -184,10 +184,10 @@ API.
   `work_event_type` labels the session_work_events materializer assigns,
   so it is an aggregation over inferred labels, not raw evidence.
   `provenance` is only populated for day/week grouping (never for the
-  default provider grouping).
+  default origin grouping).
 - Notes: `provenance.materializer_version` is a hardcoded literal `1` for
   day/week grouping with no dedicated version constant, and absent
-  entirely for provider grouping — not declared as a version field.
+  entirely for origin grouping — not declared as a version field.
 - Field contracts (9e5.29): `avg_messages_per_session`, `avg_user_words`,
   `avg_authored_user_words`, `avg_assistant_words`, `tool_use_percentage`,
   and `thinking_percentage` are `derived` fields whose declared
@@ -199,7 +199,7 @@ API.
   at all (no per-type message counts fetched there), so those fields
   render `None` on every day/week row today, not only zero-denominator
   ones — a documented coverage gap, not a bug.
-- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+- Consumer-facing fields: `bucket`, `group_by`, `origin`,
   `session_count`, `message_count`, `total_cost_usd`,
   `tool_use_percentage`, `thinking_percentage`, `work_event_breakdown`,
   `origin_breakdown`, `repos_active`.
@@ -214,11 +214,11 @@ API.
 - Readiness: Every field is a deterministic count, distinct-value count,
   or presence flag read from the canonical actions view; there is no
   heuristic/estimate layer. Check `has_coverage_gaps` (or the per-entry
-  `provider_coverage[].data_available`) to distinguish a genuine zero
+  `origin_coverage[].data_available`) to distinguish a genuine zero
   tool-use count from an origin with no ingested action data at all.
-- Consumer-facing fields: `entries`, `provider_coverage`,
-  `total_call_count`, `total_distinct_tools`, `providers_with_data`,
-  `providers_without_data`, `has_coverage_gaps`.
+- Consumer-facing fields: `entries`, `origin_coverage`,
+  `total_call_count`, `total_distinct_tools`, `origins_with_data`,
+  `origins_without_data`, `has_coverage_gaps`.
 
 ### `session_costs` — Session Costs
 
@@ -227,13 +227,13 @@ API.
 - Fallback markers: `estimate.missing_reasons`, `estimate.unavailable_reason`
 - Confidence field: `estimate.confidence`
 - Versions: `materializer_version`
-- Readiness: `session_id`/`source_name`/`title`/timestamps are direct
+- Readiness: `session_id`/`origin`/`title`/timestamps are direct
   archive facts. The nested `estimate` payload carries the pricing
   outcome: `estimate.status` is one of exact/priced/partial/unavailable,
   `estimate.confidence` quantifies trust in a non-exact price, and a
   non-empty `estimate.missing_reasons` or a set
   `estimate.unavailable_reason` flags a fallback/unpriced row.
-- Consumer-facing fields: `session_id`, `source_name`, `title`,
+- Consumer-facing fields: `session_id`, `origin`, `title`,
   `created_at`, `updated_at`, `estimate`, `provenance`.
 
 ### `cost_rollups` — Cost Rollups
@@ -255,7 +255,7 @@ API.
 - Field contract: `confidence` is `derived` from priced-session confidence
   values with `priced_session_count` as its denominator; an empty denominator
   is not applicable, not a measured zero.
-- Consumer-facing fields: `source_name`, `model_name`,
+- Consumer-facing fields: `origin`, `model_name`,
   `normalized_model`, `session_count`, `priced_session_count`,
   `unavailable_session_count`, `status_counts`, `total_usd`, `basis`,
   `usage`, `confidence`, `per_model_breakdown`.
@@ -276,7 +276,7 @@ API.
 - Notes: `provenance.materializer_version` is the same hardcoded literal
   `0` live-aggregation sentinel as `cost_rollups` — not declared as a
   version field.
-- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+- Consumer-facing fields: `bucket`, `group_by`, `origin`,
   `model_name`, `normalized_model`, `session_count`, `event_count`,
   `usage`, `reasoning_output_tokens`, `stored_cost_usd`,
   `subscription_credits`, `cost_provenance_counts`.

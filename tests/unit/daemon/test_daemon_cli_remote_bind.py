@@ -169,7 +169,7 @@ def test_loopback_bind_passes_remote_check() -> None:
 
     with (
         patch(
-            "polylogue.daemon.cli._ensure_fts_startup_readiness",
+            "polylogue.daemon.cli._run_startup_fts_readiness",
             side_effect=RuntimeError("post-gate sentinel"),
         ),
         patch("polylogue.daemon.status_snapshot.configure_runtime_components", side_effect=record_runtime_components),
@@ -214,7 +214,7 @@ def test_api_disabled_skips_remote_check() -> None:
     from unittest.mock import patch
 
     with patch(
-        "polylogue.daemon.cli._ensure_fts_startup_readiness",
+        "polylogue.daemon.cli._run_startup_fts_readiness",
         side_effect=RuntimeError("post-gate sentinel"),
     ):
         with pytest.raises(RuntimeError, match="post-gate sentinel"):

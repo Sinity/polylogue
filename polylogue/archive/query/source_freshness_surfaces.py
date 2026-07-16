@@ -187,7 +187,7 @@ def make_source_freshness_mcp_handler(
 
 def register_source_freshness_mcp_tool(
     server: object,
-    handler: Callable[..., Awaitable[dict[str, object]]],
+    handler: Callable[..., Awaitable[object]],
 ) -> object:
     """Register the handler on a FastMCP-style server.
 

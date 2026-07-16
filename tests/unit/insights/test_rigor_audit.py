@@ -79,7 +79,7 @@ def _profile(session_id: str = "c1") -> SessionProfileInsight:
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
-        source_name="claude-code",
+        origin="claude-code",
         provenance=_provenance(),
         evidence=SessionEvidencePayload(message_count=10, word_count=200),
         inference_provenance=_inference_provenance(),
@@ -93,7 +93,7 @@ def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight
     return SessionWorkEventInsight(
         event_id="e1",
         session_id="c1",
-        source_name="claude-code",
+        origin="claude-code",
         event_index=0,
         provenance=_provenance(),
         inference_provenance=_inference_provenance(),
@@ -112,7 +112,7 @@ def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
     return SessionPhaseInsight(
         phase_id="p1",
         session_id="c1",
-        source_name="claude-code",
+        origin="claude-code",
         phase_index=0,
         provenance=_provenance(),
         evidence=SessionPhaseEvidencePayload(),

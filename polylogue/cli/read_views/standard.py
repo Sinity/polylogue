@@ -21,7 +21,7 @@ from polylogue.cli.read_views.streaming_markdown import stream_exact_session_mar
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import format_session
@@ -232,7 +232,7 @@ def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = N
 def _archive_summary_to_domain(summary: Any) -> SessionSummary:
     return SessionSummary(
         id=SessionId(str(summary.session_id)),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),

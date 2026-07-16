@@ -25,7 +25,7 @@ from polylogue.archive.actions.fields import (
 )
 from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 
 _CANONICAL_TOOL_NAMES = {
     "bash": "bash",
@@ -79,7 +79,7 @@ class Action:
     kind: ToolCategory
     tool_name: str
     tool_id: str | None
-    provider: Provider | None
+    origin: Origin | None
     affected_paths: tuple[str, ...]
     cwd_path: str | None
     branch_names: tuple[str, ...]
@@ -149,7 +149,7 @@ def _build_action_from_message_fields(
         kind=category,
         tool_name=call.name,
         tool_id=call.id,
-        provider=call.provider,
+        origin=call.origin,
         affected_paths=affected_paths,
         cwd_path=cwd_path,
         branch_names=branch_names,

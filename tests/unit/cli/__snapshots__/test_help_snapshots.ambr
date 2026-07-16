@@ -153,7 +153,7 @@
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
-      continue  Print or execute the harness command that resumes a session.
+      continue  Resume a session or compile successor context as JSON.
       Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
       command.
   

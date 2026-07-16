@@ -17,6 +17,7 @@ from polylogue.archive.viewport.viewports import (
     ToolCall,
 )
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 ChatGPTMetadata: TypeAlias = dict[str, object]
@@ -99,7 +100,7 @@ class ChatGPTMessage(BaseModel):
             timestamp=self.timestamp,
             role=self.role_normalized,
             model=_model_slug(self.metadata),
-            provider=Provider.CHATGPT,
+            origin=origin_from_provider(Provider.CHATGPT),
         )
 
     def to_content_blocks(self) -> list[ContentBlock]:

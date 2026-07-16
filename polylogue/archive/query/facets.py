@@ -38,7 +38,7 @@ class FacetBuckets:
     they require scanning tables beyond the session summary surface.
     """
 
-    providers: dict[str, int] = field(default_factory=dict)
+    origins: dict[str, int] = field(default_factory=dict)
     tags: dict[str, int] = field(default_factory=dict)
     repos: dict[str, int] = field(default_factory=dict)
     role_counts: dict[str, int] = field(default_factory=dict)
@@ -83,21 +83,21 @@ def compute_facets(
     scoped and global computation paths.
     """
 
-    providers: dict[str, int] = {}
+    origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_sessions = 0
     total_messages = 0
     for s in summaries:
         total_sessions += 1
         total_messages += s.message_count or 0
-        provider_key = s.origin.value
-        providers[provider_key] = providers.get(provider_key, 0) + 1
+        origin_key = s.origin.value
+        origins[origin_key] = origins.get(origin_key, 0) + 1
         # ``tags`` are M2M user-tags; deduplicate within a single
         # session so a doubly-applied tag does not double-count.
         for tag in set(s.tags):
             tags[tag] = tags.get(tag, 0) + 1
     return FacetBuckets(
-        providers=providers,
+        origins=origins,
         tags=tags,
         total_sessions=total_sessions,
         total_messages=total_messages,
@@ -121,7 +121,7 @@ def compute_idf(buckets: FacetBuckets) -> dict[str, dict[str, float]]:
         return {}
     out: dict[str, dict[str, float]] = {}
     for family_name, family in (
-        ("origins", buckets.providers),
+        ("origins", buckets.origins),
         ("tags", buckets.tags),
         ("repos", buckets.repos),
         ("role_counts", buckets.role_counts),

@@ -28,7 +28,7 @@ def render_resume_brief(brief: ResumeBrief) -> None:
     click.echo("Resume Brief")
     click.echo(f"Session: {facts.session_id}")
     _line("Title", facts.title)
-    _line("Provider", facts.source_name)
+    _line("Origin", facts.origin)
     _line("Updated", facts.updated_at)
     _line("Messages", facts.message_count)
     _line("Parent", facts.parent_id)

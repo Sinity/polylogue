@@ -7,7 +7,7 @@ from typing import Protocol, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 
 ContentBlockSequence: TypeAlias = Sequence[Mapping[str, object]]
 
@@ -19,7 +19,7 @@ class TextMessageLike(Protocol):
 
 class SemanticMessageLike(TextMessageLike, Protocol):
     @property
-    def provider(self) -> Provider | str | None: ...
+    def origin(self) -> Origin | str | None: ...
 
     @property
     def blocks(self) -> ContentBlockSequence: ...
@@ -85,18 +85,18 @@ def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[Too
     from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 
     return build_tool_calls_from_content_blocks(
-        provider=message.provider,
+        origin=message.origin,
         content_blocks=message.blocks,
     )
 
 
 def _message_content_block_reasoning_traces(message: SemanticMessageLike) -> tuple[ReasoningTrace, ...]:
     traces: list[ReasoningTrace] = []
-    provider = (
-        message.provider
-        if isinstance(message.provider, Provider)
-        else Provider.from_string(message.provider)
-        if isinstance(message.provider, str)
+    origin = (
+        message.origin
+        if isinstance(message.origin, Origin)
+        else Origin.from_string(message.origin)
+        if isinstance(message.origin, str)
         else None
     )
     for block in message.blocks:
@@ -108,7 +108,7 @@ def _message_content_block_reasoning_traces(message: SemanticMessageLike) -> tup
         traces.append(
             ReasoningTrace(
                 text=text,
-                provider=provider,
+                origin=origin,
                 raw={
                     "type": block.get("type"),
                     "media_type": block.get("media_type"),

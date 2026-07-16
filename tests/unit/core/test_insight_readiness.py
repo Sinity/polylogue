@@ -84,7 +84,7 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     assert profile.degraded_count == 0
     assert profile.fallback_reason_counts == {}
     assert profile.row_count == 1
-    assert profile.provider_coverage[0].source_name == "codex"
+    assert profile.origin_coverage[0].origin == "codex-session"
     assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1
 
 

@@ -27,8 +27,8 @@ def _summary(
 def test_analyze_coverage_handles_empty_archive() -> None:
     coverage = analyze_coverage(())
 
-    assert coverage.provider_ranges == ()
-    assert coverage.provider_counts == {}
+    assert coverage.origin_ranges == ()
+    assert coverage.origin_counts == {}
     assert coverage.gaps == ()
     assert coverage.truncated_sessions == 0
     assert coverage.total_sessions == 0
@@ -36,7 +36,7 @@ def test_analyze_coverage_handles_empty_archive() -> None:
     assert coverage.date_range == (None, None)
 
 
-def test_analyze_coverage_reports_provider_ranges_gaps_and_truncation() -> None:
+def test_analyze_coverage_reports_origin_ranges_gaps_and_truncation() -> None:
     coverage = analyze_coverage(
         (
             _summary(
@@ -60,13 +60,13 @@ def test_analyze_coverage_reports_provider_ranges_gaps_and_truncation() -> None:
         )
     )
 
-    assert coverage.provider_counts == {"chatgpt": 2, "claude-ai": 1}
+    assert coverage.origin_counts == {"chatgpt-export": 2, "claude-ai-export": 1}
     assert [
-        (item.provider, item.first_date.isoformat(), item.last_date.isoformat(), item.count)
-        for item in coverage.provider_ranges
+        (item.origin, item.first_date.isoformat(), item.last_date.isoformat(), item.count)
+        for item in coverage.origin_ranges
     ] == [
-        ("chatgpt", "2026-01-01", "2026-01-04", 2),
-        ("claude-ai", "2026-01-04", "2026-01-04", 1),
+        ("chatgpt-export", "2026-01-01", "2026-01-04", 2),
+        ("claude-ai-export", "2026-01-04", "2026-01-04", 1),
     ]
     assert [(gap.start_date.isoformat(), gap.end_date.isoformat(), gap.days) for gap in coverage.gaps] == [
         ("2026-01-02", "2026-01-03", 2)

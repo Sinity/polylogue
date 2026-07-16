@@ -12,8 +12,8 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
-from polylogue.core.enums import Origin, Provider, SessionKind
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin, SessionKind
+from polylogue.core.sources import source_name_to_origin
 from polylogue.core.types import SessionId
 from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
 
@@ -21,11 +21,7 @@ from polylogue.core.web_urls import canonical_session_url, native_id_from_sessio
 def _coerce_origin(v: object) -> Origin:
     if isinstance(v, Origin):
         return v
-    text = str(v) if v is not None else "unknown"
-    try:
-        return Origin(text)
-    except ValueError:
-        return origin_from_provider(Provider.from_string(text))
+    return Origin.from_string(source_name_to_origin(v))
 
 
 class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):

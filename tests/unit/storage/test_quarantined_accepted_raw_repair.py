@@ -659,7 +659,7 @@ def test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch
         nonlocal calls
         calls += 1
         item = original(archive_root, raw_id, conn=conn)
-        if calls == 5:
+        if calls == 7:
             return repair_module._quarantined_raw_item(item.raw_id, "injected post-proof failure")
         return item
 

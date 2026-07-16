@@ -764,7 +764,6 @@ class TestArchiveTools:
                         session_id="codex-session:native-1",
                         native_id="native-1",
                         origin="codex-session",
-                        provider=Provider.CODEX,
                         title="Copied",
                         created_at=None,
                         updated_at=None,
@@ -1489,7 +1488,7 @@ class TestInsightTools:
         insight = SessionProfileInsight(
             session_id="conv-1",
             logical_session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -1517,7 +1516,7 @@ class TestInsightTools:
         profile = SessionProfileInsight(
             session_id="conv-1",
             logical_session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -1546,7 +1545,7 @@ class TestInsightTools:
         work_event = SessionWorkEventInsight(
             event_id="evt-1",
             session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             event_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -1560,7 +1559,7 @@ class TestInsightTools:
         phase = SessionPhaseInsight(
             phase_id="phase-1",
             session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             phase_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -1602,7 +1601,7 @@ class TestInsightTools:
         coverage = ArchiveCoverageInsight(
             group_by="origin",
             bucket="claude-code-session",
-            source_name="claude-code-session",
+            origin="claude-code-session",
             session_count=1,
             message_count=2,
             user_message_count=1,
@@ -1619,10 +1618,10 @@ class TestInsightTools:
         )
         session_cost = SessionCostInsight(
             session_id="conv-root",
-            source_name="claude-code",
+            origin="claude-code",
             title="Root Thread",
             estimate=CostEstimatePayload(
-                source_name="claude-code",
+                origin="claude-code-session",
                 session_id="conv-root",
                 model_name="claude-sonnet-4-5",
                 normalized_model="claude-sonnet-4-5",
@@ -1634,7 +1633,7 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         cost_rollup = CostRollupInsight(
-            source_name="claude-code",
+            origin="claude-code",
             model_name="claude-sonnet-4-5",
             normalized_model="claude-sonnet-4-5",
             session_count=1,
@@ -1761,10 +1760,10 @@ class TestInsightTools:
         def cost(session_id: str) -> SessionCostInsight:
             return SessionCostInsight(
                 session_id=session_id,
-                source_name="claude-code",
+                origin="claude-code",
                 title=f"Session {session_id}",
                 estimate=CostEstimatePayload(
-                    source_name="claude-code",
+                    origin="claude-code-session",
                     session_id=session_id,
                     model_name="claude-sonnet-4-5",
                     normalized_model="claude-sonnet-4-5",

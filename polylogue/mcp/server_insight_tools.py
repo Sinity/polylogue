@@ -19,7 +19,6 @@ from polylogue.insights.registry import (
     InsightType,
     fetch_insights_async,
     insight_items_payload,
-    project_origin_payload,
 )
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from polylogue.mcp.payloads import MCPRootPayload
@@ -44,10 +43,6 @@ def _object_int(value: object) -> int:
     if value is None:
         return 0
     return int(str(value))
-
-
-def _project_origin_payload(value: object) -> object:
-    return project_origin_payload(value)
 
 
 def _register_list_tool(
@@ -83,7 +78,7 @@ def _register_list_tool(
                 payload["limit"] = requested_limit
                 payload["offset"] = requested_offset
                 payload["truncated"] = requested_offset + len(page) < total
-            return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(payload))))
+            return hooks.json_payload(MCPRootPayload(root=payload))
 
         return await hooks.async_safe_call(pt.name, run)
 
@@ -153,7 +148,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     session_id=session_id,
                 )
             return hooks.json_payload(
-                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                MCPRootPayload(root=cast(dict[str, object], insight.model_dump(mode="json"))),
                 exclude_none=True,
             )
 
@@ -176,7 +171,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 MCPRootPayload(
                     root={
                         "total": len(insights),
-                        "items": [_project_origin_payload(insight.model_dump(mode="json")) for insight in insights],
+                        "items": [insight.model_dump(mode="json") for insight in insights],
                     }
                 ),
                 exclude_none=True,
@@ -255,7 +250,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if insight is None:
                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(
-                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                MCPRootPayload(root=cast(dict[str, object], insight.model_dump(mode="json"))),
                 exclude_none=True,
             )
 

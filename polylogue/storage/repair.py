@@ -5116,6 +5116,25 @@ def _raw_materialization_missing_blob_detail(candidates: RawMaterializationCandi
     return detail
 
 
+def _unavailable_raw_materialization_backlog(reason: str) -> dict[str, object]:
+    return {
+        "available": False,
+        "reason": reason,
+        "execution_blocked": False,
+        "execution_block_reason": None,
+        "blocked_candidate_count": 0,
+        "durable_authority_debt_count": 0,
+        "authority_quarantined_count": 0,
+        "byte_authority_fragment_count": 0,
+        "byte_authority_quarantined_count": 0,
+        "byte_authority_pending_count": 0,
+        "candidate_count": 0,
+        "top_raw_rows": [],
+        "origin_summary": [],
+        "source_path_summary": [],
+    }
+
+
 def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
     """Return a read-only weighted backlog for raw source-to-index replay.
 
@@ -5128,22 +5147,13 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
-        return {
-            "available": False,
-            "reason": "source_or_index_tier_missing",
-            "execution_blocked": False,
-            "execution_block_reason": None,
-            "blocked_candidate_count": 0,
-            "durable_authority_debt_count": 0,
-            "authority_quarantined_count": 0,
-            "byte_authority_fragment_count": 0,
-            "byte_authority_quarantined_count": 0,
-            "byte_authority_pending_count": 0,
-            "candidate_count": 0,
-            "top_raw_rows": [],
-            "origin_summary": [],
-            "source_path_summary": [],
-        }
+        return _unavailable_raw_materialization_backlog("source_or_index_tier_missing")
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_conn:
+        source_ready = source_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'"
+        ).fetchone()
+    if source_ready is None:
+        return _unavailable_raw_materialization_backlog("source_tier_uninitialized")
     candidates = _raw_materialization_candidate_ids(config)
     raw_ids_by_size = sorted(
         candidates.raw_ids,

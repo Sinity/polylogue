@@ -55,7 +55,7 @@ function renderSimilarReadyResults(data) {
     var title = hit.title || hit.session_id;
     var scoreStr = (hit.score != null ? hit.score.toFixed(3) : '0.000');
     var matched = hit.matched_message_count || 0;
-    var providerStr = hit.source_name ? esc(hit.source_name) : '\u2014';
+    var providerStr = hit.origin ? esc(hit.origin) : '\u2014';
     html += '<div class="similar-hit" style="padding:6px 0;border-bottom:1px solid var(--border)">'
       + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
       +   '<a href="#" onclick="openSimilarHit(\'' + escJsAttr(hit.session_id) + '\');return false;" '

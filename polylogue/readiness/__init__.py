@@ -391,8 +391,8 @@ def _duplicate_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
     )
 
 
-def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    provider_rows = conn.execute(
+def _origin_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
+    origin_rows = conn.execute(
         """
         SELECT origin, COUNT(*) AS count
         FROM sessions
@@ -400,13 +400,13 @@ def _provider_distribution_check(conn: sqlite3.Connection) -> ReadinessCheck:
         ORDER BY count DESC, origin ASC
         """
     ).fetchall()
-    provider_breakdown = {str(row["origin"]): int(row["count"]) for row in provider_rows}
+    origin_breakdown = {str(row["origin"]): int(row["count"]) for row in origin_rows}
     return ReadinessCheck(
-        "provider_distribution",
+        "origin_distribution",
         VerifyStatus.OK,
-        count=sum(provider_breakdown.values()),
-        summary=f"{len(provider_breakdown)} provider(s) represented",
-        breakdown=provider_breakdown,
+        count=sum(origin_breakdown.values()),
+        summary=f"{len(origin_breakdown)} origin(s) represented",
+        breakdown=origin_breakdown,
     )
 
 
@@ -684,7 +684,7 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
                 )
             )
         checks.append(_duplicate_sessions_check(conn))
-        checks.append(_provider_distribution_check(conn))
+        checks.append(_origin_distribution_check(conn))
 
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.

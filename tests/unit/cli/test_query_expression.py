@@ -566,10 +566,11 @@ class TestBooleanQueryExpression:
 
         class _CyclicResolver:
             def resolve_ref_operand(self, resolved_operand: RefOperand) -> ResolvedRefOperand:
+                repeated_parent = ObjectRef(kind="query", object_id="parent-query")
                 return ResolvedRefOperand(
                     operand=resolved_operand,
                     grain="session",
-                    lineage=(ObjectRef(kind="query", object_id="stable-query"),),
+                    lineage=(repeated_parent, repeated_parent),
                 )
 
         with pytest.raises(RefOperandCycleError, match="reference cycle"):

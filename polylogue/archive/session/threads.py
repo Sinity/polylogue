@@ -20,7 +20,6 @@ from polylogue.core.payload_coercion import (
     string_int_mapping,
     string_sequence,
 )
-from polylogue.core.sources import source_name_to_origin
 
 ThreadPayload: TypeAlias = ThreadDocument
 
@@ -39,9 +38,7 @@ def _thread_payload(thread: Thread) -> ThreadPayload:
         "total_messages": thread.total_messages,
         "total_cost_usd": thread.total_cost_usd,
         "dominant_repo": thread.dominant_repo,
-        "origin_breakdown": {
-            source_name_to_origin(source_name): count for source_name, count in thread.provider_breakdown.items()
-        },
+        "origin_breakdown": dict(thread.origin_breakdown),
         "work_event_breakdown": dict(thread.work_event_breakdown),
         "confidence": thread.confidence,
         "support_level": thread.support_level,
@@ -63,7 +60,7 @@ def _thread_from_mapping(payload: Mapping[str, object]) -> Thread:
         total_messages=coerce_int(payload.get("total_messages"), 0),
         total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
         dominant_repo=optional_string(payload.get("dominant_repo")),
-        provider_breakdown=string_int_mapping(payload.get("origin_breakdown") or payload.get("provider_breakdown")),
+        origin_breakdown=string_int_mapping(payload.get("origin_breakdown")),
         work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
         confidence=coerce_float(payload.get("confidence"), 0.0),
         support_level=optional_string(payload.get("support_level")) or "weak",
@@ -121,7 +118,7 @@ class Thread:
     total_messages: int
     total_cost_usd: float
     dominant_repo: str | None
-    provider_breakdown: dict[str, int]
+    origin_breakdown: dict[str, int]
     work_event_breakdown: dict[str, int]
     confidence: float
     support_level: str
@@ -264,11 +261,11 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[Thread]:
             wall_ms = max(int((end_time - start_time).total_seconds() * 1000), 0)
 
         repo_counter: Counter[str] = Counter()
-        provider_counter: Counter[str] = Counter()
+        origin_counter: Counter[str] = Counter()
         work_event_counter: Counter[str] = Counter()
         for profile in thread_profiles:
             repo_counter.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
-            provider_counter.update((profile.origin,))
+            origin_counter.update((profile.origin,))
             work_event_counter.update(
                 event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
                 for event in profile.work_events
@@ -301,7 +298,7 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[Thread]:
                 total_messages=sum(profile.message_count for profile in thread_profiles),
                 total_cost_usd=sum(profile.total_cost_usd for profile in thread_profiles),
                 dominant_repo=dominant_repo,
-                provider_breakdown=dict(provider_counter),
+                origin_breakdown=dict(origin_counter),
                 work_event_breakdown=dict(work_event_counter),
                 confidence=_thread_confidence(session_count=len(thread_ids)),
                 support_level=_thread_support_level(session_count=len(thread_ids)),

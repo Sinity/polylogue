@@ -12,7 +12,6 @@ from pydantic import Field, field_validator
 
 from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
     ArchiveInsightUnavailableError,
     SessionPhaseInsight,
@@ -52,7 +51,7 @@ class ResumeLastMessage(ArchiveInsightModel):
 
 class ResumeFacts(ArchiveInsightModel):
     session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -109,7 +108,7 @@ class ResumeInferences(ArchiveInsightModel):
 class ResumeRelatedSession(ArchiveInsightModel):
     session_id: str
     relation: str
-    source_name: str
+    origin: str
     title: str | None = None
     updated_at: str | None = None
     message_count: int = 0
@@ -352,7 +351,7 @@ def _tool_facts(session: Session) -> tuple[dict[str, int], tuple[str, ...]]:
     paths: list[str] = []
     for message in session.messages:
         tool_calls = build_tool_calls_from_content_blocks(
-            provider=provider_from_origin(session.origin),
+            origin=session.origin,
             content_blocks=message.blocks,
         )
         for tool_call in tool_calls:
@@ -371,7 +370,7 @@ def _facts_from_session(
     evidence = profile.evidence if profile is not None else None
     return ResumeFacts(
         session_id=str(session.id),
-        source_name=provider_from_origin(session.origin).value,
+        origin=session.origin.value,
         title=session.title,
         created_at=_iso(session.created_at),
         updated_at=_iso(session.updated_at),
@@ -469,7 +468,7 @@ def _related_session(
     return ResumeRelatedSession(
         session_id=str(candidate.id),
         relation=_relation(target, candidate, thread_ids),
-        source_name=provider_from_origin(candidate.origin).value,
+        origin=candidate.origin.value,
         title=candidate.title,
         updated_at=_iso(candidate.updated_at or candidate.created_at),
         message_count=len(candidate.messages),

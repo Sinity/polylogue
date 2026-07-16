@@ -16,8 +16,8 @@ context.
 
 `Provider` is a provider-wire/parser/schema coordinate. It remains valid where
 Polylogue is describing raw export families, parser contracts, provider schema
-packages, storage bridges that still speak provider tokens, model/provider
-metadata, or embedding-provider configuration.
+packages, raw acquisition records, model/pricing-provider metadata, or
+embedding-provider configuration.
 
 `Origin` is the public source-origin coordinate for query, read, API, MCP, and
 daemon surfaces. If a user asks for "Codex sessions" or filters by source
@@ -67,10 +67,14 @@ replace archive object identity.
 - `Origin` is the public archive source-origin vocabulary. Query specs,
   terminal unit rows, daemon query parameters, and MCP query-unit filters use
   `origin`/`exclude_origin` tokens and should continue to prefer that spelling.
-- `Provider` remains in parser/schema and compatibility bridges. `Provider`
-  maps to `Origin` through `origin_from_provider()`, and storage/search paths
-  still bridge some origin filters back to provider tokens while old columns are
-  reconciled.
+- `Provider` remains in parser/schema/raw-acquisition boundaries. Parsers map it
+  forward once through `origin_from_provider()` when constructing normalized
+  sessions. Normalized storage, search, insight, API, CLI, MCP, and daemon
+  models carry `Origin` without a reverse translation or payload rewrite.
+- Rebuildable storage records may retain columns named `source_name` for schema
+  continuity. Their values are canonical origins, and typed hydration projects
+  them directly into `origin` fields. The column spelling is not a second
+  domain vocabulary.
 - `Source` is richer than `Provider` and `Origin`, but it still does not name a
   concrete import path. Its `runtime_root` is a conventional root hint, not the
   actual material row or raw artifact identity.
@@ -163,27 +167,25 @@ Use `origin` for public source-origin filters. Use `provider` only when the
 surface truly asks about provider-wire schema, parser family, provider metadata,
 embedding provider, or lab/vendor metadata.
 
-## Cleanup Opportunities
+## Completed Normalized-Identity Transition
 
-This map does not require an immediate mass rename, but it identifies concrete
-cleanup pressure:
+Normalized sessions, messages, actions, query units, insights, topology and
+resume models, and the public API/CLI/MCP/daemon read surfaces now use
+`origin`. The former recursive payload projection and origin-to-provider query
+detours have been removed. New normalized features should consume that native
+contract rather than introduce an adapter.
 
-- public docs and help should avoid saying `provider` when the user-facing
-  field is `origin`;
-- `SessionSummaryPayload.provider` and similar fields should be audited before
-  new public schemas copy that spelling;
-- source discovery and ImportExplain should report configured root/material
-  source separately from selected parser/provider family;
-- query-unit/session-scope bridges that translate `origin` back to provider
-  tokens should remain local compatibility bridges, not the model future
-  features copy;
-- provider-package completeness should use this table as its acceptance
-  checklist for identity fields.
+Remaining work in adjacent products is semantic, not a vocabulary sweep:
+source discovery and ImportExplain should report configured material roots,
+capture mode, parser binding, and provider-wire family as distinct evidence;
+provider/importer completeness should use this table as its identity checklist.
 
 ## Non-Goals
 
 - No compatibility aliases for old public spellings.
 - No tests that merely assert an old word is absent.
+- No static gates, allowlists, or seeded failures whose only purpose is to
+  preserve identifier/import spelling after a refactor.
 - No broad storage rename without a schema-owner PR and re-ingest plan.
 - No attempt to turn OTel trace ids, provider-native ids, or filesystem paths
   into canonical archive refs.

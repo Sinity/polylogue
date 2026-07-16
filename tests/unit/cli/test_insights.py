@@ -71,7 +71,7 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     product = ArchiveCoverageInsight(
         group_by="origin",
         bucket="claude-code-session",
-        source_name="claude-code-session",
+        origin="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,
@@ -364,7 +364,7 @@ def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: Cl
     assert skip_event_scan is True
     assert len(rows) == 1
     assert rows[0].bucket == "2026-03"
-    assert rows[0].source_name == "chatgpt-export"
+    assert rows[0].origin == "chatgpt-export"
     assert rows[0].event_count == 0
     assert rows[0].stored_cost_usd == 0.0
     assert rows[0].cost_provenance_counts == {"origin_reported": 1}

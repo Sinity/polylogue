@@ -351,9 +351,10 @@ def _aggregate_message_stats_native(db_path: Path, session_ids: list[str] | None
 
 
 def _origin_to_provider(origin: str) -> str:
-    from polylogue.api.archive import _provider_for_archive_origin
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
 
-    return _provider_for_archive_origin(origin).value
+    return provider_from_origin(Origin.from_string(origin)).value
 
 
 @pytest.mark.asyncio
