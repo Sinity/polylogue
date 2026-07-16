@@ -1051,12 +1051,12 @@ def validate_raw_replay_application_receipt(
         )
         if application_authority == head_authority:
             applications_matching_current_head.add(key)
-        session = sessions_by_id.get(str(head.get("session_id")))
-        if session is None:
+        materialized_session = sessions_by_id.get(str(head.get("session_id")))
+        if materialized_session is None:
             continue
-        if str(session.get("raw_id")) != str(head.get("accepted_raw_id")) or str(session.get("content_hash")) != str(
-            head.get("accepted_content_hash")
-        ):
+        if str(materialized_session.get("raw_id")) != str(head.get("accepted_raw_id")) or str(
+            materialized_session.get("content_hash")
+        ) != str(head.get("accepted_content_hash")):
             problems.append(f"materialized session authority does not match the head for {key}")
     for key in sorted(application_keys - applications_matching_current_head):
         problems.append(f"no application accepted authority matches the current head for {key}")
