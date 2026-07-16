@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.schemas.generation.cluster_collection import _collect_cluster_accumulators
+from polylogue.schemas.generation.models import _ProviderBundle
 from polylogue.schemas.generation.observation_journal import ObservationJournal
 from polylogue.schemas.generation.provider_bundle_packages import _select_catalog_versions
 from polylogue.schemas.generation.workflow import _build_provider_bundle
@@ -564,6 +565,60 @@ class TestProfileClustering:
         assert "representative_paths" not in public_package
         assert "scope-a" not in json.dumps(public_package)
         assert "/tmp/one.json" not in json.dumps(public_package)
+
+    def test_journal_bundle_is_invariant_to_observation_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": str(index)},
+                schema_samples=[{"id": str(index), "kind": "session"}],
+                artifact_kind="session_document",
+                bundle_scope=f"scope-{index}",
+                observed_at=f"2026-01-0{index + 1}T00:00:00+00:00",
+                exact_structure_id="session-shape",
+                profile_tokens=("field:id", "field:kind"),
+            )
+            for index in range(3)
+        ]
+
+        def build_in_order(observations: list[SchemaUnit]) -> _ProviderBundle:
+            monkeypatch.setattr(
+                "polylogue.schemas.sampling.iter_schema_units",
+                lambda *args, **kwargs: iter(observations),
+            )
+            return _build_provider_bundle(
+                "chatgpt",
+                db_path=tmp_path / "unused.db",
+                max_samples=None,
+                privacy_config=None,
+            )
+
+        forward = build_in_order(units)
+        reverse = build_in_order(list(reversed(units)))
+        assert forward.catalog is not None
+        assert reverse.catalog is not None
+        assert forward.catalog.to_dict()["packages"] == reverse.catalog.to_dict()["packages"]
+
+        def semantic_schemas(bundle: _ProviderBundle) -> object:
+            payload = json.loads(json.dumps(bundle.package_schemas))
+
+            def strip_generated_at(value: object) -> None:
+                if isinstance(value, dict):
+                    value.pop("x-polylogue-generated-at", None)
+                    for child in value.values():
+                        strip_generated_at(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        strip_generated_at(child)
+
+            strip_generated_at(payload)
+            return payload
+
+        assert semantic_schemas(forward) == semantic_schemas(reverse)
+        assert forward.package_workload_profiles == reverse.package_workload_profiles
 
 
 class TestCliMain:
