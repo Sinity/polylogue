@@ -1131,7 +1131,13 @@ describe("background receiver diagnostics", () => {
       if (path.endsWith("/adopt")) {
         const recovered = receiverJobs.find((job) => path.includes(job.job_id));
         return responseJson({
-          job: { ...recovered, revision: recovered.revision + 1, lease_generation: recovered.lease_generation + 1 },
+          job: {
+            ...recovered, revision: recovered.revision + 1,
+            lease_generation: recovered.lease_generation + 1,
+            updated_at: recovered.job_id === "receiver-old"
+              ? "2026-07-16T10:10:00Z"
+              : "2026-07-16T10:09:00Z",
+          },
           lease: { lease_id: `lease-${recovered.job_id}`, generation: recovered.lease_generation + 1, proof: `proof-${recovered.job_id}` },
         });
       }

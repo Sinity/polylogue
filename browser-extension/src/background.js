@@ -204,7 +204,10 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
     try {
       const accountHandle = await providerAccountHandle(provider);
       const adopted = await client.discoverRecovery(provider, accountHandle, instanceId);
-      recovered.push(...adopted.map((entry) => entry.job));
+      recovered.push(...adopted.map((entry) => ({
+        ...entry.job,
+        recovery_checkpoint_updated_at: entry.recovery_updated_at,
+      })));
     } catch (error) {
       await appendDebugLog({
         stage: "capture_job_recovery_unavailable",
@@ -220,7 +223,7 @@ function mergeCaptureJobRecoveryCheckpoints(jobs) {
   const checkpoints = jobs
     .filter((job) => job.checkpoint?.payload?.version === 1 && Array.isArray(job.checkpoint.payload.jobs))
     .map((job) => {
-      const updatedAtMs = Date.parse(job.updated_at);
+      const updatedAtMs = Date.parse(job.recovery_checkpoint_updated_at);
       if (!Number.isFinite(updatedAtMs)) throw new Error(`capture_job_recovery_timestamp_invalid:${job.job_id}`);
       return { jobId: job.job_id, updatedAtMs, payload: job.checkpoint.payload };
     });
