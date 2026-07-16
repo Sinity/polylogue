@@ -371,7 +371,7 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
             cast(str, cast(dict[str, object], incomplete_ledger["census"])["detail_query_handle"]),
         )
         pending_residual = cast(dict[str, object], census_detail["residual"])
-        assert pending_residual["census_pending_raw_count"] >= 1
+        assert cast(int, pending_residual["census_pending_raw_count"]) >= 1
         assert len(cast(str, pending_residual["census_pending_raw_digest"])) == 64
         assert "census_pending_raw_ids" not in pending_residual
         incomplete_receipts.append(incomplete.census_receipt.census_id)
