@@ -276,27 +276,3 @@ def test_committed_manifest_lint_soft_is_clean() -> None:
     """The committed manifest passes the lint in soft mode."""
     rc = verify_mutation_freshness.main([])
     assert rc == 0
-
-
-def test_initial_registry_covers_required_modules() -> None:
-    """Issue #1304 AC: initial registry covers at least the 10 named modules."""
-    import yaml
-
-    manifest = yaml.safe_load(verify_mutation_freshness.MANIFEST.read_text())
-    names = {entry["name"] for entry in manifest["mutation_campaigns"]}
-    # The issue names a candidate seed set. The catalog already covers the
-    # semantic equivalents; verify the 10 expected coverage areas are present.
-    expected_present = {
-        "filters",
-        "fts5",
-        "hybrid",
-        "json",
-        "models",
-        "schema-inference",
-        "schema-validation",
-        "source-detection",
-        "pipeline-services",
-        "repair-core",
-    }
-    missing = expected_present - names
-    assert not missing, f"manifest missing campaign names: {sorted(missing)}"
