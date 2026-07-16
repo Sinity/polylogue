@@ -45,8 +45,10 @@ difficult; report only concrete source conflicts or missing dependencies.
    any residual source conflicts, dependencies, or shared write hotspots. The
    coordination lane already owns the durable campaign copy of the complete
    Test Suite Diet corpus and its 16 prompts on current master. Do not relocate
-   that corpus. Report any architecture/corpus changes made after its snapshot
-   so coordination can synchronize them.
+   that corpus. Its pinned context baseline is `testdiet/context/MANIFEST.sha256`
+   with SHA-256 `408a4dfbbc369f71d83dab793f031655091984875861a7140d85afc5cab3985c`.
+   Report any architecture/corpus changes after that exact baseline so
+   coordination can synchronize them.
 4. Harden only the existing thin Diet runner prerequisites needed for later
    local integration: validate the reconciliation receipt against the current
    head and use the attested launcher/job-control path for timeout/interruption.
@@ -74,5 +76,5 @@ difficult; report only concrete source conflicts or missing dependencies.
 Return: commits/PR/merge state; per-Bead AC matrix; exact files and public
 routes; focused and broad command outputs; canary/receipt identity map; known
 hotspots and safe parallel partitions; residual blockers; and any changes made
-to the Test Suite Diet corpus after the campaign snapshot. A green-looking
-patch that remains only in this worktree is not complete.
+to the Test Suite Diet corpus after the pinned manifest baseline above. A
+green-looking patch that remains only in this worktree is not complete.
