@@ -1537,7 +1537,6 @@ describe("Sol Pro launch worker", () => {
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
       type: "polylogue.capturePage",
       reason: "launch_job_handoff",
-      capture_context: { launch_job_id: "launch-complete" },
     });
     expect(fetchCalls.some((call) => String(call.url).endsWith("/handoff"))).toBe(false);
   });

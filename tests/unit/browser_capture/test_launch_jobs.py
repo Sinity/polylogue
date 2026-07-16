@@ -125,7 +125,6 @@ def _handoff_zip(
 
 
 def _handoff_capture(
-    job_id: str,
     content: bytes,
     *,
     conversation_id: str = "conversation-1",
@@ -138,7 +137,6 @@ def _handoff_capture(
                 "extension_instance_id": "capture-instance",
                 "adapter_name": "chatgpt-native",
             },
-            "provider_meta": {"launch_job_id": job_id},
             "session": {
                 "provider": "chatgpt",
                 "provider_session_id": conversation_id,
@@ -634,7 +632,7 @@ def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Pat
         spool_path=tmp_path,
     )
     completed = reconcile_launch_handoff_capture(
-        _handoff_capture(job.job_id, _handoff_zip()),
+        _handoff_capture(_handoff_zip()),
         "chatgpt/conversation-1.json",
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
@@ -670,7 +668,7 @@ def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: 
             spool_path=invalid_spool,
         )
         rejected = reconcile_launch_handoff_capture(
-            _handoff_capture(invalid.job_id, content),
+            _handoff_capture(content),
             "chatgpt/conversation-1.json",
             spool_path=invalid_spool,
         ) or pytest.fail("missing invalid job")
@@ -694,7 +692,7 @@ def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: 
     )
     content = _handoff_zip()
     completed = reconcile_launch_handoff_capture(
-        _handoff_capture(job.job_id, content),
+        _handoff_capture(content),
         "chatgpt/conversation-1.json",
         spool_path=valid_spool,
     ) or pytest.fail("missing job")
@@ -801,7 +799,7 @@ def test_receiver_routes_enqueue_claim_and_serve_hash_pinned_inputs(tmp_path: Pa
             port,
             "POST",
             "/v1/browser-captures",
-            _handoff_capture(job_id, handoff_content).model_dump(mode="json", exclude_none=True),
+            _handoff_capture(handoff_content).model_dump(mode="json", exclude_none=True),
         )
         capture_body = json.loads(capture.read())
         completed_body = json.loads(_http(host, port, "GET", "/v1/launch-jobs").read())
