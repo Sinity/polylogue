@@ -231,13 +231,16 @@ def _browser_strategy_witness(item: BrowserCaptureOriginRepairItem) -> JSONDocum
 
 
 def _quarantine_strategy_witness(item: QuarantinedAcceptedRawRepairItem) -> JSONDocument:
-    from polylogue.storage.repair import _repair_receipt_targets
-
+    payload = {
+        key: _json_value(value)
+        for key, value in dataclasses.asdict(item).items()
+        if key not in {"proof_digest", "reason", "repaired", "status"}
+    }
     return json_document(
         {
             "schema": "polylogue.raw-authority-strategy-witness.v1",
             "kind": "quarantine_refinement",
-            "item": _repair_receipt_targets([item])[0],
+            "item": payload,
         }
     )
 
@@ -557,8 +560,8 @@ def _strategy_overrides(
     """Ask legacy incident inspectors for proofs, never for plan identity."""
     from polylogue.storage.repair import (
         inspect_browser_canonical_authority_conflicts,
-        repair_browser_capture_origin_mismatches,
-        repair_quarantined_accepted_raws,
+        inspect_browser_capture_origin_mismatches,
+        inspect_quarantined_accepted_raws,
     )
 
     overrides: dict[str, _StrategyOverride] = {}
@@ -570,8 +573,8 @@ def _strategy_overrides(
         }
     )
     for browser_chunk in _chunks(browser_ids):
-        browser = repair_browser_capture_origin_mismatches(config, browser_chunk)
-        for browser_item in browser.items:
+        browser_items = inspect_browser_capture_origin_mismatches(config, browser_chunk)
+        for browser_item in browser_items:
             if browser_item.status in {"eligible", "already_repaired"}:
                 overrides[browser_item.raw_id] = _StrategyOverride(
                     state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
@@ -613,8 +616,8 @@ def _strategy_overrides(
         }
     )
     for quarantine_chunk in _chunks(quarantine_ids):
-        quarantine = repair_quarantined_accepted_raws(config, quarantine_chunk)
-        for quarantine_item in quarantine.items:
+        quarantine_items = inspect_quarantined_accepted_raws(config, quarantine_chunk)
+        for quarantine_item in quarantine_items:
             if quarantine_item.status in {"eligible", "already_repaired"}:
                 overrides[quarantine_item.raw_id] = _StrategyOverride(
                     state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
@@ -939,7 +942,7 @@ def _apply_strategy(
         _apply_duplicate_raw_identity_repair,
         _attach_repair_index,
         _cas_refine_quarantined_accepted_raw,
-        _inspect_browser_capture_origin_mismatch,
+        _inspect_browser_capture_origin_strategy,
         _inspect_duplicate_raw_identity,
         _inspect_quarantined_accepted_raw,
         _stage_browser_origin_copy_forward_source,
@@ -989,7 +992,7 @@ def _apply_strategy(
         with RebuildLease(root), exclude_archive_blob_publishers(source_db):
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
                 proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-                preview = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=proof_conn)
+                preview = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=proof_conn)
             if _browser_strategy_witness(preview) != item.strategy_witness:
                 raise RuntimeError("browser-origin strategy proof changed after plan authorization")
             if preview.status == "eligible" and preview.repair_strategy == "copy_forward":
@@ -1013,14 +1016,14 @@ def _apply_strategy(
                 conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    browser_locked = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=conn)
+                    browser_locked = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=conn)
                     if _browser_strategy_witness(browser_locked) != item.strategy_witness:
                         raise RuntimeError("browser-origin strategy proof changed under the apply transaction")
                     if browser_locked.status == "eligible":
                         _apply_browser_origin_repair_item(conn, browser_locked)
                     elif browser_locked.status != "already_repaired":
                         raise RuntimeError(f"browser-origin strategy lost its locked proof: {browser_locked.reason}")
-                    browser_after = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=conn)
+                    browser_after = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=conn)
                     if browser_after.status != "already_repaired":
                         raise RuntimeError("browser-origin strategy did not reach its typed terminal postcondition")
                     conn.commit()
