@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
 import polylogue.storage.insights.session.rebuild as rebuild_mod
+import polylogue.storage.insights.session.refresh as refresh_mod
 from polylogue.daemon import cli as daemon_cli
 from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
@@ -21,6 +23,7 @@ from polylogue.storage.insights.session.rebuild import (
 from polylogue.storage.insights.session.refresh import (
     _apply_session_insight_session_updates_async,
     _refresh_thread_roots_async,
+    refresh_session_insights_for_session_async,
 )
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -1627,3 +1630,181 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
         ("chatgpt-export", "2026-04-02", 2),
         ("claude-ai-export", "2026-04-03", 1),
     ]
+
+
+def _seed_heavy_session(db_path: Path, native: str, *, origin: str = "codex-session") -> str:
+    """Store a small real session, then inflate its counters past the (monkeypatched) heavy threshold."""
+    session_id = _sid(native, origin)
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="codex", title="Heavy refresh parity"),
+            messages=[
+                make_message(f"{native}:msg-1", native, text="first prompt"),
+                make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            UPDATE sessions
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            WHERE session_id = ?
+            """,
+            (50, 1234, 7, 3, session_id),
+        )
+        conn.commit()
+    return session_id
+
+
+@pytest.mark.asyncio
+async def test_refresh_single_session_heavy_uses_bounded_degraded_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Production dependency: refresh_session_insights_for_session_async must
+    branch heavy sessions into rebuild's bounded bundle. Removing the heavy
+    check in _apply_session_insight_session_update_async makes this fail (the
+    patched load_async_batch raises, and workflow_shape reverts to full analysis)."""
+    db_path = tmp_path / "refresh-heavy-single.db"
+    session_id = _seed_heavy_session(db_path, "conv-refresh-heavy-single")
+
+    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+
+    async def fail_full_load(_conn: object, _session_ids: object) -> object:
+        raise AssertionError("heavy-session refresh single path must not hydrate the full session")
+
+    monkeypatch.setattr(refresh_mod, "load_async_batch", fail_full_load)
+    async with aiosqlite.connect(db_path) as async_conn:
+        async_conn.row_factory = sqlite3.Row
+        counts = await refresh_session_insights_for_session_async(async_conn, session_id)
+        profile = await (
+            await async_conn.execute(
+                "SELECT * FROM session_profiles WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        work_events_row = await (
+            await async_conn.execute(
+                "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert counts.work_events == 0
+    assert counts.phases == 0
+    assert profile is not None
+    assert profile["workflow_shape"] == "bounded_large_session"
+    assert profile["message_count"] == 50
+    assert "large_session_bounded" in profile["inference_payload_json"]
+    assert work_events_row is not None and work_events_row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_bulk_heavy_uses_bounded_degraded_profile_and_keeps_light_full(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The bulk refresh path (ordinary ingest tick) must degrade heavy sessions
+    without hydrating them while still fully analyzing light sessions in the
+    same call. A tool-count-heavy session has a small message count, so it
+    genuinely shares a chunk with light sessions (message-heavy sessions
+    always chunk alone under the message budget). Dropping the heavy split in
+    _apply_session_insight_session_updates_async fails this test."""
+    db_path = tmp_path / "refresh-heavy-bulk.db"
+    heavy_id = _seed_heavy_session(db_path, "conv-refresh-heavy-bulk")
+    light_native = "conv-refresh-light-bulk"
+    light_id = _sid(light_native, "codex-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(light_native, source_name="codex", title="Light bulk refresh"),
+            messages=[
+                make_message(f"{light_native}:msg-1", light_native, text="hello"),
+                make_message(f"{light_native}:msg-2", light_native, role="assistant", text="world"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD", 5)
+
+    real_load = rebuild_mod.load_async_batch
+
+    async def guarded_load(
+        conn: aiosqlite.Connection,
+        session_ids: Sequence[str],
+    ) -> rebuild_mod.SessionInsightArchiveBatch:
+        assert heavy_id not in {str(session_id) for session_id in session_ids}, (
+            "heavy session must not reach hydration on the bulk refresh path"
+        )
+        return await real_load(conn, session_ids)
+
+    monkeypatch.setattr(refresh_mod, "load_async_batch", guarded_load)
+    async with aiosqlite.connect(db_path) as async_conn:
+        async_conn.row_factory = sqlite3.Row
+        update = await _apply_session_insight_session_updates_async(
+            async_conn,
+            [heavy_id, light_id],
+            transaction_depth=0,
+        )
+        rows = {
+            str(row["session_id"]): row
+            for row in await (
+                await async_conn.execute(
+                    "SELECT * FROM session_profiles WHERE session_id IN (?, ?)",
+                    (heavy_id, light_id),
+                )
+            ).fetchall()
+        }
+
+    assert update.counts.profiles == 2
+    assert rows[heavy_id]["workflow_shape"] == "bounded_large_session"
+    assert rows[light_id]["workflow_shape"] != "bounded_large_session"
+
+
+@pytest.mark.asyncio
+async def test_heavy_session_profile_agrees_between_refresh_and_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """polylogue-61zb acceptance: a heavy session's stored profile must be the
+    same degraded shape whether the incremental refresh or a convergence
+    rebuild materialized it last — no flip-flopping."""
+    db_path = tmp_path / "refresh-rebuild-parity.db"
+    session_id = _seed_heavy_session(db_path, "conv-refresh-parity")
+
+    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+
+    volatile_columns = {"materialized_at"}
+
+    async def profile_snapshot(async_conn: aiosqlite.Connection) -> dict[str, object]:
+        row = await (
+            await async_conn.execute(
+                "SELECT * FROM session_profiles WHERE session_id = ?",
+                (session_id,),
+            )
+        ).fetchone()
+        assert row is not None
+        columns: list[str] = row.keys()
+        return {key: row[key] for key in columns if key not in volatile_columns}
+
+    async with aiosqlite.connect(db_path) as async_conn:
+        async_conn.row_factory = sqlite3.Row
+        await refresh_session_insights_for_session_async(async_conn, session_id)
+        await async_conn.commit()
+        refreshed = await profile_snapshot(async_conn)
+
+        await rebuild_mod.rebuild_session_insights_async(async_conn, session_ids=[session_id])
+        await async_conn.commit()
+        rebuilt = await profile_snapshot(async_conn)
+
+        # And back again: refresh after rebuild must not flip the shape.
+        await refresh_session_insights_for_session_async(async_conn, session_id)
+        await async_conn.commit()
+        refreshed_again = await profile_snapshot(async_conn)
+
+    assert refreshed["workflow_shape"] == "bounded_large_session"
+    assert refreshed == rebuilt
+    assert refreshed_again == rebuilt
