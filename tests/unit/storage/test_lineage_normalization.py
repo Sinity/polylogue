@@ -527,6 +527,65 @@ def test_missing_variant_branch_point_keeps_only_owned_child_tail(tmp_path: Path
     conn.close()
 
 
+def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: Path) -> None:
+    """Writer-side alignment must use the same dangling-cut bound as readers."""
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    root = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="root",
+        messages=[
+            _msg("r0", Role.USER, "root prompt", 0),
+            _msg("r1", Role.ASSISTANT, "root reply", 1),
+        ],
+    )
+    root_id = write_parsed_session_to_archive(conn, root)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        parent_session_provider_id="root",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("p0", Role.USER, "root prompt", 0),
+            _msg("p1", Role.ASSISTANT, "root reply", 1),
+            _msg("p2", Role.USER, "parent tail", 2),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    conn.execute("DELETE FROM messages WHERE message_id = ?", (f"{root_id}:r1",))
+    conn.commit()
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "root prompt", 0),
+            _msg("c1", Role.ASSISTANT, "root reply", 1),
+            _msg("c2", Role.USER, "parent tail", 2),
+            _msg("c3", Role.ASSISTANT, "child tail", 3),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    # The parent's branch cut is absent.  It contributes only its owned tail
+    # to signature alignment, so the child's full replay is preserved rather
+    # than deduplicating a surviving but semantically incomplete root prefix.
+    link = conn.execute(
+        "SELECT resolved_dst_session_id, branch_point_message_id, inheritance "
+        "FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert tuple(link) == (parent_id, None, "spawned-fresh")
+    physical = conn.execute(
+        "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+        (child_id,),
+    ).fetchall()
+    assert [row[0] for row in physical] == ["c0", "c1", "c2", "c3"]
+    conn.close()
+
+
 def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     conn = _connect(db)
