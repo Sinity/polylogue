@@ -373,6 +373,55 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
 });
 
 describe("ChatGPT authenticated asset capture envelope", () => {
+  it("prefers fresh native detail over an intercepted page-load payload", async () => {
+    const adapter = syntheticEndpointAdapter();
+    const harness = installFullCapture(adapter);
+    const stalePayload = {
+      ...conversationPayload(),
+      title: "Stale page-load title",
+      update_time: 1781366401,
+      current_node: "stale-node",
+      mapping: {
+        "stale-node": {
+          id: "stale-node",
+          parent: null,
+          children: [],
+          message: {
+            id: "stale-message",
+            author: { role: "user" },
+            create_time: 1781366401,
+            content: { content_type: "text", parts: ["opening prompt only"] },
+            metadata: { model_slug: "gpt-test" },
+          },
+        },
+      },
+    };
+    harness.dom.window.dispatchEvent(
+      new harness.dom.window.MessageEvent("message", {
+        source: harness.dom.window,
+        origin: harness.dom.window.location.origin,
+        data: {
+          type: "polylogue.chatgpt.nativeCapture",
+          capture: {
+            ok: true,
+            status: 200,
+            contentType: "application/json",
+            url: "https://chatgpt.com/backend-api/conversation/conversation-1",
+            body: JSON.stringify(stalePayload),
+          },
+        },
+      }),
+    );
+
+    const result = await harness.dom.window.polylogueCapture.capturePage();
+
+    expect(result.envelope.session.title).toBe("Authenticated capture fixture");
+    expect(result.envelope.session.turns[0].provider_turn_id).toBe("assistant-message-1");
+    expect(
+      adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
+    ).toHaveLength(1);
+  });
+
   it("records stable attachment identity, bytes, size, and SHA receipt across repeat capture", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter);

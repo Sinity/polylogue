@@ -627,7 +627,12 @@
   }
 
   async function capture(reason = null) {
-    const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
+    // Intercepted responses are only a bootstrap/fallback cache. A long-running
+    // conversation can grow substantially after the response observed at page
+    // load, so every explicit capture first asks ChatGPT for current native
+    // detail with cache: "no-store". Falling back preserves degraded/offline
+    // capture without allowing an old response to outrank fresh provider state.
+    const nativePayload = (await fetchNativePayloadOnDemand()) || latestNativePayload();
     let assetAcquisition = null;
     if (nativePayload) {
       try {
