@@ -1,0 +1,16 @@
+{
+  "case": "excluded-growing",
+  "file_size_bytes": 4096,
+  "cursor_observed_size_bytes": 2048,
+  "cursor_offset_bytes": 2048,
+  "failure_count": 5,
+  "excluded": true,
+  "attempt_error": "JSON decoder stopped at an incomplete record after five retries",
+  "expected": {
+    "operational_state": "degraded",
+    "stage": "acquired-unparsed",
+    "pending_bytes": 2048,
+    "unobserved_growth_bytes": 2048,
+    "accepted_raw_id": "raw-later-unparsed"
+  }
+}

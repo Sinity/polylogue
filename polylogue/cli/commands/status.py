@@ -1294,6 +1294,18 @@ def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str
     default=False,
     help="Run expensive exact archive-readiness probes in direct SQLite fallback.",
 )
+@click.option(
+    "--source",
+    "source_path",
+    type=click.Path(path_type=Path),
+    help="Inspect one exact source path from cursor evidence through searchability.",
+)
+@click.option(
+    "--strict-source",
+    is_flag=True,
+    default=False,
+    help="Fail when --source is degraded, incomplete, or has unsafe evidence reads.",
+)
 @click.pass_obj
 def status_command(
     env: AppEnv,
@@ -1302,6 +1314,8 @@ def status_command(
     json_alias: bool,
     full_payload: bool,
     exact_archive_readiness: bool,
+    source_path: Path | None = None,
+    strict_source: bool = False,
 ) -> None:
     """Show daemon and archive health.
 
@@ -1313,6 +1327,43 @@ def status_command(
     """
     if json_alias and output_format is None:
         output_format = "json"
+    if source_path is not None:
+        # A named-source status call is intentionally direct and bounded. Do
+        # not ask the daemon for aggregate status first: the incident was an
+        # excluded path hidden by aggregate coverage.
+        from polylogue.archive.query.source_freshness import (
+            NamedSourceOperationalState,
+            NamedSourceStage,
+            project_named_source_freshness,
+        )
+        from polylogue.archive.query.source_freshness_surfaces import (
+            render_source_freshness_status,
+        )
+        from polylogue.cli.shared.helpers import load_effective_config
+        from polylogue.paths import archive_file_set_root_for_paths
+
+        if not source_path.is_absolute():
+            raise click.UsageError("--source must be an absolute exact source path")
+        config = load_effective_config(env)
+        archive_root = archive_file_set_root_for_paths(
+            archive_root_path=config.archive_root,
+            db_anchor=config.db_path,
+        )
+        freshness = project_named_source_freshness(archive_root, source_path)
+        if output_format == "json":
+            click.echo(json.dumps(freshness.to_dict(), sort_keys=True))
+        else:
+            click.echo(render_source_freshness_status(freshness))
+        unsafe = bool(freshness.receipt.unsafe_scan_rejections or freshness.errors)
+        incomplete = (
+            freshness.operational_state is NamedSourceOperationalState.DEGRADED
+            or freshness.stage is not NamedSourceStage.SEARCHABLE
+        )
+        if unsafe:
+            raise click.exceptions.Exit(3)
+        if strict_source and incomplete:
+            raise click.exceptions.Exit(2)
+        return
     candidate_urls = _candidate_daemon_urls(daemon_url)
     for candidate_url in candidate_urls:
         try:

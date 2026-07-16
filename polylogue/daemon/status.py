@@ -2459,22 +2459,31 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             for family in families[:5]:
                 if isinstance(family, dict):
                     lines.append(f"    {family.get('family')}: {family.get('failed_count', 0)} failed")
-    # Cursor lag summary (#1232) — show only when something is stuck so the
-    # quiet steady state stays quiet.
+    # Cursor lag summary (#1232) — degraded cursors are outside the lag SLO,
+    # but must be surfaced even when no ordinary cursor is stuck.
     cursor_lag = payload.get("cursor_lag")
     if isinstance(cursor_lag, dict):
         stuck = _safe_int(cursor_lag.get("stuck_file_count"))
-        if stuck > 0:
+        degraded = _safe_int(cursor_lag.get("degraded_file_count"))
+        if stuck > 0 or degraded > 0:
             idle = _safe_int(cursor_lag.get("idle_file_count"))
             max_lag = _safe_float(cursor_lag.get("max_lag_s"))
-            lines.append(f"Cursor lag: {stuck} stuck file(s) ({idle} idle), worst lag {max_lag:.0f}s")
+            max_degraded_lag = _safe_float(cursor_lag.get("max_degraded_lag_s"))
+            lines.append(
+                f"Cursor lag: {stuck} stuck, {degraded} degraded, {idle} idle "
+                f"(worst lag {max_lag:.0f}s; degraded age {max_degraded_lag:.0f}s)"
+            )
             cursor_families = cursor_lag.get("family_summaries")
             if isinstance(cursor_families, list):
                 for family in cursor_families[:5]:
-                    if isinstance(family, dict) and _safe_int(family.get("stuck_file_count")) > 0:
+                    if isinstance(family, dict) and (
+                        _safe_int(family.get("stuck_file_count")) > 0
+                        or _safe_int(family.get("degraded_file_count")) > 0
+                    ):
                         lines.append(
                             "  "
                             f"{family.get('family')}: {_safe_int(family.get('stuck_file_count'))} stuck, "
+                            f"{_safe_int(family.get('degraded_file_count'))} degraded, "
                             f"worst lag {_safe_float(family.get('max_lag_s')):.0f}s"
                         )
                         # Auto-calibration baseline state (#1349). Render only

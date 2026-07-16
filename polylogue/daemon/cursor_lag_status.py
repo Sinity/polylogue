@@ -31,6 +31,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -66,14 +67,17 @@ class CursorLagFamilySummary(BaseModel):
     family: str
     tracked_file_count: int = 0
     stuck_file_count: int = 0
+    degraded_file_count: int = 0
     idle_file_count: int = 0
     max_lag_s: float = 0.0
     """Maximum ``now - updated_at`` across stuck files in this family (0 if none)."""
+    max_degraded_lag_s: float = 0.0
+    """Maximum age across degraded cursors, outside the cursor-lag SLO."""
     baseline: CursorLagBaselineState = Field(default_factory=CursorLagBaselineState)
 
 
 class CursorLagItem(BaseModel):
-    """One cursor that the projection classified as stuck."""
+    """One cursor that the projection classified as stuck or degraded."""
 
     family: str
     source_path: str
@@ -82,6 +86,9 @@ class CursorLagItem(BaseModel):
     failure_count: int = 0
     updated_at: str
     lag_s: float = 0.0
+    classification: Literal["stuck", "degraded"] = "stuck"
+    degradation_reason: Literal["excluded", "cursor-ahead"] | None = None
+    excluded: bool = False
 
 
 class CursorLagSummary(BaseModel):
@@ -89,14 +96,20 @@ class CursorLagSummary(BaseModel):
 
     tracked_file_count: int = 0
     stuck_file_count: int = 0
+    degraded_file_count: int = 0
     idle_file_count: int = 0
     max_lag_s: float = 0.0
+    max_degraded_lag_s: float = 0.0
     family_summaries: list[CursorLagFamilySummary] = Field(default_factory=list)
     stuck: list[CursorLagItem] = Field(default_factory=list)
+    degraded: list[CursorLagItem] = Field(default_factory=list)
 
 
 _STUCK_SAMPLE_LIMIT = 10
 """Bound the per-summary list of stuck items so the projection stays small."""
+
+_DEGRADED_SAMPLE_LIMIT = 10
+"""Bound degraded evidence independently from the SLO sample."""
 
 
 def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> CursorLagSummary:
@@ -266,10 +279,13 @@ def _project_rows(
 
     per_family: dict[str, _FamilyAccumulator] = {}
     stuck_items: list[CursorLagItem] = []
+    degraded_items: list[CursorLagItem] = []
     tracked_total = 0
     stuck_total = 0
+    degraded_total = 0
     idle_total = 0
     max_lag_total = 0.0
+    max_degraded_lag_total = 0.0
 
     for row in rows:
         source_path = _required_str(row[0])
@@ -282,15 +298,33 @@ def _project_rows(
         family = source_family_for_path(source_path)
         acc = per_family.setdefault(family, _FamilyAccumulator(family=family))
         acc.tracked += 1
-        if excluded:
-            # Quarantined cursors are not "stuck" in the SLO sense — they
-            # have been explicitly removed from the ingest loop and live
-            # under the raw-failures alert surface instead.
-            acc.idle += 1
-            idle_total += 1
+        lag_s = _age_seconds(updated_at, now=now)
+        cursor_ahead = byte_offset > byte_size
+        if excluded or cursor_ahead:
+            # Quarantine and impossible positions are explicit degraded
+            # evidence. They remain outside the lag SLO, but can never
+            # silently appear as healthy idle sources.
+            degradation_reason: Literal["excluded", "cursor-ahead"] = "excluded" if excluded else "cursor-ahead"
+            acc.degraded += 1
+            degraded_total += 1
+            acc.max_degraded_lag_s = max(acc.max_degraded_lag_s, lag_s)
+            max_degraded_lag_total = max(max_degraded_lag_total, lag_s)
+            degraded_items.append(
+                CursorLagItem(
+                    family=family,
+                    source_path=source_path,
+                    byte_offset=byte_offset,
+                    byte_size=byte_size,
+                    failure_count=failure_count,
+                    updated_at=updated_at,
+                    lag_s=round(lag_s, 3),
+                    classification="degraded",
+                    degradation_reason=degradation_reason,
+                    excluded=excluded,
+                )
+            )
             continue
         is_stuck = (byte_offset < byte_size) or failure_count > 0
-        lag_s = _age_seconds(updated_at, now=now)
         if is_stuck:
             acc.stuck += 1
             stuck_total += 1
@@ -318,34 +352,46 @@ def _project_rows(
             family=acc.family,
             tracked_file_count=acc.tracked,
             stuck_file_count=acc.stuck,
+            degraded_file_count=acc.degraded,
             idle_file_count=acc.idle,
             max_lag_s=round(acc.max_lag_s, 3),
+            max_degraded_lag_s=round(acc.max_degraded_lag_s, 3),
         )
-        for acc in sorted(per_family.values(), key=lambda a: (-a.max_lag_s, -a.stuck, a.family))
+        for acc in sorted(
+            per_family.values(),
+            key=lambda a: (-max(a.max_lag_s, a.max_degraded_lag_s), -a.degraded, -a.stuck, a.family),
+        )
     ]
     # Surface the worst offenders first; bound list size for status payloads.
     stuck_items.sort(key=lambda item: item.lag_s, reverse=True)
     stuck_items = stuck_items[:_STUCK_SAMPLE_LIMIT]
+    degraded_items.sort(key=lambda item: item.lag_s, reverse=True)
+    degraded_items = degraded_items[:_DEGRADED_SAMPLE_LIMIT]
 
     return CursorLagSummary(
         tracked_file_count=tracked_total,
         stuck_file_count=stuck_total,
+        degraded_file_count=degraded_total,
         idle_file_count=idle_total,
         max_lag_s=round(max_lag_total, 3),
+        max_degraded_lag_s=round(max_degraded_lag_total, 3),
         family_summaries=family_summaries,
         stuck=stuck_items,
+        degraded=degraded_items,
     )
 
 
 class _FamilyAccumulator:
-    __slots__ = ("family", "tracked", "stuck", "idle", "max_lag_s")
+    __slots__ = ("family", "tracked", "stuck", "degraded", "idle", "max_lag_s", "max_degraded_lag_s")
 
     def __init__(self, *, family: str) -> None:
         self.family = family
         self.tracked = 0
         self.stuck = 0
+        self.degraded = 0
         self.idle = 0
         self.max_lag_s = 0.0
+        self.max_degraded_lag_s = 0.0
 
 
 def _age_seconds(iso_value: str, *, now: datetime) -> float:
