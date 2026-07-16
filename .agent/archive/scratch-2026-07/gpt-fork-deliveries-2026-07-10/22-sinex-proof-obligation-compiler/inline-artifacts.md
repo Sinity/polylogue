@@ -1,0 +1,1 @@
+none recovered — Shared prefix (Polylogue overview, Sinex overview + interop architecture, external-legibility package summary) is NOT repeated here -- see ../00-shared-branch-root-polylogue-sinex-overview/delivery.md (byte-identical, sha256-verified). No other substantial branch-unique inline artifacts found.

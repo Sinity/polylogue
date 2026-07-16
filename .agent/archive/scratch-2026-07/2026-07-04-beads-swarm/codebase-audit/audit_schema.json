@@ -1,0 +1,63 @@
+{
+  "over_storage": [
+    {
+      "table_or_column": "session_runs (main-role rows), session_observed_events (kind='session_started' and kind='tool_finished' rows), session_context_snapshots (boundary='session_start' rows)",
+      "tier": "index.db (derived / rebuildable)",
+      "why_redundant": "The materializer (polylogue/insights/run_projection.py lines 231-273) writes a main run, a session_start context snapshot, a session_started event, and one tool_finished event per tool call into these three tables. But the read relation SQL (polylogue/storage/sqlite/run_projection_relations.py) unconditionally SYNTHESIZES those exact rows from sessions+blocks (source_runs / session_started_base / tool_finished_base / source_context_snapshots CTEs, producing byte-identical refs 'run:<sid>', 'observed-event:<sid>:session_started', 'observed-event:<block_id>:tool_finished', 'context-snapshot:<sid>:session_start') and then explicitly DISCARDS the materialized copies for those categories: materialized_runs has `WHERE r.role <> 'main' OR NOT EXISTS(source_runs for session)`, materialized_observed_events has `WHERE e.kind NOT IN ('session_started','tool_finished') OR NOT EXISTS(...)`, materialized_context_snapshots has `WHERE c.boundary <> 'session_start' OR NOT EXISTS(...)`. So these rows are written to a derived tier and then filtered out of every read = pure write-amplification + resident storage with zero read value. tool_finished is the worst offender: one materialized row per tool_use block across ~10M blocks. Only subagent runs, non-(session_started/tool_finished) events (compaction, subagent lifecycle, message events), and non-session_start snapshots (subagent_start, resume) are NOT cheaply lowerable and legitimately need materialization.",
+      "replacement_read_path": "Already the default: run_relation_sql/observed_event_relation_sql/context_snapshot_relation_sql source CTEs over sessions+blocks; include_materialized only unions the residual rich rows. Surgery = make the materializer stop emitting main/session_started/tool_finished/session_start rows (mirror the reader's discard predicate at write time); DDL is retained for the rich residual.",
+      "existing_bead_or_null": "polylogue-dab (open) — 'Stop materializing run-projection cache rows; drop DDL after parity'; child of epic polylogue-a7xr; umbrella polylogue-iec"
+    },
+    {
+      "table_or_column": "session_runs.payload_json, session_observed_events.payload_json, session_context_snapshots.payload_json (the residual RICH rows that survive the dab surgery)",
+      "tier": "index.db (derived)",
+      "why_redundant": "Each of the three tables stores the ENTIRE typed object a second time as a JSON blob in payload_json, alongside the individual typed columns (harness, role, status, title, cwd, git_branch, native_session_id, native_parent_session_id, parent_run_ref, agent_ref, provider_origin, lineage_refs_json, evidence_refs_json, transcript_ref, context_snapshot_ref, ...). The proof they are sufficient without payload_json: relations.py:projected_run_from_row/observed_event_from_row/context_snapshot_from_row have a 'source' branch that reconstructs the full ProjectedRun/ObservedEvent/ContextSnapshot ENTIRELY from the typed columns; only the 'materialized' branch shortcuts to `model_validate(json.loads(payload_json))`. The columns already carry every field the object needs, so payload_json is a duplicate copy of data that is also stored column-wise. search_text on all three tables is likewise a denormalized title/native_id/git_branch concatenation the source branch recomputes inline in SQL.",
+      "replacement_read_path": "Point the materialized read branch at the same column-based constructor the source branch already uses (projected_run_from_row source path), and drop payload_json (and optionally search_text) from the DDL. This is a residual that dab does NOT cover: dab stops the redundant ROWS; this stops the redundant per-row JSON copy on the rows that remain.",
+      "existing_bead_or_null": null
+    },
+    {
+      "table_or_column": "fts_freshness_state (duplicate CREATE TABLE declaration + drifted shape + derived-tier ALTER helpers)",
+      "tier": "index.db (derived)",
+      "why_redundant": "Declared twice: canonical tier DDL at polylogue/storage/sqlite/archive_tiers/index.py:312 (with `) STRICT;`) and a second full CREATE TABLE constant _CREATE_TABLE_SQL at polylogue/storage/fts/freshness.py:18 used by ensure_fts_freshness_table_sync/async — WITHOUT STRICT. The two shapes have already diverged (STRICT present in the tier DDL, absent in the lifecycle copy), which is exactly the schema-policy self-violation the bead warns about. Worse, freshness.py carries a _COLUMN_UPGRADES table of ALTER TABLE ... ADD COLUMN migrations run against index.db — a derived/rebuildable tier that policy says must be rebuilt from source, not migrated in place; the ALTER path only exists to paper over the fact that a second declaration can lag the canonical one.",
+      "replacement_read_path": "Single-source: the index-tier DDL owns fts_freshness_state; the lifecycle ensure-path references that single definition (or is deleted, since a fresh index.db already has the table). Remove _COLUMN_UPGRADES entirely (derived tiers rebuild, not ALTER).",
+      "existing_bead_or_null": "polylogue-1ty (open) — 'fts_freshness_state declared twice: reconcile with schema policy'; child of polylogue-a7xr. Finding extends 1ty with the concrete STRICT divergence and the illegitimate derived-tier _COLUMN_UPGRADES ALTER path."
+    },
+    {
+      "table_or_column": "ArchiveWebConstructRow dataclass (polylogue/storage/sqlite/archive_tiers/write.py:62)",
+      "tier": "index.db write path (code, not stored bytes)",
+      "why_redundant": "Dead dataclass: the only reference to ArchiveWebConstructRow in the tree is its own class definition. The web_content_constructs INSERT (write.py:1593 _write_web_constructs) builds the row inline and never instantiates the dataclass. It is a declared-but-unused construct.",
+      "replacement_read_path": "n/a — delete the dataclass; the inline INSERT is the live path. (The web_content_constructs TABLE itself is live and populated.)",
+      "existing_bead_or_null": "polylogue-1a9 (open) — 'Remove dead session-commit stubs + unused web-construct row + stale fuzz README'"
+    },
+    {
+      "table_or_column": "insights/session_commit.py: persist_session_commits() no-op + session_commit_edge_to_row()",
+      "tier": "code (insights)",
+      "why_redundant": "persist_session_commits is a placeholder whose entire body is `del edges, repo_id` (docstring: 'placeholder ... the actual write path is through the facade'); session_commit_edge_to_row has no callers. Both are dead. NOTE: the session_commits TABLE is NOT dead — it is written from write.py:3255 on the parser git-meta path (session.git_commit_hash), so do not flag the table, only the two stub functions.",
+      "replacement_read_path": "n/a — delete both functions; the live write path is write.py's INSERT OR REPLACE INTO session_commits.",
+      "existing_bead_or_null": "polylogue-1a9 (open)"
+    },
+    {
+      "table_or_column": "~40+ duplicated table_exists / column_exists / index_exists SQLite-introspection helpers",
+      "tier": "code (cross-cutting, all tiers)",
+      "why_redundant": "Not stored bytes, but declared-schema-introspection duplication in the same consolidation family. A grep for `def *table_exists` / column_exists / index_exists finds 40+ private definitions across daemon/*, storage/*, storage/fts/*, storage/embeddings/*, storage/sqlite/archive_tiers/*, cli/commands/*, etc. Bead 48h scopes this but undercounts as '10 copies of _table_exists' — the true count including column/index variants is ~40+ definition sites.",
+      "replacement_read_path": "One storage/sqlite/introspection.py with table_exists/index_exists/column_exists (sync + thin async wrappers); replace all call sites; add a grep-based verify-quick lint (clock-hygiene pattern) rejecting new local defs.",
+      "existing_bead_or_null": "polylogue-48h (open) — 'Consolidate SQLite introspection helpers'; child of polylogue-a7xr. Extend the bead's count from ~10 to ~40+ (include column_exists/index_exists variants)."
+    },
+    {
+      "table_or_column": "Composite TEXT identity keys stored + UNIQUE-indexed on every child row: sessions.session_id ('origin:native'), messages.session_id, blocks.message_id AND blocks.session_id, plus every insight/attachment/tag child; and blocks.search_text storage class vs blocks.text overlap",
+      "tier": "index.db (derived) — the dominant byte consumer",
+      "why_redundant": "The 50-120 char composite TEXT ids are repeated as STORED generated columns on ~3.8M messages / ~10M blocks and re-keyed by every child table, plausibly 30-50% of index.db bytes and most of the page-cache working set; children could join on parent INTEGER rowids while the TEXT ids remain generated-at-boundary. Needs a dbstat/dbstat-census before surgery. Also verify search_text vs blocks.text duplication for text-bearing blocks (a STORED search_text would duplicate every text byte).",
+      "replacement_read_path": "Blue-green index.db rebuild: internal INTEGER-rowid child FKs, TEXT ids as generated columns at the API boundary. Measure first (census artifact) — high win-probability, high churn.",
+      "existing_bead_or_null": "polylogue-iec (open, umbrella) — 'Schema optimization audit: storage shape earns its bytes and its reads'. This IS the iec headline; census-first is iec's own acceptance."
+    }
+  ],
+  "proposed_beads": [
+    {
+      "title": "Drop payload_json/search_text duplication from run-projection tables; hydrate from typed columns",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-dab",
+      "design": "Residual over-storage that dab does NOT cover. dab removes the redundant ROWS (main/session_started/tool_finished/session_start) that the reader discards; this bead attacks the per-row JSON duplication on the rich rows that SURVIVE. session_runs/session_observed_events/session_context_snapshots each store the full typed object a SECOND time in payload_json alongside the individual typed columns (harness, role, status, title, cwd, git_branch, native_session_id, parent_run_ref, agent_ref, provider_origin, lineage_refs_json, evidence_refs_json, transcript_ref, context_snapshot_ref, ...). Proof of redundancy: run_projection_relations.py projected_run_from_row/observed_event_from_row/context_snapshot_from_row already reconstruct the ENTIRE object from typed columns in their 'source' branch; only the 'materialized' branch takes the payload_json shortcut. search_text is likewise a recomputable title/native_id/git_branch concatenation. Surgery: point the materialized read branch at the same column-based constructor the source branch uses, then drop payload_json (and evaluate dropping search_text if a lowered concat/expression index suffices) from the three tables' DDL. Sequence AFTER dab so the row-set is already minimized; blue-green index.db rebuild (derived tier). Measure the byte delta on the live archive as part of iec's census.",
+      "acceptance": "Materialized run/observed-event/context-snapshot reads hydrate from typed columns with no payload_json read; payload_json column removed from all three tables' canonical DDL; snapshot/parity test proves identical ProjectedRun/ObservedEvent/ContextSnapshot output before/after for a subagent+compaction fixture; before/after index.db size delta recorded; devtools lab policy schema-versioning + verify layering green; index tier rebuilt from source evidence."
+    }
+  ]
+}

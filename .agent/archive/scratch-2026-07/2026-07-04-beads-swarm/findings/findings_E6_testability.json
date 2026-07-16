@@ -1,0 +1,123 @@
+{
+  "domain": "E6-testability-and-sizing",
+  "summary": "Of 109 in-scope beads (P0/P1 + ready P2), 56 have no acceptance and 33 no design; most that DO carry AC are well-specified but state observable states without naming a verify command, so they are gradeable-but-not-runnable. The higher-leverage defect is sizing: at least seven in-scope beads self-describe multi-lane scope (their own design enumerates (1)(2)(3) sub-lanes) yet are filed as one task/feature, and a four-bead devloop-contract cluster stands parentless implying a missing epic.",
+  "underspecified": [
+    {
+      "id": "polylogue-xy95",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "verify: `time polylogue analyze usage --origin codex-session --detail full --limit 20 --format json` returns on the live archive with p95 < 15s and no D-state wait in the stale-rollup path (was terminated in D-state during polylogue-4ts.2); the expensive broad Python source-reconstruction/sampling section is gated behind an explicit `--deep` flag so the default path never runs it; `devtools test tests/unit/cli -k 'usage and (reasoning_only or stale_rollup)'` covers the reasoning-only predicate and the optimized clean-rollup result.",
+      "why": "Existing AC says 'either completes within an agreed interactive budget or exposes separately selectable expensive sections' — no numeric threshold, no flag name, and no named test, so 'agreed budget' is unfalsifiable."
+    },
+    {
+      "id": "polylogue-b5l",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "Add executable gates to the (good, but command-less) thresholds: a chaos/probe lane `devtools lab probe blue-green` drives a schema bump on the seeded corpus under concurrent read load and asserts (a) zero failed reads across the swap, (b) write-pause < 100ms measured, (c) delta replayed and old generation reaped; `polylogue ops reset --index --offline` has a test proving the old path is preserved; `devtools bench` records the swap-pause distribution so the '20-40 min degraded window gone' claim is measured, not asserted.",
+      "why": "AC already names correct measurable states (100ms swap, zero failed queries) but binds them to no runnable check — nothing in verify/probe/bench exercises the blue-green swap, so the claim can only be asserted by hand."
+    },
+    {
+      "id": "polylogue-3tl",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "Make the cold-reader gate reproducible (additive, keep the operator's intent): (1) `devtools verify doc-commands` proves every command on the README first screen resolves to a live polylogue/polylogued/devtools command; (2) `polylogue demo script --shell bash | bash` runs the one-command demo to exit 0 in a clean env (CI job); (3) a fresh subagent dispatched with ONLY the checked-out repo (no CLAUDE.md/no memory) must answer 'what is this / run the demo / cite one published finding URL', and its transcript is archived under .agent/demos/cold-reader/ as the standing cold-reader evidence artifact, re-runnable each release.",
+      "why": "Terminal state is well-named but 'verified by a cold-reader pass from someone/something with no project context' names no reproducible procedure — this is the top-of-frame legibility epic, so its acceptance most needs an automatable gate rather than a one-off human read."
+    },
+    {
+      "id": "polylogue-6il",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "verify: `devloop-integration --json --check` emits a schema-validated object carrying branch_role, ahead_count, stale_ledger, replay_branches, and pr_urls; `devloop-review` consumes it (its output surfaces those fields — assert via grep in a golden-file test); `--check` exits non-zero on a seeded drift fixture (branch role missing / stale ledger) and zero on a clean one.",
+      "why": "No acceptance at all and no design; the bead is a one-line 'add JSON/check mode', so it needs a concrete contract before it can be closed or verified."
+    },
+    {
+      "id": "polylogue-lio",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "verify: both the polylogue and Sinex shared-contract docs state 'operator directives = P0/P1 beads (bd human)'; the contract-drift check in each repo's verify fails when a `devloop-checkpoint --queue` directive exists with no corresponding bead; a regression fixture reproduces the once-swallowed `--queue`-as-checkpoint-title bug and the extended check catches it in both repos.",
+      "why": "No acceptance; the bead describes a real past silent-drift bug but gives no check that would re-catch it, so 'align the twins' cannot be proven done."
+    },
+    {
+      "id": "polylogue-avg",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "verify: `polylogue ops status --json` exposes a `claimable` block with booleans archive_openable / converged / search_ready / perf_measurable derived from the SAME signals devloop-status uses (schema-version match, raw-materialization debt zero/classified, live_performance_proof_blocked); `devtools test tests/unit/cli -k 'ops_status and claim'`; a seeded not-yet-converged archive reports converged=false with the raw-materialization-debt reason attached, and a seeded ready archive reports all true.",
+      "why": "No acceptance; the value is 'expose the loop scripts' claim-guard vocabulary to users', which is only meaningful if the exposed fields provably track the same signals — that parity needs an explicit test."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-7aw",
+      "kind": "scope-conflict",
+      "evidence": "polylogue-7aw AC: 'one state-like global-CLAUDE.md section migrated to injected-equivalent with drill-verified parity and the static text retired'. polylogue-3gd design owns authoring the injected 'Polylogue substrate' chapter in dots/claude and its AC is the activation layer that makes injected context exist. Both beads claim to migrate a global CLAUDE.md section into injected form.",
+      "fix": "Assign ownership: 3gd owns the injected activation chapter (the destination); 7aw owns only ingesting agent-config as a source family and the four-class classification map. Move the 'migrate + retire one static section' acceptance to a single owner (3gd, since it authors the injected surface) and have 7aw's classification map feed it, or make 7aw's migration item an explicit dependent of 3gd."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-cfk",
+      "issue": "missing-dep",
+      "detail": "cfk description states the memory-loop program polylogue-37t 'is building on an unvalidated premise' until the two-arm uplift re-run exists (jxe closed diagnostic-negative: packs lost 5/10 vs 8/10). 37t's context-scheduler/analytics children are being specified while the only recorded uplift result is 'packs lose'.",
+      "proposed": "Add a dependency so 37t's context-build-out children are gated on cfk's result (positive/negative/ambiguous). At minimum flag in 37t that cfk validates its founding premise; if cfk lands negative, 37t needs a three-arm redesign decision before further build-out."
+    },
+    {
+      "id": "polylogue-27m",
+      "issue": "missing-dep",
+      "detail": "27m (excision) AC assumes 'the blue-green machinery makes this [derived-tier rebuild after excision] cheap' — that machinery is polylogue-b5l. Excision without blue-green means every excision degrades the archive for the full 20-40min rebuild window b5l exists to remove.",
+      "proposed": "Add dep 27m -> b5l (blue-green index rebuilds), so excision's 'rebuild the affected session' step is a non-event rather than a downtime."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-3gd",
+      "change": "split",
+      "from": "single P1 feature (des=2214, spans sinnix repo + polylogue + a month-later checkpoint)",
+      "to": "epic + children",
+      "rationale": "Self-describes as an 'unapologetically LARGE' cross-repo layer AND a longitudinal decay-watch that cannot be one PR. Children: (1) 'Substrate activation chapter + render wiring' — author the ~3-6K-token dots/claude chapter, trigger table, seven flows, five protocol examples; render-agents proves it reaches Claude+Codex. (2) 'Adoption instrumentation: pre-ship baseline + weekly affordance-usage report' — baseline captured BEFORE the chapter ships so the delta is measurable. (3) 'One-month adoption/decay review' (decision bead) — material movement or revise chapter. Item (3) is inherently a later checkpoint, not shippable now."
+    },
+    {
+      "id": "polylogue-ox0",
+      "change": "split",
+      "from": "single P2 task",
+      "to": "epic + 3 children (its own design already says 'Three sub-lanes, sequenced')",
+      "rationale": "Design literally sequences: (1) state_5.sqlite authoritative importer + goals_1.sqlite schema note (mirror of fs1.1); (2) app-server JSON-RPC protocol spike -> committed capabilities/version/event-vocabulary artifact with go/no-go; (3) app-server live capture lane, gated on (2)'s go/no-go. Lane 2 is a spike whose output decides whether lane 3 exists — that decision boundary makes them separate beads with an explicit dep chain."
+    },
+    {
+      "id": "polylogue-yeq",
+      "change": "split",
+      "from": "single P2 task",
+      "to": "epic + 3 children",
+      "rationale": "Three method-independent lanes: (1) metamorphic query lane (hypothesis strategy over the DSL grammar + ~8 algebraic laws as properties); (2) daemon chaos lane (one seeded crash-recovery invariant per staged kill point); (3) API-contract ref-walk lane (100% of list-emitting routes/tools, fails on a deliberately broken ref). Different test infra, different failure modes, independent review boundaries — three PRs."
+    },
+    {
+      "id": "polylogue-oxz",
+      "change": "split",
+      "from": "single P2 feature",
+      "to": "epic + children",
+      "rationale": "Enumerates (a) slow-query log (SQLite statements over threshold + EQP on demand, bounded storage), (b) `--debug-timing` CLI phase breakdown (import/config/db-open/compile/execute/render), (c) webui client-side perf beacons, plus a doctrine page + print()-diagnostic lint. These touch storage, CLI, webui, and docs/verify independently. Split into slow-query-log, cli-debug-timing, and webui-beacons+logging-doctrine-lint."
+    },
+    {
+      "id": "polylogue-t0p",
+      "change": "split",
+      "from": "single P2 task",
+      "to": "epic + children (design already orders them by evidence value)",
+      "rationale": "Four distinct Claude Code artifact kinds with separate parsers/read-models: (1) todos JSON -> plan items + plan-vs-outcome measure; (2) file-history -> content-addressed blob capture + yrx cross-check lane; (3) history.jsonl prompt history -> paste/reuse analytics; (4) debug artifacts. Todos and file-history alone are each a full artifact-kind PR; ship the two high-value ones first."
+    },
+    {
+      "id": "polylogue-7aw",
+      "change": "split",
+      "from": "single P2 feature (des=2338)",
+      "to": "epic + children",
+      "rationale": "New source family + correlation + migration is 3 PRs: (1) 'Agent-config source family' — parser (git-log walker), identity, content-hash versioning, watcher coverage; (2) 'Session<->config correlation + skill-invocation report' — resolve a session to the exact CLAUDE.md/skill versions it ran under, render frequency/outcome-mix report; (3) 'Migrate one static global-CLAUDE.md section to injected-equivalent + commit the four-class classification map' — this last child overlaps 3gd (see inconsistencies) and should depend on it."
+    },
+    {
+      "id": "polylogue-27m",
+      "change": "split",
+      "from": "single P2 task",
+      "to": "epic + 2 children",
+      "rationale": "Two independent subsystems: (1) EXCISION — auditable removal across source/index/FTS/embeddings/blob + tombstone + content-hash recompute so idempotency does not resurrect it (hard, touches the content-addressing invariant, depends on b5l blue-green); (2) SECRET SCANNING at ingest — flag seeded fake credentials as candidates without logging their value + a bounded retro scan on the live archive. Different code paths, different risk; excision is a large PR on its own."
+    },
+    {
+      "id": "polylogue-x4s",
+      "change": "new-epic",
+      "from": "four parentless P2 devloop-contract tasks (x4s, 6il, lio, avg)",
+      "to": "new epic 'Devloop expressed in the substrate + cross-repo contract'",
+      "rationale": "x4s (express devloop state as assertions), 6il (devloop-integration --json --check), lio (align cross-repo devloop contract on beads), and avg (fold claim-guard vocabulary into ops status) are one coherent program (dogfood the loop into Polylogue) yet stand parentless with mostly-empty design/AC. Group under one epic so their shared 'route through the substrate write-leg, not a parallel writer' constraint and their acceptance are specified once. 6il is trivially small (2-line desc) and should be the epic's first mechanical child rather than a floating standalone."
+    }
+  ]
+}

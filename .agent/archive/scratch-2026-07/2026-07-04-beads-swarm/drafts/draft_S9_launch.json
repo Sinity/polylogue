@@ -1,0 +1,38 @@
+{
+  "domain": "S9-launch-sequence",
+  "summary": "3tl.4 is the critical-path producer of the epic's own acceptance clause ('cite a published finding URL') yet sits P3 with null design; the launch kit (3tl.10) and finding variant (3tl.3) are prose-gated on cfk/3tl.4 with no edges; the 212 epic title is stale (drops D8) and has null AC; cpf's acceptance omits the salvaged non-goals + closeout-posture doctrine its own comment supplies. This slice fixes the launch dependency spine and lands execution-grade text on the URL producer.",
+  "updates": [
+    {
+      "id": "polylogue-3tl.4",
+      "set_priority": 2,
+      "set_design": "Publishing lane = a devtools render surface, not an ad-hoc workflow. (1) SOURCE: each finding lives at docs/findings/<slug>/finding.yaml carrying a five-part PROVENANCE STANZA (archive cursor id/position at measurement, measure+query-DSL/code version, git commit SHA, sample-frame predicate = the exact population query, run date) plus its structural body. (2) RENDER: add devtools/render_findings.py + a CommandSpec 'render findings' in devtools/command_catalog.py (model on render_pages.py entry at command_catalog.py:191); wire it into devtools/render_all.py so 'devtools render all --check' fails on drift. It renders docs/findings/<slug>/index.md (+ a per-finding CHANGELOG section). (3) PUBLISH: fold docs/findings/** into the existing site build (render_pages.py / pages_builder.py) so pages.yml (already deploys docs site on master push) serves each finding at a STABLE citeable URL /findings/<slug>/ — no per-run paths (per-PR/versioned trees are deferred under #1307; a finding is a living page at a fixed slug, that fixed slug is the URL 3tl's acceptance requires). (4) PROVENANCE GATE (enforcement point for the cpf finding-provenance doctrine): the lane REFUSES to render any finding missing any of the five stanza fields — non-zero exit with a named error. The stanza schema is defined once and shared with cpf (cpf lands the doctrine TEXT + deny-lexicon; 3tl.4 lands the executable refusal). (5) LIVING PAGES: re-running a finding does NOT mint a new URL and does NOT silently replace numbers — it appends a dated CHANGELOG entry attributing each changed number to the provenance delta (new cursor/commit/run date) and supersedes in place. (6) NO PRIVATE DATA: the published body regenerates its numbers from the deterministic demo corpus (polylogue demo seed, seed 1843) so nothing private ships; any live-archive figures shown are labeled and bounded by the documented sample-frame predicate (structural aggregates only, never raw private rows). PITFALLS: keep render output deterministic so render all --check stays clean; do not couple the ship of 3tl.4 to cpf's full doctrine landing — ship the gate function with an inline stanza schema that cpf's text then points at; never publish raw archive rows, only seeded-corpus-reproducible aggregates.",
+      "set_acceptance": "1. devtools render findings exists, registered in devtools/command_catalog.py, wired into devtools render all with a working --check. 2. At least one real finding (the base claim-vs-evidence finding) renders to docs/findings/<slug>/index.md and is served by pages.yml at a stable citeable URL /findings/<slug>/ (this is the 'published finding URL' 3tl acceptance clause 3 depends on). 3. Provenance gate: a finding source missing any of the five stanza fields makes the lane exit non-zero with a named error; a focused test covers the refusal. 4. Living-page changelog: re-rendering with a changed provenance stanza appends a dated changelog entry with attributed number deltas at the SAME slug/URL (no silent replace); a test covers supersede-with-delta. 5. The published finding regenerates its numbers from the seeded demo corpus (seed 1843); no private-archive rows appear in output. Verify: devtools render findings --check; devtools render all --check; devtools verify doc-commands; focused test for the provenance refusal + changelog supersede."
+    },
+    {
+      "id": "polylogue-212",
+      "set_title": "Demo portfolio: construct-valid demos (D1/D2/D4/D5/D8 + post-hoc forensic Q&A)",
+      "set_acceptance": "Each demo child (212.1 post-hoc forensic Q&A, 212.2 D1, 212.3 D2, 212.4 D4, 212.5 D5, 212.6 D8) ships in two variants: (a) a public seeded-corpus variant (seed 1843) reproducible with one documented command, and (b) a live-archive operator variant. GROUND RULE: every displayed number resolves, on click or --explain, to structural evidence (outcome fields, usage events, provenance refs, raw bytes) — never regex over prose. COMPOSITIONALITY: every demo decomposes into product primitives (DSL queries, saved views, read-package layouts, render profiles, workflow-registry entries); shell/python is glue only, and any bespoke logic beyond glue is first filed and built as a product primitive. D3/D6/D7 are explicitly out of scope (covered by the context-loop/uplift/forensics campaigns). Epic closeable when all non-deferred children are closed and a cold-reader can drive each public variant to first result unaided. Verify: each child's own acceptance + devtools verify doc-commands over the demo commands."
+    },
+    {
+      "id": "polylogue-cpf",
+      "set_acceptance": "Six doctrine documents committed under docs/doctrine/ (or matching internals-IA tiering) and indexed from architecture-spine; three cheap lints wired (timestamp-TEXT DDL schema-audit check; provenance-stanza refusal in the findings lane [3tl.4], sharing one stanza schema; trust deny-lexicon fixture); bd memory repointed at the doctrines instead of restating them. Salvage from the superseded docs/execution-plan.md folded BEFORE retiring the file: (a) the non-goals register additionally carries the four fragments, cross-checked and deduped against the existing non-goals/trust/degraded texts — Polylogue is not a general desktop-automation framework (revisit: a real cross-tool orchestration need no existing tool owns); OTel/OTLP export is an outbound projection, not internal authority (the archive's own tables are the source of truth); context images/bundles are evidence-backed projections with omissions/caveats/redaction/candidate-review affordances, never presented as authority; rendering uses theme tokens + demo-backed visual tests, no hard-coded one-off palette and no showcase-era proof vocabulary. (b) A closeout-posture rule is stated as doctrine (in degraded-modes or a closure-discipline doctrine): a cloud agent may patch source probes, docs, and fixtures but cannot certify deployed truth — deployment-smoke, browser-capture receiver->archive consistency, and copied-profile browser proofs close only on the operator's live deployment + archive, never on source/docs alone. docs/execution-plan.md removed with its live pointers redirected to the doctrines. Verify: devtools render all --check; the shared provenance-stanza gate test (with 3tl.4); grep confirms no dangling references to the retired execution-plan."
+    }
+  ],
+  "edges": [
+    {
+      "blocker": "polylogue-cfk",
+      "blocks": "polylogue-3tl.10",
+      "type": "blocks"
+    },
+    {
+      "blocker": "polylogue-3tl.4",
+      "blocks": "polylogue-3tl.10",
+      "type": "blocks"
+    },
+    {
+      "blocker": "polylogue-3tl.4",
+      "blocks": "polylogue-3tl.3",
+      "type": "blocks"
+    }
+  ]
+}

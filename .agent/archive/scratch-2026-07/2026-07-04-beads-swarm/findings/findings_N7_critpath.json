@@ -1,0 +1,104 @@
+{
+  "domain": "N7_critpath",
+  "summary": "The hard-'blocks' graph is thin (80 edges over 333 beads) and the only deep chains (depth 6: sru.*->sru.7->tf2.1->jxe.1->jxe.2->jxe.3) are the already-CLOSED P0 campaign; live P1 epics have shallow chains (depth<=3) so almost every P1 is startable today. Leverage concentrates in a handful of ready roots (pj8, arso, 0v9p, d1y, s7ae.1, 37t.11) that each unblock multiple P1 beads. Two structural defects dominate: 1xc (P1 Scale-hardening) is an EMPTY epic with zero children (no entry point), and bby.11 (P1 webui-arch v2) blocks NOTHING despite being the declared foundation the whole bby web-workbench should sit on, so ~9 UI beads read as ready but would be built on the wrong stack.",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Scale-hardening: decompose 1xc into concrete real-scale bug beads",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "polylogue-1xc is a P1 epic with ZERO children (descend()=0). It has an epic-level AC ('bugs that only bite on real-scale archives') but no child bead covers any of it, so the epic can never enter a ready state and no agent can pick it up. An epic with no decomposition is a no-op in the scheduler.",
+      "design": "Enumerate the known real-scale pathologies already documented in memory/issues (WAL reader-blocked growth #1614, blob GC orphan/lease races #818, topology graph resolution cost, FTS readiness scans on multi-thousand-msg sessions, keyset pagination temp-B-tree). Create one PR-shaped child per class with a repro-at-scale harness (evidence-harness skill) as the acceptance gate.",
+      "acceptance": "polylogue-1xc has >=3 open child beads, each with a scale repro command and a measured before/after; `bd show polylogue-1xc` shows non-empty children; epic is no longer a leaf.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-1xc",
+      "kind": "epic-ac-gap",
+      "evidence": "descend(polylogue-1xc) returns 0 descendants; children total=0 open=0 closed=0. It is a P1 epic in the live top-of-frame with no work items under it.",
+      "fix": "Either decompose into child beads (see gap above) or, if superseded by 83u/4ts scale work, close/merge it. As-is it is an un-startable P1 that inflates the P1 count without representing schedulable work."
+    },
+    {
+      "id": "polylogue-bby.11",
+      "kind": "scope-conflict",
+      "evidence": "bby.11 (P1 'Webui architecture v2: the stack that can carry the workbench') has blocks_out=[] — it is a hard prerequisite for the workbench but blocks no sibling. Meanwhile bby.10 depends on 20d.12/20d.13, and bby.2/3/4/5/6/8/12/13 have empty blockers and read as ready.",
+      "fix": "Wire bby.11 as a 'blocks' predecessor of the UI-surface siblings that assume the v2 stack (bby.2,3,4,5,6,8,10,12,13). See false-block/missing-dep entry below."
+    },
+    {
+      "id": "polylogue-9l5.7",
+      "kind": "other",
+      "evidence": "Brief cites 9l5.7 as an under-wired prereq, but the graph shows 9l5.7 hard-blocks 3 downstream beads (9l5.11, h10, stc). It is actually the correctly-wired counterexample, not under-wired.",
+      "fix": "No change to 9l5.7 wiring needed. The under-wired prereqs are 37t.11 (only 1 hard downstream) and bby.11 (0 hard downstream)."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-pj8",
+      "issue": "priority-violation",
+      "detail": "HIGH-LEVERAGE #1: pj8 (P1 'Agent query cookbook') is READY (no open blockers) and hard-blocks 3 P1/P0 beads (3gd, ahqd, s7ae.2). It is the single ready bead that unblocks the most P1 work; it should be at the very front of the s7ae coordination queue.",
+      "proposed": "Sequence pj8 first among ready coordination work; it is the tightest leverage point in the live frame."
+    },
+    {
+      "id": "polylogue-arso",
+      "issue": "priority-violation",
+      "detail": "HIGH-LEVERAGE #2 + CRITICAL-PATH(4smp): arso (P1 'Content variant substrate') is the READY root of the deepest live P1 chain: arso -> rlsb -> d4zk (and 0v9p -> rlsb -> d4zk). It hard-blocks both P1 children of epic 4smp. 4smp's terminal state (d4zk) is 2 hops behind arso.",
+      "proposed": "Treat {arso, 0v9p} as the paired ready entry points for 4smp; both must land before rlsb, then d4zk. This is the only P1 epic with a real multi-hop critical path."
+    },
+    {
+      "id": "polylogue-0v9p",
+      "issue": "priority-violation",
+      "detail": "HIGH-LEVERAGE #3: 0v9p (P1 'Language detection/preference facts') is READY and co-gates rlsb->d4zk alongside arso. Parallelizable with arso.",
+      "proposed": "Run 0v9p in parallel with arso; rlsb is blocked until BOTH close."
+    },
+    {
+      "id": "polylogue-d1y",
+      "issue": "priority-violation",
+      "detail": "HIGH-LEVERAGE #4: d1y (P1 'polylogue hooks install') is READY and has 5 transitive downstream beads (gates 3gd via the hooks harness). Broadest transitive fan-out of any ready P1.",
+      "proposed": "Schedule d1y early in the s7ae lane; it and pj8 together unblock 3gd."
+    },
+    {
+      "id": "polylogue-37t.11",
+      "issue": "priority-violation",
+      "detail": "37t.11 (P1 'Context scheduler') is READY and hard-blocks s7ae.3 (P1) — cross-epic leverage — yet it is parented under the P2 epic 37t. It is the long pole for s7ae.3: s7ae.3 cannot start until this P1 feature (sitting in a P2 epic) lands. Under-wired otherwise (only 1 hard downstream despite being 'one arbiter for everything that enters context').",
+      "proposed": "Either re-parent 37t.11 under s7ae (where its only hard dependent lives) or lift epic 37t toward P1, so the scheduler is not deprioritized under a P2 umbrella while gating P1 coordination work."
+    },
+    {
+      "id": "polylogue-bby.11",
+      "issue": "missing-dep",
+      "detail": "UNDER-WIRED PREREQ: bby.11 (P1 webui-arch v2) blocks nothing (blocks_out=[]) though it is 'the stack that can carry the workbench' and is a P1 parented in a P3 epic. Its siblings bby.2,3,4,5,6,8,10,12,13 (the actual UI surfaces) have no blocker on it, so they read as ready and could be built on the old stack — wasted rework. Also a priority inversion (P1 inside P3 epic bby).",
+      "proposed": "Add 'blocks' edges bby.11 -> {bby.2,bby.3,bby.4,bby.5,bby.6,bby.8,bby.10,bby.12,bby.13}. Consider lifting epic bby, or at least bby.11, so the foundational P1 is not buried under P3 UI polish."
+    },
+    {
+      "id": "polylogue-s7ae.3",
+      "issue": "missing-dep",
+      "detail": "CRITICAL-PATH(s7ae): s7ae.3 is blocked only by 37t.11 (cross-epic). The rest of s7ae flows s7ae.1(in_progress)->{s7ae.2,bby.9} and pj8->s7ae.2->ahqd. So s7ae has TWO independent long poles: (a) 37t.11->s7ae.3, and (b) {s7ae.1, pj8}->s7ae.2->ahqd. Terminal ahqd needs both s7ae.2 (open) chain done.",
+      "proposed": "Recognize 37t.11 as an s7ae-blocking prereq (reparent as above) so the coordination epic's critical path is visible in one place instead of leaking into P2 epic 37t."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-6wnh",
+      "change": "reprioritize",
+      "from": "blocked-by CLOSED polylogue-3wb",
+      "to": "ready",
+      "rationale": "FALSE-BLOCK: 6wnh is open but its only 'blocks' predecessor (3wb) is CLOSED, so it is actually ready. The stale block edge hides it from the ready frontier. Same fully-false pattern for: ma2 (deps 3wb+6h7 both closed), 27m (doh closed), 90y (27p closed), ze5 (doh closed), 703 (4bu closed), dab (x5l closed), 3tl.3 (sru.7 closed), 9l5.1 (sru.1 closed), 212.3 (sru.1 closed). All 10 are now-ready and should have their closed 'blocks' edges pruned or auto-resolved."
+    },
+    {
+      "id": "polylogue-mhx.4",
+      "change": "reprioritize",
+      "from": "blocked-by MISSING 'emb-targets'",
+      "to": "unblock / fix dangling ref",
+      "rationale": "FALSE-BLOCK (dangling): mhx.4 and mhx.5 are blocked by dependency id 'emb-targets' which does not exist in the graph (no 'polylogue-' prefix, not a bead). mhx.6 is blocked by nonexistent 'emb-eval'. These are broken dep references that permanently pin the beads as blocked against phantom prereqs. Either point them at the real embedding-targets bead or drop the edges."
+    },
+    {
+      "id": "polylogue-1xc",
+      "change": "new-epic",
+      "from": "empty P1 epic (0 children)",
+      "to": "decomposed or merged",
+      "rationale": "NO-ENTRY-POINT: 1xc is the only P1 epic with no ready entry point because it has no children at all. It must be decomposed (see gaps) or merged into the scale-adjacent epics (83u blob-integrity / 4ts lineage) so a live P1 is not permanently un-startable."
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "domain": "D12_intake_sources",
+  "summary": "The slice is strategically coherent but unevenly specified: da1/2qx/o21/rii.2 carry execution-grade design yet leave the acceptance field null (acceptance often buried in design prose), and 5hf (provider token accounting — core cost-honesty correctness) is a near-empty stub despite rich operator memory to draw on. Two structural issues dominate: fs1.4 (P2 flagship demo) is blocked by fs1.1 (P3 importer) — a priority inversion — and 2qx (OriginSpec) is the origin instantiation of o21's generic declare-once pattern, so they need an explicit order rather than parallel drift. 7aw is epic-shaped work filed as a single feature.",
+  "underspecified": [
+    {
+      "id": "polylogue-5hf",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Build the cross-provider usage ledger on the existing session_provider_usage_events substrate (storage/usage.py) rather than a new store. (1) Keep cache read/write, input, output, and reasoning token lanes DISJOINT per provider semantics: Codex `input` already includes cached (~96%) and `output` includes reasoning — bill disjoint lanes or double-count (regression fixed 3938bc6c2). (2) Per-model partitioning: usage.py:1406 already warns that summing per-model rows double-counts session totals; the ledger must expose current-window vs cumulative and per-model rows without re-summing them into a session total (the residual #2472 partitioning bug). (3) Coverage/caveats surface: exact provider-event rows vs text-only estimates vs unsupported origins vs stale session_model_usage rollups are distinct states (see docs/internals provider-usage accounting). (4) Pricing resolves through the vendored LiteLLM catalog as the sole source (last path-segment match); do not merge cache lanes into generic input/output. Companions lineage-tokens (fork/resume double-count) and the cost-reconciliation probe (devtools lab probe cost-reconciliation vs ~/.codex/state_5.sqlite) are the validation gates.",
+      "proposed_acceptance": "`polylogue analyze`/provider_usage renders a per-origin ledger with disjoint cache/input/output/reasoning lanes, current-window and cumulative session totals, and an explicit coverage/caveat line per origin (exact-event vs estimate vs unsupported). Per-model rows never sum into an inflated session total (verify against usage.py:1406 caveat path). Cost-reconciliation probe against local Codex state_5.sqlite shows per-thread median token ratio ~1.00. Cached reads are shown free-on-subscription AND API-list-equivalent as two labelled views.",
+      "why": "5hf has empty design and acceptance yet is flagged as core cost-honesty correctness spanning all providers; operator memory (Codex token semantics, subscription credit pricing, #2472, LiteLLM catalog) already supplies an execution-grade spec, so leaving it a one-line stub is the single largest under-specification in this slice."
+    },
+    {
+      "id": "polylogue-da1",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "On live ingest, records whose shape diverges from the committed provider schema package are counted into ops.db telemetry keyed by (origin, element kind, unseen-key signature) with no schema bump; `polylogue ops status` prints 'origin X: N% of records since <date> carry unseen shapes' with bounded example native_ids; a seeded drift fixture (a known field removed / type changed) trips a daemon health alert at a DIFFERENT threshold than a benign new-optional-field; the rate is windowed since-date (old archives do not dilute it); ingest never fails or skips on drift (raw payload still stored, reparse remains possible).",
+      "proposed_design": "",
+      "why": "Design is already execution-grade (reuse schemas/ shape signatures, ops.db additive telemetry, three enumerated pitfalls) but the acceptance_criteria field is null; the checkable done-state is inferable directly from the design and should be lifted so this P2 becomes ready-frontier."
+    },
+    {
+      "id": "polylogue-2qx",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "Every origin lives in one package under sources/origins/<name>/ carrying detector, parser entry, declared strictness tier, schema-package pointer, capture/fidelity, usage-coverage class, pricing hints; dispatch order is DERIVED by (tier, registration order) with the hand-ordered chain in dispatch.py:125-171 deleted; a dispatch-order regression test feeds every origin's fixtures through the full chain and asserts each is claimed by its own detector (a loose detector physically cannot outrank a strict one); `devtools lab provider completeness` reads the specs, not its own inventory; migration is mechanical one-origin-per-commit, mypy-net + fixture-suite green throughout.",
+      "proposed_design": "",
+      "why": "Confirmed greenfield (no sources/origins/ package exists; dispatch.py has a hand-ordered if-looks_like chain at lines 125-171). Design is execution-grade but acceptance field is null."
+    },
+    {
+      "id": "polylogue-o21",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "Pilot on MCP tools: a single tool declaration object derives EXPECTED_TOOL_NAMES, TOOL_CONTRACT, role gating, and render inputs (openapi/cli-output-schemas); each registration validator, on failure, names the missing step and the exact fix command; `devtools new tool` scaffolds declaration+stub+test in the right places. Acceptance test = obsolescence-by-construction: a fresh agent with NO access to the registration-traps bd memory adds a new MCP tool end-to-end and every gate passes. Then the pattern sweeps remaining extension points one per PR (origin sweep = 2qx).",
+      "proposed_design": "",
+      "why": "The acceptance is stated inline in the design ('registration-traps bd memory becomes obsolete BY CONSTRUCTION... a new agent adds a tool end-to-end without the memory') but the acceptance_criteria field is null; lift it so the done-state is checkable rather than buried."
+    },
+    {
+      "id": "polylogue-rii.2",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "HOOK_EVENT artifacts (runtime.py:~209, currently parse_as_session=False) are materialized through the write-leg contract into session_events/ObservedEvents keyed to the owning session; the hardcoded provider allowlist in support.py:~82 (claude-code,codex) is replaced by a taxonomy-driven check so any origin's hooks materialize; OTLP spans already in ops.db are projected into the same queryable evidence (no second reader); a seeded hook event (tool annotation / permission decision / cwd change / subagent lifecycle) is queryable via observed-events within one convergence cycle and re-ingest is idempotent.",
+      "proposed_design": "",
+      "why": "Design cites confirmed code lines but acceptance_criteria is null; a P2 with a code-grounded design deserves the matching checkable done-state and idempotency assertion in the acceptance field."
+    },
+    {
+      "id": "polylogue-rii.1",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "MCP record_work_event/emit_decision (mutation role) accept typed events (tool run, subagent spawn, decision, artifact change) with evidence/session refs, routed through the existing idempotent ingest seam (write_raw_and_parsed) with no parallel writer; events land in session_events and the run-projection read models pick them up via the normal materializer; an agent posts a work event mid-session and it is queryable via observed-events within one convergence cycle; re-posting the same event is idempotent; MCP registration passes EXPECTED_TOOL_NAMES + TOOL_CONTRACT + role gating + render openapi/cli-output-schemas regen.",
+      "proposed_design": "",
+      "why": "The acceptance sentence already exists in the design body ('Acceptance: an agent posts a work event... queryable... re-posting is idempotent') but the acceptance_criteria field is null — a field/text mismatch; promote it and fold in the registration-trap gate the design also names."
+    },
+    {
+      "id": "polylogue-fs1.4",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "A named forensics read view/report profile renders all five sections (topology, LLM/request economy, tool profile, failure patterns, local causal footprint) for a Hermes session, each lowering onto existing primitives where possible (get_session_topology, session_provider_usage_events + cost rollups, actions/tool timing, pathology detectors, session_commits) with only Hermes-specific detectors added (loop/stall/reasoning-burn); every section fact is query-composable (capabilities-not-silos), not demo-only; the 2-minute demo packages sanitized fixtures behind one command with a README section and runs in <2min.",
+      "proposed_design": "",
+      "why": "fs1.4 is P2 with execution-grade design but null acceptance; as the campaign-grade packaging of the flagship demo it needs an explicit five-section + composability + <2min checkable done-state."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Fix per-model provider-usage partitioning double-count (#2472 residual)",
+      "type": "bug",
+      "priority": 2,
+      "parent": "polylogue-5hf",
+      "why": "5hf's own text names 'lineage-tokens (double-count)' as a companion, and usage.py:1406 documents that summing per-model rows double-counts session totals; operator memory records this as the residual #2472 partitioning bug still open after #2469. It is implied by 5hf's correctness scope, not invented.",
+      "design": "Ensure per-model usage rows are exposed as a drill-down that never re-sums into the session total; the session total is computed once from disjoint token lanes. Add a regression test with a multi-model session asserting session_total != sum(per_model_totals) when lanes overlap. Ground the fix in storage/usage.py partitioning path (~1406, ~1528 caveat).",
+      "acceptance": "A multi-model Hermes/Codex/Claude session reports one honest session total; per-model rows are drillable; the double-count regression test passes; the caveat at usage.py:1528 is only emitted when genuinely multi-model.",
+      "deps": ["polylogue-5hf"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-7aw",
+      "kind": "wrong-type",
+      "evidence": "Filed as a single 'feature' but the acceptance enumerates five independently-checkable multi-PR outcomes: config-artifact ingest with content-hash versioning + watcher coverage; session->config-state resolution; skill-invocation report; one state-like CLAUDE.md section migrated to injected-equivalent with drill-verified parity; and the four-class classification map committed. The design has four numbered legs (CAPTURE/UNDERSTAND/REPLACEMENT-PATH/EDIT-FRICTION).",
+      "fix": "Reclassify 7aw as an epic and split into children: (a) config-artifact source family + content-hash versioning + watcher; (b) session->config-state join (session_agent_policies extension); (c) skill-invocation tracking report; (d) one-section migration drill (composes with stc experiment substrate); (e) config-doc surface + edit-affordance routing. Keep the four-class classification map as the epic's design artifact."
+    },
+    {
+      "id": "polylogue-5hf",
+      "kind": "other",
+      "evidence": "Description ends 'this bead's scope statement wins where they conflict' but the bead's actual scope statement is a single fragment ('Coverage, caveats, cached-vs-uncached splits, reasoning tokens, current-window + cumulative session usage'). There is no design and no acceptance for the GH thread to be overridden by.",
+      "fix": "Populate design+acceptance (see underspecified) so the 'scope statement wins' clause references real content; otherwise the boilerplate is asserting authority over an empty field."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-fs1.1",
+      "issue": "priority-violation",
+      "detail": "fs1.4 (P2, forensics report / flagship demo) has a blocks-dependency on fs1.1 (P3, Hermes state.db importer). fs1.1 also blocks fs1.5 and fs1.6. A P3 blocker gating the P2 deliverable is a priority inversion — the keystone importer + wiring-completion (keystone outcome extraction, real fixtures) is prerequisite to every downstream Hermes bead.",
+      "proposed": "Raise fs1.1 to P2 to match the highest bead it blocks (fs1.4). Alternatively, if the Hermes program is genuinely gated (epic says priority rises when an artifact is scheduled), drop fs1.4 to P3 so the whole fs1 subtree is P3-consistent — but do not leave a P2 blocked by P3."
+    },
+    {
+      "id": "polylogue-2qx",
+      "issue": "missing-dep",
+      "detail": "o21 (declare-once across ALL extension points; wave:1) explicitly lists origins as one of its extension points ('a new origin touches detector, parser, enum, schema package, usage-coverage, completeness matrix') and sequences 'pilot on MCP tools, extract the pattern, then sweep the rest one per PR'. 2qx (OriginSpec) IS the origin sweep — the deep, strictness-tier-derived instantiation of o21's declare-once pattern for the origin extension point.",
+      "proposed": "Add a dependency 2qx depends-on o21 (o21 extracts the declare-once pattern first) and tag 2qx wave:2 so it follows o21's wave:1. Keep them separate beads: 2qx carries origin-specific value (derived dispatch by strictness tier) beyond a mechanical pattern application."
+    },
+    {
+      "id": "polylogue-rii.1",
+      "issue": "epic-ac-gap",
+      "detail": "rii epic carries an OPERATOR GATE ('full program needs explicit green-light before a large build') and per focus-hint overlaps s7ae (coordination) and 37t (context loop): rii.1's agent work-event write-leg is adjacent to 37t's in-loop context read and s7ae's coordination writes. The boundary of which program owns the generic write-leg vs the context-read-back vs coordination is not pinned in rii's epic (design=null).",
+      "proposed": "Add an epic design/boundary note on rii stating: rii owns the generic write-leg + intake seams (record_work_event->session_events->read-models); 37t owns the read-back/context-compilation loop; s7ae owns multi-agent coordination semantics. Orchestrator should reconcile against s7ae/37t records (not in this slice) before marking rii.1 ready given the operator gate."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-5hf",
+      "change": "new-epic",
+      "from": "standalone P2 (area:usage)",
+      "to": "usage/cost-honesty epic parenting 5hf + lineage-token-double-count + cost-reconciliation companions",
+      "rationale": "Answering the focus hint: 5hf must NOT go under fs1 — cost honesty is cross-provider correctness, not Hermes-specific. It names two companions (lineage-tokens double-count, cost-reconciliation probe) and the residual #2472 partitioning bug; those + 5hf form a coherent usage epic. If those companions already exist as beads elsewhere, parent them together; otherwise 5hf can stay standalone but must be specified. Keep it out of the Hermes bridge subtree either way."
+    },
+    {
+      "id": "polylogue-7aw",
+      "change": "new-epic",
+      "from": "type=feature",
+      "to": "epic with 4-5 children (capture/versioning, session-config join, skill-invocation report, one-section migration drill, config-doc surface)",
+      "rationale": "Acceptance enumerates five independent multi-PR done-states and the design has four numbered legs; a single feature bead cannot honestly track it as one PR-shaped unit (see inconsistencies wrong-type)."
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "domain": "D06_scale_storage_perf",
+  "summary": "The individual storage/perf beads are unusually well-specified (iec/hiu/b5l/exb/ma2/6wnh carry execution-grade design+acceptance), except 0ns which is bare (null design and acceptance). The P1 epic 1xc is structurally broken: its AC demands 'every child closed + a scale-regression lane exists' but it has literally zero children in Beads (grep of .beads/issues.jsonl finds 1xc only in its own def and one prose reference), so its own tier-1 confirmed-live items and the required regression lane have no tracked beads. Three standalone 'bound-cost-for-large-sessions' beads (ma2/0ns/6wnh) are exactly the epic's scope and should become its children.",
+  "underspecified": [
+    {
+      "id": "polylogue-0ns",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Grounded in daemon/convergence_stages.py: _embed_archive_sessions_sync (line 1312) checks `time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS` (=30s, line 43) only in the between-session loop (line 1335), then calls embed_archive_session_sync (line 1337 / storage/embeddings/materialization.py:851) which embeds an ENTIRE session with no internal time/window bound. The same unbounded-per-session shape repeats in daemon/embedding_backlog.py:171/183. Fix: push a bound INTO embed_archive_session_sync — process a session as message windows (reuse the existing pending-window selector select_pending_embedding_session_window rather than a whole-session unit), record per-window catch-up progress in the embedding status/catchup rows so a huge Codex/Claude session resumes mid-session on the next daemon tick instead of restarting. Alternative (simpler, price it): have the daemon select message windows as the ingest unit at the caller (convergence_stages + embedding_backlog) so the stop-after check straddles windows, not whole sessions. Preserve exact-once embedding and cost accounting; do not double-charge Voyage on a resumed window.",
+      "proposed_acceptance": "A forced embedding-debt drain against a seeded archive containing one very large session (>= a few thousand embeddable messages) honours _DAEMON_EMBED_STOP_AFTER_SECONDS mid-session (stops within one window of the deadline, not after the whole session), and the next tick resumes from the recorded window offset with zero re-embedding of already-embedded messages (assert on message_embeddings count / catchup progress row). A focused devtools test exercises the bounded path; no Voyage double-charge on resume.",
+      "why": "0ns is a P2 with a concrete live-verified defect (2026-07-04 daemon convergence) but design=null and acceptance_criteria=null; per the execution-grade contract a P2 with confirmed evidence should carry how+done-state. The claim is code-grounded (convergence_stages.py:1335 vs :1337)."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Chunk full insight rebuild into bounded per-batch transactions",
+      "type": "bug",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc's own design names this as a tier-1 confirmed-live item: 'full insight rebuild runs as ONE transaction -> 6GB WAL + minutes-long write lock on the live archive'. No child bead tracks it. 6h7's close note ('bounded 100-session ticks') fixed the daemon catch-up selector, not the full ops-reset rebuild transaction; 20d.15 owns bulk throughput and b5l owns downtime, neither owns the single-transaction/WAL blowup.",
+      "design": "Chunk the storage/insights rebuild path so materialization commits in bounded per-batch transactions (e.g. N sessions per commit) with durable progress rows, so the WAL never grows to multi-GB and the write lock is released between batches. Reconcile with 6h7's existing 100-session daemon tick so the ops-reset rebuild and daemon catch-up share one bounded batching primitive rather than two.",
+      "acceptance": "A full insight rebuild on a live-archive copy keeps WAL under a stated cap (e.g. the 160MiB journal_size_limit, not 6GB) and never holds the write lock for more than one batch interval; progress rows advance monotonically and a mid-rebuild kill resumes without redoing committed batches.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Audit global PKs derived from non-unique local coordinates (run_ref collision siblings)",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc's design: 'the run_ref global-PK collision class was fixed (#2464) -- audit for siblings (any global PK derived from non-unique local coordinates)'. The instance bead (polylogue-85z0 'Run projection subagent run collides with child main run_ref') is CLOSED, but the sibling-audit half of the tier-1 item has no bead.",
+      "design": "Enumerate every table whose primary/unique key is composed from local coordinates that are only unique within a parent scope (position indexes, native offsets, per-session counters) and prove global uniqueness or add the missing parent qualifier. Prime suspects flagged in iec: message_id (session_id + ':' + native/position), block_id compounds, run_ref/observed-event keys. Add a scale-tier fixture that forces two parents with colliding local coordinates for each suspect key.",
+      "acceptance": "A table-by-table matrix of global-PK keys with a uniqueness verdict (safe / needs-qualifier); each 'needs-qualifier' either fixed with a schema slice or filed as its own bead; a scale-tier regression test reproduces the run_ref-class collision shape and would fail on a regression.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Scale-regression lane: seeded large-archive tier that catches each shipped scale-bug class",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc's AC literally requires it: 'a scale-regression lane exists (seeded large-archive tier or live-copy probe) that would have caught each shipped bug class, wired into the optional lanes.' No bead owns building this lane, so the epic can never reach its stated terminal state.",
+      "design": "Extend the synthetic corpus generator to emit a scale-tier fixture (16K+ sessions, 5M+ messages, duplicate native ids, giant single artifacts approximating the 384MB Codex raw row) and register it as an optional validation lane (devtools lab lanes). Each closed 1xc child adds a regression assertion against this fixture (WAL cap for the insight rebuild, planner/no-scan for ma2, bounded stop for 0ns/6wnh, PK-collision for the run_ref siblings).",
+      "acceptance": "An optional lane runs the scale fixture and asserts each fixed scale-bug class stays fixed; the lane is listed in devtools lab lanes --list and referenced from each 1xc child's acceptance; running it on a pre-fix commit reproduces at least one of the shipped bug classes.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-1xc",
+      "kind": "acc-mismatch",
+      "evidence": "AC: 'Epic terminal state: every child closed and a scale-regression lane exists ... wired into the optional lanes.' But .beads/issues.jsonl contains '1xc' exactly twice (its own record at line 62 and a prose mention in polylogue-fie at line 254); `bd dep tree polylogue-1xc` shows no children and no bead has parent=polylogue-1xc. The epic's completion condition ('every child closed') is vacuously satisfiable / structurally impossible to track.",
+      "fix": "Give 1xc real children: reparent the three matching bound-cost beads (ma2/0ns/6wnh) under it and create the three gap beads above (insight-rebuild chunking, run_ref sibling audit, scale-regression lane). The AC then becomes checkable. The epic points to gh-2465 as the authoritative checklist, but 'every child closed' is a Beads-side condition and needs Beads-side children."
+    },
+    {
+      "id": "polylogue-1xc",
+      "kind": "stale-ref",
+      "evidence": "Epic design: 'the run_ref global-PK collision class was fixed (#2464)'. The corresponding bead polylogue-85z0 is CLOSED. The epic still lists this as a live tier-1 item to 'work'; only the sibling-audit half remains open. The wording reads as if the primary fix is still pending.",
+      "fix": "Update the tier-1 note to mark the #2464/85z0 instance fixed and scope the remaining work to the sibling audit (the proposed gap bead), so the open surface is not confused with the already-shipped fix."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-1xc",
+      "issue": "epic-ac-gap",
+      "detail": "No child bead covers any of the epic's three AC obligations (tier-1 insight-rebuild chunking, run_ref sibling audit, scale-regression lane). The epic is P1 but currently un-actionable as an epic because it has no decomposition.",
+      "proposed": "Create the three gap beads above and reparent ma2/0ns/6wnh; only then can 'every child closed' mean anything."
+    },
+    {
+      "id": "polylogue-20d.15",
+      "issue": "priority-violation",
+      "detail": "b5l (P1, spine, 'Blue-green index rebuilds') is blocked by 20d.15 (P2, bulk ingest throughput) per its dependency; b5l's own design says the 20d.15 dependency is what makes the double-write window trivial. A P1 spine bead is gated on a P2.",
+      "proposed": "Either elevate 20d.15 to P1 (it is on the critical path of a P1 spine deliverable and owns the 20-40min downtime measurement), or weaken the b5l->20d.15 edge to 'related' since b5l's design already offers a slower-rebuild fallback (delta-replay) that does not require the 5-min target."
+    },
+    {
+      "id": "polylogue-pf1",
+      "issue": "priority-violation",
+      "detail": "hiu (P2, 'Collapse storage twins') is blocked by pf1 (P3, sync/async divergence diff). hiu's design step (0) makes pf1 a hard prereq ('reconcile the 10 documented divergences INTO the sync store ... BEFORE any wiring moves'). A P2 with a decided operator direction is gated on a P3.",
+      "proposed": "Elevate pf1 to P2 to match the bead it blocks, or fold pf1's divergence-reconciliation into hiu step (0) as an explicit sub-task so the collapse is not stalled behind a lower-priority standalone."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-ma2",
+      "change": "reparent",
+      "from": "(none)",
+      "to": "polylogue-1xc",
+      "rationale": "ma2 (FK index for web_content_constructs message cleanup) is a textbook 1xc case: correct on small fixtures, SCAN over ~89k rows on the live v24 rebuild. Its blockers 3wb and 6h7 are both now CLOSED, so it is ready-frontier and gives the empty epic a concrete, verifiable child."
+    },
+    {
+      "id": "polylogue-0ns",
+      "change": "reparent",
+      "from": "(none)",
+      "to": "polylogue-1xc",
+      "rationale": "0ns (bound embedding work within large sessions) is exactly 1xc's stated class: 'code correct on small/clean fixtures but wrong at real scale ... giant single artifacts'. Unbounded per-session embedding only bites on huge Codex/Claude sessions."
+    },
+    {
+      "id": "polylogue-6wnh",
+      "change": "reparent",
+      "from": "(none)",
+      "to": "polylogue-1xc",
+      "rationale": "6wnh (bound thread_refresh for large Codex appends) is the same scale-bug class (3.02s of 3.04s graph_resolve on a 340.8MB Codex append). Its blocker 3wb is CLOSED, so it is ready. Reparenting ma2/0ns/6wnh converts the empty epic into a real 3-child decomposition."
+    },
+    {
+      "id": "polylogue-iec",
+      "change": "reparent",
+      "from": "(none)",
+      "to": "(keep standalone)",
+      "rationale": "Considered and REJECTED reparenting iec/hiu/b5l/exb under 1xc. 1xc's scope is confirmed-severe scale BUGS; iec is a proactive schema-cost audit, hiu/exb are refactors (twin collapse, layering), and b5l is an operational architecture change (P1 spine in its own right). They relate to scale but are not the 'wrong-at-scale bug' class 1xc owns; only the bound-cost/scan-bug beads (ma2/0ns/6wnh) belong under it."
+    }
+  ]
+}

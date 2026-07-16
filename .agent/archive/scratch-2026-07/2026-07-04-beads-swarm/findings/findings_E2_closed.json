@@ -1,0 +1,39 @@
+{
+  "domain": "closed-bead-audit (65 CLOSED beads; P1-epic children + P0 campaigns)",
+  "summary": "The 3 CLOSED P0 campaign epics (sru/tf2/jxe) were NOT premature closes: each had a cold-reader-gated terminal artifact at close time (2026-07-03 v23). Those artifacts were legitimately retired to .agent/archive/retired-demos/2026-07-04-v23-demo-packets/ during the 2026-07-04 v24 rebuild, which leaves two live problems: the campaign close_reasons now cite dead .agent/demos/ paths, and the forensics (tf2) finding has no v24 re-run coverage (jxe got polylogue-cfk, sru was refreshed on v24, tf2 got neither). Closed children of the open P1 epics are well-evidenced (4ts.1/9p0y lineage external_counts_citable=true verified; 3tl.2 demo tour command exists); the one hygiene defect is P0 bug 7ry closed with an empty close_reason.",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Regenerate agent-forensics all-provider finding on the v24 archive after session-profile convergence",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-3tl",
+      "why": "tf2 (agent-forensics campaign) closed 2026-07-03 with a v23 terminal artifact that was retired 2026-07-04 during the v24 rebuild. Its own RETIRED-DEMO.md (.agent/archive/retired-demos/2026-07-04-v23-demo-packets/agent-forensics/RETIRED-DEMO.md) states the packet 'is not the current archive cardinality source after the v24 rebuild ... until the full forensics packet is regenerated after session-profile convergence.' The forensics/cost report is described in the tf2 epic as 'the most stranger-legible artifact on any shelf', so a stale-only forensics finding directly undercuts the live top-of-frame goal (polylogue-3tl external legibility). Asymmetry proves the gap: jxe got a tracked re-run (polylogue-cfk) and sru was refreshed live (.agent/demos/claim-vs-evidence report dated 2026-07-04), but no bead tracks the tf2 forensics v24 regeneration.",
+      "design": "Blocked-on: session-profile convergence for the v24 archive (the same materialization/perf surface as polylogue-w79/b5l/1xc). Once profiles converge, re-run the product-backed pricing lane: `polylogue --plain analyze usage --detail headline --format json --limit 0` plus the per-origin (claude-code-session, codex-session) variants and cost-rollups, then regenerate the demo packet (charts + report.md + summary.json) into .agent/demos/agent-forensics/current with archive root/schema named, physical-vs-logical token grain separated, priced subset vs origin_reported catalog-estimate lanes labeled, and reproduction commands. Preserve the 106.6B logical/physical replay-gap caveat as the headline construct-validity note.",
+      "acceptance": "A refreshed .agent/demos/agent-forensics/current packet is generated against the v24 archive (schema/root named), passes SVG XML parse, separates priced vs origin_reported lanes and physical vs logical high-water token grain, provides reproduction commands, passes a cold-reader gate, and `devtools workspace demo-shelf --json` lists it as current (not retired). Focused test: devtools test tests/unit/scripts/test_agent_forensics.py.",
+      "deps": ["polylogue-b5l"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-7ry",
+      "kind": "other",
+      "evidence": "P0 bug 'Do not report partial rebuilt index as archive ready' is closed with close_reason=None (empty) despite a substantial AC (a first-class not-ready state across status/config paths/daemon health/read surfaces). Its acceptance IS actually satisfied — the evidence lives in the superseding bead polylogue-4bu ('One converging-state contract'), whose close_reason documents component_readiness.raw_materialization counts, find/analyze archive_converging warnings, MCP readiness_check materialization_progress, and the web materialization chip (16 tests + verify --quick passed). So this is a closure-hygiene defect, not a resurrection candidate: a P0 closed with no recorded reason/evidence violates evidence-grounded close discipline.",
+      "fix": "Backfill 7ry's close_reason to point at the superseding work: 'Superseded by polylogue-4bu, which implements the converging-state contract (component_readiness.raw_materialization; archive_converging in find/analyze/MCP/web). AC satisfied there.' (Documentation-only; do not reopen — the AC is met.)"
+    },
+    {
+      "id": "polylogue-tf2",
+      "kind": "stale-ref",
+      "evidence": "The tf2 epic close_reason (and tf2.1, jxe, jxe.1, jxe.2, jxe.3) cite terminal artifacts at .agent/demos/agent-forensics, .agent/demos/uplift-two-arm/current, and .agent/demos/handoff-pack/current. None of those live paths exist anymore — all three were moved during the 2026-07-04 v24 rebuild to .agent/archive/retired-demos/2026-07-04-v23-demo-packets/{agent-forensics,uplift-two-arm,handoff-pack}. An auditor reading the closed campaigns and following the cited paths finds nothing, which reads as a fabricated close even though the artifacts (with real report.md/metrics/charts) do exist under retired-demos.",
+      "fix": "Add a one-line note to the tf2/jxe/jxe.* close_reasons (or a campaign follow-up comment) redirecting the cited .agent/demos/... paths to .agent/archive/retired-demos/2026-07-04-v23-demo-packets/. The retired-demos RETIRED-DEMO.md notes are the current provenance record; the bead close_reasons should point there so the closures stay auditable post-v24."
+    },
+    {
+      "id": "polylogue-sru.1",
+      "kind": "other",
+      "evidence": "sru.1 ('Expose action-unit outcome fields + followup_class as product capability') has a checkable AC ('Fixture session with known unacknowledged failure fires via pure query strings; report README numbers reproducible from the printed queries') but a bare close_reason='Completed' with no evidence citation. The parent sru epic close_reason does document the productized followup_class/followup_message_ref query capability and the artifact carries PUBLIC_REPRODUCTION.md, so the work appears done; the child closure itself just under-cites. Low-severity hygiene note.",
+      "fix": "No reopen. If touched during any sru cleanup, backfill sru.1 close_reason with the verify command and the reproduction reference (PUBLIC_REPRODUCTION.md in .agent/demos/claim-vs-evidence)."
+    }
+  ],
+  "dep_priority": [],
+  "reorg": []
+}

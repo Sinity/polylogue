@@ -1,0 +1,152 @@
+{
+  "_meta": {
+    "author": "S6 reconciliation agent",
+    "inputs": "findings_D01..D16 reorg arrays + findings_D15_graph + D15_orphans.json (74 orphans)",
+    "invariant": "every orphan/reparent target assigned EXACTLY ONCE; no double-moves; all adoptees verified parent=null except jnj.5 (lifted from jnj)",
+    "coverage": "8 new epics adopt ~40 orphans; 33 reparents into existing epics; remainder intentionally standalone (listed in standalone_kept)"
+  },
+
+  "new_epics": [
+    {
+      "title": "Beads/devloop work-evidence rail: join external work-tracking + PR evidence to the archive",
+      "design": "Coherent theme distinct from s7ae's live-agent coordination: bind the beads task graph and PR/authoring evidence to Polylogue sessions. Substrate leg (blocking): 7fj ingests beads issue history as a source family. Join leg: 4c0 builds session<->bead cross-links + archive-rendered work loop. Contract/decision legs: lnd decides the beads-vs-assertions boundary (which state lives in bd vs user.db); lio aligns the cross-repo devloop contract on beads (Sinex parity); kph attaches the authoring session's postmortem bundle to PRs (provenance-carrying PRs). Sequence: 7fj (substrate) -> 4c0/lnd (join+boundary) -> lio/kph (cross-repo + PR provenance). Do NOT pull in h6r (belongs to analytics/uplift tower, blocks h10). 6mv's emitter task may later join this rail but is not adopted here.",
+      "acceptance": "Epic exists and owns 4c0, 7fj, lnd, lio, kph as children. 7fj is marked as the blocking substrate dep of 4c0 (dep edge 7fj->4c0 present). lnd (decision) records the beads-vs-assertions boundary with a written verdict before 4c0/lio ship against it. Each child retains its own execution-grade design/acceptance; the epic body states the sequence and non-goals (no h6r, no live-coordination scope that belongs to s7ae).",
+      "adopts": ["polylogue-4c0", "polylogue-7fj", "polylogue-lnd", "polylogue-lio", "polylogue-kph"]
+    },
+    {
+      "title": "Usage/cost honesty: one cross-provider token+cost ledger that survives lineage and drift",
+      "design": "Cost honesty is cross-provider correctness, NOT Hermes-specific (keep out of fs1). Spine: 5hf builds the honest cross-provider usage ledger (disjoint input/cached/output/reasoning lanes; per-model partitioning). Companion: ivsc classifies Codex state_5 token drift outside lineage replay (cross-verify archive accounting vs ~/.codex/state_5.sqlite). External residual: GH #2472 (per-model partitioning bug) is the named correctness gap 5hf's ledger must close -- track it as an external-ref from 5hf, not as a bead mirror. If a distinct lineage-token double-count companion is later filed, parent it here too.",
+      "acceptance": "Epic exists and owns 5hf + ivsc. 5hf's acceptance cites GH #2472 as the partitioning correctness bar (Ref #2472, neutral wording). ivsc's reconciliation is expressed as a devtools probe (lab probe cost-reconciliation lineage) with a pass/fail band on per-thread ratio. The epic body states that cost accounting is cross-provider and must not be nested under the Hermes bridge.",
+      "adopts": ["polylogue-5hf", "polylogue-ivsc"]
+    },
+    {
+      "title": "Capture extension: reliability, coverage, and in-page presence",
+      "design": "Browser-extension cluster distinct from the daemon-served web workbench (bby). 3v1: MV3 extension reliability + status UX (spool health, badge, completeness signal, gemini bridge, error telemetry). 90y: in-page shadow-DOM overlay showing archive state + inline assertion/context capture on chat sites. Both are area:ingest+area:web, both scoped to the extension itself. Do NOT reparent under bby -- 3v1 is pure MV3 reliability with no daemon-reader surface. Future extension beads land here.",
+      "acceptance": "Epic exists and owns 3v1 + 90y. Epic body states the boundary: extension-side code (MV3 service worker, content scripts, shadow-DOM overlay) here; daemon-reader/web-workbench surface stays in bby; posting-channel infra (ptx/b1n) stays in bby. Each child keeps its execution-grade spec.",
+      "adopts": ["polylogue-3v1", "polylogue-90y"]
+    },
+    {
+      "title": "Compaction lifecycle: pre-compaction snapshot, loss forensics, post-compaction re-grounding",
+      "design": "PROMOTION: retype existing polylogue-gjg from task->epic in place (reuse the gjg id; do not mint a new epic). gjg's design already carries four epic-sized legs that must become children: (1) PreCompact snapshot capture (persist context before Claude/Codex compaction destroys it), (2) corpus-wide compaction-loss forensics measure (quantify what auto-compaction drops), (3) opt-in re-grounding SessionStart lane armable as an ExperimentSpec, (4) the 37t handoff-triad documentation. It is already dep-linked to s7ae via d1y and references 37t; keep those cross-epic deps. Decompose into 4 children so each leg is independently ready/verifiable instead of one unschedulable mega-task.",
+      "acceptance": "gjg is typed 'epic' and its four legs exist as child beads, each PR-shaped with its own acceptance. The re-grounding lane is expressed as an ExperimentSpec (declared arms + preregistered metric) so it is measurable, not asserted. Cross-epic deps to s7ae (d1y) and the 37t handoff-triad reference are preserved. No new umbrella id is created.",
+      "adopts": ["polylogue-gjg"]
+    },
+    {
+      "title": "Configuration doctrine + DB-backed runtime preferences",
+      "design": "Clearest missing-epic signal: y4c is a doctrine spine with four dependent implementation bundles, all orphaned. Spine: y4c (great defaults, DB-backed runtime prefs in user.db, Nix module surface). Bundles: 3xx (verb-behavior + ops preferences: confirmations, judge defaults, copy-as-command), y8w (reading preferences: per-scope views, fold budgets, rows, pager), 6kh (query-scope preferences: default time window, scope filter), 1jc (learned defaults: archive proposes config as judged candidates, closing the loop to 37t's judgment gate). Sequence: y4c defines the prefs table + resolution order first; the three bundles fill lanes; 1jc layers learned proposals on top.",
+      "acceptance": "Epic exists and owns y4c (spine) + 3xx, y8w, 6kh, 1jc. y4c's design fixes the user.db prefs table shape and precedence (CLI flag > env > db-pref > default) before the bundles depend on it (dep edges y4c->3xx/y8w/6kh). 1jc is gated on 37t's judgment gate (relates-to 37t). Each bundle keeps execution-grade acceptance naming its config keys.",
+      "adopts": ["polylogue-y4c", "polylogue-3xx", "polylogue-y8w", "polylogue-6kh", "polylogue-1jc"]
+    },
+    {
+      "title": "Operational resilience: recoverable, forgettable-on-purpose, observable in prod",
+      "design": "Ops/daemon-trust cluster with no owning epic; all concern 'the archive stays trustworthy, recoverable, and observable.' 4be: restore drill -- prove backups actually restore, quarterly (untested backups are not backups). 27m: excision + secret hygiene -- the archive can forget on purpose (targeted deletion + secret scrubbing). peo: daemon death forensics -- crash trace + heartbeat sentinel + restart. s8q: make deployed Polylogue state trustworthy / captures queryable (P4, deliberately parked pending next deploy -- adopt for grouping, keep P4). Note: perf-observability beads opc/oxz were routed to 20d (interactive performance), not here (see conflicts_resolved).",
+      "acceptance": "Epic exists and owns 4be, 27m, peo, s8q. 4be produces a repeatable devtools restore-drill artifact with a pass/fail line. 27m's excision path is idempotent and leaves an audit trail. peo emits a heartbeat + crash-forensics record readable from the archive. s8q remains P4 with its parked note intact; re-triaged at next deploy. Epic body states the boundary with 20d (perf instrumentation lives in 20d; resilience/recovery lives here).",
+      "adopts": ["polylogue-4be", "polylogue-27m", "polylogue-peo", "polylogue-s8q"]
+    },
+    {
+      "title": "Ecosystem interop + origin breadth: a two-way citizen (ingest + export lanes)",
+      "design": "Large unparented cluster whose beads literally describe being a 'two-way citizen'. Ingest breadth: t0p (capture the rest of Claude Code: todos/file-history/prompt-history/debug), uiw (origin breadth: enumerate target set + generic openai-chat-shape detector), 2qx (OriginSpec: one package per origin, dispatch order derived from descriptors), 0cg (OTel GenAI semantic-conventions ingest), 7xv (native git/repo awareness: session<->commit/branch correlation), 611 (Grok/xAI export importer), ale (external link archival). Export/interop lanes: wmj (OTel GenAI trace export), 7k7 (research-tooling export: inspect-ai/Docent), r47 (Obsidian/PKM export profile), 4g5 (expose archive as HPI module + Promnesia source). The 2qx OriginSpec/detector-registry work makes each new origin mechanical, which is why one umbrella is warranted. EXCLUDED (routed elsewhere): 7fj->beads rail (beads-history is not a chat origin); ox0->fs1 (Codex state-db mirrors the Hermes state-authoritative pattern).",
+      "acceptance": "Epic exists and owns t0p, uiw, 2qx, 0cg, 7xv, 611, ale, wmj, 7k7, r47, 4g5. 2qx (OriginSpec/descriptor registry) is marked as the enabler the other ingest beads build on (dep edges 2qx->uiw/611/0cg). Export lanes share one interop contract (a declared export-profile registry). Epic body states 7fj and ox0 are intentionally NOT here. Each child keeps its own acceptance; P4 breadth items may stay under-specified deep backlog.",
+      "adopts": ["polylogue-t0p", "polylogue-uiw", "polylogue-2qx", "polylogue-0cg", "polylogue-7xv", "polylogue-611", "polylogue-ale", "polylogue-wmj", "polylogue-7k7", "polylogue-r47", "polylogue-4g5"]
+    },
+    {
+      "title": "Substrate consolidation: kill the twins, God-modules, and duplicated primitives",
+      "design": "Internal-debt refactor cluster distinct from t46's surface-dispatch focus (t46 owns parallel *surfaces*; this owns duplicated *substrate*). Daemon nervous system: 0aj (declared write-effects chain: post-commit effects as registry entries), yp0 (daemon internal event bus: loops subscribe, polling retires). Storage-twin trap: 48h (consolidate 10 copies of _table_exists / introspection helpers), pf1 (sync/async divergence: diff the twin backends against the 10 known divergences), 1ty (fts_freshness_state declared twice: reconcile with schema policy). Dead weight: 1a9 (remove dead session-commit stubs + unused web-construct row + stale fuzz REs), dab (stop materializing run-projection cache rows; drop DDL after parity). Doctrine: c9y (package topology boundary doctrine for the 28-package tree). Note hiu (twin collapse, from D06) relates here but stays where D06 keeps it standalone; cross-link rather than move.",
+      "acceptance": "Epic exists and owns 0aj, yp0, 48h, pf1, 1ty, 1a9, dab, c9y. Consolidation beads assert the duplicate is GONE (grep shows one _table_exists, one fts_freshness declaration) not merely 'added a helper'. c9y (doctrine) lands before the boundary-sensitive moves. pf1's twin-diff is expressed as an executable check. Each child keeps its own acceptance + verify command.",
+      "adopts": ["polylogue-0aj", "polylogue-yp0", "polylogue-48h", "polylogue-pf1", "polylogue-1ty", "polylogue-1a9", "polylogue-dab", "polylogue-c9y"]
+    }
+  ],
+
+  "reparents": [
+    {"id": "polylogue-ma2",  "to_parent": "polylogue-1xc",  "why": "FK-index scale bug: correct on fixtures, SCAN over ~89k v24 rows; blockers 3wb/6h7 CLOSED (ready). Populates the empty scale-hardening epic. [D06]"},
+    {"id": "polylogue-6wnh", "to_parent": "polylogue-1xc",  "why": "thread_refresh unbounded on large Codex appends (3.02s of 3.04s graph_resolve on 340MB append); same wrong-at-scale bug class; blocker 3wb CLOSED. [D06]"},
+    {"id": "polylogue-xy95", "to_parent": "polylogue-1xc",  "why": "Full usage diagnostic D-stated on the live archive while a 30s SQL equivalent existed -- bug that only bites at real archive scale = 1xc charter. [D15]"},
+    {"id": "polylogue-xgw",  "to_parent": "polylogue-1xc",  "why": "Archive schema hygiene for evidence-cockpit read paths (unsafe joins, JSON checks) is scale-read hardening. [D15]"},
+    {"id": "polylogue-fie",  "to_parent": "polylogue-1xc",  "why": "Decision: archive scaling doctrine (keep everything, optimize ceilings) is the decision layer over 1xc's bug layer; both cite 16.5K/42GB growth. [D15]"},
+    {"id": "polylogue-0ns",  "to_parent": "polylogue-mhx",  "why": "CONFLICT RESOLVED (mhx over 1xc): embedding daemon-drain bound; fix lives in _embed_archive_sessions_sync; overlaps mhx.6 DRAIN SCOPING. Domain epic owns it; cross-link to 1xc. [D13 over D06]"},
+
+    {"id": "polylogue-3gd",  "to_parent": "polylogue-37t",  "why": "Activation layer teaches agents to use the memory loop (preamble 37t.4, protocol 37t.2, judgment gate); deliverable is CLAUDE.md context + adoption metrics = 37t. Deps d1y/pj8 (s7ae children) kept as cross-epic. Highest-priority orphan (P1). [D15]"},
+    {"id": "polylogue-p5g",  "to_parent": "polylogue-37t",  "why": "'polylogue judge' is the human ergonomics of the 37t judgment gate; its own text cedes lifecycle semantics to 37t.1. [D15]"},
+    {"id": "polylogue-ze5",  "to_parent": "polylogue-37t",  "why": "Decision on user.db assertion vocabulary is foundational to the claims->judgment->preamble loop 37t consumes. [D15]"},
+    {"id": "polylogue-rvh",  "to_parent": "polylogue-37t",  "why": "Lesson-reinforcement scheduling (SRS over injection) extends the memory loop's injection stage. [D15]"},
+
+    {"id": "polylogue-t8t",  "to_parent": "polylogue-s7ae", "why": "'Walk the seven core agent flows end-to-end' is the empirical complement to the pj8 cookbook (an s7ae child); coordination-substrate adoption. [D15]"},
+    {"id": "polylogue-1hj",  "to_parent": "polylogue-s7ae", "why": "'Blackboard as agent comms: messages that arrive' is multi-agent coordination messaging; deps include s7ae.3. [D15]"},
+
+    {"id": "polylogue-x4s",  "to_parent": "polylogue-rii",  "why": "'Express devloop state in Polylogue substrate' = write focus/handoff/proof-claims as work-event assertions = rii's charter; rii has only 2 children. [D15]"},
+
+    {"id": "polylogue-h10",  "to_parent": "polylogue-9l5",  "why": "Prediction/calibration tracking (Brier, reliability buckets via 9l5.7) is outcome-grounded analytics; dep on 9l5.7 already makes it a 9l5 slice. [D15]"},
+    {"id": "polylogue-stc",  "to_parent": "polylogue-9l5",  "why": "Experiment hosting (declared arms, preregistered metrics) depends on 9l5.7 and is analytics substrate; relates-to 37t for context experiments. [D15]"},
+
+    {"id": "polylogue-opc",  "to_parent": "polylogue-20d",  "why": "Self-tracing (daemon spans in its own archive) feeds 20d.14 latency projection; daemon/perf observability = 20d. [D15]"},
+    {"id": "polylogue-oxz",  "to_parent": "polylogue-20d",  "why": "Perf-instrumentation doctrine (slow-query log, phase timings) complements 20d.7 EQP sweep and feeds bby.8/20d.14 acceptance. [D15]"},
+
+    {"id": "polylogue-ttu",  "to_parent": "polylogue-3tl",  "why": "Docs information architecture (tiered index, orphan/stale sweep) is external legibility; sibling of 3tl.9 docs coverage lint. [D15]"},
+    {"id": "polylogue-y0b",  "to_parent": "polylogue-3tl",  "why": "Generated codebase atlas (self-grokking map) feeds the README skim ladder (3tl.1). [D15]"},
+    {"id": "polylogue-45i",  "to_parent": "polylogue-3tl",  "why": "Datasette lane ('your archive is just SQLite') targets 3tl's validator/evangelist audience and proves no-lock-in. [D15]"},
+    {"id": "polylogue-6bu",  "to_parent": "polylogue-3tl",  "why": "Docs-site verification lane (pages cache + link integrity) is legibility infra; pairs with 3tl.9. [D15]"},
+    {"id": "polylogue-6l6",  "to_parent": "polylogue-3tl",  "why": "'Docs/theming/release-proof/control-plane polish' is externally-inspectable polish = 3tl scope. [D15]"},
+
+    {"id": "polylogue-ox0",  "to_parent": "polylogue-fs1",  "why": "CONFLICT RESOLVED (fs1 over interop-breadth): Codex state_5.sqlite as authoritative source mirrors fs1.1's 'product-local state authoritative; snapshots fallback' pattern exactly. [D15 self-resolved]"},
+
+    {"id": "polylogue-jsy",  "to_parent": "polylogue-83u",  "why": "'Harden blob hash validation + drop misleading symlink check' is blob-store integrity = 83u (Attachment & blob evidence integrity). [D15]"},
+
+    {"id": "polylogue-7le",  "to_parent": "polylogue-t46",  "why": "Consolidate the three session->HTML render paths = delete parallel dispatch, t46's charter. [D15]"},
+    {"id": "polylogue-1fp",  "to_parent": "polylogue-t46",  "why": "Facade decomposition of the 5.2k-line God-object = the parallel-dispatch/QA-middle-layer removal t46 names. [D15]"},
+    {"id": "polylogue-703",  "to_parent": "polylogue-t46",  "why": "'One status assembly' collapses three disagreeing status computations into one contract = t46 delete-parallel-dispatch. [D15]"},
+
+    {"id": "polylogue-yrx",  "to_parent": "polylogue-bby",  "why": "Session changes view lands a web 'Changes' tab as evidence-cockpit content; relates-to bby.11. [D15]"},
+    {"id": "polylogue-ptx",  "to_parent": "polylogue-bby",  "why": "Browser-capture posting channel is web-capture/posting infra the workbench surfaces; b1n depends on it. [D15]"},
+    {"id": "polylogue-b1n",  "to_parent": "polylogue-bby",  "why": "WebUI-driven posting is UI plumbing over the ptx channel, delivered in the web workbench. [D15]"},
+
+    {"id": "polylogue-scd",  "to_parent": "polylogue-jnj",  "why": "Cross-surface handoff (polylogue open + copy-as-command everywhere, one ref grammar) = jnj 'one rule per concern across CLI/config/onboarding'. [D15]"},
+
+    {"id": "polylogue-9yz",  "to_parent": "polylogue-fnm",  "why": "'Named bounded-dialogue layout' is a reusable read-view/render profile wired to DSL terminal stages (fnm.6); query-DSL epic owns projection/layout naming. [D15]"},
+    {"id": "polylogue-ap7",  "to_parent": "polylogue-fnm",  "why": "Layout profiles / RenderSpec presets per 4p1 extend the read-algebra substrate fnm owns; makes the read-algebra frontier auditable as one deliverable rather than a floating task. [D03]"},
+
+    {"id": "polylogue-jnj.5", "to_parent": null, "why": "LIFT OUT of jnj: jnj is P3 surface-hygiene; jnj.5 is a P2 area:security bug (ops reset --session/--source tombstones before confirmation, reset.py:260-277). Nesting live security work under a hygiene epic risks tier-4 deprioritization. Track standalone at true P2; keep a relates-to link to jnj for the shared mutation-contract theme. [D10]"}
+  ],
+
+  "reprioritizations": [
+    {"id": "polylogue-3tl.4", "to_priority": 2, "why": "P3->P2. Produces the 'published finding URL' that is item (3) of the 3tl epic's OWN acceptance and is the enforcement site for cpf's provenance stanza + citation target for 3tl.3/3tl.10/3tl.8. Spine/critical-path enabler currently at deep-backlog tier while its dependents also sit at P3. [D07]"},
+    {"id": "polylogue-bby", "to_priority": 2, "why": "P3->P2. Resolves the priority inversion: the epic is P3 but its child bby.11 (Webui architecture v2) is P1 spine that gates s7ae/4smp web-projection work. A P3 epic reads as deep backlog while it actually carries P1-blocking architecture. (Alternative -- reparent bby.11 out to a spine epic -- rejected: no foundational web epic exists; lifting bby is lower-churn and honest.) [D11]"},
+    {"id": "polylogue-f94", "to_priority": 3, "why": "RETYPE decision->task (priority unchanged, P3). The decision is DECIDED (kill the TUI); remaining scope is a mechanical ~373-line deletion PR. Retyping makes it a claimable execution item instead of a phantom open decision. [D16]"},
+    {"id": "polylogue-gjg", "to_priority": 2, "why": "RETYPE task->epic (priority unchanged, P2). See new_epics 'Compaction lifecycle': gjg carries four epic-sized legs; promote in place and decompose into children. [D05/brief]"}
+  ],
+
+  "standalone_kept": [
+    {"id": "polylogue-iec", "why": "Proactive schema-cost audit, not a confirmed wrong-at-scale bug; D06 explicitly rejected 1xc."},
+    {"id": "polylogue-hiu", "why": "Twin-collapse refactor; relates to substrate-consolidation but D06 keeps standalone; cross-link only."},
+    {"id": "polylogue-b5l", "why": "P1 operational-architecture spine in its own right; not a 1xc scale bug."},
+    {"id": "polylogue-exb", "why": "Layering refactor, not a scale bug; D06 rejected 1xc."},
+    {"id": "polylogue-k8k", "why": "Fix is in the Sinnix repo (devshell scope wrapper), not Polylogue code; do NOT move under 20d; link as external measurement context. [D08]"},
+    {"id": "polylogue-yeq", "why": "Advanced verification lanes; 2-bead 'verification depth' mini-cluster with th0 -- too small for an epic; seed a testing epic only if more test-infra beads appear. [D15]"},
+    {"id": "polylogue-th0", "why": "Interactive-surface test harness; pairs with yeq; keep standalone. [D15]"},
+    {"id": "polylogue-2n6", "why": "Harness remote-control lane; standalone; could join s7ae/agent-orchestration later."},
+    {"id": "polylogue-bfv", "why": "Advisory hooks; standalone; relates to 37t but not adopted."},
+    {"id": "polylogue-4p1", "why": "Decision: one read algebra -- foundational decision feeding fnm; keep standalone (fnm/jnj already reference it)."},
+    {"id": "polylogue-ca4", "why": "Decision: DuckDB optional OLAP engine; standalone decision."},
+    {"id": "polylogue-dx1", "why": "Decision: daemon HTTP substrate; standalone decision."},
+    {"id": "polylogue-tsk", "why": "Resume-ranking bug (workflow shapes classifier never emits); standalone P2 bug."},
+    {"id": "polylogue-30h", "why": "Display-title synthesis; standalone."},
+    {"id": "polylogue-utf", "why": "Devtools surface economy; standalone."},
+    {"id": "polylogue-5dx", "why": "Dependency leverage policy chore; standalone."},
+    {"id": "polylogue-0dz", "why": "Chunked/streaming read-package layout; standalone (relates to fnm/read-algebra but not adopted)."},
+    {"id": "polylogue-lu1", "why": "Ambient theming P4; standalone."},
+    {"id": "polylogue-gqx", "why": "Desktop-presence spike P4; standalone."},
+    {"id": "polylogue-c36", "why": "Native-compilation probe P4; standalone."},
+    {"id": "polylogue-2jj", "why": "IssueBench P4; standalone."},
+    {"id": "polylogue-5en", "why": "Branch-local dev-loop AC verify-and-close task; standalone close-out (touches devloop but is a one-shot closure, not epic-shaped)."}
+  ],
+
+  "conflicts_resolved": [
+    {"item": "0ns target", "options": "D06 -> 1xc (scale) vs D13 -> mhx (embedding lifecycle)", "chosen": "mhx", "justification": "Embedding-specific: fix is in _embed_archive_sessions_sync (daemon-drain window checked only between sessions), and it overlaps mhx.6's DRAIN SCOPING item. The domain epic that already owns adjacent work (mhx.6) should own it; 1xc is the generic scale epic. Cross-link to 1xc. This overrides the brief's 'ma2/0ns/6wnh->1xc' shorthand for 0ns only (ma2/6wnh still -> 1xc)."},
+    {"item": "3gd target", "options": "D15 -> 37t vs s7ae (deps d1y/pj8 are s7ae children)", "chosen": "37t", "justification": "Deferred to the dedicated graph agent: 3gd's deliverable is standing CLAUDE.md context + adoption metrics for the memory loop (preamble/protocol/judgment gate) = 37t. Cross-epic deps to s7ae children are kept as edges, not parenthood. Flagged as the one reparent with a live alternative."},
+    {"item": "ox0 target", "options": "interop-breadth ingest side vs fs1 (Hermes bridge)", "chosen": "fs1", "justification": "Graph agent self-resolved: Codex state_5.sqlite-as-authoritative mirrors fs1.1's 'product-local state authoritative; snapshots fallback' pattern exactly. Removed from the interop-breadth epic to avoid a double-move."},
+    {"item": "7fj target", "options": "beads/devloop rail (brief) vs interop-breadth ingest side (D15)", "chosen": "beads/devloop rail", "justification": "7fj ingests BEADS issue history, not a chat/provider origin -- it is the substrate dep of the work-evidence rail (blocks 4c0), which the brief blessed. Removed from interop-breadth to avoid a double-move."},
+    {"item": "opc/oxz target", "options": "ops-resilience-epic (D15 alt) vs 20d interactive-performance", "chosen": "20d", "justification": "Both are perf instrumentation: opc (self-tracing spans) feeds 20d.14 latency projection; oxz (slow-query log, phase timings) complements 20d.7 EQP sweep. ops-resilience-epic adopts only recovery/trust beads (4be/27m/peo/s8q); the epic body states the boundary."},
+    {"item": "jnj.5 placement", "options": "keep under jnj (hygiene epic) vs lift to standalone P2 security bug", "chosen": "lift out (parent=null, relates-to jnj)", "justification": "A live P2 area:security correctness bug must not inherit P3 hygiene-tier deprioritization; keep the shared mutation-contract theme as a relates-to link. [D10]"},
+    {"item": "iec/hiu/b5l/exb under 1xc", "options": "D06 considered then REJECTED", "chosen": "keep standalone", "justification": "1xc owns confirmed-severe wrong-at-scale BUGS only. iec is a proactive audit, hiu/exb are refactors, b5l is an operational-architecture spine. Related to scale but not the bug class; only ma2/6wnh (and the D15 scale bugs xy95/xgw + doctrine fie) belong under 1xc."},
+    {"item": "bby.11 vs bby priority", "options": "lift epic bby to P2 vs reparent bby.11 out to a spine epic", "chosen": "lift bby to P2", "justification": "No foundational web/spine epic exists to receive bby.11; lifting the epic to P2 is lower-churn and honestly reflects that it carries a P1 spine child gating s7ae/4smp web work. bby.11 stays P1 under bby."}
+  ]
+}

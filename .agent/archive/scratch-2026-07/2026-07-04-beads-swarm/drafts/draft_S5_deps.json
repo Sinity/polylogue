@@ -1,0 +1,306 @@
+{
+  "edges": [
+    {
+      "blocker": "polylogue-mhx.2",
+      "blocks": "polylogue-mhx.4",
+      "type": "blocks",
+      "evidence": "D13: mhx.4 consumes session/assertion vector classes from mhx.2; alias emb-targets did not resolve",
+      "replaces": "drop emb-targets->mhx.4"
+    },
+    {
+      "blocker": "polylogue-mhx.2",
+      "blocks": "polylogue-mhx.5",
+      "type": "blocks",
+      "evidence": "D13: mhx.5 consumes vector classes from mhx.2; alias emb-targets did not resolve",
+      "replaces": "drop emb-targets->mhx.5"
+    },
+    {
+      "blocker": "polylogue-mhx.3",
+      "blocks": "polylogue-mhx.6",
+      "type": "blocks",
+      "evidence": "D13: mhx.6 (efficiency) must sequence after mhx.3 quality gate; alias emb-eval did not resolve",
+      "replaces": "drop emb-eval->mhx.6"
+    },
+    {
+      "blocker": "polylogue-mhx.1",
+      "blocks": "polylogue-37t.5",
+      "type": "blocks",
+      "evidence": "D13: abstraction (mhx.1) is enabler, local-lane demo (37t.5) is downstream; existing edge was reversed",
+      "replaces": "drop 37t.5->mhx.1"
+    },
+    {
+      "blocker": "polylogue-fnm.11",
+      "blocks": "polylogue-fnm.1",
+      "type": "blocks",
+      "evidence": "D04: fnm.11 design \"do the matrix first so fnm.1 lands against known gaps\""
+    },
+    {
+      "blocker": "polylogue-fnm.1",
+      "blocks": "polylogue-fnm.9",
+      "type": "blocks",
+      "evidence": "D04: fnm.9 design \"defer until aggregates (fnm.1) prove demand\""
+    },
+    {
+      "blocker": "polylogue-fnm.7",
+      "blocks": "polylogue-fnm.9",
+      "type": "blocks",
+      "evidence": "D04: fnm.9 design \"defer until child-count predicates (fnm.7) prove demand\""
+    },
+    {
+      "blocker": "polylogue-fnm.12",
+      "blocks": "polylogue-6kh",
+      "type": "blocks",
+      "evidence": "D04: 6kh reuses fnm.12 macro-expansion/provenance to render implicit-scope in explain"
+    },
+    {
+      "blocker": "polylogue-fnm.1",
+      "blocks": "polylogue-fnm.7",
+      "type": "relates-to",
+      "evidence": "D04: shared correlated-aggregate relation built once, not forked"
+    },
+    {
+      "blocker": "polylogue-20d.1",
+      "blocks": "polylogue-20d.12",
+      "type": "blocks",
+      "evidence": "D08: 20d.12 design \"lands with/after 20d.1 so CLI+webui+MCP hit the same cache\""
+    },
+    {
+      "blocker": "polylogue-20d.14",
+      "blocks": "polylogue-20d.15",
+      "type": "blocks",
+      "evidence": "D08: 20d.15 acceptance target is the maintenance-tier budget 20d.14 defines"
+    },
+    {
+      "blocker": "polylogue-20d.6",
+      "blocks": "polylogue-20d.15",
+      "type": "relates-to",
+      "evidence": "D08: shared WAL/autocheckpoint measurement, split live vs bulk lane (not a hard block)"
+    },
+    {
+      "blocker": "polylogue-20d.10",
+      "blocks": "polylogue-20d.8",
+      "type": "blocks",
+      "evidence": "D08: 20d.8 \"re-measure after action-unit outcome fields land\"; 20d.10 lowers matchers SQL-side"
+    },
+    {
+      "blocker": "polylogue-9l5.7",
+      "blocks": "polylogue-9l5.8",
+      "type": "blocks",
+      "evidence": "D09: 9l5.8 temporal series emits measures registered via 9l5.7 + needs median/MAD/CI stats (P2 ready-frontier)"
+    },
+    {
+      "blocker": "polylogue-9l5.7",
+      "blocks": "polylogue-9l5.9",
+      "type": "blocks",
+      "evidence": "D09: 9l5.9 survival design \"registered as measures (9l5.7)\", KM+Greenwood CIs"
+    },
+    {
+      "blocker": "polylogue-9l5.7",
+      "blocks": "polylogue-9l5.10",
+      "type": "blocks",
+      "evidence": "D09: 9l5.10 design \"permutation test for significance via 9l5.7\""
+    },
+    {
+      "blocker": "polylogue-9l5.7",
+      "blocks": "polylogue-9l5.12",
+      "type": "blocks",
+      "evidence": "D09: 9l5.12 design \"registered via 9l5.7 with construct notes\""
+    },
+    {
+      "blocker": "polylogue-27p",
+      "blocks": "polylogue-dmp",
+      "type": "relates-to",
+      "evidence": "D10: dmp keeps payload identical to 27p candidate-writer; 27p is CLOSED so substrate already exists (relates, not a pending block)"
+    },
+    {
+      "blocker": "polylogue-o21",
+      "blocks": "polylogue-2qx",
+      "type": "blocks",
+      "evidence": "D12: o21 extracts declare-once pattern first (wave:1); 2qx is the origin sweep (wave:2)"
+    },
+    {
+      "blocker": "polylogue-9e5.3",
+      "blocks": "polylogue-b0b",
+      "type": "blocks",
+      "evidence": "D14: 9e5.3 is \"go/no-go gate for the heuristic->structural sweep\""
+    },
+    {
+      "blocker": "polylogue-9e5.9",
+      "blocks": "polylogue-b0b",
+      "type": "blocks",
+      "evidence": "D14: 9e5.9 \"produces labeled fixture set that sweep needs for regression\""
+    },
+    {
+      "blocker": "polylogue-9e5.14",
+      "blocks": "polylogue-9e5.16",
+      "type": "blocks",
+      "evidence": "D14: 9e5.16 builds capability matrix from 9e5.14 facade-decomposition map"
+    },
+    {
+      "blocker": "polylogue-9e5.5",
+      "blocks": "polylogue-9e5.15",
+      "type": "relates-to",
+      "evidence": "D14: table-level (9e5.5) and symbol-level (9e5.15) dead-weight audits sequenced, not re-run"
+    },
+    {
+      "blocker": "polylogue-4ts.5",
+      "blocks": "polylogue-gjg",
+      "type": "blocks",
+      "evidence": "D05: gjg forensics consumes 4ts.5 effective-context/boundary primitive to measure compaction loss"
+    },
+    {
+      "blocker": "polylogue-ivsc",
+      "blocks": "polylogue-38x",
+      "type": "relates-to",
+      "evidence": "D05: 38x Codex token-drift seed finding owned by executable bead ivsc"
+    },
+    {
+      "blocker": "polylogue-cfk",
+      "blocks": "polylogue-3tl.10",
+      "type": "blocks",
+      "evidence": "D07: 3tl.10 launch memory-claim volume cannot finalize until cfk uplift re-run reports"
+    },
+    {
+      "blocker": "polylogue-cfk",
+      "blocks": "polylogue-37t",
+      "type": "relates-to",
+      "evidence": "E6: cfk validates 37t founding premise; negative result forces 37t redesign decision"
+    },
+    {
+      "blocker": "polylogue-b5l",
+      "blocks": "polylogue-27m",
+      "type": "blocks",
+      "evidence": "E6: 27m excision AC assumes blue-green (b5l) makes derived-tier rebuild cheap; else 20-40min downtime per excision"
+    },
+    {
+      "blocker": "polylogue-7fj",
+      "blocks": "polylogue-lnd",
+      "type": "relates-to",
+      "evidence": "D01: lnd \"revisit when beads ingestion (7fj) lands\""
+    },
+    {
+      "blocker": "polylogue-4c0",
+      "blocks": "polylogue-lnd",
+      "type": "relates-to",
+      "evidence": "D01: 4c0 implements the close-reason claim-vs-evidence cross-check lnd describes"
+    },
+    {
+      "blocker": "polylogue-ap7",
+      "blocks": "polylogue-rlsb",
+      "type": "relates-to",
+      "evidence": "D03: rlsb variant layouts must be render profiles in ap7 registry, not a new silo"
+    },
+    {
+      "blocker": "polylogue-1lm",
+      "blocks": "polylogue-rlsb",
+      "type": "relates-to",
+      "evidence": "D03: rlsb projection plugs into 1lm selector x transform x budget algebra"
+    },
+    {
+      "blocker": "polylogue-mhx.4",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: mhx.4 injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-rvh",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: rvh injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-1hj",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: 1hj injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-bfv",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: bfv injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-3gd",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: 3gd injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-gjg",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: gjg injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-1jc",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: 1jc injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-4smp",
+      "blocks": "polylogue-37t.11",
+      "type": "relates-to",
+      "evidence": "D02/D15: 4smp injects into agent context; 37t.11 is the declared arbiter/choke point (relates-to, not blocks, to avoid serializing P1 injection legs)"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-bby.9",
+      "type": "relates-to",
+      "evidence": "D11/D15: bby.9 web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-bby.8",
+      "type": "relates-to",
+      "evidence": "D11/D15: bby.8 web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-20d.13",
+      "type": "relates-to",
+      "evidence": "D11/D15: 20d.13 web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-90y",
+      "type": "relates-to",
+      "evidence": "D11/D15: 90y web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-b1n",
+      "type": "relates-to",
+      "evidence": "D11/D15: b1n web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-yrx",
+      "type": "relates-to",
+      "evidence": "D11/D15: yrx web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-bby.11",
+      "blocks": "polylogue-scd",
+      "type": "relates-to",
+      "evidence": "D11/D15: scd web leg builds on v2 web stack (bby.11); relates-to per operator hedge, not a hard block"
+    },
+    {
+      "blocker": "polylogue-0v9p",
+      "blocks": "polylogue-rlsb",
+      "type": "relates-to",
+      "evidence": "D03: downgrade existing 0v9p->rlsb from blocks to relates-to; language facts only inform projection defaults, not core variant render",
+      "replaces": "drop-blocks 0v9p->rlsb, re-add as relates-to (MODIFY existing edge, not net-new)"
+    }
+  ],
+  "rejected": [],
+  "cycles": [],
+  "alias_and_backwards_removals": [
+    "DROP emb-targets->mhx.4 (blocks) — unresolved alias; replaced by mhx.2->mhx.4",
+    "DROP emb-targets->mhx.5 (blocks) — unresolved alias; replaced by mhx.2->mhx.5",
+    "DROP emb-eval->mhx.6 (blocks) — unresolved alias; replaced by mhx.3->mhx.6",
+    "DROP polylogue-37t.5->polylogue-mhx.1 (blocks) — backwards; replaced by mhx.1->37t.5",
+    "DOWNGRADE polylogue-0v9p->polylogue-rlsb from blocks to relates-to"
+  ]
+}

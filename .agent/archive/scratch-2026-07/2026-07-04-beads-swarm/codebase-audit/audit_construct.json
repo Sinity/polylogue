@@ -1,0 +1,99 @@
+{
+  "insights_assessed": [
+    {
+      "insight": "SessionDigestEvent (command_succeeded/failed, test_passed/failed) — polylogue/insights/transforms.py:254-278, _extract_events 1708-1759, _tool_status 2190-2201",
+      "derivation": "STRUCTURE. Outcome read only from keystone tool-result fields (tool_result_exit_code / tool_result_is_error) on the paired tool_result block. status=='unknown' -> no event emitted. exit_code authoritative, then is_error; NULL on both = unknown, never a fabricated positive.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "None material. This is the post-#2482 fix of the recovery-digest fabrication incident: in-session outcomes are facts about what a tool returned, not prose-mined. External truths (PR/issue/CI state) are explicitly NOT synthesized here. handler_kind=='test' classification uses command/output keywords (pytest/ruff/mypy or _TEST_PASS_RE), but that only routes command vs test flavour of an already-structural outcome, not the outcome itself.",
+      "existing_bead_or_null": "n/a (already structural)"
+    },
+    {
+      "insight": "Pathology detectors: wasted_loop, stale_context — polylogue/insights/pathology.py",
+      "derivation": "STRUCTURE. wasted_loop counts consecutive structured failure events (test_failed/command_failed with diagnostic handler_kind) with no structured success between; stale_context reads context-snapshot boundary=='resume' + inheritance_mode in {summary,prefix}. All evidence-linked via EvidenceRef, versioned (PATHOLOGY_DETECTOR_VERSION=4), deterministic.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "None material. The prose-mined missed_review detector was DELETED in #2482 precisely because it fabricated review lifecycle from unverified text. Severity bands (>=7 high, >=4 medium) are arbitrary cutoffs but the underlying counts are structural; presented as counts with drillable evidence, not as verdicts.",
+      "existing_bead_or_null": "9l5.3 (pathology epidemiology, corpus rates)"
+    },
+    {
+      "insight": "SessionPhase — polylogue/archive/phase/extraction.py",
+      "derivation": "STRUCTURE. Phases are pure time-gap segmentation (PHASE_IDLE_THRESHOLD_MS=5min) with tool_counts/word_count. The intent-classifying `kind` field was REMOVED: docstring states 'Phases represent when activity happened, not what kind of activity it was.'",
+      "has_uncertainty": true,
+      "construct_validity_gap": "None. Prior construct-validity failure (phase intent classification) already removed. ALL_PHASES_HEURISTIC/PHASE_NO_TOOL_COUNTS retained only as legacy payload-compat FallbackReason markers.",
+      "existing_bead_or_null": "n/a (fixed)"
+    },
+    {
+      "insight": "WorkEvent.heuristic_label (planning/implementation/debugging/testing/review/research/config/docs/refactoring/data_analysis/session) — polylogue/archive/session/extraction.py:89-359, _classify_range 305-359",
+      "derivation": "MIXED, mostly GUESSED for the label. Action-category counts (file_edit/read/search/shell/git/agent) are structural and drive the primary branches, but the tie-breaks and fallbacks come from keyword substring tables (_DEBUGGING_PATTERNS='error','fix','bug'...; _PLANNING/_TESTING/_REVIEW/etc.) matched with naive `pattern in lowered_text`. Confidence is a hardcoded literal per branch (0.4-0.75), not derived from anything measurable.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "HONEST but weak. Field is named heuristic_label, class WorkEventHeuristicLabel, docstring 'Weak heuristic label'; carries confidence + evidence markers (weak_signal/no_tools/shell_default) + FallbackReason.ALL_WORK_EVENTS_WEAK/WORK_EVENT_WEAK_MARKERS, banded via confidence.ConfidenceBand. Two residual gaps: (1) substring matching mislabels silently — 'fix' matches prefix/suffix, 'test' matches latest/contest, 'plan' matches explanation/airplane, 'data' matches update/validate, 'move' matches remove; the naive matcher's noise is invisible in the confidence number. (2) The activity-TYPE label is neither an outcome nor a pathology, so it may fall outside b0b's explicit 'outcome/pathology heuristics' inventory scope; only 9e5.9 (accuracy benchmark) clearly targets it.",
+      "existing_bead_or_null": "9e5.9 (accuracy benchmark, names 'extraction.py hard-coded confidences' + work-event type) partially; b0b scope ambiguous for activity-type label; word-boundary defect untracked"
+    },
+    {
+      "insight": "RunStateSummary (goal/done/in_flight/blockers/next) — polylogue/insights/transforms.py:_extract_run_state 1811-1893",
+      "derivation": "GUESSED from prose. Regex on assistant message text for section headings (_RUNSTATE_SECTION_RE 'goal:|done:|in flight:|blocker:|next:'). These are the assistant's own self-report.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "HONEST. Every run_state entry is emitted with EvidenceSupport=='assertion' (or 'caveat' for blockers), never 'raw_evidence'. Bundle carries missing_evidence gap rows when no run-state parsed. A naive reader of the 'Continue' report could still read 'done: X' as verified fact, but the support marker and evidence ref make the assertion tier explicit — this is the correct labeling per the post-fabrication design.",
+      "existing_bead_or_null": "n/a (adequately labeled)"
+    },
+    {
+      "insight": "DecisionCandidate — polylogue/insights/transforms.py:_extract_decision_candidates 1922-1984",
+      "derivation": "GUESSED from prose. Regex _DECISION_RE ('decision|decided|choose|chosen') and _STATUS_HEADING_RE on message lines. An instruction-dump detector (_instruction_dump_rejection_reason: >=30 lines/600 words + marker/imperative counts) rejects verbatim CLAUDE.md/system-prompt paste-ins as candidates.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "HONEST. Emitted with support=='inference' (accepted) or 'caveat' (rejected), carries candidate_ref + candidate-review action affordances (accept/reject/supersede) and rejection reason. This is the review-lifecycle design that replaced the fabrication pattern: candidates are proposals awaiting a durable assertion, not facts.",
+      "existing_bead_or_null": "n/a (adequately labeled)"
+    },
+    {
+      "insight": "ToolSummary refs: pr_refs/issue_refs/commit_refs/test_evidence/file_refs — transforms.py:_extract_tool_summaries 1572-1614, _number_refs/_test_evidence/_tool_commit_refs",
+      "derivation": "GUESSED from prose (regex over tool output text) but presented as REFERENCES not CLAIMS. _TEST_PASS_RE/_TEST_FAIL_RE collect preview lines as test_evidence (quoted excerpts), not asserted outcomes; commit-ref detector is deliberately conservative (git-shaped command or commit/sha/head context required).",
+      "has_uncertainty": true,
+      "construct_validity_gap": "HONEST. Comment at transforms.py:77-80 states these classify handler_kind and collect evidence lines, they do NOT assert outcomes. Refs become typed ObjectRefs (github-pr/github-issue/commit) pointing at evidence, never 'PR merged' statements. Directly addresses the fabrication incident (regex previously synthesized 'PR #123 merged').",
+      "existing_bead_or_null": "n/a"
+    },
+    {
+      "insight": "SessionEnrichmentPayload.intent_summary / outcome_summary — polylogue/storage/insights/session/profiles.py:160-163",
+      "derivation": "QUOTE, not classification. intent_summary = first user turn text (cleaned); outcome_summary = last assistant turn (or last user turn) text (cleaned via _clean_topic_text). No label is invented — verbatim excerpts.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "Mostly honest (quotes, plus additive confidence 0.2+.. and FallbackReason.MISSING_SESSION_ANALYSIS/NO_USER_TURNS). Mild: the field NAME 'outcome_summary' overclaims — the last assistant message is not necessarily an outcome (could be a mid-thought or a question). But it is a quote of real text, not a fabricated judgment, and carries fallback reasons. Not worth a dedicated bead.",
+      "existing_bead_or_null": "n/a (quote-based, labeled)"
+    },
+    {
+      "insight": "goal_outcome for /goal sessions — polylogue/storage/insights/session/profiles.py:172-190",
+      "derivation": "STRUCTURE. Mapped from terminal_state (clean_finish->ended_cleanly, error_left->ended_with_error, etc.), which is itself derived from message-boundary structure.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "None material. Explicit comment: 'These are not claims about whether the goal itself succeeded' — it reports boundary posture, not goal success. Precisely the distinction construct validity demands.",
+      "existing_bead_or_null": "n/a"
+    },
+    {
+      "insight": "Confidence fields across Layer-0 substrate payloads: WorkEvent.confidence (0.4-0.75 literals), SessionEnrichmentPayload.confidence (additive 0.2+0.2+..), workflow_shape_confidence, terminal_state_confidence — extraction.py, profiles.py, confidence.py",
+      "derivation": "CONSTRUCTED numbers. The confidence floats are hand-set constants / additive rule points, not empirically calibrated to classifier accuracy. confidence.py bands them into weak/moderate/strong at fixed floors (0.55/0.78).",
+      "has_uncertainty": true,
+      "construct_validity_gap": "PARTIALLY honest. ConfidenceBand vocabulary (STRONG/MODERATE/WEAK/NONE) is documented and closed; NONE vs WEAK ('did not try' vs 'tried and thin') is a good distinction. Gap: the raw float is surfaced to MCP/API consumers as 'confidence' — reads as probability-of-correctness it does not have, and the Layer-0 substrate payloads carry no evidence_tier tag distinguishing a rule-heuristic 0.5 from a structural measure. 9l5.7's measure registry adds tiers for NEW analytics; the pre-existing substrate confidence fields are not explicitly re-tiered.",
+      "existing_bead_or_null": "9e5.9 (calibrates extraction.py confidences vs hand-labeled truth) + 9l5.7 (measure registry evidence tiers) cover this at analytics layer; substrate-payload tiering not explicitly scoped"
+    },
+    {
+      "insight": "terminal_state / workflow_shape — profiles.py inference payload",
+      "derivation": "STRUCTURE. Derived from message-boundary posture and tool-sequence shape features; each carries a *_confidence field.",
+      "has_uncertainty": true,
+      "construct_validity_gap": "Low. Structural signals with confidence + support_level. Shares the uncalibrated-confidence caveat above but the labels themselves are boundary/shape facts.",
+      "existing_bead_or_null": "9e5.9 (terminal state in benchmark scope)"
+    }
+  ],
+  "proposed_beads": [
+    {
+      "title": "Fix substring false-positives in work-event keyword classifier + inventory activity-type label as heuristic-tier",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-b0b",
+      "design": "polylogue/archive/session/extraction.py:_text_signal_from_lowered_text (241-262) matches keyword tables with naive `pattern in lowered_text`, so tokens embed into unrelated words: 'fix'->prefix/suffix, 'test'->latest/contest, 'plan'->explanation/airplane, 'data'->update/validate/metadata, 'spec'->respect/inspect, 'move'->remove, 'config'->reconfigured. This silently mislabels work-event heuristic_label and the noise is invisible in the hardcoded confidence float. Two changes: (1) match on word boundaries (compile the pattern tables to `\\b(?:...)\\b` regexes or tokenize+set-membership) so substring collisions stop; keep multiword phrases ('stack trace','should we') as phrase matches. (2) b0b's inventory is scoped to 'outcome/pathology heuristics' — the work-event activity-TYPE classifier (planning/debugging/testing/...) is neither, so explicitly record it in the b0b heuristic-tier inventory with a per-origin coverage caveat, since unlike outcomes there is no structural ground truth to convert it to (it stays heuristic-tier by nature). Feeds 9e5.9's labeled corpus as a before/after precision point.",
+      "acceptance": "1. _TEXT_SIGNAL_TABLE matching uses word boundaries; a regression test asserts 'prefix'/'latest'/'explanation'/'metadata'/'remove' do NOT trigger fix/test/plan/data/move signals while genuine 'fix the bug'/'run pytest'/'let us plan' do. 2. The work-event activity-type classifier appears in the b0b heuristic-tier inventory with an explicit 'stays heuristic (no structural ground truth)' note and a coverage caveat. 3. No change to the confidence literals in this bead (calibration is 9e5.9); this is the correctness fix only. Verify: devtools test on tests covering extraction._classify_range / _text_signal_from_lowered_text."
+    },
+    {
+      "title": "Tag Layer-0 substrate insight payloads with evidence_tier so consumers can read rule-heuristic vs structural confidence",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-9l5.7",
+      "design": "The pre-existing Layer-0 payloads (WorkEvent, SessionInferencePayload, SessionEnrichmentPayload, workflow_shape, terminal_state) expose a bare `confidence: float` to MCP/API/dashboard consumers. The float is a hand-set rule constant, not a calibrated probability, and nothing on the payload distinguishes a heuristic-tier 0.5 (keyword tie-break) from a structural signal. 9l5.7 introduces MeasureSpec.evidence_tier (structural/provider-reported/derived/heuristic) for NEW analytics; this bead back-fills the same tier vocabulary onto the existing substrate inference/enrichment/work-event payloads (a single evidence_tier field per emitted signal, defaulting from the branch that produced it — e.g. action-count branches -> derived, keyword-fallback branches -> heuristic, structural-outcome events -> structural). Renderers/MCP then surface the tier alongside the number instead of an unqualified float. Scope this only if the operator wants substrate-layer tiering surfaced before the full measure registry lands; otherwise fold into 9l5.7.",
+      "acceptance": "1. Work-event and profile-inference payloads carry an evidence_tier per signal aligned with the ConfidenceBand/MeasureSpec tier vocabulary. 2. The tier is set from the producing branch (keyword-fallback => heuristic, action-count => derived, keystone tool-result => structural). 3. MCP session_profile / session_work_events responses render the tier next to confidence. Verify: devtools test on the profile materializer + one MCP contract test asserting tier presence."
+    }
+  ]
+}

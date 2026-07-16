@@ -1,0 +1,30 @@
+{
+  "domain": "N3-rawlog-operator-ideas",
+  "summary": "The recent raw-log (through 2026-07-04) is almost fully mirrored in beads already: adjacency/reply-only + mid-tool-truncation exports (1lm cites raw-log 07-02/06-23 verbatim), devloop-in-substrate (x4s cites 07-03), assertions-vs-beads (lnd cites 07-03), beads<->session join (4c0), language detection (0v9p), reboot-with-refs (37t.3), inline-annotation DSL (37t.2), local embeddings (37t.5/mhx.1), posting channel (ptx). Only two concrete, durable operator ideas have no covering bead: multi-instance browser-capture handling (07-04 19:00) and the fresh README de-meta/de-persuasion critique (07-04 18:16-18:21, post-dating the closed README rewrite 3tl.1). No contradictions with existing bead direction were found.",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Browser capture: handle multiple concurrent extension instances (attribution + dedup)",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-3v1",
+      "why": "raw-log 2026-07-04 19:00 'polylogue: how does it handle multiple instances of browser capture extension? If it does...'. No bead covers concurrency across >1 extension instance. This is now a live scenario, not hypothetical: the ambient control model runs an agent-private Chrome AND the live Chrome, and ptx (posting channel) is un-gated, so two extension instances can POST to the single loopback receiver at once. 3v1 covers spool/completeness/status UX and 0mu covers newest-wins/DOM-fallback precedence, but neither addresses two instances writing concurrently or attributing which instance produced a capture.",
+      "design": "Receiver + spool must accept concurrent POSTs from N extension instances without interleaving/spool-file corruption (verify with two simulated clients). Tag each captured payload with an instance/source identity (browser-profile id / capture origin) recorded on the source.db observation row, so the source.db v2 multi-observation-per-native-id model coalesces distinct captures of the same provider-native session into one canonical indexed session while preserving both source observations. Reuse the 0mu newest-wins + DOM-fallback-never-overwrites-richer rule for precedence; add per-instance attribution so a dom-degraded capture from instance A and a native capture from instance B for the same session still coalesce correctly (ties into 07-04 19:04 coalesce-after-degraded concern already covered by capture_gap/0mu).",
+      "acceptance": "A test drives two simulated extension clients POSTing a mix of overlapping and distinct sessions to the receiver: both land with no spool corruption or lost payloads; same provider-native-id captures from different instances coalesce to one canonical session; each source observation row carries an instance/origin attribution; `polylogue ops diagnostics workload --json` shows both capture sources distinctly. Documented behaviour for the agent-private + live concurrent-capture case.",
+      "deps": ["polylogue-0mu", "polylogue-3v1"]
+    },
+    {
+      "proposed_title": "README: strip meta/persuasion, define agent-coined terms, validate claims on operator archive",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-3tl",
+      "why": "raw-log 2026-07-04 18:16 / 18:17 / 18:18 / 18:21 (four consecutive entries): the current README still carries meta-about-claims lines ('Memory-benefit claims stay capability-phrased until measured uplift experiments prove the effect.'), second-person persuasion ('why you can trust it', 'the product is organized around four verbs'), and undefined agent-coined concepts ('judged notes', 'work phases' — operator suspects work-phases is vestigial insights slop that should already be gone). This post-dates the CLOSED 3tl.1 (artifact-first skim-ladder rewrite) and is a distinct legibility axis (register + vocabulary + claim-provability), not a re-open of that structural rewrite; the 06-19 'README still sucks massively' entry shows the dissatisfaction is recurring, not a one-off.",
+      "design": "Remove meta commentary and persuasion register from the README: state the underlying facts and let trustworthiness be the reader's own conclusion (rename/reframe 'why you can trust it' -> 'why it is trustworthy' or drop the persuasive framing entirely; drop meta lines that belong in internals docs). Define-or-remove every agent-coined term exposed to end users (judged notes, work phases) inline at first use; explicitly decide whether 'work phases' is a live product feature or removable derived-insights residue. Replace each retained capability claim with one demonstrably reproducible on the operator's own archive (link the exact polylogue command + a real cited finding), or delete the claim.",
+      "acceptance": "README contains no meta-about-claims lines and no second-person persuasion framing; every domain term used is either defined inline or removed; each retained capability claim is backed by a reproducible command that produces the cited result on a real archive (or is dropped). Operator-review pass confirming the README reads as fact, not marketing.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [],
+  "dep_priority": [],
+  "reorg": []
+}
