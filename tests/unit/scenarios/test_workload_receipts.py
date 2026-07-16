@@ -17,7 +17,9 @@ from polylogue.scenarios.workload import (
     WorkloadReceipt,
     WorkloadRunStatus,
     evaluate_budgets,
+    exact_session_actions_canary_spec,
 )
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
 
 def _spec() -> WorkloadEnvelopeSpec:
@@ -150,3 +152,48 @@ def test_budget_aggregation_is_dimension_aware_and_may_target_one_phase() -> Non
         BudgetAggregation.MAXIMUM,
         BudgetAggregation.SUM,
     ]
+
+
+def test_exact_session_actions_canary_uses_shared_tier_and_receipt_contract() -> None:
+    spec = exact_session_actions_canary_spec(
+        profile_id="workload-profile:sha256:profile",
+        archive_id="archive:sha256:corpus",
+    )
+    workload_input = spec.inputs[0]
+
+    assert workload_input.scale_tier == WorkloadScaleTier.CI_ACTIVATION.value
+    assert workload_input.selectivity_tier == WorkloadSelectivityTier.EXACT_ONE.value
+    passing = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:head",
+        runtime_id="sqlite:test",
+        archive_id="archive:sha256:corpus",
+        generation_id="generation:test",
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="seed"),
+            WorkloadPhaseObservation(name="query", sqlite_vm_steps=49_900),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+    exceeded = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:mutant",
+        runtime_id="sqlite:test",
+        archive_id="archive:sha256:corpus",
+        generation_id="generation:test",
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="seed"),
+            WorkloadPhaseObservation(name="query", sqlite_vm_steps=50_001),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert passing.budget_results[0].verdict is BudgetVerdict.PASS
+    assert exceeded.budget_results[0].verdict is BudgetVerdict.EXCEEDED
+    assert exceeded.spec.semantic_result == "complete"

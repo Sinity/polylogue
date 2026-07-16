@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
 
 class MeasurementScope(str, Enum):
@@ -56,6 +57,7 @@ class BudgetMeasure(str, Enum):
     CANCELLATION_LATENCY_MS = "cancellation_latency_ms"
     QUEUE_DEPTH = "queue_depth"
     BACKPRESSURE_MS = "backpressure_ms"
+    SQLITE_VM_STEPS = "sqlite_vm_steps"
 
 
 class BudgetVerdict(str, Enum):
@@ -84,6 +86,7 @@ class WorkloadInputRef:
     profile_id: str | None = None
     package_ref: str | None = None
     scale_tier: str | None = None
+    selectivity_tier: str | None = None
     seed: int | None = None
     distribution_refs: tuple[str, ...] = ()
 
@@ -99,6 +102,7 @@ class WorkloadInputRef:
                 "profile_id": self.profile_id,
                 "package_ref": self.package_ref,
                 "scale_tier": self.scale_tier,
+                "selectivity_tier": self.selectivity_tier,
                 "seed": self.seed,
                 "distribution_refs": list(self.distribution_refs),
             }
@@ -199,6 +203,7 @@ _PHASE_MEASURES = frozenset(measure.value for measure in BudgetMeasure) | {
     "progress_completed",
     "progress_total",
     "cleanup_reclaimed_bytes",
+    "sqlite_vm_steps",
 }
 
 
@@ -227,6 +232,7 @@ class WorkloadPhaseObservation:
     queue_depth: int | None = None
     backpressure_ms: float | None = None
     cleanup_reclaimed_bytes: int | None = None
+    sqlite_vm_steps: int | None = None
     cleanup_complete: bool | None = None
     quiescent: bool = False
     unavailable: tuple[str, ...] = ()
@@ -427,7 +433,55 @@ _DEFAULT_BUDGET_AGGREGATION: dict[BudgetMeasure, BudgetAggregation] = {
     BudgetMeasure.CANCELLATION_LATENCY_MS: BudgetAggregation.MAXIMUM,
     BudgetMeasure.QUEUE_DEPTH: BudgetAggregation.MAXIMUM,
     BudgetMeasure.BACKPRESSURE_MS: BudgetAggregation.SUM,
+    BudgetMeasure.SQLITE_VM_STEPS: BudgetAggregation.SUM,
 }
+
+
+def exact_session_actions_canary_spec(
+    *,
+    profile_id: str,
+    archive_id: str,
+    scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
+    maximum_vm_steps: int = 50_000,
+) -> WorkloadEnvelopeSpec:
+    """Declare the C-03 exact-session action query against a mixed archive."""
+    selectivity_tier = WorkloadSelectivityTier.EXACT_ONE
+    input_id = _identity(
+        "workload-input",
+        {
+            "archive_id": archive_id,
+            "profile_id": profile_id,
+            "scale_tier": scale_tier.value,
+            "selectivity_tier": selectivity_tier.value,
+        },
+    )
+    return WorkloadEnvelopeSpec(
+        workload_id="canary:c03:exact-session-actions",
+        family_id="schema-profile-query-canary",
+        version=1,
+        inputs=(
+            WorkloadInputRef(
+                input_id=input_id,
+                corpus_id=archive_id,
+                profile_id=profile_id,
+                scale_tier=scale_tier.value,
+                selectivity_tier=selectivity_tier.value,
+                distribution_refs=(
+                    "index.action_shapes.tool_pairing",
+                    "index.predicate_selectivity.exact_existing_session_cardinality",
+                ),
+            ),
+        ),
+        phases=("seed", "query", "quiescent"),
+        budgets=(
+            WorkloadBudget(
+                measure=BudgetMeasure.SQLITE_VM_STEPS,
+                maximum=maximum_vm_steps,
+                semantics=BudgetSemantics.REGRESSION_GATE,
+                phase="query",
+            ),
+        ),
+    )
 
 
 def _identity(namespace: str, payload: JSONDocument) -> str:
@@ -455,4 +509,5 @@ __all__ = [
     "WorkloadReceipt",
     "WorkloadRunStatus",
     "evaluate_budgets",
+    "exact_session_actions_canary_spec",
 ]

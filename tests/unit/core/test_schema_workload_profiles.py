@@ -25,6 +25,7 @@ from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 from polylogue.sources.dispatch import parse_payload
 
 
@@ -548,6 +549,8 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     tool_uses = cast(dict[str, JSONValue], action_shapes["tool_uses_per_session"])
     tool_results = cast(dict[str, JSONValue], action_shapes["tool_results_per_session"])
     archive_mix = cast(dict[str, JSONValue], profile["archive_mix"])
+    scale_tiers = cast(dict[str, JSONValue], profile["scale_tiers"])
+    selectivity_tiers = cast(dict[str, JSONValue], profile["selectivity_tiers"])
     assert row_counts == {"sessions": 3, "messages": 3, "blocks": 5}
     assert pairing["paired"] == 1
     assert pairing["unknown_identity_uses"] == 1
@@ -557,6 +560,15 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     assert tool_results["count"] == 3
     assert tool_results["min"] == 0
     assert archive_mix["package_bundle_scope_counts"] == {"codex": {"v1": 2}}
+    ci_tier = cast(dict[str, JSONValue], scale_tiers[WorkloadScaleTier.CI_ACTIVATION.value])
+    archive_1x = cast(dict[str, JSONValue], scale_tiers[WorkloadScaleTier.ARCHIVE_1X.value])
+    archive_10x = cast(dict[str, JSONValue], scale_tiers[WorkloadScaleTier.ARCHIVE_10X.value])
+    assert ci_tier["row_counts"] == row_counts
+    assert ci_tier["selectivity_tier"] == WorkloadSelectivityTier.EXACT_ONE.value
+    assert archive_1x["row_counts"] == row_counts
+    assert archive_10x["row_counts"] == {"sessions": 30, "messages": 30, "blocks": 50}
+    exact_tier = cast(dict[str, JSONValue], selectivity_tiers[WorkloadSelectivityTier.EXACT_ONE.value])
+    assert exact_tier["cardinality"] == 1
     assert profile["profile_id"] == repeated["profile_id"]
 
     serialized = json.dumps(profile, sort_keys=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import sqlite3
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -16,9 +17,12 @@ from polylogue.schemas.generation.workload_profiles import (
     WORKLOAD_PROFILE_VERSION,
     workload_profile_identity,
 )
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
 ARCHIVE_WORKLOAD_PROFILE_FILE = "archive-workload-profile.json.gz"
 _INFERENCE_VERSION = "archive-composition-v1"
+_CI_SESSION_CEILING = 512
+_TAIL_QUANTILES = ("p50", "p95", "p99")
 
 
 def _connect_read_only(path: Path) -> sqlite3.Connection:
@@ -558,6 +562,156 @@ def _tier_file_sizes(index_path: Path) -> JSONDocument:
     return sizes
 
 
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _quantile_targets(distribution: object) -> JSONDocument:
+    quantiles = _mapping(_mapping(distribution).get("quantiles"))
+    return {
+        quantile: value
+        for quantile in _TAIL_QUANTILES
+        if isinstance((value := quantiles.get(quantile)), int | float) and not isinstance(value, bool)
+    }
+
+
+def _shape_anchors(index_profile: Mapping[str, object], source_profile: Mapping[str, object]) -> list[JSONDocument]:
+    session_shapes = _mapping(index_profile.get("session_shapes"))
+    action_shapes = _mapping(index_profile.get("action_shapes"))
+    topology = _mapping(index_profile.get("topology"))
+    candidates = (
+        ("index.session_shapes.message_count", session_shapes.get("message_count")),
+        ("index.action_shapes.tool_uses_per_session", action_shapes.get("tool_uses_per_session")),
+        ("index.action_shapes.tool_results_per_session", action_shapes.get("tool_results_per_session")),
+        ("index.topology.children_per_parent", topology.get("children_per_parent")),
+        ("source.blob_size", source_profile.get("blob_size")),
+    )
+    anchors: list[JSONDocument] = []
+    for distribution_ref, distribution in candidates:
+        targets = _quantile_targets(distribution)
+        if targets:
+            anchors.append({"distribution_ref": distribution_ref, "targets": targets})
+    return anchors
+
+
+def _scaled_row_counts(row_counts: Mapping[str, object], *, target_sessions: int) -> JSONDocument:
+    observed_sessions = row_counts.get("sessions")
+    if not isinstance(observed_sessions, int) or isinstance(observed_sessions, bool) or observed_sessions <= 0:
+        return {}
+    scale = target_sessions / observed_sessions
+    projected: JSONDocument = {}
+    for unit in ("sessions", "messages", "blocks"):
+        observed = row_counts.get(unit)
+        if isinstance(observed, int) and not isinstance(observed, bool):
+            projected[unit] = target_sessions if unit == "sessions" else math.ceil(observed * scale)
+    return projected
+
+
+def _selectivity_targets(index_profile: Mapping[str, object], quantile: str) -> list[JSONDocument]:
+    predicate_profile = _mapping(index_profile.get("predicate_selectivity"))
+    dimensions = (
+        ("repository", "sessions_per_repository"),
+        ("branch", "sessions_per_branch"),
+        ("model", "messages_per_model"),
+        ("tool-name", "blocks_per_tool_name"),
+        ("origin", None),
+        ("utc-day", None),
+    )
+    targets: list[JSONDocument] = []
+    for dimension, measure in dimensions:
+        profile_key = {
+            "tool-name": "tool_name",
+            "origin": "sessions_per_origin",
+            "utc-day": "sessions_per_utc_day",
+        }.get(dimension, dimension)
+        distribution: object = predicate_profile.get(profile_key)
+        if measure is not None:
+            distribution = _mapping(distribution).get(measure)
+        value = _mapping(_mapping(distribution).get("quantiles")).get(quantile)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            targets.append(
+                {
+                    "dimension": dimension,
+                    "distribution_ref": f"index.predicate_selectivity.{profile_key}"
+                    + (f".{measure}" if measure is not None else ""),
+                    "estimated_cardinality": value,
+                }
+            )
+    return targets
+
+
+def _named_projection_tiers(
+    index_profile: Mapping[str, object],
+    source_profile: Mapping[str, object],
+) -> tuple[JSONDocument, JSONDocument]:
+    row_counts = _mapping(index_profile.get("row_counts"))
+    observed_sessions = row_counts.get("sessions")
+    session_count = (
+        observed_sessions
+        if isinstance(observed_sessions, int) and not isinstance(observed_sessions, bool) and observed_sessions > 0
+        else 1
+    )
+    ci_sessions = min(session_count, _CI_SESSION_CEILING)
+    shape_anchors = _shape_anchors(index_profile, source_profile)
+    archive_1x: JSONDocument = {}
+    for unit in ("sessions", "messages", "blocks"):
+        value = row_counts.get(unit)
+        if isinstance(value, int) and not isinstance(value, bool):
+            archive_1x[unit] = value
+    archive_10x = {
+        unit: value * 10 for unit, value in archive_1x.items() if isinstance(value, int) and not isinstance(value, bool)
+    }
+    scale_tiers = json_document(
+        {
+            WorkloadScaleTier.CI_ACTIVATION.value: {
+                "purpose": "bounded deterministic projection retaining observed tail and exact-selectivity anchors",
+                "row_counts": _scaled_row_counts(row_counts, target_sessions=ci_sessions),
+                "session_ceiling": _CI_SESSION_CEILING,
+                "shape_anchors": shape_anchors,
+                "required_quantiles": list(_TAIL_QUANTILES),
+                "selectivity_tier": WorkloadSelectivityTier.EXACT_ONE.value,
+            },
+            WorkloadScaleTier.ARCHIVE_1X.value: {
+                "purpose": "observed archive composition",
+                "scale_multiplier": 1,
+                "row_counts": archive_1x,
+                "shape_anchors": shape_anchors,
+            },
+            WorkloadScaleTier.ARCHIVE_10X.value: {
+                "purpose": "tenfold scaling proof with unchanged distribution contract",
+                "scale_multiplier": 10,
+                "row_counts": archive_10x,
+                "shape_anchors": shape_anchors,
+            },
+        }
+    )
+    exact_profile = _mapping(
+        _mapping(index_profile.get("predicate_selectivity")).get("exact_existing_session_cardinality")
+    )
+    exact_cardinality = exact_profile.get("cardinality")
+    selectivity_tiers = json_document(
+        {
+            WorkloadSelectivityTier.EXACT_ONE.value: {
+                "purpose": "one exact existing session among archive distractors",
+                "dimension": "session-id",
+                "cardinality": exact_cardinality if isinstance(exact_cardinality, int) else 1,
+                "distribution_ref": "index.predicate_selectivity.exact_existing_session_cardinality",
+            },
+            WorkloadSelectivityTier.OBSERVED_P50.value: {
+                "purpose": "median observed anonymous predicate cardinality",
+                "quantile": "p50",
+                "targets": _selectivity_targets(index_profile, "p50"),
+            },
+            WorkloadSelectivityTier.OBSERVED_P99.value: {
+                "purpose": "tail observed anonymous predicate cardinality",
+                "quantile": "p99",
+                "targets": _selectivity_targets(index_profile, "p99"),
+            },
+        }
+    )
+    return scale_tiers, selectivity_tiers
+
+
 def build_archive_workload_profile(
     index_path: Path,
     *,
@@ -578,6 +732,7 @@ def build_archive_workload_profile(
 
     source_profile, source_generation = _source_profile(index_path.with_name("source.db"))
     ops_profile, ops_generation = _ops_profile(index_path.with_name("ops.db"))
+    scale_tiers, selectivity_tiers = _named_projection_tiers(index_profile, source_profile)
     loss_inventory: JSONDocument = {}
     loss_inventory.update({key: value for key, value in source_generation.items() if isinstance(value, str)})
     loss_inventory.update({key: value for key, value in ops_generation.items() if isinstance(value, str)})
@@ -608,6 +763,8 @@ def build_archive_workload_profile(
         "index": index_profile,
         "source": source_profile,
         "operations": ops_profile,
+        "scale_tiers": scale_tiers,
+        "selectivity_tiers": selectivity_tiers,
         "privacy_review": {
             "included_value_dimensions": [
                 "closed schema vocabularies",

@@ -1,5 +1,7 @@
 """Shared scenario models used across verification projections."""
 
+from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
+
 from .assertions import AssertionClass, AssertionSpec, classification_label
 from .cli_surfaces import (
     CliSurfaceFamily,
@@ -108,6 +110,7 @@ from .workload import (
     WorkloadReceipt,
     WorkloadRunStatus,
     evaluate_budgets,
+    exact_session_actions_canary_spec,
 )
 
 __all__ = [
@@ -203,5 +206,8 @@ __all__ = [
     "WorkloadPhaseObservation",
     "WorkloadReceipt",
     "WorkloadRunStatus",
+    "WorkloadScaleTier",
+    "WorkloadSelectivityTier",
     "evaluate_budgets",
+    "exact_session_actions_canary_spec",
 ]

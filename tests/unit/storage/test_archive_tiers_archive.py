@@ -11,6 +11,13 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.scenarios.workload import (
+    BudgetVerdict,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    exact_session_actions_canary_spec,
+)
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -245,11 +252,40 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
         )
         mutant_rows, global_first_vm_steps = measure_query()
 
+    canary_spec = exact_session_actions_canary_spec(
+        profile_id="workload-profile:c03-known-answer",
+        archive_id="archive:c03-known-answer",
+        maximum_vm_steps=49_999,
+    )
+
+    def canary_receipt(vm_steps: int, *, build_id: str) -> WorkloadReceipt:
+        return WorkloadReceipt.from_observations(
+            spec=canary_spec,
+            status=WorkloadRunStatus.SUCCEEDED,
+            build_id=build_id,
+            runtime_id="sqlite:test",
+            archive_id="archive:c03-known-answer",
+            generation_id="generation:c03-known-answer",
+            frame_id=None,
+            phases=(
+                WorkloadPhaseObservation(name="seed"),
+                WorkloadPhaseObservation(name="query", sqlite_vm_steps=vm_steps),
+                WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+            ),
+            cleanup_complete=True,
+        )
+
+    bounded_receipt = canary_receipt(bounded_vm_steps, build_id="git:bounded")
+    mutant_receipt = canary_receipt(global_first_vm_steps, build_id="git:global-first-mutant")
+
     assert [(row.group_key, row.count) for row in rows] == [("all", 1)]
     assert contradictory_rows == []
     assert [(row.group_key, row.count) for row in mutant_rows] == [("all", 1)]
     assert bounded_vm_steps < 50_000
     assert global_first_vm_steps >= 50_000
+    assert bounded_receipt.budget_results[0].verdict is BudgetVerdict.PASS
+    assert mutant_receipt.budget_results[0].verdict is BudgetVerdict.EXCEEDED
+    assert mutant_receipt.spec.semantic_result == "complete"
 
 
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:
