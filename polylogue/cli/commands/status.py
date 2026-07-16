@@ -2415,8 +2415,12 @@ def _show_direct_status(
         if not compact and not actively_ingesting:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
     except Exception as exc:
+        # markup=False: raw exception text may contain [brackets] Rich would
+        # otherwise parse as style tags and crash on, hiding the error.
         env.ui.console.print(
-            f"\n[yellow]Archive exists at {archive_root()} but could not be queried ({type(exc).__name__}: {exc}).[/yellow]"
+            f"\nArchive exists at {archive_root()} but could not be queried ({type(exc).__name__}: {exc}).",
+            style="yellow",
+            markup=False,
         )
 
 

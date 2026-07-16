@@ -795,7 +795,9 @@ def read_backfill_checkpoint(
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
-    except (OSError, json.JSONDecodeError) as exc:
+    # ValueError covers both json.JSONDecodeError and UnicodeDecodeError from
+    # read_text on a corrupt (non-UTF-8) mirror file.
+    except (OSError, ValueError) as exc:
         # A corrupt/unreadable mirror is not "no checkpoint": returning None
         # triggers a full re-backfill, so leave a trace of why.
         logger.warning(
