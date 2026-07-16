@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
@@ -97,10 +99,25 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
             """,
             (result.census_receipt.census_id,),
         ).fetchall()
+        plan_row = conn.execute(
+            """
+            SELECT input_raw_ids_json, logical_keys_json, authority_witness_json,
+                   source_preconditions_json, index_preconditions_json
+            FROM raw_authority_plans
+            WHERE plan_id = (
+                SELECT plan_id FROM raw_authority_census_plans
+                WHERE census_id = ? AND selected = 1
+            )
+            """,
+            (result.census_receipt.census_id,),
+        ).fetchone()
     assert {row[1] for row in rows} == {"executed", "carried_forward"}
     executed = next(row for row in rows if row[1] == "executed")
     assert executed[0] == 1
     assert '"application_rows"' in executed[2]
+    assert '"membership_rows"' in executed[2]
+    assert plan_row is not None
+    assert all(value not in (None, "", "[]", "{}") for value in plan_row)
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     census_status = cast(dict[str, object], readiness["raw_authority_census"])
     assert census_status["census_id"] == result.census_receipt.census_id
@@ -163,3 +180,60 @@ def test_stale_plan_persists_blocker_before_automatic_replay_refuses_work(tmp_pa
     refused = repair_raw_materialization(_config(tmp_path))
     assert refused.success is False
     assert refused.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
+
+
+def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    first = _write_codex_raw(tmp_path, native_id="atomic-first", source_path="atomic-first.jsonl", acquired_at_ms=1)
+    second = _write_codex_raw(
+        tmp_path,
+        native_id="atomic-second",
+        source_path="atomic-second.jsonl",
+        acquired_at_ms=2,
+    )
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[first, second])
+    plans = build_raw_replay_plans(tmp_path, ((first,), (second,)))
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER abort_second_census_plan
+            BEFORE INSERT ON raw_authority_census_plans
+            WHEN NEW.ordinal = 1
+            BEGIN
+                SELECT RAISE(ABORT, 'synthetic census interruption');
+            END
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="synthetic census interruption"):
+        record_raw_authority_census(
+            tmp_path,
+            plans,
+            selected_plan_ids={plan.plan_id for plan in plans},
+            scope={"test": "interruption"},
+            residual={},
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_plans").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_census_plans").fetchone()[0] == 0
+        conn.execute("DROP TRIGGER abort_second_census_plan")
+        conn.commit()
+
+    receipt = record_raw_authority_census(
+        tmp_path,
+        plans,
+        selected_plan_ids={plan.plan_id for plan in plans},
+        scope={"test": "interruption"},
+        residual={},
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0] == 1
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_census_plans WHERE census_id = ?",
+                (receipt.census_id,),
+            ).fetchone()[0]
+            == 2
+        )
