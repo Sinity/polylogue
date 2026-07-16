@@ -1,0 +1,2322 @@
+diff --git a/README.md b/README.md
+index aa373b2f..6451748f 100644
+--- a/README.md
++++ b/README.md
+@@ -1,227 +1,227 @@
+ # Sinex
+ 
+-**Local-first event capture for your machine. Query your digital history like a database.**
++<p align="center">
++  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e" alt="MIT License"></a>
++  <img src="https://img.shields.io/badge/rust-2024-dea584?logo=rust" alt="Rust 2024">
++  <img src="https://img.shields.io/badge/status-pre--1.0-f59e0b" alt="Pre-1.0">
++</p>
+ 
+-[Quick Start](#quick-start) · [Architecture](#architecture) · [Security](#security) · [Deployment & Operations](#deployment--operations)
++**Sinex is a local evidence substrate for digital life and agent work.** It records the material your tools leave behind—commands, files, browser activity, desktop state, Git, exports, system events, and AI sessions—and turns it into a replayable history without erasing provenance, uncertainty, or missing coverage.
+ 
+----
++Sinex is not primarily an activity dashboard. It is infrastructure for answering questions such as:
+ 
+-## What Is Sinex?
++- **What was happening around this failure?** Reconstruct a bounded interval across sources on occurrence time.
++- **What does this result rest on?** Resolve an interpretation to the exact source material or upstream events that support it.
++- **Did the source go quiet, or did nothing happen?** Surface coverage gaps and stale capture instead of returning a misleading empty result.
++- **What changed when the parser changed?** Replay preserved material under new semantics while retaining the previous interpretation for audit.
++- **May this model-generated claim become durable state?** Keep proposals, confidence, judgment, and authority separate.
++- **Can another agent resume this work responsibly?** Build evidence packs with provenance, caveats, and explicit omissions rather than a free-floating summary.
+ 
+-Sinex captures local activity as typed, timestamped events and stores them in
+-an append-only PostgreSQL event log. The runtime is built around Rust services,
+-NATS JetStream transport, and a NixOS deployment surface.
++The compact analogy is **Nix for personal data**: content-addressed material, declarative schema convergence, and reproducible interpretation through replay. The analogy is directional rather than literal; Sinex also has to model occurrence identity, late evidence, privacy, and authority.
+ 
+-The system is meant for grounded local analytics, replayable derived state, and
+-operator-visible automation, not opaque cloud processing.
++## Run the deterministic walkthrough
+ 
+-Example payoff:
++From a checkout with the Nix development shell loaded:
+ 
+-```sql
+--- What was I researching when that build failed?
+-SELECT v.url
+-FROM commands c
+-JOIN visits v ON v.ts BETWEEN c.ts AND c.ts + interval '5 min'
+-WHERE c.command LIKE 'cargo test%'
+-  AND c.exit_code = 1
+-  AND v.domain = 'stackoverflow.com';
++```bash
++git clone https://github.com/Sinity/sinex.git
++cd sinex
++direnv allow
++
++xtask infra start
++xtask run core --logs
++sinexctl ops verify --demo
+ ```
+ 
+-## Current Surfaces
++The current walkthrough seeds a deterministic dataset directly into the local PostgreSQL event store, then executes bounded verification queries through the normal API. It writes machine-readable and human-readable receipts under `.sinex/demo/` and exits nonzero when an expectation fails.
+ 
+-| Surface | Current Owner |
+-|---------|---------------|
+-| Capture | source contracts over staged materials, input-shape adapters, and parsers under `crate/sinexd/src/sources/` |
+-| Query / control | `sinexd::api` + `sinexctl` |
+-| Persistence | `sinexd::event_engine` + PostgreSQL |
+-| Derived state | `sinexd::automata` and replay-aware stream runtime |
+-| Deployment | NixOS modules + systemd |
+-| Runtime extension | inline `sinexd` runtime support and source/automaton traits |
++Current scope: this is a database-and-API operational smoke proof. Because deterministic seeding bypasses source acquisition, NATS transport, and event-engine admission, it is **not** an end-to-end capture proof. The planned public demo portfolio is designed to prove replay, coverage honesty, idempotence, authority, and cross-source reconstruction directly.
+ 
+-## Architecture
++## The evidence model
++
++Sinex keeps adjacent kinds of information separate:
+ 
+-The capture layer uses a staged-source parser substrate: source material is
+-registered, an input-shape adapter enumerates records or bytes, and a parser
+-emits material-provenance events. See
+-[`crate/sinexd/docs/sources/staged_source_parser_substrate.md`](crate/sinexd/docs/sources/staged_source_parser_substrate.md).
+-The diagram below shows the deployed runtime shape; #1054 owns the remaining
+-decision about whether staged local parsers always cross NATS or can run closer
+-to persistence.
++| Layer | Examples | Authority |
++|---|---|---|
++| **Source material** | Export files, SQLite snapshots, logs, transcript archives, document bytes | What was acquired |
++| **Material interpretations** | Parsed commands, visits, messages, file events | What a versioned parser inferred from material |
++| **Domain projections** | Current task state, current transcript view, attention timeline | Rebuildable current state |
++| **Derived graph and products** | Work episodes, relations, context candidates, findings | Evidence-backed computation |
++| **Workspace artifacts** | Context packs, reports, semantic diffs | Saved work products, not automatic truth |
++
++The default flow is:
+ 
+ ```text
+-sinexd::sources    sinexd::automata      Clients
+-  fs, terminal,      analytics,           CLI, browser
+-  desktop, system,   automata        extension
+-  browser, exports
+-       │                 │                    │
+-       ▼                 ▼                    │
+-  ┌────────────────────────────────────────┐  │
+-  │         NATS JetStream                 │  │
+-  │       (event transport)                │  │
+-  └──────────────┬─────────────────────────┘  │
+-                 │                            │
+-                 ▼                            │
+-        ┌──────────────────┐                  │
+-        │ sinexd           │                  │
+-        │ ::event_engine   │ validate, persist │
+-        └───────┬──────────┘                  │
+-                │                             │
+-                ▼                             │
+-        ┌────────────────┐                    │
+-        │   PostgreSQL   │ TimescaleDB,       │
+-        │   + extensions │ pgvector, schemas  │
+-        └───────┬────────┘                    │
+-                │                             │
+-                ▼                             │
+-        ┌──────────────────┐                  │
+-        │ sinexd           │◄─────────────────┘
+-        │ ::api            │ auth, rate limits
+-        │   JSON-RPC       │
+-        └──────────────────┘
++source material
++    → versioned material interpretation
++        → typed events and domain objects
++            → rebuildable projections and cross-source products
++                → reports, context packs, and agent-facing views
+ ```
+ 
+-### Core Invariants
++Reverse flow is explicit. A generated context pack does not become canonical evidence merely because a model later repeats it.
+ 
+-- canonical persistence flows through `sinexd::event_engine`
+-- `core.events` is append-only; corrections become new events with provenance
+-- derived events carry source, temporal, and replay metadata
+-- `UUIDv7` IDs provide ordering; `ts_orig` and `ts_coided` are distinct and load-bearing
+-- blobs are content-addressed and referenced stably
+-- long-running replay/lifecycle work is recorded in `operations_log`
++## Three clocks, not one
+ 
+-### Operating Model
++One observation can have several relevant times:
+ 
+-- services run as separate systemd units with NixOS-managed configuration
+-- observability is journald-first; service logs are part of the event universe
+-- runtime modules and derived automata recover through checkpoints and replay
+-- replay, archive, and restore are explicit control-plane operations
+-- direct DB access is diagnostic; the normal control/query boundary is `sinexd::api`
++- `ts_orig` — when the occurrence happened in the source domain;
++- `ts_coided` — when this interpretation was minted;
++- `ts_persisted` — when it became durable in Sinex.
+ 
+-### Stack
++A historical import should preserve the conversation’s original timestamp rather than pretend it happened at import time. A replay should normally preserve occurrence time while producing a new interpretation identity and coining time.
+ 
+-- Rust
+-- PostgreSQL 18 + TimescaleDB + pgvector + pg_jsonschema
+-- NATS JetStream
+-- NixOS modules + systemd hardening
++This allows Sinex to distinguish “the command ran Tuesday” from “the command was discovered Friday” and “the parser was corrected next month.”
+ 
+-## Quick Start
++## Replay means the system can change its mind honestly
+ 
+-```bash
+-git clone https://github.com/sinity/sinex.git
+-cd sinex
+-direnv allow  # loads the flake devShell and puts xtask on PATH
++`core.events` is append-only. A parser fix or new derivation does not silently rewrite history:
+ 
+-xtask infra start
+-xtask run core --logs
+-xtask run list
+-sinexctl events recent -n 10
++1. preserve or resolve the source material;
++2. archive the prior interpretation where lifecycle policy requires it;
++3. emit a new semantics-versioned interpretation;
++4. rebuild the affected projection;
++5. retain enough provenance to explain the difference.
++
++A source occurrence and an interpretation are not the same identity. Re-reading the same occurrence should not invent another occurrence; reinterpreting it under changed semantics should produce a new interpretation.
++
++## Missing evidence is a result
++
++An empty query result can mean several different things:
++
++- nothing happened;
++- the source was disabled;
++- capture was stale;
++- material was acquired but not interpreted;
++- the projection is behind;
++- the requested evidence is not replayable;
++- privacy policy suppressed the view.
++
++Sinex’s coverage and readiness work is intended to make those states explicit. The system should return less rather than quietly turn a capture outage into a factual claim about the operator’s life.
++
++## Confidence is not authority
++
++Models and heuristics may propose entities, relations, episode labels, lessons, or context candidates. A confidence score does not grant permission to mutate canonical state.
++
++The intended lifecycle is:
++
++```text
++evidence → proposal → judgment or declared policy → promoted state
+ ```
+ 
+-## Development
++The proposal, evidence, decision, and resulting state remain separately inspectable. This makes Sinex suitable as an agent substrate without letting agents recursively canonize their own guesses.
+ 
+-Start with the canonical repo workflow docs:
++## Architecture
+ 
+-- contributing workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
+-- testing workflow: [TESTING.md](TESTING.md)
+-- local runtime loop and devshell smoke: [xtask/docs/devshell-runtime.md](xtask/docs/devshell-runtime.md)
+-- xtask/tooling reference: [xtask/docs/README.md](xtask/docs/README.md)
+-- sandbox harness details: [xtask/docs/sandbox/README.md](xtask/docs/sandbox/README.md)
++```mermaid
++flowchart LR
++    A[Files · databases · streams · exports · external producers] --> B[Source contracts]
++    B --> C[Material registry + content storage]
++    C --> D[Adapters + versioned parsers]
++    D --> E[NATS JetStream transport]
++    E --> F[Event engine\nvalidate · time · privacy · persist]
++    F --> G[(PostgreSQL\ncanonical events + material metadata)]
++    G --> H[Automata · reducers · projections · search]
++    H --> I[sinexctl · API · MCP · context consumers]
++    F --> J[Reflection and operational evidence]
++```
+ 
+-## Deployment & Operations
++The deployed stack is Rust, PostgreSQL 18 with TimescaleDB/pgvector/pg_jsonschema, NATS JetStream, and NixOS/systemd.
+ 
+-The canonical deployment surface is the NixOS module tree under `services.sinex`.
+-Stable operational guidance lives here and in [nixos/modules/README.md](nixos/modules/README.md).
+-There is no separate top-level operations runbook anymore.
++NATS is transport, not the archive. Large or sensitive bytes belong in the material plane; compact typed observations carry stable material anchors through the event path.
+ 
+-Hardening defaults that are already part of the repo:
++## Current surfaces
+ 
+-- API RPC is TLS-only and non-loopback binds require mTLS policy
+-- managed long-running units and helper/maintenance oneshots use systemd sandboxing
+-- managed local NATS now has typed server TLS under `services.sinex.nats.tls.*`
+-- managed local NATS now has typed subject-level authz for the current shared runtime identity under `services.sinex.nats.authorization.sharedClient.*`
+-- shared client transport still lives under `services.sinex.runtime.nats.{servers,tls,auth}` and is exported to all managed services automatically
++- source contracts, material staging, adapters, and parsers under `crate/sinexd/src/sources/`;
++- a single-writer event-engine path into append-only canonical storage;
++- replay-aware automata and domain projections;
++- JSON-RPC API and `sinexctl` query/control surfaces;
++- 68 read-only MCP tools for bounded evidence access;
++- NixOS modules, systemd hardening, operational checks, replay, archive, and restore controls;
++- content-addressed blobs, temporal ledgers, operations logs, and public refs;
++- deterministic demo verification and tracked real-archive proof artifacts.
+ 
+-Conventional secret names that the module now resolves automatically through agenix:
++The project has been exercised against a live archive with tens of millions of events. Those private-deployment observations are field evidence, not general performance guarantees. Public claims should resolve to bounded proof packets with the exact corpus, query, caveat, and regeneration path.
+ 
+-- API admin token: `sinex-api-admin-token`
+-- local NATS server TLS: `sinex-nats-server-cert`, `sinex-nats-server-key`, `sinex-nats-client-ca`
+-- shared NATS client TLS/auth: `sinex-nats-ca`, `sinex-nats-client-cert`, `sinex-nats-client-key`, `sinex-nats-client-creds`, `sinex-nats-client-nkey`, `sinex-nats-token`
+-- compatibility aliases are also accepted for the NATS client path: `nats-ca`, `nats-client-cert`, `nats-client-key`, `nats-client-creds`, `nats-client-nkey`, `nats-token`
++## Polylogue on Sinex
+ 
+-Common operator entrypoints:
++Polylogue is the AI-work domain product; Sinex is the generalized evidence backend.
++
++The maximal target is not a metadata-only bridge and not an ontology merger:
++
++```text
++Sinex stores:
++  provider-native transcript material
++  normalized transcript material
++  durable transcript-domain history
++  judgments, lifecycle, and model effects
++
++Polylogue owns:
++  provider normalization semantics
++  sessions, messages, blocks, tools, lineage, and compaction
++  physical-versus-logical accounting
++  reviewed AI memory and context compilation
++  transcript, forensic, and coordination UX
++
++SQLite remains:
++  Polylogue's standalone store and local/offline projection
++```
++
++See `crate/sinexd/docs/sources/integration_authority.md` for the current integration boundary. The full Sinex-backed architecture is an active Beads program and should be presented as direction until the rebuild and parity proofs land.
++
++## Security and privacy
++
++Sinex currently assumes a trusted single-user local host. The hardened API boundary uses TLS, bearer tokens, rate limits, and request auditing; the NixOS deployment applies systemd sandboxing and managed NATS transport policy.
++
++The archive can contain secrets, health information, source code, personal text, browser activity, and agent tool output. Full-disk encryption and capture-time privacy controls are part of the operating baseline. Generic agent surfaces are intentionally read-only and redacted; broader raw-material capabilities require explicit policy.
++
++A local-first design reduces third-party exposure. It does not make the archive harmless. Selective forgetting, effect/cache invalidation, and proof of physical excision remain important active work.
++
++## Project status
++
++Sinex is pre-1.0 and built first for a demanding single-user deployment. It is a substantial working system, not yet a polished general-purpose product.
++
++Current Beads priorities include:
++
++1. **Substrate honesty** — no silent data loss, false readiness, or invisible coverage gaps.
++2. **Robustness under load** — bounded backlog, resumable replay, paced historical import, and recovery without manual stream surgery.
++3. **Derived products that pay rent** — moments, work episodes, evidence packs, and Agent Work Packets that answer real questions.
++4. **Operator and agent experience** — fast orientation, judgment, context budgets, and bounded agent triggers.
++5. **Construct-valid public demos** — replay, idempotence, source outages, authority, retrieval, and crash recovery with explicit falsifiers.
++6. **Polylogue on Sinex** — full transcript evidence and durable AI-work history without erasing Polylogue’s domain semantics.
++
++Roadmap authority lives in Beads, not GitHub Issues:
++
++```bash
++bd ready
++bd list --status open
++```
++
++## Documentation
++
++Start with the [documentation map](docs/README.md). It provides 30-second, three-minute, and thirty-minute paths through the repository.
++
++Public-facing entry points:
++
++1. [Product and purpose](docs/product.md) — category, concepts, agent relevance, and value.
++2. [Public demonstrations](docs/demos.md) — current walkthrough, proof doctrine, and the redesigned portfolio.
++3. [Proof and claims](docs/proof-artifacts.md) — claim classes, field evidence, caveats, and proof-packet contract.
++4. [Polylogue on Sinex](docs/polylogue-integration.md) — the maximal transcript-backend target, authority matrix, and impedance mismatches.
++5. [`public-claims.yaml`](docs/public-claims.yaml) — machine-readable public claim ledger.
++
++Deep technical entry points remain linked from the documentation map. Roadmap authority lives in Beads, not retired GitHub Issues.
++
++## Development
+ 
+ ```bash
+ xtask doctor
+ xtask status --summary
+ xtask infra status
+-journalctl -u sinexd -f
++cargo nextest run
+ ```
+ 
+-Deployment/host readiness proof (systemd units, schema, source-config
+-validators) is owned by `sinexd` startup preflight and `sinexctl`/NixOS, not by
+-`xtask` — see [runtime-target boundaries](xtask/docs/runtime-target-boundaries.md).
+-
+-## Documentation
+-
+-| I want to... | Start here |
+-|--------------|------------|
+-| Understand the system shape | [README.md#architecture](README.md#architecture) |
+-| Deploy and harden the common NixOS path | [README.md#deployment--operations](README.md#deployment--operations) |
+-| Deploy on NixOS | [nixos/README.md](nixos/README.md) |
+-| Build a source or derived service | [crate/sinexd/docs/sources/README.md](crate/sinexd/docs/sources/README.md) |
+-| Understand event schemas | [crate/sinex-db/docs/schema/event-taxonomy.md](crate/sinex-db/docs/schema/event-taxonomy.md) |
+-| Separate notes, typed records, graph, and artifacts | [crate/sinex-primitives/docs/knowledge_boundaries.md](crate/sinex-primitives/docs/knowledge_boundaries.md) |
+-| Define current-state projections for event-native domains | [crate/sinex-primitives/docs/domain_reducers.md](crate/sinex-primitives/docs/domain_reducers.md) |
+-| Model tasks as event-native workflow objects | [issue #1107](https://github.com/Sinity/sinex/issues/1107) |
+-| Model sensitive health and self-observation logs | [issue #1108](https://github.com/Sinity/sinex/issues/1108) |
+-| Model declarations, omissions, and conceptual time | [issue #1113](https://github.com/Sinity/sinex/issues/1113) |
+-| Design interval-backed moment queries | [issue #1110](https://github.com/Sinity/sinex/issues/1110) |
+-| Define versioned SQL-shaped derivations | [issue #1117](https://github.com/Sinity/sinex/issues/1117) |
+-| Record replayable inference confidence and seeds | [issue #1118](https://github.com/Sinity/sinex/issues/1118) |
+-| Explain semantic composition beyond ancestry trace | [issue #1114](https://github.com/Sinity/sinex/issues/1114) |
+-| Run replay-safe semantic experiments | [issue #1109](https://github.com/Sinity/sinex/issues/1109) |
+-| Route model calls through prompts, policy, and budgets | [issue #1116](https://github.com/Sinity/sinex/issues/1116) |
+-| Promote generated suggestions through human or policy authority | [crate/sinex-primitives/docs/curation_authority.md](crate/sinex-primitives/docs/curation_authority.md) |
+-| Bound active instruction and actuator loops | [issue #1104](https://github.com/Sinity/sinex/issues/1104) |
+-| Expose read-only evidence to coding agents | [crate/sinexctl/docs/mcp_readonly_server.md](crate/sinexctl/docs/mcp_readonly_server.md) |
+-| Rename event taxonomy labels without parser replay | [issue #1101](https://github.com/Sinity/sinex/issues/1101) |
+-| Reason about replay evidence and source snapshots | [crate/sinexd/docs/sources/evidence_lanes.md](crate/sinexd/docs/sources/evidence_lanes.md) |
+-| Reason about large aggregate provenance | [crate/sinexd/docs/automata/high_fan_in_lineage.md](crate/sinexd/docs/automata/high_fan_in_lineage.md) |
+-| Coordinate late-arriving evidence in derived outputs | [issue #1111](https://github.com/Sinity/sinex/issues/1111) |
+-| Reason about runtime backpressure and loss policy | [crate/sinexd/docs/runtime_qos.md](crate/sinexd/docs/runtime_qos.md) |
+-| Suppress live capture through private mode | [crate/sinexctl/docs/private_mode.md](crate/sinexctl/docs/private_mode.md) |
+-| Add a staged personal-export parser | [crate/sinexd/docs/sources/adding_staged_export_parser.md](crate/sinexd/docs/sources/adding_staged_export_parser.md) |
+-| Drain and recover source material cleanly | [crate/sinexd/docs/sources/source_drain.md](crate/sinexd/docs/sources/source_drain.md) |
+-| Snapshot or restore runtime state | [crate/sinexctl/docs/state_snapshot.md](crate/sinexctl/docs/state_snapshot.md) |
+-| Configure PostgreSQL backup/restore | [crate/sinex-db/docs/backup_restore.md](crate/sinex-db/docs/backup_restore.md) |
+-| Decide which surface owns a runtime or data concern | [.github/authority-surfaces.md](.github/authority-surfaces.md) |
+-| Integrate an external tool or sibling project | [crate/sinexd/docs/sources/integration_authority.md](crate/sinexd/docs/sources/integration_authority.md) |
+-| Work on repo workflow or verification | [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md) |
+-| Work on the CLI/tooling loop | [xtask/docs/README.md](xtask/docs/README.md) |
+-
+-## Security
+-
+-Threat model shorthand:
+-
+-- trusted single-user local host
+-- runtime modules submit over NATS; the `sinexd` API is the hardened external boundary
+-- canonical persistence stays single-writer through `sinexd::event_engine`
+-- host full-disk encryption and capture-time privacy controls are the intended baseline
+-
+-Current controls:
+-
+-- typed payload validation with schema checks
+-- TLS-only API RPC; non-loopback binds require stronger transport policy
+-- bearer-token auth with constant-time comparison
+-- per-token rate limiting
+-- structured request access audit logs on RPC, SSE, and native-messaging dispatch paths
+-- systemd hardening from the NixOS deployment layer, including helper/maintenance units
+-- typed managed-NATS TLS and subject-level authorization surfaces in the NixOS module
++Use `xtask/docs/README.md` for the supported development commands and `TESTING.md` for the current verification matrix.
+ 
+ ## License
+ 
+ MIT.
+-
+----
+-
+-<sub>Built for personal use. Not yet production-ready for general deployment.</sub>
+diff --git a/crate/sinexd/docs/sources/integration_authority.md b/crate/sinexd/docs/sources/integration_authority.md
+index e9822ad0..341dbded 100644
+--- a/crate/sinexd/docs/sources/integration_authority.md
++++ b/crate/sinexd/docs/sources/integration_authority.md
+@@ -49,21 +49,31 @@ fixtures must be.
+ 
+ ### Polylogue
+ 
+-Authority: `FederatedCanonicalMirror` for archive metadata, with an optional
+-`SourceMaterialOnly` path for raw provider exports.
+-
+-Polylogue remains authoritative for normalized AI conversation archives,
+-message hashes, provider detection, renderers, and its MCP surface. Sinex may
+-mirror metadata-only conversation/session/work-event signals for joins with
+-terminal, filesystem, issue, project, and context-pack data. Raw conversation
+-text is not duplicated into event payloads by default; if Sinex needs native
+-AI-session interpretation, raw exports or rendered artefacts are staged as
+-source material and parsed by a dedicated source parser.
+-
+-First implementation slice: #1122. A Polylogue-style producer should publish a
+-metadata-only event intent or material-staged signal through the admitted
+-envelope, preserve Polylogue IDs and content hashes, receive event-engine
+-confirmation/rejection, and avoid linking `sinexd` internals.
++**Current implementation:** `FederatedCanonicalMirror` for archive metadata. The
++existing external producer publishes a compact session-indexed signal. Raw
++conversation text is not copied into generic durable NATS payloads. This is a
++useful notification and correlation slice, but it is not the ultimate authority
++boundary.
++
++**Target under Bead `sinex-4j2`:** Sinex becomes the durable material, event,
++lifecycle, judgment, and model-effect backend for Polylogue in Sinex-backed
++deployments. Polylogue remains authoritative for AI-work semantics: provider
++normalization, sessions, messages, blocks, tools, lineage, compaction, logical
++composition, reviewed memory, context compilation, query behavior, and product
++UX. Provider-native and normalized transcript bytes belong in Sinex's protected
++material plane; compact admitted events carry stable domain IDs and exact
++material anchors. Polylogue SQLite remains the standalone backend and the
++local/offline rebuildable projection in backed mode.
++
++The distinction is important: **do not publish raw private text into generic
++NATS event payloads by default** does not imply **Sinex must not store transcript
++material**. Storage, transport, embedding, and agent disclosure are separate
++policies.
++
++The target is complete only after stable cross-replay object identity, immutable
++revision manifests, bundle settlement, durable user-state history, and a proof
++that Polylogue's rebuildable SQLite tiers can be reconstructed from Sinex. See
++[`../../../../docs/polylogue-integration.md`](../../../../docs/polylogue-integration.md).
+ 
+ ### Lynchpin
+ 
+diff --git a/crate/sinexd/src/sources/source_contracts/polylogue.rs b/crate/sinexd/src/sources/source_contracts/polylogue.rs
+index fa2cface..db9c5c97 100644
+--- a/crate/sinexd/src/sources/source_contracts/polylogue.rs
++++ b/crate/sinexd/src/sources/source_contracts/polylogue.rs
+@@ -7,6 +7,13 @@
+ //! depending on the sinex Rust runtime. event_engine picks them up on the standard
+ //! `{env}.sinex.events.raw.>` stream just like any other source.
+ //!
++//! This `session_indexed` contract is the current **thin notification and
++//! correlation lane**. It is not the intended final storage boundary. Under the
++//! `sinex-4j2` target architecture, Sinex also stores provider-native and
++//! Polylogue-normalized transcript material plus durable transcript-domain
++//! history, while Polylogue retains the AI-work ontology and product semantics.
++//! Raw text belongs in the protected material plane, not generic NATS payloads.
++//!
+ //! This module provides:
+ //! - A source contract for the canonical
+ //!   [`sinex_primitives::events::payloads::PolylogueSessionIndexedPayload`]
+@@ -44,12 +51,16 @@
+ //! ## Privacy tier
+ //!
+ //! **Sensitive** — tags and titles can reflect personal context even though
+-//! raw session text is not included.
++//! this compact notification payload does not include raw session text. That
++//! transport constraint does not prohibit Sinex from storing transcript bytes in
++//! the protected material plane under a separate full-fidelity contract.
+ //!
+ //! ## Occurrence identity
+ //!
+-//! `(content_hash, session_id)` — the content hash detects changed
+-//! sessions; the `session_id` provides the stable external key.
++//! `(content_hash, session_id)` — sufficient for de-duplicating this thin
++//! notification. It is not the ultimate identity model for transcript storage:
++//! stable Polylogue object IDs, revisions, Sinex interpretation IDs, and exact
++//! material occurrence refs must remain separate.
+ 
+ use sinex_macros::SourceMeta;
+ use sinex_primitives::privacy::ProcessingContext;
+diff --git a/docs/README.md b/docs/README.md
+new file mode 100644
+index 00000000..a4cd98eb
+--- /dev/null
++++ b/docs/README.md
+@@ -0,0 +1,104 @@
++# Sinex documentation map
++
++Sinex is a local evidence substrate for digital life and agent work. It preserves acquired material, records versioned interpretations, exposes gaps and readiness explicitly, and derives cross-source products without turning model output into authority.
++
++This page is the shortest route through a large repository. Roadmap authority lives in Beads. Deep technical documents describe the implementation; they do not override the owning Bead when future work changes.
++
++## In 30 seconds
++
++Read:
++
++1. [Product and purpose](product.md) — what Sinex is, what it refuses to conflate, and why agents need it.
++2. [Public demonstrations](demos.md) — what can be reproduced now and what the stronger proof portfolio is designed to establish.
++3. [Proof and claims](proof-artifacts.md) — the difference between deterministic proof, private-deployment observation, experiment, and roadmap direction.
++
++The category sentence is:
++
++> **Sinex is a local, replayable evidence substrate for a person's and machine's digital activity.**
++
++The compact mental model is:
++
++```text
++source material
++    → versioned interpretations
++        → typed events and domain objects
++            → rebuildable projections
++                → evidence-backed products and context
++```
++
++## In three minutes
++
++Read these sections:
++
++- [The five evidence layers](product.md#the-five-evidence-layers)
++- [Three clocks](product.md#three-clocks-not-one)
++- [Replay](product.md#replay-means-reinterpretation-not-erasure)
++- [Missing evidence](product.md#missing-evidence-is-a-result)
++- [Confidence and authority](product.md#confidence-is-not-authority)
++- [Polylogue on Sinex](polylogue-integration.md)
++- [Sinex-Polylogue machine contracts](interop/README.md)
++
++Then run the existing deterministic operational walkthrough:
++
++```bash
++xtask infra start
++xtask run core --logs
++sinexctl ops verify --demo
++```
++
++The walkthrough is a bounded smoke proof of real API/query paths. It is not yet the full proof of Sinex's product thesis. That distinction is deliberate.
++
++## In thirty minutes
++
++Read in this order:
++
++1. [Architecture deep dive](architecture.md) — provenance, identity, replay, storage, runtime, and privacy.
++2. [Knowledge boundaries](../crate/sinex-primitives/docs/knowledge_boundaries.md) — source material, interpretations, typed records, graph products, and workspace artifacts.
++3. [Evidence lanes](../crate/sinexd/docs/sources/evidence_lanes.md) — acquisition payloads, replayable snapshots, and storage roles.
++4. [Event taxonomy](../crate/sinex-db/docs/schema/event-taxonomy.md) — canonical event storage.
++5. [Domain reducers](../crate/sinex-primitives/docs/domain_reducers.md) — how current state is reconstructed from event history.
++6. [Runtime quality of service](../crate/sinexd/docs/runtime_qos.md) — backpressure, boundedness, and failure policy.
++7. [Read-only MCP](../crate/sinexctl/docs/mcp_readonly_server.md) — the current agent evidence boundary.
++8. [Polylogue integration](polylogue-integration.md) — the maximal transcript-backend target and its impedance mismatches.
++
++## By task
++
++| I need to… | Start here |
++|---|---|
++| Explain Sinex to a new reader | [Product and purpose](product.md) |
++| Reproduce the current demo | [Generated demo walkthrough](../crate/sinexctl/docs/demo_walkthrough.md) |
++| Understand what public claims are supportable | [Proof and claims](proof-artifacts.md) and [`public-claims.yaml`](public-claims.yaml) |
++| Design a source | [Source package template](../crate/sinexd/docs/sources/source_capture_package_template.md) |
++| Understand source gaps | [Evidence lanes](../crate/sinexd/docs/sources/evidence_lanes.md) and [runtime QoS](../crate/sinexd/docs/runtime_qos.md) |
++| Understand replay and identity | [Architecture](architecture.md#identity-occurrence-vs-interpretation) |
++| Build a projection | [Domain reducers](../crate/sinex-primitives/docs/domain_reducers.md) and [derivation catalog](../crate/sinexd/docs/automata/derivation_catalog.md) |
++| Query or operate Sinex | [sinexctl docs](../crate/sinexctl/docs/README.md) |
++| Give an agent evidence access | [MCP contract](../crate/sinexctl/docs/mcp_readonly_server.md) and [agent orientation](../crate/sinexctl/docs/agent_orientation.md) |
++| Deploy or harden it | [NixOS guide](../nixos/README.md) and [API transport security](../crate/sinexd/docs/api/transport_security.md) |
++| Understand Polylogue as a Sinex-backed product | [Polylogue integration](polylogue-integration.md) |
++| Work on the roadmap | `bd ready`, then inspect the owning Bead |
++
++## Authority and status labels
++
++Public-facing prose should use these labels consistently:
++
++- **Implemented** — present in the supplied code and reachable through a named surface.
++- **Deterministically proven** — reproducible from a checked-in fixture or demo packet with a structural oracle.
++- **Observed in deployment** — measured on a named private deployment; not a general benchmark.
++- **Experimental** — evaluated under a declared protocol, with limitations.
++- **Planned** — owned by a Bead and not described as shipped.
++- **Retired** — historical design or issue references that no longer own work.
++
++A result also needs an evidence class: structural, source-material, independently recomputed, human-adjudicated, heuristic, or unavailable. Status and evidence class answer different questions.
++
++## Roadmap authority
++
++GitHub Issues are retired as the planning surface. Use Beads:
++
++```bash
++bd ready
++bd list --status open
++bd show <id>
++```
++
++When a design document and its owning Bead disagree about future work, the Bead wins. Current code and schemas remain authoritative for what is actually implemented.
+diff --git a/docs/demos.md b/docs/demos.md
+new file mode 100644
+index 00000000..4166af54
+--- /dev/null
++++ b/docs/demos.md
+@@ -0,0 +1,224 @@
++# Sinex public demonstrations
++
++A public demonstration should be impressive because it is easy to falsify, not because it displays many unrelated features at once.
++
++## What exists now
++
++The current deterministic walkthrough is:
++
++```bash
++xtask infra start
++xtask run core --logs
++sinexctl ops verify --demo
++```
++
++It seeds deterministic data directly into the local PostgreSQL event store, then exercises normal API/query paths, writes machine-readable and human-readable receipts under `.sinex/demo/`, and exits nonzero when an expectation fails. The seed path bypasses source acquisition, NATS transport, and event-engine admission.
++
++The generated operator guide is [Sinex Demo Walkthrough](../crate/sinexctl/docs/demo_walkthrough.md).
++
++### What the current walkthrough proves
++
++It proves that a bounded deterministic dataset can be persisted in the event store, read through the current API/query surfaces, and checked against declared expectations. It does not prove the upstream capture and admission path.
++
++### What it does not prove
++
++It does not by itself prove:
++
++- source-capture completeness;
++- crash-loss freedom;
++- replay correctness over historical material;
++- cross-source work reconstruction;
++- semantic retrieval quality;
++- model-memory uplift;
++- large-archive latency;
++- physical deletion;
++- the full Sinex–Polylogue architecture.
++
++Those require separate constructs, oracles, and controls.
++
++## Demo doctrine
++
++Every public demo packet should declare:
++
++```yaml
++claim: the one primary construct the demonstration may establish
++oracle: the field, invariant, or independent result that decides success
++falsifier: the observation that makes the demonstration fail
++controls: positive, negative, ambiguous, or missing-evidence cases
++scope: what the result does not generalize to
++```
++
++A complete packet also includes:
++
++- input manifest and content hashes;
++- exact commands;
++- expected and observed result;
++- evidence refs;
++- caveats and unsupported claims;
++- software revision and environment;
++- terminal transcript;
++- human report;
++- machine-readable report;
++- optional recording generated from the same script.
++
++A recording is a rendering of the proof packet, not a separate hand-edited truth.
++
++## The shared Evidence Lab corpus: Incident 14:32
++
++The proposed joint Polylogue–Sinex corpus is one compact AI-assisted software incident:
++
++1. A developer asks an agent to repair a clock-sensitive test.
++2. The first agent edits the wrong fixture.
++3. A structured test result is nonzero, but the assistant claims success.
++4. A continuation copies the prior transcript prefix.
++5. A compaction summary omits the failed experiment.
++6. A second agent receives a bounded brief, repairs the correct fixture, and verifies the result.
++7. Terminal, Git, filesystem, browser, desktop, Beads, and transcript evidence surround the incident.
++8. One source has a declared capture outage.
++9. Parser semantics v1 and v2 disagree on one record.
++10. One cross-material duplicate is intentionally ambiguous.
++
++One shared corpus makes the portfolio coherent. Each demo still has one primary construct and an independent oracle.
++
++## Launch portfolio
++
++### 1. Missing Source — flagship Sinex category proof
++
++**Question:** Does an empty interval mean nothing happened, or that evidence is missing?
++
++**Setup:** Two otherwise identical windows. In one, the browser source is healthy and contains no matching visit. In the other, the browser source is stale or has a declared continuity gap.
++
++**Oracle:** Source coverage/readiness fields and material/event counts.
++
++**Pass condition:** The first window reports an evidence-backed empty result. The second reports a bounded coverage caveat or gap and refuses to imply absence.
++
++**Negative control:** A query path that omits source-health metadata is shown beside the honest result.
++
++**Primary Beads:** `sinex-jdp`, `sinex-r6d`, `sinex-cem` self-diagnosing-outage child.
++
++### 2. Changes Mind Honestly — flagship replay proof
++
++**Question:** Can a parser fix change the current interpretation without erasing the old one?
++
++**Setup:** Parser v1 misclassifies a deterministic source record. Parser v2 corrects it.
++
++**Oracle:** Same source-material occurrence, distinct interpretation event IDs and semantics versions, archived/superseded prior reading, updated projection.
++
++**Pass condition:** The current view changes; the original bytes and prior interpretation remain resolvable; the semantic diff explains why.
++
++**Falsifier:** The source bytes are rewritten, the old interpretation disappears without lifecycle evidence, or a duplicate live occurrence remains.
++
++**Primary Beads:** `sinex-cem` replay demo, `sinex-r6d`, `sinex-0vx`.
++
++### 3. Import It Twice — occurrence versus interpretation proof
++
++**Question:** Does re-importing the same occurrence create false duplicate work?
++
++**Setup:** Import one immutable material twice, then replay it under changed semantics.
++
++**Oracle:** Occurrence identity, equivalence behavior, live/archived interpretation counts, and current projection cardinality.
++
++**Pass condition:** Re-import does not invent a second current domain occurrence; replay produces a fresh interpretation as designed.
++
++**Negative control:** Two genuinely distinct but text-identical occurrences remain distinct.
++
++**Primary Beads:** `sinex-908`, the idempotence/replay addition under `sinex-cem`.
++
++### 4. World Around the Claim — joint thesis proof
++
++**Question:** What evidence surrounds an agent's claim that the tests passed?
++
++**Setup:** The assistant's prose says success while the first structured tool result is a failure. A later run succeeds. Sinex contributes terminal, Git, filesystem, browser, source-health, and Beads evidence; Polylogue contributes messages, tool structure, lineage, compaction, and context.
++
++**Oracle:** Structural exit results and independently observed machine/repository outcomes.
++
++**Pass condition:** The system distinguishes claim, tool evidence, ambient machine evidence, later repair, and known gaps without flattening them into one synthetic fact.
++
++**Primary Beads:** `sinex-4j2`, `sinex-a4w.3.9`, Polylogue's forensic and coordination programs.
++
++### 5. Bounded Moment — cross-source reconstruction without the “full Tuesday” confound
++
++**Question:** What happened in a five-minute evidence window around one known occurrence?
++
++**Setup:** Start from a resolvable transcript or command ref and expand a bounded interval across source families.
++
++**Oracle:** Independent raw-source baseline queries over the same interval and a random sample of result refs resolved to source material.
++
++**Pass condition:** The product reproduces the expected evidence set, exposes missing source families, and never claims a complete day.
++
++**Reason for scope:** A whole-day reconstruction mixes capture completeness, entity resolution, episode segmentation, summarization, and UI quality. The bounded moment isolates cross-source recall first.
++
++**Primary Beads:** `sinex-9j9`, `sinex-a4w.3`, moment-search work.
++
++### 6. Crash, Recover, Account — durability proof
++
++**Question:** Does acknowledged work survive a controlled crash and resume without manual stream surgery?
++
++**Setup:** Fault injection at a declared receipt/commit boundary during bounded ingest.
++
++**Oracle:** Durable receipt ledger, admitted event counts, source checkpoint, stream state, and post-restart reconciliation.
++
++**Pass condition:** Every acknowledged occurrence is present exactly as promised; unacknowledged work is retried or declared; no hidden gap remains.
++
++**Falsifier:** An acknowledged occurrence disappears, a cursor advances beyond durability, or recovery requires silently purging backlog.
++
++**Primary Beads:** `sinex-r6d`, `sinex-n23`, crash-no-loss child under `sinex-cem`.
++
++### 7. Run Twice, Pay Once — model-effect reuse
++
++**Question:** Can an expensive deterministic model effect be reused under an identical recipe?
++
++**Setup:** Run an embedding or other model-derived effect twice with the same content and complete recipe identity, then once with one recipe field changed.
++
++**Oracle:** Model-effect ledger, provider call count, cache/effect key, and output refs.
++
++**Pass condition:** The identical recipe reuses the effect; the changed recipe does not collide.
++
++**Important recipe fields:** content digest, canonicalization, selector/chunking version, provider, model revision, dimensions, task/input type, and normalization policy.
++
++**Primary Beads:** `sinex-5v6`, `sinex-cem` model-effect demo, `sinex-4j2.8`.
++
++### 8. Disclosure Control, not “retroactive privacy” unless deletion is proven
++
++A demo that changes what a query or export discloses is useful, but it should be named accurately.
++
++**Capability claim:** New policy prevents protected material from being disclosed by bounded product surfaces after replay or reprojection.
++
++**Stronger claim requiring a different oracle:** Every raw byte, archived interpretation, vector, cache, context pack, report, and replica has been physically excised.
++
++Do not call the first construct “deletion” or “retroactive privacy.” Add the physical-excision proof only when lifecycle and cache invalidation are complete.
++
++## Research demonstrations, kept off the capability path
++
++### Retrieval benchmark
++
++Measure lexical, vector, and hybrid hit@k on a frozen corpus with frozen relevance judgments. Record candidate-generation and reranking recipes. Do not use an attractive anecdote as a retrieval-quality result.
++
++### Blinded resumption duel
++
++Compare realistic alternatives, such as live evidence refs versus the same evidence plus a bounded reviewed pack. Pre-register tasks, budget, scoring rubric, freshness boundary, and failure handling. Include stale-memory negative controls. Treat a small pilot as directional evidence, not a general productivity claim.
++
++### Counterfactual derivation lane
++
++Run two sessionization or episode-segmentation semantics versions in shadow, compare diffs, adjudicate a sample, and promote only after declared criteria pass. This is a derivation-control experiment, not a stage demo.
++
++## Rejected as first-contact demos
++
++The following are valuable later but weak launch constructs:
++
++- **“Reconstruct my entire Tuesday.”** Too many source and summarization confounds; begin with a bounded moment.
++- **Cost by outcome.** Outcome attribution is not mature enough; first prove disjoint usage lanes and cost views.
++- **A model leaderboard over personal history.** Selection bias, task heterogeneity, and tool/environment drift dominate.
++- **A beautiful generated daily summary.** Summaries can hide unsupported joins and gaps.
++- **Live autonomous actuation.** Authority and safety dominate the evidence thesis and make failure costly.
++- **A generic feature tour.** It proves navigation, not the category.
++
++## Presentation sequence
++
++A strong ten-minute public sequence is:
++
++1. **Missing Source** — category distinction in under a minute.
++2. **Changes Mind Honestly** — replay and provenance.
++3. **World Around the Claim** — the joint human-agent payoff.
++4. Open the proof packet and resolve one result to source material.
++5. End with the explicit boundary: what remains planned, unsupported, or private-deployment-only.
+diff --git a/docs/interop/README.md b/docs/interop/README.md
+new file mode 100644
+index 00000000..a78939fe
+--- /dev/null
++++ b/docs/interop/README.md
+@@ -0,0 +1,17 @@
++# Sinex-Polylogue Interoperability Contracts
++
++These files make the target `sinex-4j2` architecture inspectable before its data plane is implemented. They are design contracts, not a shipped-backend claim.
++
++- [`polylogue-authority-v1.yaml`](polylogue-authority-v1.yaml) defines authority by deployment profile and data class.
++- [`polylogue-identity-v1.schema.json`](polylogue-identity-v1.schema.json) separates stable Polylogue identity, domain revision, Sinex interpretation identity, and exact material occurrence.
++- [`polylogue-transcript-revision-v1.schema.json`](polylogue-transcript-revision-v1.schema.json) defines an atomic transcript-revision manifest over immutable material segments.
++- [`polylogue-transcript-revision-example.json`](polylogue-transcript-revision-example.json) is a public-safe validating example.
++
++The contracts deliberately reject both shallow and flattening integrations:
++
++1. Sinex must not receive only session summaries while irreplaceable transcript evidence remains elsewhere.
++2. Polylogue must not become a generic event browser that loses provider, lineage, context, usage, and assertion semantics.
++3. Event UUIDs, content hashes, and byte offsets must not be used as stable public object identity.
++4. A new transcript revision must not become visible as complete until its expected material and observation counts settle.
++
++The proof that converts these contracts from design to capability is a clean `polylogue rebuild --from-sinex` with explained parity across transcripts, topology, usage, assertions, and context-delivery history.
+diff --git a/docs/interop/polylogue-authority-v1.yaml b/docs/interop/polylogue-authority-v1.yaml
+new file mode 100644
+index 00000000..e67c2c5d
+--- /dev/null
++++ b/docs/interop/polylogue-authority-v1.yaml
+@@ -0,0 +1,92 @@
++schema: sinex.polylogue.authority/v1
++status: target-architecture
++owner_programs:
++  sinex: [sinex-4j2]
++  polylogue: [polylogue-fs1.9]
++profiles:
++  standalone:
++    durable_authority: polylogue-sqlite
++    sinex_required: false
++  sinex-backed:
++    durable_authority: sinex
++    polylogue_sqlite_role: local-projection-cache-outbox
++    no_silent_dual_master: true
++principles:
++  - Sinex owns durable persistence, source material, evidentiary lifecycle, and cross-domain joins.
++  - Polylogue owns AI-work ontology, provider normalization, logical composition, query semantics, context policy, and product UX.
++  - Beads remains authoritative for task intent and dependency state.
++  - Raw transcript storage, embedding eligibility, and agent disclosure are separate policies.
++  - Every irreplaceable backed-mode write must be admitted to Sinex or remain visibly pending in the local outbox.
++data_classes:
++  provider_native_artifacts:
++    backed_authority: sinex-material-plane
++    sqlite_role: spool-or-download-cache
++    rebuildable: false
++  attachments:
++    backed_authority: sinex-material-plane
++    sqlite_role: download-cache
++    rebuildable: false
++  normalized_transcript_segments:
++    backed_authority: sinex-material-plane
++    sqlite_role: projection-source-cache
++    rebuildable: false
++  stable_domain_identity:
++    backed_authority: sinex-polylogue-identity-ledger
++    sqlite_role: replica
++    rebuildable: false
++  transcript_domain_history:
++    backed_authority: sinex-events-under-polylogue-semantics
++    sqlite_role: rebuildable-index
++    rebuildable: false
++  current_transcript_projection:
++    backed_authority: rebuildable-postgresql-projection
++    sqlite_role: rebuildable-edge-projection
++    rebuildable: true
++  logical_session_topology:
++    backed_authority: sinex-durable-history-under-polylogue-semantics
++    sqlite_role: composed-read-index
++    rebuildable: true
++  usage_and_cost_observations:
++    backed_authority: sinex-durable-history
++    sqlite_role: analytic-cache
++    rebuildable: true
++  assertions_and_judgments:
++    backed_authority: sinex-durable-authority
++    sqlite_role: offline-replica-outbox
++    rebuildable: false
++  context_images:
++    backed_authority: sinex-material-plane
++    sqlite_role: local-cache
++    rebuildable: false
++  context_delivery_occurrences:
++    backed_authority: sinex-durable-history
++    sqlite_role: audit-projection
++    rebuildable: false
++  search_indexes_and_vectors:
++    backed_authority: rebuildable-projection
++    sqlite_role: local-acceleration
++    rebuildable: true
++  local_ui_state:
++    backed_authority: polylogue-sqlite
++    sqlite_role: local-authority
++    rebuildable: false
++  pending_offline_writes:
++    backed_authority: polylogue-sqlite-until-sinex-admission
++    sqlite_role: durable-outbox
++    rebuildable: false
++  beads_task_state:
++    backed_authority: beads
++    sqlite_role: reference-cache-only
++    rebuildable: false
++supersession_required:
++  - decision: polylogue-6mv
++    reason: Its no-transcript-in-Sinex boundary conflicts with the transcript-complete backed-mode target.
++  - work_item: polylogue-fs1.9
++    reason: Re-scope its low-volume events as notifications, correlation summaries, lag, and health signals rather than the storage boundary.
++completion_proofs:
++  - provider-native and normalized transcript material is durably stored in Sinex
++  - stable refs survive parser replay and material resegmentation
++  - incomplete revision bundles never appear complete
++  - a clean SQLite projection rebuilds from Sinex with explained parity
++  - accepted assertions, judgments, and context deliveries survive that rebuild
++  - physical deletion invalidates server projections, SQLite replicas, FTS, vectors, context artifacts, and model effects
+diff --git a/docs/interop/polylogue-identity-v1.schema.json b/docs/interop/polylogue-identity-v1.schema.json
+new file mode 100644
+index 00000000..4184f4af
+--- /dev/null
++++ b/docs/interop/polylogue-identity-v1.schema.json
+@@ -0,0 +1,82 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://sinex.local/schemas/polylogue-identity-v1.schema.json",
++  "title": "Sinex-Polylogue stable identity record v1",
++  "type": "object",
++  "additionalProperties": false,
++  "required": [
++    "schema",
++    "object_kind",
++    "stable_object_id",
++    "domain_revision_id",
++    "interpretation",
++    "material_occurrences"
++  ],
++  "properties": {
++    "schema": {"const": "sinex.polylogue.identity/v1"},
++    "object_kind": {
++      "enum": [
++        "session",
++        "message",
++        "block",
++        "tool_invocation",
++        "tool_result",
++        "attachment",
++        "assertion",
++        "judgment",
++        "context_image",
++        "context_delivery"
++      ]
++    },
++    "stable_object_id": {
++      "type": "string",
++      "minLength": 3,
++      "description": "Replay-stable Polylogue domain identity. Never a Sinex event UUID, digest, or byte offset."
++    },
++    "domain_revision_id": {
++      "type": "string",
++      "minLength": 3,
++      "description": "One immutable content or semantics revision of the stable object."
++    },
++    "aliases": {
++      "type": "array",
++      "uniqueItems": true,
++      "items": {"type": "string", "minLength": 1},
++      "default": []
++    },
++    "interpretation": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["semantics_version", "coined_at"],
++      "properties": {
++        "sinex_event_id": {"type": ["string", "null"]},
++        "semantics_version": {"type": "string", "minLength": 1},
++        "coined_at": {"type": "string", "format": "date-time"},
++        "supersedes_event_id": {"type": ["string", "null"]}
++      }
++    },
++    "material_occurrences": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "type": "object",
++        "additionalProperties": false,
++        "required": ["material_id", "role", "anchor"],
++        "properties": {
++          "material_id": {"type": "string", "minLength": 1},
++          "role": {"enum": ["provider-native", "normalized", "attachment", "context-artifact"]},
++          "anchor": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": ["kind", "value"],
++            "properties": {
++              "kind": {"enum": ["record-id", "json-pointer", "byte-range", "line-range", "whole-material"]},
++              "value": {"type": "string", "minLength": 1},
++              "canonicalization_version": {"type": ["string", "null"]}
++            }
++          }
++        }
++      }
++    }
++  }
++}
+diff --git a/docs/interop/polylogue-transcript-revision-example.json b/docs/interop/polylogue-transcript-revision-example.json
+new file mode 100644
+index 00000000..c3405203
+--- /dev/null
++++ b/docs/interop/polylogue-transcript-revision-example.json
+@@ -0,0 +1,73 @@
++{
++  "schema": "sinex.polylogue.transcript-revision/v1",
++  "ingest_batch_id": "plg-batch-incident-1432-r2",
++  "stable_session_id": "codex-session:incident-1432",
++  "revision_id": "plg-rev-incident-1432-v2",
++  "previous_revision_id": "plg-rev-incident-1432-v1",
++  "origin": "codex-session",
++  "parser_semantics_version": "polylogue-normalization/2",
++  "occurred_interval": {
++    "start": "2026-07-10T14:31:58Z",
++    "end": "2026-07-10T14:38:41Z",
++    "quality": "provider-exact"
++  },
++  "source_materials": [
++    {
++      "material_id": "material:provider:incident-1432",
++      "role": "provider-native",
++      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
++      "blake3": "2222222222222222222222222222222222222222222222222222222222222222",
++      "size_bytes": 18432,
++      "media_type": "application/x-ndjson"
++    }
++  ],
++  "normalized_segments": [
++    {
++      "material_id": "material:normalized:incident-1432:0",
++      "role": "normalized",
++      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
++      "blake3": "4444444444444444444444444444444444444444444444444444444444444444",
++      "size_bytes": 12288,
++      "media_type": "application/x-ndjson",
++      "first_sequence": 0,
++      "last_sequence": 18,
++      "record_count": 19
++    }
++  ],
++  "attachments": [],
++  "expected_counts": {
++    "sessions": 1,
++    "messages": 9,
++    "blocks": 19,
++    "tool_invocations": 4,
++    "tool_results": 4,
++    "attachments": 0
++  },
++  "digests": {
++    "aggregate_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
++    "aggregate_blake3": "6666666666666666666666666666666666666666666666666666666666666666",
++    "canonicalization_version": "polylogue-transcript-c14n/1"
++  },
++  "ordering": {
++    "session_sequence": true,
++    "provider_ordinal": true,
++    "block_ordinal": true,
++    "tool_correlation": true
++  },
++  "coverage": {
++    "state": "complete",
++    "known_gaps": []
++  },
++  "privacy": {
++    "class": "private",
++    "raw_text_capability_required": true,
++    "embedding_policy": "explicit-opt-in"
++  },
++  "settlement": {
++    "state": "settled",
++    "expected_children": 19,
++    "settled_children": 19,
++    "committed_frontier": "sinex-frontier:incident-1432-r2",
++    "failure_ref": null
++  }
++}
+diff --git a/docs/interop/polylogue-transcript-revision-v1.schema.json b/docs/interop/polylogue-transcript-revision-v1.schema.json
+new file mode 100644
+index 00000000..da4376fe
+--- /dev/null
++++ b/docs/interop/polylogue-transcript-revision-v1.schema.json
+@@ -0,0 +1,381 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://sinex.local/schemas/polylogue-transcript-revision-v1.schema.json",
++  "title": "Sinex-Polylogue transcript revision manifest v1",
++  "type": "object",
++  "additionalProperties": false,
++  "required": [
++    "schema",
++    "ingest_batch_id",
++    "stable_session_id",
++    "revision_id",
++    "origin",
++    "parser_semantics_version",
++    "source_materials",
++    "normalized_segments",
++    "expected_counts",
++    "digests",
++    "ordering",
++    "coverage",
++    "privacy",
++    "settlement"
++  ],
++  "properties": {
++    "schema": {
++      "const": "sinex.polylogue.transcript-revision/v1"
++    },
++    "ingest_batch_id": {
++      "type": "string",
++      "minLength": 3
++    },
++    "stable_session_id": {
++      "type": "string",
++      "minLength": 3
++    },
++    "revision_id": {
++      "type": "string",
++      "minLength": 3
++    },
++    "previous_revision_id": {
++      "type": [
++        "string",
++        "null"
++      ]
++    },
++    "origin": {
++      "type": "string",
++      "minLength": 1
++    },
++    "parser_semantics_version": {
++      "type": "string",
++      "minLength": 1
++    },
++    "occurred_interval": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "start",
++        "end",
++        "quality"
++      ],
++      "properties": {
++        "start": {
++          "type": "string",
++          "format": "date-time"
++        },
++        "end": {
++          "type": "string",
++          "format": "date-time"
++        },
++        "quality": {
++          "enum": [
++            "provider-exact",
++            "provider-rounded",
++            "derived",
++            "unknown"
++          ]
++        }
++      }
++    },
++    "source_materials": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "$ref": "#/$defs/materialRef"
++      }
++    },
++    "normalized_segments": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "$ref": "#/$defs/segmentRef"
++      }
++    },
++    "attachments": {
++      "type": "array",
++      "items": {
++        "$ref": "#/$defs/materialRef"
++      },
++      "default": []
++    },
++    "expected_counts": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "sessions",
++        "messages",
++        "blocks",
++        "tool_invocations",
++        "tool_results",
++        "attachments"
++      ],
++      "properties": {
++        "sessions": {
++          "type": "integer",
++          "minimum": 1
++        },
++        "messages": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "blocks": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "tool_invocations": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "tool_results": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "attachments": {
++          "type": "integer",
++          "minimum": 0
++        }
++      }
++    },
++    "digests": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "aggregate_sha256",
++        "aggregate_blake3",
++        "canonicalization_version"
++      ],
++      "properties": {
++        "aggregate_sha256": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "aggregate_blake3": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "canonicalization_version": {
++          "type": "string",
++          "minLength": 1
++        }
++      }
++    },
++    "ordering": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "session_sequence",
++        "provider_ordinal",
++        "block_ordinal",
++        "tool_correlation"
++      ],
++      "properties": {
++        "session_sequence": {
++          "type": "boolean",
++          "const": true
++        },
++        "provider_ordinal": {
++          "type": "boolean",
++          "const": true
++        },
++        "block_ordinal": {
++          "type": "boolean",
++          "const": true
++        },
++        "tool_correlation": {
++          "type": "boolean",
++          "const": true
++        }
++      }
++    },
++    "coverage": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "state",
++        "known_gaps"
++      ],
++      "properties": {
++        "state": {
++          "enum": [
++            "complete",
++            "partial",
++            "failed",
++            "unknown"
++          ]
++        },
++        "known_gaps": {
++          "type": "array",
++          "items": {
++            "type": "string"
++          }
++        }
++      }
++    },
++    "privacy": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "class",
++        "raw_text_capability_required",
++        "embedding_policy"
++      ],
++      "properties": {
++        "class": {
++          "enum": [
++            "private",
++            "sensitive",
++            "restricted"
++          ]
++        },
++        "raw_text_capability_required": {
++          "type": "boolean"
++        },
++        "embedding_policy": {
++          "enum": [
++            "forbidden",
++            "explicit-opt-in",
++            "allowed"
++          ]
++        }
++      }
++    },
++    "settlement": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "state",
++        "expected_children",
++        "settled_children",
++        "committed_frontier"
++      ],
++      "properties": {
++        "state": {
++          "enum": [
++            "staged",
++            "admitting",
++            "settled",
++            "failed",
++            "superseded"
++          ]
++        },
++        "expected_children": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "settled_children": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "committed_frontier": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "failure_ref": {
++          "type": [
++            "string",
++            "null"
++          ]
++        }
++      }
++    }
++  },
++  "$defs": {
++    "materialRef": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "material_id",
++        "role",
++        "sha256",
++        "blake3",
++        "size_bytes"
++      ],
++      "properties": {
++        "material_id": {
++          "type": "string",
++          "minLength": 1
++        },
++        "role": {
++          "enum": [
++            "provider-native",
++            "normalized",
++            "attachment"
++          ]
++        },
++        "sha256": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "blake3": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "size_bytes": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "media_type": {
++          "type": [
++            "string",
++            "null"
++          ]
++        }
++      }
++    },
++    "segmentRef": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "material_id",
++        "role",
++        "sha256",
++        "blake3",
++        "size_bytes",
++        "first_sequence",
++        "last_sequence",
++        "record_count"
++      ],
++      "properties": {
++        "material_id": {
++          "type": "string",
++          "minLength": 1
++        },
++        "role": {
++          "const": "normalized"
++        },
++        "sha256": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "blake3": {
++          "type": "string",
++          "pattern": "^[0-9a-f]{64}$"
++        },
++        "size_bytes": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "media_type": {
++          "type": [
++            "string",
++            "null"
++          ]
++        },
++        "first_sequence": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "last_sequence": {
++          "type": "integer",
++          "minimum": 0
++        },
++        "record_count": {
++          "type": "integer",
++          "minimum": 1
++        }
++      }
++    }
++  }
++}
+diff --git a/docs/polylogue-integration.md b/docs/polylogue-integration.md
+new file mode 100644
+index 00000000..122be9e9
+--- /dev/null
++++ b/docs/polylogue-integration.md
+@@ -0,0 +1,277 @@
++# Polylogue on Sinex
++
++Status: target architecture and execution contract. The current implementation is a metadata-thin bridge; the full backend is planned under Bead `sinex-4j2` and corresponding Polylogue work.
++
++The companion [machine-readable authority, identity, and transcript-revision contracts](interop/README.md) make the target falsifiable before runtime implementation.
++
++## Executive decision
++
++In a Sinex-backed deployment, Sinex should ultimately store:
++
++- provider-native transcript artifacts;
++- original attachment bytes;
++- immutable normalized Polylogue transcript material;
++- durable session, message, tool, topology, usage, assertion, judgment, and context-delivery history;
++- lifecycle, deletion, model-effect, and cross-domain relation records;
++- rebuildable server-side Polylogue projections.
++
++Polylogue should remain responsible for:
++
++- provider and origin normalization semantics;
++- the session/message/block/tool ontology;
++- fork, continuation, subagent, shared-prefix, and compaction semantics;
++- physical-versus-logical composition and accounting;
++- AI-work query behavior;
++- reviewed memory and context compilation;
++- transcript, forensic, coordination, and handoff UX.
++
++Polylogue SQLite remains:
++
++- the standalone authority when Sinex is not configured;
++- a local/offline projection, cache, and outbox in Sinex-backed mode;
++- a deterministic development and demo backend;
++- a home for genuinely local presentation state.
++
++The division is:
++
++> **Sinex owns durable persistence and evidentiary lifecycle. Polylogue owns AI-work semantics and product behavior.**
++
++## Why the metadata-only bridge is insufficient
++
++The current source contract publishes a session-indexed summary with IDs, origin, title, tags, hashes, timestamps, counts, model, and optional cost. That is useful for low-volume correlation, notifications, and migration.
++
++It cannot establish that Sinex is Polylogue's backend because it cannot:
++
++- rebuild transcript content;
++- resolve messages and tool evidence;
++- preserve attachments;
++- reconstruct session lineage;
++- restore assertions and judgments;
++- reproduce context delivery;
++- apply lifecycle and deletion coherently;
++- reuse model effects over the same content;
++- audit parser reinterpretation.
++
++The low-volume event remains useful as a notification and health lane. It should not define the ultimate storage boundary.
++
++## Five layers
++
++```text
++1. Provider-native material
++   exports · JSONL · browser payloads · hook streams · attachments
++
++2. Polylogue-normalized material
++   sessions · messages · blocks · tool calls/results · usage lanes
++
++3. Sinex evidence and lifecycle
++   material refs · versioned interpretations · judgments · effects · deletion
++
++4. Derived and cross-domain products
++   logical sessions · work episodes · Agent Work Packets · findings · context candidates
++
++5. Polylogue product surfaces
++   transcript views · search · audit · memory · coordination · handoff
++```
++
++Layer boundaries prevent two failure modes:
++
++- reducing Polylogue to generic event JSON and destroying its domain semantics;
++- leaving all meaningful transcript evidence in isolated SQLite while Sinex receives only summaries.
++
++## Authority matrix
++
++| Data class | Sinex-backed authority | Polylogue SQLite role |
++|---|---|---|
++| Provider-native artifacts | Sinex material plane | Spool/download cache |
++| Attachments | Sinex material plane | Local cache |
++| Normalized transcript segments | Sinex material plane | Projection source/cache |
++| Durable session/message/block history | Sinex domain history under Polylogue semantics | Rebuildable index |
++| Current transcript view | Rebuildable PostgreSQL projection | Rebuildable edge projection |
++| Logical session topology | Polylogue-defined, durably recorded in Sinex | Local composed-read index |
++| Usage and cost observations | Sinex durable history | Local analytic cache |
++| Candidate assertions | Sinex proposal history | Offline replica/outbox |
++| Judgments and accepted memory | Sinex durable authority | Local replica |
++| Context image bytes | Sinex artifact/material | Local cache |
++| Context delivery occurrence | Sinex durable event | Local audit projection |
++| FTS and vectors | Rebuildable projection | Local acceleration |
++| UI layout, scroll, temporary filters | Local SQLite | Local authority |
++| Pending offline writes | Local outbox until admitted | Temporary local authority |
++| Beads task state | Beads | Reference/cache only |
++
++No irreplaceable durable AI-work state should silently exist only in SQLite in backed mode.
++
++## Identity model
++
++Four identities must remain separate:
++
++| Identity | Meaning |
++|---|---|
++| Stable Polylogue object ID | Logical session, message, block, assertion, or context delivery |
++| Polylogue revision ID | One content or semantic revision of that object |
++| Sinex event ID | One admitted interpretation in a replay epoch |
++| Material occurrence ref | Exact provider-native or normalized record/byte anchor |
++
++Sinex event UUIDs change on replay. Public Polylogue refs must not.
++
++A durable identity/alias registry is therefore required. Content digests and material offsets help reconciliation but are not sufficient object identity.
++
++## Transcript ingestion protocol
++
++### 1. Stage source material
++
++Polylogue stages provider-native bytes and receives Sinex material IDs. Material records carry source, origin, digests, size, media/record format, acquisition interval, privacy class, completeness, and replayability.
++
++### 2. Seal normalized segments
++
++Polylogue writes immutable bounded normalized segments. A revision manifest names:
++
++- raw material refs;
++- normalized segment refs;
++- parser semantics version;
++- expected sessions/messages/blocks/tools/attachments;
++- aggregate digests;
++- privacy and coverage metadata.
++
++Immutable segments are safer than anchors into a regenerated mutable JSONL file.
++
++### 3. Emit compact observations
++
++The admitted event vocabulary includes session lifecycle, messages, tool calls/results, subagents, compaction, attachments, usage, assertions, judgments, and context delivery.
++
++Large text and bytes stay in material. Events carry typed metadata, stable object and revision IDs, sequence, source-domain time, semantics version, material anchor, and privacy class.
++
++### 4. Settle the revision bundle
++
++A transcript revision needs expected counts, digests, child settlement, retry state, and a committed frontier. Readers see either the prior complete revision or the new complete revision, not an apparently complete half-import.
++
++### 5. Build Polylogue projections
++
++Polylogue-owned reducers/projection workers reconstruct current sessions, message order, blocks, tool pairing, topology, usage, assertions, and context delivery in PostgreSQL and SQLite.
++
++### 6. Prove rebuild
++
++The decisive command is conceptually:
++
++```bash
++polylogue rebuild --from-sinex
++```
++
++The proof drops rebuildable SQLite state, reconstructs it from Sinex material and domain history, and explains every difference. Local UI state and explicitly unsupported legacy material are excluded by contract.
++
++## Impedance mismatches and resolutions
++
++### Replay identity versus stable public refs
++
++Sinex interpretations receive new UUIDs on replay. Polylogue refs need stable object IDs and revision aliases.
++
++### Mutable sessions versus immutable evidence
++
++A session grows and can be resumed or re-exported. Model it as stable identity plus immutable revision manifests and segments, not `(session_id, content_hash)` as one occurrence key.
++
++### Material anchors can move
++
++Byte and line offsets are exact only inside immutable material. Seal segments and retain record IDs so public refs survive reserialization.
++
++### Sinex derivation provenance is not Polylogue lineage
++
++Fork, continuation, shared prefix, subagent, and compaction are domain relationships. They must not be encoded as Sinex derivation parentage or deletion cascades will be wrong.
++
++### Physical evidence versus logical work
++
++Sinex preserves every physical artifact. Polylogue composes copied prefixes, unique tails, logical sessions, and physical/logical token views. Generic event counts must never be presented as unique work counts.
++
++### Event volume
++
++Messages and tool calls are first-class. Not every UI implementation row needs a canonical event. Subordinate block details can remain in normalized material/projections unless they have independent lifecycle or forensic significance.
++
++### Transaction-like completeness
++
++Use revision manifests and settlement so an asynchronous pipeline cannot expose a partial session as complete.
++
++### Ordering
++
++Preserve source time, but add session sequence, provider ordinal, block ordinal, tool correlation, causal predecessor, and revision ordering. Never sort a transcript by `ts_coided`.
++
++### Query shape
++
++Sinex's generic event query is not a substitute for Polylogue's transcript, lineage, action-sequence, cost, assertion, and context queries. Polylogue remains the domain query service over Sinex-backed projections.
++
++### User-authored durable state
++
++Marks, corrections, notes, lessons, handoffs, judgments, and context policy must be reconstructable from Sinex in backed mode. Merely mirroring “an annotation happened” is insufficient.
++
++### Context packs
++
++Sinex supplies broad evidence candidates and source gaps. Polylogue owns AI-work selection and trust policy. One final context artifact and one delivery event record exactly what crossed the model boundary.
++
++### Model effects
++
++Effect identity includes content digest, canonicalization, selector/chunking recipe, provider, model revision, dimensions, task/input type, and normalization. `(provider, model, content_hash)` alone can collide.
++
++### Content hashes
++
++Sinex and Polylogue currently use different digest conventions. Store a multi-digest content descriptor; do not turn either digest into domain identity.
++
++### Privacy and access
++
++Transcript storage, embedding, and agent disclosure are separate policies. Raw text need not travel in generic NATS payloads or generic MCP responses, but it can still be durably stored in Sinex's protected material plane.
++
++### Deletion
++
++Deletion must cover raw material, normalized segments, event interpretations, server projections, SQLite replicas, FTS, vectors, context artifacts, reports, and model-effect inputs. Polylogue topology relationships must remain distinct from derivation lineage during cascade.
++
++### Standalone and backed deployment
++
++Support two explicit profiles:
++
++- standalone Polylogue: SQLite is authoritative;
++- Sinex-backed Polylogue: Sinex is durable authority and SQLite is a local replica/outbox.
++
++Do not permit silent dual-master behavior.
++
++### Agent tool surface
++
++Sinex and Polylogue each expose many MCP tools. The combined product needs a small workflow-oriented front door—orient, search, resolve/show, compile context, inspect work packet, propose assertion, inspect readiness—while full low-level catalogs remain specialist surfaces.
++
++## Joint products enabled by the architecture
++
++### Evidence-backed resumption
++
++A new agent receives Bead intent, prior sessions, actual Git state, failed and successful commands, reviewed lessons, stale-memory warnings, and source gaps. The delivered context is itself recorded.
++
++### Claim versus machine effect
++
++The system compares assistant prose, provider tool outcomes, ambient terminal evidence, Git state, CI results, and operator judgment without collapsing them.
++
++### Compaction forensics
++
++Polylogue supplies context boundaries and summaries. Sinex supplies surrounding machine activity and source state. The combined view can investigate whether omitted context plausibly contributed to later failure.
++
++### Stale-memory detection
++
++A reviewed assertion tied to repository state can be marked for review when relevant files, commits, or tasks change.
++
++### Agent Work Packets
++
++A packet can relate Bead intent, sessions/subagents, repository/worktree, commands, changes, tests, CI, source materials, outcomes, and reviewed lessons. Every leg remains a native ref; missing legs remain explicit.
++
++## Delivery phases
++
++1. Supersede the metadata-only storage decision and publish the authority matrix.
++2. Establish stable object/revision/material identity.
++3. Stage provider-native and normalized material.
++4. Emit the full observation vocabulary.
++5. Add revision settlement and projection watermarks.
++6. Build PostgreSQL Polylogue projections and SQLite replication.
++7. Move durable user judgment and context-delivery history into Sinex.
++8. Share model-effect recipes and retrieval evaluation.
++9. Deliver reverse context, moments, and Agent Work Packets.
++10. Prove deletion, offline reconciliation, replay-stable refs, and full SQLite rebuild.
++
++## Public status wording
++
++Use:
++
++> Sinex currently receives a metadata-thin Polylogue signal. The planned `sinex-4j2` architecture makes Sinex the durable material and event backend while Polylogue remains the AI-work domain and product. The transition is complete only after full transcript storage, stable identity, revision settlement, and a from-Sinex rebuild proof land.
++
++Do not say “Polylogue runs on Sinex” until that proof exists.
+diff --git a/docs/product.md b/docs/product.md
+new file mode 100644
+index 00000000..63cd9f1a
+--- /dev/null
++++ b/docs/product.md
+@@ -0,0 +1,197 @@
++# Sinex: product, purpose, and value
++
++## The one-sentence explanation
++
++**Sinex is a local, replayable evidence substrate for digital life and agent work.**
++
++It acquires heterogeneous material, records versioned interpretations of that material, preserves temporal and provenance distinctions, makes source gaps visible, and derives higher-order products without silently promoting inference into truth.
++
++## The problem
++
++Important work is scattered across systems that do not share an ontology or a reliable clock:
++
++- shell histories and process outcomes;
++- Git repositories, branches, commits, and worktrees;
++- browser visits and research;
++- desktop focus and application state;
++- files, exports, logs, and documents;
++- task and issue systems;
++- model calls, agent sessions, and context deliveries;
++- operator notes and judgments.
++
++Collecting rows is not enough. A useful evidence system has to distinguish:
++
++- nothing happened from capture failed;
++- occurrence time from import time;
++- acquired bytes from a parser's interpretation;
++- a new interpretation from a duplicate occurrence;
++- a model proposal from an accepted fact;
++- current state from the event history that produced it;
++- a convenient summary from the evidence it summarizes.
++
++Sinex is designed around those distinctions.
++
++## The five evidence layers
++
++| Layer | Examples | What may be claimed |
++|---|---|---|
++| **Source material** | Export files, local databases, immutable snapshots, transcript archives, attachment bytes | These bytes or records were acquired under this source contract |
++| **Material interpretations** | Parsed commands, visits, messages, file observations | This parser and semantics version interpreted this material this way |
++| **Domain objects and projections** | Current task state, current transcript view, attention stream | This is the current rebuildable domain view under declared reducer semantics |
++| **Derived graph and products** | Work episodes, relations, Agent Work Packets, findings | This computation related these evidence objects under this algorithm and scope |
++| **Workspace artifacts** | Context packs, reports, semantic diffs | This saved product was generated; it is not automatically canonical truth |
++
++The boundary is deliberately asymmetric. Evidence can produce a report. A report repeated by a model does not automatically become evidence.
++
++## Three clocks, not one
++
++One observation can have several relevant times:
++
++- `ts_orig`: when the occurrence happened in its source domain;
++- `ts_coided`: when Sinex minted this interpretation;
++- `ts_persisted`: when the interpretation became durable.
++
++A provider conversation may have occurred in January, been imported in July, and be reinterpreted after a parser fix in August. A single timestamp cannot represent all three facts honestly.
++
++Queries about when something happened use occurrence time. Queries about when Sinex learned or reinterpreted it use coining time. Persistence time describes pipeline delay and storage behavior.
++
++## Replay means reinterpretation, not erasure
++
++An event ID identifies one interpretation. It is not the permanent identity of the underlying real-world occurrence.
++
++When parser or derivation semantics change, Sinex can:
++
++1. preserve the source material;
++2. archive or supersede the prior interpretation according to lifecycle policy;
++3. emit a fresh semantics-versioned interpretation;
++4. rebuild affected projections;
++5. retain enough provenance to explain the change.
++
++This means the system can change its mind without pretending it never held the earlier interpretation.
++
++Occurrence identity, interpretation identity, and stable domain-object identity are separate concerns. This separation is particularly important for a Sinex-backed Polylogue, where public session and message references must survive replay even though Sinex event UUIDs do not.
++
++## Missing evidence is a result
++
++An empty result may mean:
++
++- no matching occurrence exists;
++- the source was disabled or stale;
++- source material exists but has not been interpreted;
++- a projection is behind;
++- a continuity gap exists;
++- the requested evidence is not replayable;
++- privacy policy suppresses the material;
++- the query is unsupported.
++
++Sinex's coverage and readiness work exists so those states can be represented instead of collapsed into an authoritative-looking empty list.
++
++This is central to the product. A system that cannot describe its blind spots is not an evidence system; it is a confident partial database.
++
++## Confidence is not authority
++
++Models and heuristics can propose:
++
++- entity merges;
++- project attribution;
++- work-episode labels;
++- relations;
++- lessons;
++- task candidates;
++- context candidates.
++
++A confidence score measures a model or heuristic's assessment. It does not grant write authority.
++
++The intended lifecycle is:
++
++```text
++evidence
++    → proposal
++        → operator judgment or declared policy
++            → promoted state
++```
++
++The proposal, its evidence, the judgment, and the promoted state remain separately inspectable. This prevents agents from recursively canonizing their own earlier guesses.
++
++## Why this matters for agents
++
++An agent transcript records a partial point of view. It may contain the prompt, a plan, tool calls, tool results, and final prose. It does not necessarily contain the wider machine state or the complete evidentiary outcome.
++
++Sinex can add:
++
++- terminal commands outside the provider transcript;
++- actual Git and filesystem changes;
++- browser research;
++- task intent;
++- source outages and capture gaps;
++- other agents' activity;
++- deployment or verification evidence;
++- model-effect and context-delivery records.
++
++Together with Polylogue, the system can distinguish:
++
++```text
++what the agent claimed
++what its tool result structurally reported
++what the machine independently observed
++what repository or deployment state changed
++what a human accepted as durable memory
++```
++
++That distinction is the basis for reliable resumption, context compilation, postmortems, and agent evaluation.
++
++## Architecture at a glance
++
++```text
++files · databases · streams · exports · external producers
++                              │
++                       source contracts
++                              │
++                material registry + content store
++                              │
++                 adapters + versioned parsers
++                              │
++                     NATS JetStream transport
++                              │
++          event engine: validate · time · privacy · persist
++                              │
++              PostgreSQL canonical evidence plane
++                              │
++              automata · reducers · projections · search
++                              │
++              API · sinexctl · MCP · context consumers
++```
++
++NATS is transport, not archive authority. Large or sensitive bytes belong in the material plane. Compact typed observations reference exact material and pass through the admitted event path.
++
++## What Sinex is not
++
++Sinex is not:
++
++- a generic event viewer whose ontology is arbitrary JSON;
++- an activity score or behavioral-nudging product;
++- a vector database with provenance added later;
++- a model allowed to rewrite its own memory;
++- a guarantee that every source is complete;
++- a cloud service required to inspect one's own history;
++- an orchestrator that autonomously acts without operator-declared authority.
++
++## Product value
++
++For an individual, Sinex can support evidence-backed recall across tools rather than relying on memory or one application's history.
++
++For an agent, it can provide bounded, source-aware context and make omissions visible.
++
++For an operator, it can expose source health, replay, lifecycle, and model effects instead of hiding them behind generated prose.
++
++For research, it can provide longitudinal, cross-source evidence with explicit semantics and caveats.
++
++For Polylogue, it can become the durable material, event, lifecycle, and cross-domain backend while Polylogue remains the AI-work domain product.
++
++## Present state
++
++Sinex is pre-1.0 and optimized first for a demanding single-user deployment. The repository contains substantial capture, event-engine, replay, query, operations, MCP, schema, and deployment machinery. It has been exercised against a private archive with tens of millions of events.
++
++That deployment evidence establishes that a substantial system exists. It is not a general scalability benchmark. Broad recall latency, capture completeness, replay safety, derived-product usefulness, and public onboarding remain active Beads work.
++
++See [Proof and claims](proof-artifacts.md) for the claim taxonomy and [Public demonstrations](demos.md) for the proposed proof portfolio.
+diff --git a/docs/proof-artifacts.md b/docs/proof-artifacts.md
+new file mode 100644
+index 00000000..b9737d2d
+--- /dev/null
++++ b/docs/proof-artifacts.md
+@@ -0,0 +1,157 @@
++# Sinex proof artifacts and public claims
++
++Sinex should publish fewer claims and make each one easy to audit.
++
++## Claim classes
++
++| Claim class | Meaning | Required support |
++|---|---|---|
++| **Implemented capability** | A named operation exists in current code | Source location, public command/API, and contract test or bounded check |
++| **Deterministic proof** | A checked-in fixture satisfies a declared invariant | Input manifest, oracle, expected/observed result, exact commands, machine report |
++| **Private-deployment observation** | A result was measured on a named private archive/runtime | Date, corpus/host scope, method, caveats, and non-generalization statement |
++| **Experiment** | An intervention was compared with a baseline | Protocol, frozen inputs, scoring, uncertainty, negative controls, and limitations |
++| **Roadmap direction** | An owned future target | Bead ID, dependency state, acceptance criteria, and no shipped-language |
++| **Retired claim** | A prior design or issue no longer owns truth | Superseding code, Bead, or decision |
++
++Claim class is separate from evidence class. A deterministic proof may use a structural oracle; an experiment may use human adjudication; an implemented capability may lack a public construct-valid proof.
++
++## Evidence classes
++
++Preferred evidence, strongest first where applicable:
++
++1. externally authoritative state;
++2. provider/runtime-structured outcome;
++3. exact material bytes or record anchor;
++4. independently recomputed baseline;
++5. human adjudication under a written rubric;
++6. heuristic or model classification;
++7. unavailable or unsupported.
++
++A result should name its evidence class rather than letting polished prose imply strength.
++
++## Existing reproducible proof
++
++### Deterministic operational walkthrough
++
++Command:
++
++```bash
++sinexctl ops verify --demo
++```
++
++Generated documentation: [Sinex Demo Walkthrough](../crate/sinexctl/docs/demo_walkthrough.md).
++
++Declared scope: bounded deterministic operational smoke through normal surfaces. It is not a complete replay, coverage, durability, or cross-source thesis proof.
++
++### Existing tests and contracts
++
++The repository contains extensive unit, integration, schema, sandbox, source, event-engine, API, and CLI tests. Tests support specific implementation contracts; aggregate test count is not itself a product-value proof.
++
++Use `TESTING.md` and `xtask` for the current verification matrix.
++
++## Tracked field evidence
++
++### Production restore and recall campaign — `sinex-mhk`
++
++The closed Bead records a restored live deployment, event-count and source-material checks, a healthy serving runtime, and bounded recall against production data.
++
++The same record also preserves a serious caveat: recovery included an intentional stream purge to establish a new real-time boundary, and some material may have been recoverable. The campaign therefore proves a substantial live deployment and a repaired serving path; it does not prove lossless recovery under every failure.
++
++### Multi-source recall campaign — `sinex-9j9`
++
++The closed campaign required a side-by-side raw-source baseline, resolvable evidence, explicit source caveats, one-command regeneration, and a cold-reader check.
++
++Its construct is bounded recall over a real work window, not complete lifetime reconstruction.
++
++### Capture-coverage work — `sinex-jdp`
++
++The in-progress Bead promotes source gaps into a standing coverage-error measure. Its first private-deployment observation reported 58 of 64 evaluated source entries with at least one identified coverage error.
++
++That means 90.62% of source entries had some known coverage problem under the metric. It does **not** mean 90.62% of all real-world occurrences were lost.
++
++### Recall latency field note
++
++See [Recall Query Latency, 2026-07-03](../crate/sinex-db/docs/recall_query_latency_2026_07_03.md). This is a dated private-deployment diagnostic, not a general performance guarantee.
++
++## Public claim ledger
++
++The machine-readable source is [`public-claims.yaml`](public-claims.yaml). It should be validated in CI and used to render a human claims page.
++
++Each entry carries:
++
++- stable claim ID;
++- public wording;
++- claim class;
++- status;
++- evidence class;
++- scope;
++- evidence refs;
++- falsifier;
++- caveats;
++- owning Beads;
++- last review date.
++
++## Proof-packet contract
++
++A public demo or experiment should emit a packet with at least:
++
++```yaml
++packet_version: 2
++id: stable-demo-id
++software_revision: git-sha
++claim:
++  text: bounded public claim
++  class: deterministic-proof
++  scope: exact corpus and operation
++oracle:
++  kind: structural
++  expected: machine-checkable expectation
++  observed: machine-readable result
++falsifier: explicit failure condition
++controls:
++  - positive
++  - negative
++  - missing-evidence
++inputs:
++  manifest: inputs.json
++  digests: []
++evidence_refs: []
++caveats: []
++unsupported_claims: []
++commands: []
++artifacts:
++  report_json: report.json
++  report_markdown: report.md
++  transcript: transcript.txt
++```
++
++The verifier should fail when:
++
++- required artifacts are absent;
++- declared hashes do not match;
++- the expected oracle does not match the observed result;
++- evidence refs do not resolve;
++- a claim marked deterministic depends on undeclared live/private state;
++- unsupported claims are rendered as achieved.
++
++## Claims that should not appear unqualified
++
++Do not publish these without narrower scope and evidence:
++
++- “Sinex captures everything.”
++- “No data loss.”
++- “Replay is deterministic.”
++- “An empty result means nothing happened.”
++- “Semantic retrieval is better.”
++- “AI memory improves productivity.”
++- “Retroactive privacy deletes all traces.”
++- “Tens of millions of events proves general scalability.”
++- “Polylogue already runs on Sinex.”
++
++Use exact alternatives:
++
++- “The queried sources reported these coverage states.”
++- “This fault-injection proof preserved every acknowledged occurrence at this boundary.”
++- “Replay reinterprets preserved evidence under current semantics.”
++- “This private deployment held approximately N events on date D under the recorded configuration.”
++- “The Sinex-backed Polylogue architecture is planned under `sinex-4j2`; the current bridge is metadata-thin.”
+diff --git a/docs/public-claims.yaml b/docs/public-claims.yaml
+new file mode 100644
+index 00000000..0f040272
+--- /dev/null
++++ b/docs/public-claims.yaml
+@@ -0,0 +1,152 @@
++schema_version: 1
++project: sinex
++snapshot_date: 2026-07-10
++claims:
++  - id: sinex.category.local-evidence-substrate
++    text: Sinex is a local, replayable evidence substrate for digital life and agent work.
++    class: implemented-capability
++    status: supported
++    evidence_class: structural-and-source-material
++    scope: Product category derived from current material registry, event engine, replay, query, and local deployment surfaces.
++    evidence:
++      - README.md
++      - docs/architecture.md
++      - crate/sinex-primitives/docs/knowledge_boundaries.md
++      - crate/sinexd/docs/sources/evidence_lanes.md
++    falsifier: The project lacks durable source material, provenance-bearing events, replay, or local query surfaces.
++    caveats:
++      - Pre-1.0 and optimized first for one demanding single-user deployment.
++    beads: []
++    last_reviewed: 2026-07-10
++
++  - id: sinex.events.append-only
++    text: Canonical core events are append-only; corrections and replay produce new lifecycle-visible interpretations rather than silent in-place edits.
++    class: implemented-capability
++    status: supported
++    evidence_class: structural
++    scope: core.events and documented replay/lifecycle paths.
++    evidence:
++      - docs/architecture.md
++      - crate/sinex-db/docs/schema/event-taxonomy.md
++      - crate/sinex-db/docs/event_replay_subsystem.md
++    falsifier: A normal correction path mutates canonical event payloads in place without lifecycle evidence.
++    caveats:
++      - Current-state projections are rebuildable and may be replaced.
++    beads:
++      - sinex-r6d
++    last_reviewed: 2026-07-10
++
++  - id: sinex.time.three-clocks
++    text: Sinex distinguishes source occurrence time, interpretation coining time, and persistence time.
++    class: implemented-capability
++    status: supported
++    evidence_class: structural
++    scope: Canonical event and temporal-ledger model.
++    evidence:
++      - docs/architecture.md
++      - docs/glossary.md
++    falsifier: The current event model collapses all three semantics into one timestamp.
++    caveats:
++      - Timestamp quality depends on source evidence and temporal-ledger resolution.
++    beads: []
++    last_reviewed: 2026-07-10
++
++  - id: sinex.demo.operational-walkthrough
++    text: The repository includes a deterministic operational walkthrough that executes normal query/API paths and writes receipts.
++    class: deterministic-proof
++    status: supported
++    evidence_class: structural
++    scope: sinexctl ops verify --demo on its seeded fixture and declared checks.
++    evidence:
++      - crate/sinexctl/docs/demo_walkthrough.md
++      - crate/sinexctl/src/commands/verify/mod.rs
++      - crate/sinexctl/src/commands/demo.rs
++    falsifier: The command does not emit the declared artifacts or exits successfully when an expectation fails.
++    caveats:
++      - This is an operational smoke proof, not a full replay, coverage, or durability proof.
++    beads: []
++    last_reviewed: 2026-07-10
++
++  - id: sinex.field.tens-of-millions
++    text: A private Sinex deployment has been operated with tens of millions of canonical events.
++    class: private-deployment-observation
++    status: supported-with-caveat
++    evidence_class: independently-recorded-operational-state
++    scope: The production restore campaign recorded approximately 80.9 million events at its proof point.
++    evidence:
++      - bead:sinex-mhk
++      - crate/sinex-db/docs/recall_query_latency_2026_07_03.md
++    falsifier: The campaign record or corresponding operational receipts do not support the recorded count.
++    caveats:
++      - Not a general throughput or latency guarantee.
++      - Recovery included a stream purge and therefore does not prove universal lossless recovery.
++    beads:
++      - sinex-mhk
++      - sinex-n23
++      - sinex-r6d
++    last_reviewed: 2026-07-10
++
++  - id: sinex.coverage.first-measure
++    text: Sinex can report known source-coverage errors instead of treating every empty source as complete.
++    class: private-deployment-observation
++    status: partial
++    evidence_class: structural-and-operational
++    scope: The first sinex-jdp slice computed coverage-error fields from existing readiness, continuity, and gap evidence.
++    evidence:
++      - bead:sinex-jdp
++    falsifier: Source status cannot distinguish known gaps or missing material from a healthy empty source.
++    caveats:
++      - Source-specific external denominators remain incomplete.
++      - 58 of 64 affected source entries is not an event-loss percentage.
++    beads:
++      - sinex-jdp
++      - sinex-r6d
++    last_reviewed: 2026-07-10
++
++  - id: sinex.mcp.read-only
++    text: The current Sinex MCP server is a bounded read-only evidence surface.
++    class: implemented-capability
++    status: supported
++    evidence_class: structural
++    scope: Current sinexctl stdio MCP contract.
++    evidence:
++      - crate/sinexctl/docs/mcp_readonly_server.md
++      - crate/sinexctl/src/mcp.rs
++    falsifier: The listed MCP server exposes direct publication, deletion, replay mutation, or arbitrary raw-blob retrieval.
++    caveats:
++      - Read-only does not make all returned evidence harmless; privacy/redaction policy still applies.
++    beads:
++      - sinex-7z0
++    last_reviewed: 2026-07-10
++
++  - id: sinex.polylogue.current-bridge
++    text: The current Polylogue integration is metadata-thin and does not make Sinex the transcript backend.
++    class: implemented-capability
++    status: supported
++    evidence_class: structural
++    scope: Current integration.polylogue source contract and authority document.
++    evidence:
++      - crate/sinexd/src/sources/source_contracts/polylogue.rs
++      - crate/sinexd/docs/sources/integration_authority.md
++    falsifier: Current code stores and can rebuild full provider-native and normalized transcripts, assertions, and context history from Sinex.
++    caveats:
++      - The current metadata-thin transport is an implementation snapshot, not the ultimate transcript-storage boundary.
++    beads:
++      - sinex-4j2
++    last_reviewed: 2026-07-10
++
++  - id: sinex.polylogue.maximal-backend
++    text: The target architecture makes Sinex the durable evidence backend for Polylogue while Polylogue remains the AI-work ontology and product.
++    class: roadmap-direction
++    status: planned
++    evidence_class: design-and-beads
++    scope: Target under sinex-4j2; not current implementation.
++    evidence:
++      - docs/polylogue-integration.md
++      - bead:sinex-4j2
++    falsifier: The owning decision is superseded or the rebuild/parity proof rejects the architecture.
++    caveats:
++      - Do not describe this as shipped until transcript storage, identity, settlement, and from-Sinex rebuild proofs land.
++    beads:
++      - sinex-4j2
++    last_reviewed: 2026-07-10

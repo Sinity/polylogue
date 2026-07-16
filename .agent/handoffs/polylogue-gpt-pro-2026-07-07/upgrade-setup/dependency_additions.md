@@ -1,0 +1,195 @@
+# Proposed dependency additions
+
+These are hard `blocks` edges added by the delivery upgrade. The target bead should wait for the blocker bead because the later work would otherwise build on an unsafe or undefined contract.
+
+- `polylogue-b5l` depends on `polylogue-1xc.8` (blocks): blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof
+- `polylogue-b5l` depends on `polylogue-8jg9.4` (blocks): blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof
+- `polylogue-b5l` depends on `polylogue-8jg9.2` (blocks): blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof
+- `polylogue-b5l` depends on `polylogue-4be` (blocks): blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof
+- `polylogue-83u.5` depends on `polylogue-83u.4` (blocks): blob compression waits until missing byte debt and acquisition coverage are classified/proven
+- `polylogue-83u.5` depends on `polylogue-83u.2` (blocks): blob compression waits until missing byte debt and acquisition coverage are classified/proven
+- `polylogue-83u.5` depends on `polylogue-83u.3` (blocks): blob compression waits until missing byte debt and acquisition coverage are classified/proven
+- `polylogue-83u.5` depends on `polylogue-83u.6` (blocks): blob compression waits until missing byte debt and acquisition coverage are classified/proven
+- `polylogue-bby.15` depends on `polylogue-rxdo.1` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-bby.15` depends on `polylogue-rxdo.2` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-bby.15` depends on `polylogue-rxdo.3` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-bby.15` depends on `polylogue-rxdo.4` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-bby.15` depends on `polylogue-4p1` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-bby.15` depends on `polylogue-fnm.11` (blocks): evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations
+- `polylogue-3tl.16` depends on `polylogue-rxdo.4` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-svfj` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-9e5.28` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-9e5.29` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-9e5.30` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-cpf.5` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.16` depends on `polylogue-cpf.6` (blocks): public claims ledger requires finding assertions, citations, and evidence-honesty gates
+- `polylogue-3tl.4` depends on `polylogue-3tl.16` (blocks): findings publishing lane requires claims ledger, basket/export, findings, and citations
+- `polylogue-3tl.4` depends on `polylogue-bby.15` (blocks): findings publishing lane requires claims ledger, basket/export, findings, and citations
+- `polylogue-3tl.4` depends on `polylogue-rxdo.4` (blocks): findings publishing lane requires claims ledger, basket/export, findings, and citations
+- `polylogue-3tl.4` depends on `polylogue-svfj` (blocks): findings publishing lane requires claims ledger, basket/export, findings, and citations
+- `polylogue-212.8` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.8` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.8` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.8` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.8` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.8` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.7` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.4` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.3` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.1` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.2` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.9` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.6` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-9e5.28` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-9e5.29` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-9e5.30` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-cpf.5` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-cpf.6` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-212.5` depends on `polylogue-svfj` (blocks): public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks
+- `polylogue-3tl.10` depends on `polylogue-3tl.16` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-3tl.4` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-3tl.7` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-212.1` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-212.2` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-212.3` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-212.4` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.10` depends on `polylogue-212.8` (blocks): launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio
+- `polylogue-3tl.12` depends on `polylogue-3tl.16` (blocks): README de-meta pass must route factual claims through the public claims ledger
+- `polylogue-3tl.6` depends on `polylogue-2qx` (blocks): normalized session interchange publication requires OriginSpec and evidence refs
+- `polylogue-3tl.6` depends on `polylogue-rxdo.1` (blocks): normalized session interchange publication requires OriginSpec and evidence refs
+- `polylogue-3tl.6` depends on `polylogue-svfj` (blocks): normalized session interchange publication requires OriginSpec and evidence refs
+- `polylogue-s7ae.2` depends on `polylogue-kwsb.1` (blocks): coordination and live messaging cannot deploy on an unsafe daemon/capture surface
+- `polylogue-s7ae.3` depends on `polylogue-kwsb.1` (blocks): coordination and live messaging cannot deploy on an unsafe daemon/capture surface
+- `polylogue-s7ae.5` depends on `polylogue-kwsb.1` (blocks): coordination and live messaging cannot deploy on an unsafe daemon/capture surface
+- `polylogue-ahqd` depends on `polylogue-kwsb.1` (blocks): coordination and live messaging cannot deploy on an unsafe daemon/capture surface
+- `polylogue-1hj` depends on `polylogue-kwsb.1` (blocks): coordination and live messaging cannot deploy on an unsafe daemon/capture surface
+- `polylogue-s7ae.3` depends on `polylogue-37t.15` (blocks): scheduler-mediated advisories require context scheduler and safe agent-write boundary
+- `polylogue-s7ae.5` depends on `polylogue-d1y` (blocks): two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes
+- `polylogue-s7ae.5` depends on `polylogue-pj8` (blocks): two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes
+- `polylogue-s7ae.5` depends on `polylogue-ahqd` (blocks): two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes
+- `polylogue-s7ae.5` depends on `polylogue-37t.15` (blocks): two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes
+- `polylogue-3gd` depends on `polylogue-37t.11` (blocks): activation layer must use scheduler-controlled context and discoverable hooks/prompts
+- `polylogue-bfv` depends on `polylogue-kwsb.1` (blocks): advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths
+- `polylogue-bfv` depends on `polylogue-37t.15` (blocks): advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths
+- `polylogue-bfv` depends on `polylogue-37t.11` (blocks): advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths
+- `polylogue-rii.2` depends on `polylogue-2qx` (blocks): materialized live events should use the declared origin contract
+- `polylogue-rlsb` depends on `polylogue-0v9p` (blocks): variant-aware projection/rendering requires language facts, variant storage, and source citations
+- `polylogue-rlsb` depends on `polylogue-svfj` (blocks): variant-aware projection/rendering requires language facts, variant storage, and source citations
+- `polylogue-d4zk` depends on `polylogue-0v9p` (blocks): variant UX waits for language facts, variant storage/rendering, and safe agent-created candidates
+- `polylogue-d4zk` depends on `polylogue-37t.15` (blocks): variant UX waits for language facts, variant storage/rendering, and safe agent-created candidates
+- `polylogue-1jc` depends on `polylogue-37t.12` (blocks): learned or proposed preferences should enter through candidate judgment, not silent settings changes
+- `polylogue-3xx` depends on `polylogue-37t.12` (blocks): learned or proposed preferences should enter through candidate judgment, not silent settings changes
+- `polylogue-y8w` depends on `polylogue-37t.12` (blocks): learned or proposed preferences should enter through candidate judgment, not silent settings changes
+- `polylogue-gjg.1` depends on `polylogue-4ts.5` (blocks): compaction event/loss tables require compaction boundary/effective context columns
+- `polylogue-gjg.2` depends on `polylogue-d1y` (blocks): pre-compaction snapshots require hook liveness/install substrate
+- `polylogue-gjg.3` depends on `polylogue-4ts.5` (blocks): deterministic loss forensics needs boundaries, events, and snapshots/manifests
+- `polylogue-gjg.4` depends on `polylogue-gjg.1` (blocks): regrounding is context injection and must pass through scheduler with loss-forensics evidence
+- `polylogue-gjg.4` depends on `polylogue-37t.11` (blocks): regrounding is context injection and must pass through scheduler with loss-forensics evidence
+- `polylogue-h6r` depends on `polylogue-2qx` (blocks): stable agent identity must sit on declared origin identity semantics
+- `polylogue-ptx` depends on `polylogue-kwsb.1` (blocks): browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety
+- `polylogue-ptx` depends on `polylogue-83u.3` (blocks): browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety
+- `polylogue-ptx` depends on `polylogue-83u.4` (blocks): browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety
+- `polylogue-ptx` depends on `polylogue-3v1.1` (blocks): browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety
+- `polylogue-b1n` depends on `polylogue-kwsb.1` (blocks): web-driven posting builds on safe posting channel, daemon security, and safe agent/user write boundaries
+- `polylogue-b1n` depends on `polylogue-37t.15` (blocks): web-driven posting builds on safe posting channel, daemon security, and safe agent/user write boundaries
+- `polylogue-bby.4` depends on `polylogue-20d.13` (blocks): live web modes should use daemon push rather than bespoke polling
+- `polylogue-bby.12` depends on `polylogue-4ts.4` (blocks): session replay requires transactionally consistent lineage composition
+- `polylogue-bby.12` depends on `polylogue-4ts.6` (blocks): session replay must expose transcript completeness/truncation state
+- `polylogue-bby.3` depends on `polylogue-9l5.7` (blocks): aggregate web analytics require the statistics/measure registry
+- `polylogue-9l5.7` depends on `polylogue-9e5.28` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-9e5.29` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-9e5.30` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-cpf.5` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-cpf.6` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-f2qv.1` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-f2qv.2` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-f2qv.3` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-f2qv.4` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.7` depends on `polylogue-f2qv.5` (blocks): measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates
+- `polylogue-9l5.15` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.13` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.6` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.2` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.1` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.18` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.14` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.5` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.3` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.4` depends on `polylogue-9l5.7` (blocks): analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata
+- `polylogue-9l5.1` depends on `polylogue-1vpm` (blocks): episode/delegation/tool analytics depend on work-graph unit definitions
+- `polylogue-9l5.2` depends on `polylogue-1vpm` (blocks): episode/delegation/tool analytics depend on work-graph unit definitions
+- `polylogue-9l5.6` depends on `polylogue-1vpm` (blocks): episode/delegation/tool analytics depend on work-graph unit definitions
+- `polylogue-9l5.13` depends on `polylogue-1vpm` (blocks): episode/delegation/tool analytics depend on work-graph unit definitions
+- `polylogue-stc` depends on `polylogue-rxdo.2` (blocks): experiment hosting requires durable query/result identity and registered measures
+- `polylogue-stc` depends on `polylogue-rxdo.3` (blocks): experiment hosting requires durable query/result identity and registered measures
+- `polylogue-mhx.4` depends on `polylogue-37t.11` (blocks): semantic recall in context compilation must pass through context scheduler
+- `polylogue-mhx.5` depends on `polylogue-9l5.7` (blocks): semantic analytics require measure registry and non-claim wording
+- `polylogue-0cg` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-4g5` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-611` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-7aw` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-7k7` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-7xv` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-ale` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-da1` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.10` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.2` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.3` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.4` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.5` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.6` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.7` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.8` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-fs1.9` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-l4kf.1` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-l4kf.2` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-l4kf.3` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-ox0` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-r47` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-t0p` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-tf0e` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-uiw` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-wmj` depends on `polylogue-2qx` (blocks): new origins/imports/exports must route through declared OriginSpec unless explicitly exempted
+- `polylogue-l4kf.1` depends on `polylogue-svfj` (blocks): Polylogue export/import envelope must preserve object identity, citations, and findings
+- `polylogue-l4kf.1` depends on `polylogue-rxdo.1` (blocks): Polylogue export/import envelope must preserve object identity, citations, and findings
+- `polylogue-l4kf.1` depends on `polylogue-rxdo.4` (blocks): Polylogue export/import envelope must preserve object identity, citations, and findings
+- `polylogue-l4kf.3` depends on `polylogue-svfj` (blocks): outbound developer citations need finding assertions and drift-aware citation anchors
+- `polylogue-7k7` depends on `polylogue-fs1.3` (blocks): research export depends on fidelity declarations and canonical export shape
+- `polylogue-hiu` depends on `polylogue-b5l` (blocks): storage twin collapse should follow divergence diff, layering decision, and rebuild-safety proof
+- `polylogue-4822` depends on `polylogue-3tl.6` (blocks): external SDK/public models require interchange schema and stable object refs
+- `polylogue-4822` depends on `polylogue-rxdo.1` (blocks): external SDK/public models require interchange schema and stable object refs

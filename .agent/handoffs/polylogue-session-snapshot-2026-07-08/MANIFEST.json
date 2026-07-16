@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-07-08T20:18:34+02:00",
+  "method": "ChatGPT shared-page React Router stream decode; not DOM scrape",
+  "entries": [
+    {
+      "source_url": "https://chatgpt.com/share/6a4ac7f7-f0b4-83eb-941d-7428e03f4834",
+      "shared_conversation_id": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834",
+      "conversation_id": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834",
+      "title": "Report Analysis and Synthesis",
+      "default_model_slug": "gpt-5-5-pro",
+      "message_count": 322,
+      "mapping_node_count": 323,
+      "markdown": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834.md",
+      "messages_json": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834.messages.json",
+      "raw_router_stream": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834.router-stream.js",
+      "raw_html": "6a4ac7f7-f0b4-83eb-941d-7428e03f4834.html"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{"payload": {"id": "demo-terminal-error", "timestamp": "2026-07-04T10:05:00Z"}, "type": "session_meta"}
+{"payload": {"content": [{"text": "Run the command and stop if it fails.", "type": "input_text"}], "id": "terminal-error-u0", "role": "user", "timestamp": "2026-07-04T10:05:01Z", "type": "message"}, "type": "response_item"}
+{"payload": {"arguments": "{\"cmd\": \"pytest tests/missing_test.py\"}", "call_id": "call-terminal-error", "id": "fc-terminal-error", "name": "exec_command", "type": "function_call"}, "type": "response_item"}
+{"payload": {"call_id": "call-terminal-error", "output": "{\"metadata\": {\"exit_code\": 4}, \"output\": \"ERROR: file or directory not found: tests/missing_test.py\"}", "type": "function_call_output"}, "type": "response_item"}
+{"payload": {"content": [{"text": "I hit an error and need the missing test path corrected before continuing.", "type": "output_text"}], "id": "terminal-error-a1", "role": "assistant", "timestamp": "2026-07-04T10:05:04Z", "type": "message"}, "type": "response_item"}

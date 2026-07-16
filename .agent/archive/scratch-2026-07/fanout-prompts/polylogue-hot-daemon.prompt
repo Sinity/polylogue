@@ -1,0 +1,227 @@
+You are one lane of a parallel fanout on the Polylogue repo (~/realm/worktrees/polylogue-hot-daemon).
+Your worktree is your root; NEVER cd to /realm/project/polylogue. Branch: feature/fanout/hot-daemon.
+
+════════════════════════════════════════════════════════════════════════
+MISSION — "polylogue feels instant and knows where you left off"
+════════════════════════════════════════════════════════════════════════
+Three beads forming one coherent UX arc, in this order:
+  1. polylogue-20d.1  — CLI→daemon fast path over UDS (persistent hot process)
+  2. polylogue-jnj.13 — bare-invocation triage (status + 5 recent sessions)
+  3. polylogue-37t.8  — resume routing: session → harness reopen command
+
+Why together: 20d.1 makes every read instant; jnj.13 makes the instant thing
+you see on bare `polylogue` be "here's where you left off"; 37t.8 makes
+"continue" actually reopen the session. Ship order matters: 20d.1 first (the
+other two ride on its speed), jnj.13 second (composes existing pieces),
+37t.8 third (greenfield module). One PR per bead is allowed and preferred if
+each is coherent; a single 3-commit-series PR is acceptable if you finish all
+three — decide by size when you get there.
+
+READ FIRST (in this order):
+  - bd show polylogue-20d.1 --json   (design field is the spec — read ALL of it,
+    my excerpt below is truncated)
+  - bd show polylogue-jnj.13 --json
+  - bd show polylogue-37t.8 --json
+  - Prework packets (accelerators, NOT authority — anchors generated from
+    master@8a975a40 2026-07-06, ~1400 commits ago; re-verify every line number):
+      .agent/scratch/corpus-gpt-pro-2026-07-07/prework-v2/task_packets/task_packets/097_polylogue_20d_1.md
+      .agent/scratch/corpus-gpt-pro-2026-07-07/prework-v2/task_packets/task_packets/170_polylogue_37t_8.md
+  - docs/daemon.md (daemon architecture), docs/search.md (query lanes)
+
+════════════════════════════════════════════════════════════════════════
+BEAD 1: polylogue-20d.1 — UDS fast path (the hot-daemon concept)
+════════════════════════════════════════════════════════════════════════
+PROBLEM: every `polylogue` invocation pays cold Python imports + SQLite open
+(3.6–17s observed). The daemon (`polylogued run`) is already always-on with
+warm page cache. Route CLI READS through it; keep writes direct.
+
+DESIGN (from the bead — verified excerpts):
+- Precedent to extend: the fast-status path already prefers the daemon —
+  commands/status.py ~line 950 and click_app.py ~lines 214-221 (anchors from
+  the bead; RE-VERIFY, code has moved). Extend that pattern to the whole read
+  surface.
+- Transport: AF_UNIX socket at $XDG_RUNTIME_DIR/polylogue/daemon.sock.
+  TCP stays for the browser extension — UDS is ADDITIVE. An AF_UNIX
+  HTTPServer subclass is ~20 lines. Instant-fail when socket absent.
+- Probe protocol: socket exists → connect (microseconds to fail) →
+  GET /api/health with a 100ms budget. Health payload must carry
+  {archive_root, index_schema_version, daemon_version, commit, started_at}.
+- CONFIG-MISMATCH SAFETY — NON-NEGOTIABLE AC: the client compares the health
+  payload against its OWN resolved config and silently falls back to
+  in-process execution on ANY mismatch (archive_root, schema version, daemon
+  version). Live trap this guards: POLYLOGUE_ARCHIVE_ROOT from
+  .claude/settings.json pointing at /tmp while the real archive sits
+  elsewhere — a regression test must seed exactly that mismatch.
+- Thin client: NEW file cli/daemon_client.py over stdlib http.client — no
+  httpx, no payload models, NO storage imports (the whole point is skipping
+  import cost; a client that imports storage defeats itself — add an
+  import-boundary test: subprocess-import cli.daemon_client and assert
+  polylogue.storage not in sys.modules).
+- Send the RAW query string + flags; the daemon owns compilation. Side
+  effect: this delivers the #1860 structured-routing behavior the direct CLI
+  path lacks — the fast path fixes that bug for free; mention it in the PR.
+- Endpoints: REUSE /api/sessions, /api/query-units, /api/facets,
+  /api/sessions/:id/read?view=, :id/messages. Add ONE new POST
+  /api/cli/query accepting the root-request param dict (cli/root_request.py
+  output) to cover the gaps, so CLI flags never drift from the HTTP surface.
+- Output: --format json renders via sys.stdout.write of the daemon payload;
+  table/plain modes import only formatting helpers that render from payload
+  dicts.
+- Writes stay direct (user.db is its own WAL file, no contention). Proxy
+  READS only.
+- Escape hatches: --no-daemon flag + POLYLOGUE_NO_DAEMON env; --verbose
+  prints `served-by: daemon (uds, <N>ms)` or `served-by: direct`.
+
+ACCEPTANCE (from the bead, restated):
+- Warm daemon serves find/read/messages/facets at 0.3–0.5s wall (from
+  3.6–17s). Verify with timed runs; if `devtools bench slo` exists use it,
+  otherwise commit a small timing harness artifact — do NOT implement the
+  20d.14 SLO framework (separate bead, not yours).
+- Golden parity: --format json byte-identical between direct and
+  daemon-proxied execution for every read surface on the demo corpus
+  (pytest golden-parity test; `polylogue demo seed` gives you a
+  private-data-free corpus).
+- Config-mismatch fallback regression (the /tmp trap above).
+- Escape hatches work and are covered.
+
+IMPLEMENTATION SEQUENCE for 20d.1:
+  a. Daemon side: UDS listener (new polylogue/daemon/uds.py or similar) +
+     health payload fields + POST /api/cli/query route. Touch daemon/http.py
+     MINIMALLY (route registration + health fields only) — see CONFLICTS.
+  b. Client side: cli/daemon_client.py (probe, config compare, request,
+     fallback) with the import-boundary test.
+  c. Wire into the read verbs behind the probe; --no-daemon/env escape.
+  d. Golden-parity + mismatch + timing tests.
+  Commit after each of a/b/c/d passes its focused tests.
+
+════════════════════════════════════════════════════════════════════════
+BEAD 2: polylogue-jnj.13 — bare-invocation triage
+════════════════════════════════════════════════════════════════════════
+Bare `polylogue` (no args, on a tty) currently shows Click help. Target: an
+inviting triage surface instead —
+  - archive status one-liner (daemon fresh? converged? — the health probe
+    from 20d.1 gives you this nearly free),
+  - the five most recent sessions (id, origin, title, age) — the select
+    renderer already produces exactly these rows; this is COMPOSITION of
+    existing pieces, not new rendering,
+  - the three most useful next commands (e.g. `polylogue find …`,
+    `polylogue read <id>`, `polylogue continue <id>`).
+CONSTRAINTS:
+  - <200ms budget: one indexed query, NO insight loads. Ride the 20d.1 fast
+    path when the daemon is up; direct-but-minimal when not.
+  - Non-tty (machine mode) output UNCHANGED. Strict command floor (#1842)
+    behavior UNCHANGED: `polylogue foo` (bare unquoted word) must still raise
+    the UsageError with did-you-mean — see cli/query_group.py
+    _looks_like_query_expression/_bare_root_error_message. Do not regress
+    tests/unit/cli around the floor.
+  - No archive at all → current help text fallback.
+AC verify: devtools test -k bare + a timing spot-check recorded in the PR.
+GOTCHA: any new Click params on query verbs go LAST (positional-shift bug).
+
+════════════════════════════════════════════════════════════════════════
+BEAD 3: polylogue-37t.8 — resume routing (the continue verb's last mile)
+════════════════════════════════════════════════════════════════════════
+Nothing owns "reopen this session in its harness." Build:
+  - A resume-routing helper mapping (origin, native_session_id) → concrete
+    reopen command: Claude Code → `claude --resume <native_id>`; Codex →
+    `codex resume <native_id>` (interactive TUI; `codex exec resume <id>`
+    is the headless variant — pick the interactive one for a human-facing
+    continue, note both in code). Cover at least these two; every other
+    origin returns an explicit typed unsupported/unknown result — NEVER
+    a guessed command.
+  - Session cwd matters: Claude Code sessions are per-project — the reopen
+    command should include (or print) the session's working directory when
+    the archive knows it (sessions carry workspace/repo metadata — check
+    what the schema actually stores before promising it).
+  - Wire into the `continue` verb: `find … then continue` (and
+    `polylogue continue <id>`) ends with the reopen command EMITTED by
+    default (print the exact command); optionally EXECUTED behind an
+    explicit flag (--exec). Emitting is the safe default — the CLI may be
+    running in contexts where spawning a TUI is wrong.
+  - Already-open detection (kitty/hyprland control plane) goes behind a
+    pluggable interface (e.g. a protocol with a null default impl) —
+    OPTIONAL, degrade cleanly, NO hard dependency on kitty/hyprland, and do
+    NOT import sinnix-specific paths in polylogue/ core. If you implement a
+    sinnix probe, put it behind an env-gated entry point and keep tests
+    dependency-free.
+AC verify: devtools test on the routing module asserting per-origin command
+mapping for fixture sessions (Claude Code, Codex, and an unsupported origin);
+manual `continue` on one real Claude and one real Codex session recorded in
+the PR body.
+
+════════════════════════════════════════════════════════════════════════
+FOOTPRINT
+════════════════════════════════════════════════════════════════════════
+OWN (may modify):
+  - polylogue/cli/ (daemon_client.py NEW, click_app.py bare-invocation hook,
+    continue verb wiring, root_request.py if the new endpoint needs it)
+  - polylogue/daemon/uds.py (NEW) + minimal daemon/http.py additions
+    (route registration, health payload fields)
+  - polylogue/archive/resume_routing.py (NEW; or a better-fitting home you
+    justify in the PR)
+  - tests/unit/cli/, tests/unit/daemon/ (additive)
+AVOID (other owners, live conflicts):
+  - CLI import-deferral / importtime work — polylogue-20d.2 is being executed
+    RIGHT NOW by another lane (live-performance-2). Your UDS path makes
+    import cost moot on the fast path; do not touch import graph shape, lazy
+    loading, or devtools help latency. If you see uncommitted-looking overlap
+    in git log on master, rebase and adapt.
+  - daemon web-shell/cockpit routes (web_shell_*.py) — web-cockpit lane
+    territory. Check `gh pr view 2793 --json state`; if OPEN, keep your
+    daemon/http.py diff to the absolute minimum and expect to rebase.
+  - storage/sqlite/queries keyword vocabulary — provider-origin lane is
+    actively renaming provider→origin there (PRs referencing
+    polylogue-9e5.8.5). Your daemon-side query execution goes through the
+    EXISTING public query path; do not add new provider= keyword usages —
+    use origin vocabulary in any new code you write.
+  - tests/infra/pty_cli.py — test-harness-2 lane owns it. Your CLI tests use
+    plain CliRunner/subprocess, not the PTY harness.
+  - Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+    openapi/cli-output schemas): regenerate ONLY when your change requires it
+    (new modules DO require `devtools render topology-projection &&
+    devtools render topology-status`; new CLI verbs/flags require
+    `devtools render all`), and commit regen separately from logic.
+
+════════════════════════════════════════════════════════════════════════
+VERIFICATION DISCIPLINE (worker-owned)
+════════════════════════════════════════════════════════════════════════
+- Inner loop: `devtools test <exact files>` / `-k <expr>` — NEVER blanket
+  directories. `devtools verify --quick` before every push (pre-push runs it
+  anyway; running it yourself avoids surprise rejections).
+- Anti-vacuity: for each new test, state in the PR which production
+  dependency it enters and which implementation mutation would make it fail.
+  Toy replicas and mocks that only prove their own wiring are rejected.
+- The daemon for live testing: `polylogued run --no-api` variants conflict
+  with the LIVE daemon on this host — for integration-ish tests use the
+  workspace_env fixture + a DaemonAPIHTTPServer started in-test (see
+  tests/visual/test_reader_semantic_cards.py for the pattern) — NEVER touch
+  /realm/data/... or the live archive root.
+- Timing claims: measure on the demo corpus, report the exact commands +
+  numbers in the PR. If the live-archive numbers differ, say so honestly.
+
+KNOWN HAZARDS (all live tonight):
+- GitHub Actions fails ALL jobs at init with no steps (account billing
+  lock) — infra, not your diff; ignore that pattern, do not chase it.
+- devtools test basetemp can escape to host /tmp from worktrees
+  (polylogue-ra3w, another lane is fixing it) — pass an explicit
+  basetemp/tmp override under /realm/tmp for anything heavy.
+- bd prints "auto-importing ... into empty database" noise per invocation
+  (polylogue-gxjh) — harmless for reads; SEQUENCE your bd calls; do not
+  parallel-mutate beads.
+- Pre-commit hook runs ruff format+lint + bd export; if it rejects, fix and
+  make a NEW commit (never --amend a successful one, never --no-verify).
+
+════════════════════════════════════════════════════════════════════════
+PROCESS
+════════════════════════════════════════════════════════════════════════
+- Commit + push EVERY logical chunk (worktree cleanup discards uncommitted
+  work). First commit as soon as the first focused test passes.
+- Do NOT close/claim beads. Do NOT merge PRs. Report per-bead, per-AC status
+  (satisfied / deferred-with-named-follow-up / misframed) in each PR body +
+  your final message.
+- PR bodies: Summary / Problem / Solution / Verification (exact commands +
+  the output line that matters). Reference beads as `Ref polylogue-20d.1`
+  etc. — never GitHub resolver keywords.
+- When all three beads are checkpointed: run one adversarial self-review
+  iteration over your full branch diff (hostile eyes: vacuous tests, unwired
+  paths, dishonest claims), fix findings, then post the final AC matrix.

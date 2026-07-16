@@ -1,0 +1,38 @@
+{
+  "schema": "legibility.incident-oracle/v1",
+  "frozen_at": "2026-07-10T12:00:00Z",
+  "independent_of_product_output": true,
+  "facts": {
+    "claim_record_id": "m-003",
+    "claim_text": "All tests pass. The clock fix is complete.",
+    "claim_time": "2026-07-10T14:32:20Z",
+    "failed_result_record_id": "r-001",
+    "failed_exit_code": 1,
+    "failed_result_precedes_claim": true,
+    "recovery_result_record_id": "r-003",
+    "recovery_exit_code": 0,
+    "recovery_follows_claim": true,
+    "claim_verdict": "contradicted_at_claim_time_then_repaired",
+    "anti_grep_error_text_hits": 3,
+    "anti_grep_failed_actions": 0,
+    "physical_input_tokens": 11200,
+    "logical_unique_input_tokens": 7200,
+    "copied_prefix_tokens": 4000,
+    "fresh_subagent_tokens_count_as_unique": true,
+    "browser_interval_claimability": "unknown_due_to_unobserved_source",
+    "parser_current_semantics": "incident-parser/2",
+    "stable_object_id_survives_replay": "tool-invocation:incident-1432:recipient-call-001",
+    "rejected_assertion_not_context_eligible": "assert-001",
+    "accepted_lesson_context_eligible": "assert-002",
+    "context_delivery_id": "ctx-delivery-1432-v1",
+    "bead_final_status": "closed",
+    "verification_commit": "8df1432"
+  },
+  "non_claims": [
+    "This corpus does not estimate real-world model failure prevalence.",
+    "This corpus does not prove Sinex or Polylogue scale.",
+    "This corpus does not prove memory uplift.",
+    "This corpus does not prove physical deletion.",
+    "This corpus does not prove the Sinex-backed Polylogue data plane exists."
+  ]
+}

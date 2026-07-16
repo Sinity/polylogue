@@ -1,0 +1,5 @@
+{"payload": {"forked_from_id": "demo-lineage-parent", "id": "demo-lineage-fork", "timestamp": "2026-07-04T10:01:00Z"}, "type": "session_meta"}
+{"payload": {"content": [{"text": "Map the demo lineage base context.", "type": "input_text"}], "id": "fork-u0", "role": "user", "timestamp": "2026-07-04T10:01:01Z", "type": "message"}, "type": "response_item"}
+{"payload": {"content": [{"text": "I have the base context and can branch the analysis.", "type": "output_text"}], "id": "fork-a1", "role": "assistant", "timestamp": "2026-07-04T10:01:02Z", "type": "message"}, "type": "response_item"}
+{"payload": {"content": [{"text": "Now take the forked branch and audit construct validity.", "type": "input_text"}], "id": "fork-u2", "role": "user", "timestamp": "2026-07-04T10:01:03Z", "type": "message"}, "type": "response_item"}
+{"payload": {"content": [{"text": "The fork diverges into demo corpus construct checks.", "type": "output_text"}], "id": "fork-a3", "role": "assistant", "timestamp": "2026-07-04T10:01:04Z", "type": "message"}, "type": "response_item"}

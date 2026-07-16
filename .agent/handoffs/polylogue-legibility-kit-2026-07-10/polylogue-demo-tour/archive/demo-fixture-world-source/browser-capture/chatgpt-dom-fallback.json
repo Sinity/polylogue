@@ -1,0 +1,27 @@
+{
+  "capture_id": "chatgpt:dc13ca54-0bba-4298-a38f-09068c2ef2c5:dom-fallback",
+  "polylogue_capture_kind": "browser_llm_session",
+  "provenance": {
+    "adapter_name": "chatgpt-dom-v1",
+    "capture_mode": "snapshot",
+    "captured_at": "2026-07-04T09:55:00Z",
+    "page_title": "ChatGPT - Debugging flaky async pipeline tests",
+    "source_url": "https://chatgpt.com/c/dc13ca54-0bba-4298-a38f-09068c2ef2c5"
+  },
+  "schema_version": 1,
+  "session": {
+    "model": "gpt-5-demo",
+    "provider": "chatgpt",
+    "provider_session_id": "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+    "title": "Debugging flaky async pipeline tests",
+    "turns": [
+      {
+        "ordinal": 0,
+        "provider_turn_id": "dom-gap-u0",
+        "role": "user",
+        "text": "DOM fallback saw only this first turn."
+      }
+    ],
+    "updated_at": "2026-07-04T09:55:00Z"
+  }
+}

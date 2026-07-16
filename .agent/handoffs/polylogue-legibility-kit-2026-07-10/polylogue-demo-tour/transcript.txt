@@ -1,0 +1,101 @@
+# prepare deterministic proof archive
+Seeded 11 sessions, 43 messages, and 5 user-state assertions in 0.887s. Fixture audit: 30/30 declared constructs satisfied.
+
+# verify evidence before presenting it
+Verification passed in 0.028s; 0 path leaks and 0 semantic problems. The complete fixture and verification audit remains in report.json.
+
+$ polylogue --id codex-session:demo-terminal-error read --view messages --limit 10
+Start with the receipt, not a dashboard: the assistant acknowledges a failed test run, and the tool result retains exit_code=4 plus the exact error output.
+exit=0 duration=1.661s bytes=230
+Run the command and stop if it fails.
+---
+ {"metadata": {"exit_code": 4}, "output": "ERROR: file or directory not found: tests/missing_test.py"}
+---
+ I hit an error and need the missing test path corrected before continuing.
+---
+
+$ polylogue 'actions where is_error:true | group by tool | count'
+Now aggregate the same structural field across providers. This query counts normalized failed actions; it does not search prose for the word 'error'.
+exit=0 duration=1.469s bytes=44
+tool=Bash count=4
+tool=exec_command count=1
+
+$ polylogue --id codex-session:demo-lineage-fork read --view chronicle
+Read a fork as one logical chronicle: inherited parent messages remain attributable to their origin while the fork contributes only its divergent tail.
+exit=0 duration=1.492s bytes=936
+# Session Chronicle
+
+- Sessions: 1
+- Edge limit: 8
+- Body policy: authored-dialogue
+
+## Map the demo lineage base context.
+
+- Session: `codex-session:demo-lineage-fork`
+- Origin: codex-session
+- Matching prose messages: 4
+- Included: 4
+- Omitted middle messages: 0
+
+### First Messages
+
+### 2026-07-04T10:00:01+00:00 - user / message
+
+Map the demo lineage base context.
+
+`codex-session:demo-lineage-parent:parent-u0`
+
+### 2026-07-04T10:00:02+00:00 - assistant / message
+
+I have the base context and can branch the analysis.
+
+`codex-session:demo-lineage-parent:parent-a1`
+
+### 2026-07-04T10:01:03+00:00 - user / message
+
+Now take the forked branch and audit construct validity.
+
+`codex-session:demo-lineage-fork:fork-u2`
+
+### 2026-07-04T10:01:04+00:00 - assistant / message
+
+The fork diverges into demo corpus construct checks.
+
+`codex-session:demo-lineage-fork:fork-a3`
+
+### Last Messages
+
+_No distinct matching prose in the last edge._
+
+$ polylogue analyze --facets
+Only after inspecting evidence, zoom out to the archive: eleven sessions across five origins, with deferred families labeled rather than silently guessed.
+exit=0 duration=1.305s bytes=1426
+Facets (global) — matched result set:
+  sessions: 11  messages: 43
+  Family states:
+    total_counts: Total counts — complete
+    origins: Provider origins — complete
+    tags: User tags — complete
+    repos: Canonical repositories — deferred (deferred_by_default; use --include-deferred); prefer repo_name or origin_url; omit archive/path tokens that are not product repo identities
+    role_counts: Provider-role counts — deferred (deferred_by_default; use --include-deferred); provider-reported message role; not authoredness
+    material_origins: Material origins — deferred (deferred_by_default; use --include-deferred); authoredness/protocol provenance; separates human text from runtime or assistant material
+    message_types: Message content types — deferred (deferred_by_default; use --include-deferred)
+    action_types: Action types — deferred (deferred_by_default; use --include-deferred)
+    has_flags: Content flags — deferred (deferred_by_default; use --include-deferred)
+  Provider origins:
+    codex-session: 5
+    claude-code-session: 3
+    aistudio-drive: 1
+    chatgpt-export: 1
+    claude-ai-export: 1
+  User tags:
+    pytest-triage: 1
+  IDF (higher = rarer, partitions more strongly):
+    [origins]
+      aistudio-drive: 2.398
+      chatgpt-export: 2.398
+      claude-ai-export: 2.398
+      claude-code-session: 1.299
+      codex-session: 0.788
+    [tags]
+      pytest-triage: 2.398

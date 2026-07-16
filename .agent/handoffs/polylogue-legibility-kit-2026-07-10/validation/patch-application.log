@@ -1,0 +1,13 @@
+Patch application validation
+Polylogue
+  base: f6c1da997bea64bc6cd9670d9cbb8f7e7439ec51
+  git apply --check: PASS
+  git apply: PASS
+  git diff --check after apply: PASS
+  changed paths reported by git status: 30
+Sinex
+  base: b70a08d9e51cecc9e76b92f955a88183e99842cf
+  git apply --check: PASS
+  git apply: PASS
+  git diff --check after apply: PASS
+  changed paths reported by git status: 9

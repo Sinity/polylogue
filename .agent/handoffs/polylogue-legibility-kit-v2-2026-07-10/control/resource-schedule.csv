@@ -1,0 +1,17 @@
+wave,horizon,missions,purpose,scarce_resource,scheduling_note
+wave-0,72h,PLG-72-01,Receipts + claims gate,poly-python-heavy,start immediately
+wave-0,72h,PLG-72-04,README/anti-grep,docs-static,read-only against proof contracts until PLG-72-01 lands
+wave-0,72h,PLG-72-03,Claims CI,poly-python-light,parallel after claims schema stabilizes
+wave-1,72h,PLG-72-02,Readiness/degradation,poly-python-heavy,after proof vocabulary
+wave-1,72h,PLG-72-05,Site,docs-static,after public copy
+wave-1,72h,PLG-72-06,Media,browser-vhs,exclusive display/recording lane
+wave-2,72h,QA-72-01,Cold-reader audit,docs-static,after all first-contact surfaces
+wave-3,72h,INT-72-01,Integration,full-verification,exclusive
+wave-4,7d,"PLG-7D-01,PLG-7D-02,PLG-7D-03,PLG-7D-05",Parallel product/proof lanes,mixed,respect path locks
+wave-5,7d,"PLG-7D-04,PLG-7D-06",Publishing + web honesty,mixed,after upstream outputs
+wave-6,7d,INT-7D-01,Integration,full-verification,exclusive
+wave-7,30d,"SNX-30-01,JNT-30-01",Sinex coverage + joint identity,mixed,separate worktrees; one Rust build at a time
+wave-8,30d,"SNX-30-02,JNT-30-02",Replay + settlement,mixed,serialize live stack
+wave-9,30d,"JNT-30-03,JNT-30-04",Rebuild + work packet,mixed,"one live stack, alternating proof windows"
+wave-10,30d,EXP-30-01,Resumption experiment,full-verification,freeze code and checkpoints
+wave-11,30d,INT-30-01,Joint integration,full-verification,exclusive

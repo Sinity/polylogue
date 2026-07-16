@@ -1,0 +1,17 @@
+lane,branch,repo,exclusive_scope,resource_class,merge_wave
+P1,polylogue-narrative,polylogue,README.md; pyproject.toml; landing template copy,cheap,1
+P2,polylogue-docs,polylogue,new high-level docs; pages.toml; docs registry,cheap,1
+P3,polylogue-claims,polylogue,claims ledger; findings pages/templates,cheap,1
+P4,polylogue-receipts-fixture,polylogue,polylogue/scenarios; demo seed/verify; fixture tests,medium,2
+P5,polylogue-tour,polylogue,polylogue/demo/tour.py; demo command tests,medium,2
+P6,polylogue-semantic-contract,polylogue,renderer registry/intermediate model; contract snapshots,medium,2
+P7,polylogue-terminal-renderer,polylogue,terminal semantic renderer and snapshots,medium,3
+P8,polylogue-web-renderer,polylogue,web semantic renderer and snapshots,medium,3
+P9,polylogue-web-reliability,polylogue,daemon HTTP executor; slow route UX,heavy/live,0
+P10,polylogue-install-media,polylogue,install matrix; visual tapes; launch assets,heavy,4
+S1,sinex-narrative,sinex,README; concepts; agents; demo docs,cheap,1
+S2,sinex-demo-contract,sinex,demo packet schema/runner/manifest,medium,2
+S3,sinex-moment-demo,sinex,multi-source fixture and moment surface,heavy/infra,3
+S4,sinex-replay-demo,sinex,interpretation revision fixture and replay surface,heavy/infra,3
+S5,sinex-outage-demo,sinex,fault injection and coverage result,heavy/infra,3
+J1,joint-backend-adr,both,authority/identity/revision/settlement docs and schemas,cheap,1

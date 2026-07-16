@@ -1,0 +1,6 @@
+ Run the command and stop if it fails.
+---
+ {"metadata": {"exit_code": 4}, "output": "ERROR: file or directory not found: tests/missing_test.py"}
+---
+ I hit an error and need the missing test path corrected before continuing.
+---

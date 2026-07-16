@@ -1,0 +1,21 @@
+flowchart TD
+  R0["R0 normalize"] --> A["A trust floor"]
+  A --> B["B storage/rebuild/bytes"]
+  A --> C["C read/evidence contract"]
+  A --> D["D agent context/coordination"]
+  B --> C
+  C --> H["H web cockpit"]
+  C --> I["I analytics/experiments"]
+  C --> K["K interop/export"]
+  D --> E["E variants/preferences"]
+  D --> F["F lineage/compaction"]
+  D --> G["G live/performance"]
+  E --> H
+  F --> H
+  G --> H
+  I --> L["L external legibility"]
+  H --> L
+  K --> L
+  C --> M["M consolidation"]
+  B --> M
+  L --> N["N horizon"]
