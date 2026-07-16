@@ -103,6 +103,21 @@ def _file_identity(path: Path) -> dict[str, object]:
     }
 
 
+def _proven_clone_identity(path: Path) -> dict[str, object]:
+    """Bind a prepared proof to exact clone bytes, not only row counts."""
+    identity = _file_identity(path)
+    digest = hashlib.sha256()
+    with path.resolve(strict=True).open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    identity["sha256"] = digest.hexdigest()
+    return identity
+
+
+def _canonical_schema_sha256(schema: dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def _receipt_hash(payload: dict[str, object]) -> str:
     body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -147,13 +162,13 @@ def _require_daemon_stopped(archive_root: Path) -> None:
         raise IndexV37FastForwardError(f"polylogued PID {pid} is still running")
 
 
-def _checkpoint_stopped_database(path: Path) -> None:
+def _checkpoint_stopped_database(path: Path, *, label: str = "active index") -> None:
     """Consolidate a stopped writer's committed WAL before clone evidence."""
     resolved = path.resolve(strict=True)
     with closing(sqlite3.connect(resolved, timeout=120.0)) as conn:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     if checkpoint is None or int(checkpoint[0]) != 0 or len(checkpoint) < 3 or int(checkpoint[1]) != int(checkpoint[2]):
-        raise IndexV37FastForwardError(f"active index WAL checkpoint failed: {checkpoint}")
+        raise IndexV37FastForwardError(f"{label} WAL checkpoint failed: {checkpoint}")
     for suffix in ("-wal", "-shm"):
         # A successful checkpoint under the stopped-daemon rebuild lease makes
         # both coordination files disposable.  SQLite commonly leaves a
@@ -214,13 +229,7 @@ def _transform_clone(path: Path, *, before_counts: dict[str, int], canonical: di
         except Exception:
             conn.rollback()
             raise
-        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        if checkpoint is None or int(checkpoint[0]) != 0:
-            raise IndexV37FastForwardError(f"clone WAL checkpoint failed: {checkpoint}")
-    for suffix in ("-wal", "-shm", "-journal"):
-        sidecar = Path(f"{path}{suffix}")
-        if sidecar.exists() and sidecar.stat().st_size == 0:
-            sidecar.unlink()
+    _checkpoint_stopped_database(path, label="prepared clone")
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
         checks = _checks(conn)
         after_schema = _schema_objects(conn)
@@ -261,6 +270,7 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
             postflight = _transform_clone(clone, before_counts=before_counts, canonical=canonical)
             if source_revision_snapshot(archive_root) != source_snapshot:
                 raise IndexV37FastForwardError("source evidence changed while preparing v37 clone")
+            clone_identity = _proven_clone_identity(clone)
             receipt: dict[str, object] = {
                 "schema": RECEIPT_SCHEMA,
                 "status": "prepared",
@@ -269,6 +279,8 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
                 "generation": asdict(generation),
                 "source_snapshot": source_snapshot,
                 "active_identity": active_identity,
+                "clone_identity": clone_identity,
+                "canonical_schema_sha256": _canonical_schema_sha256(canonical),
                 "before_table_counts": before_counts,
                 "retired_tables": list(RETIRED_TABLES),
                 "postflight": postflight,
@@ -282,9 +294,10 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
 
 
 def activate_forward(*, receipt_path: Path) -> dict[str, object]:
-    """Re-prove and atomically promote one prepared v37 generation."""
+    """Reconcile or atomically promote one prepared v37 generation."""
     receipt = _load_receipt(receipt_path)
-    if receipt.get("status") != "prepared":
+    status = receipt.get("status")
+    if status not in {"prepared", "activating", "activated"}:
         raise IndexV37FastForwardError(f"receipt is not prepared: {receipt.get('status')}")
     archive_root = Path(str(receipt["archive_root"])).resolve(strict=True)
     _require_daemon_stopped(archive_root)
@@ -293,20 +306,38 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     generation = store.load(str(generation_payload["generation_id"]))
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
-        if generation.owner_id != generation_payload["owner_id"] or generation.state != "inactive":
-            raise IndexV37FastForwardError("prepared generation ownership/state changed")
+        if status in {"activating", "activated"}:
+            generation = store.recover_promotion(generation.generation_id)
+        if generation.owner_id != generation_payload["owner_id"]:
+            raise IndexV37FastForwardError("prepared generation ownership changed")
+        clone = Path(generation.index_path)
+        if generation.state == "active":
+            if store.active_pointer.resolve(strict=True) != clone.resolve(strict=True):
+                raise IndexV37FastForwardError("active generation does not own the active index pointer")
+            receipt.update(
+                {
+                    "status": "activated",
+                    "activated_at_ms": receipt.get("activated_at_ms", _now_ms()),
+                    "generation": asdict(generation),
+                    "active_identity_after": _file_identity(store.active_pointer),
+                }
+            )
+            _write_receipt(receipt_path, receipt)
+            return receipt
+        if generation.state != "inactive":
+            raise IndexV37FastForwardError(f"prepared generation has unrecoverable state {generation.state}")
         if source_revision_snapshot(archive_root) != receipt["source_snapshot"]:
             raise IndexV37FastForwardError("source evidence changed since v37 preparation")
         if _file_identity(store.active_pointer) != receipt["active_identity"]:
             raise IndexV37FastForwardError("active index changed since v37 preparation")
-        clone = Path(generation.index_path)
-        clone_schema, clone_counts = _require_clean_database(clone, expected_version=TO_VERSION)
         canonical = _canonical_schema_objects()
-        if clone_schema != canonical:
-            raise IndexV37FastForwardError("prepared clone no longer matches canonical v37 DDL")
-        expected_counts = cast(dict[str, int], cast(dict[str, object], receipt["postflight"])["table_counts"])
-        if clone_counts != expected_counts:
-            raise IndexV37FastForwardError("prepared clone table counts changed before activation")
+        if _canonical_schema_sha256(canonical) != receipt.get("canonical_schema_sha256"):
+            raise IndexV37FastForwardError("canonical v37 schema changed since clone preparation")
+        if _proven_clone_identity(clone) != receipt.get("clone_identity"):
+            raise IndexV37FastForwardError("prepared clone bytes changed before activation")
+        if status == "prepared":
+            receipt.update({"status": "activating", "activation_started_at_ms": _now_ms()})
+            _write_receipt(receipt_path, receipt)
         promoted = store.promote(generation)
         receipt.update(
             {
