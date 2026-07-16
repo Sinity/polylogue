@@ -24,21 +24,37 @@ one mission repeated. About half the manifests use a different schema
 — their actual mission is still unidentified; see `raw/` + `SHA256SUMS` and
 open the zip's `MANIFEST.json`/`README.md` directly to identify those.
 
-## Why these aren't backups — a real capture gap
+## Why these aren't backups — a real capture gap (corrected)
 
 Checked the live archive directly (not just message text): polylogue captured
 all 28 source ChatGPT sessions in this window, and captured 29 attachments —
 but every single one is a `polylogue-sol-pro-context-*.tar.gz`, the *input*
 bundle the operator uploaded to seed each session. **Zero** attachments named
 `*launch-handoff*` exist anywhere in `attachments`/`attachment_refs`.
-Browser-capture acquires what gets uploaded *to* ChatGPT but has no path for
-what ChatGPT offers back as a downloadable generated file. Filed as
-`polylogue-s2x7` (P1 bug) — these 28 zips are named there as the real-world
-regression fixture once one is unzipped into a browser-capture DOM fixture.
 
-**Until `polylogue-s2x7` is fixed, this directory is the only copy of this
-category of Sol/Pro output that will ever exist** — future runs will have the
-same gap unless the capture-side fix lands first.
+**Correction**: this is *not* a missing capability. Reading
+`codex 019f66fa-3db2-7bc2-b36e-b9f7569b808f` directly (a live-debugging
+session from the same night) found a real result-ZIP-capture mechanism
+already implemented (`polylogue/browser_capture/launch_jobs.py` +
+`work_package.py` + `browser-extension/src/launch/chatgpt_launch.js`, PR
+#2913) — the actual defects were (1) completion capture preferring a stale
+cached payload over the fresh completed response, and (2) an undocumented
+dependency on the launch tab staying open, which the operator (unaware)
+violated by closing tabs. PRs #2918/#2919 appear to address both, already on
+master. Re-verified the live archive *after* those merges — still zero
+captures for these 28, meaning the fix (if effective) didn't retroactively
+backfill what was already lost. Full trail: `polylogue-s2x7`.
+
+**Operator caveat (2026-07-16)**: the whole GPT-Pro handoff/launch system is
+being actively rewritten on this branch — the mechanism described above may
+already be superseded. Don't treat this as current-behavior fact without
+re-checking live source.
+
+**Regardless of root cause, this directory is — right now — the only copy of
+this category of Sol/Pro output.** Whether that's permanent (unrecoverable
+via the extension) or fixable (a live reconciliation pass on the 28
+historical conversation ids, if ChatGPT still offers the generated file) is
+unresolved — see `polylogue-s2x7`'s remaining-scope notes.
 
 ## Status: NOT adjudicated — do not apply patches wholesale
 
