@@ -48,7 +48,14 @@ class ObservationTerminal:
 
 
 def _canonical_json(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    """Serialize provider-derived JSON without rejecting valid decoded escapes.
+
+    Provider JSON may legally contain a lone UTF-16 surrogate escape.  Python
+    preserves that code unit in ``str`` but cannot UTF-8 encode it directly.
+    ASCII JSON escaping preserves the exact JSON value for replay while keeping
+    the private journal valid UTF-8 bytes.
+    """
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
 def _decode_json(value: bytes) -> JSONValue:

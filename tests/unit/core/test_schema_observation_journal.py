@@ -225,6 +225,25 @@ def test_journal_roundtrips_units_samples_and_terminal_evidence(tmp_path: Path) 
     assert not journal_path.with_name(f"{journal_path.name}-shm").exists()
 
 
+def test_journal_replays_lone_surrogate_provider_values_without_utf8_failure(tmp_path: Path) -> None:
+    unit = SchemaUnit(
+        cluster_payload={"text": "broken \udce2 provider value"},
+        schema_samples=[{"text": "broken \udce2 provider value"}],
+        artifact_kind="session_record_stream",
+        session_id="session-surrogate",
+        raw_id="raw-surrogate",
+        source_path="/private/source.jsonl",
+        bundle_scope="scope-surrogate",
+        observed_at="2026-07-16T12:00:00+00:00",
+        exact_structure_id="structure-surrogate",
+        profile_tokens=("field:text",),
+    )
+
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        journal.append_unit(unit)
+        assert list(journal.iter_units()) == [unit]
+
+
 def test_journal_cleanup_runs_for_exceptions(tmp_path: Path) -> None:
     root = tmp_path / "journals"
     journal_path: Path | None = None
