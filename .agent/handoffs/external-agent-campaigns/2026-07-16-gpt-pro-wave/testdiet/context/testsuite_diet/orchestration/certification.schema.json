@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Testsuite Diet independent sensitivity and dominance certification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "law_id",
+    "cluster_id",
+    "base_commit",
+    "dossier_sha256",
+    "survivor_job_ids",
+    "certifier",
+    "historical_witness",
+    "mutation",
+    "dominance_review",
+    "runtime",
+    "final_tree",
+    "residual_risks",
+    "blocker",
+    "verdict"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "law_id": {"type": "string", "pattern": "^L[0-9]{2}$"},
+    "cluster_id": {"type": "string", "minLength": 1},
+    "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "dossier_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "survivor_job_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "certifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "effort", "job_id", "prompt_sha256", "launcher_attestation"],
+      "properties": {
+        "model": {"const": "gpt-5.6-terra"},
+        "effort": {"const": "high"},
+        "job_id": {"type": "string", "minLength": 1},
+        "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "launcher_attestation": {"type": "string", "minLength": 1}
+      }
+    },
+    "historical_witness": {
+      "$ref": "#/$defs/check"
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "paths",
+        "before_sha256",
+        "mutated_sha256",
+        "restored_sha256",
+        "check",
+        "failed_for_expected_reason",
+        "artifact"
+      ],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "before_sha256": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        "mutated_sha256": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        "restored_sha256": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+        "check": {"$ref": "#/$defs/check"},
+        "failed_for_expected_reason": {"type": "boolean"},
+        "artifact": {"type": "string", "minLength": 1}
+      }
+    },
+    "dominance_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposed_deletions", "certified_deletions", "retained_obligations", "decision"],
+      "properties": {
+        "proposed_deletions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "certified_deletions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "retained_obligations": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "decision": {"type": "string", "minLength": 1}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_seconds", "fixture_builds"],
+      "properties": {
+        "wall_seconds": {"type": "number", "minimum": 0},
+        "fixture_builds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "final_tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clean", "git_status_output", "head_commit"],
+      "properties": {
+        "clean": {"const": true},
+        "git_status_output": {"const": ""},
+        "head_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "residual_risks": {"type": "array", "items": {"type": "string"}},
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocked", "reason", "decision_needed"],
+      "properties": {
+        "blocked": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "decision_needed": {"type": "string"}
+      }
+    },
+    "verdict": {"enum": ["certified", "rejected", "blocked"]}
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code", "output", "artifact"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "exit_code": {"type": "integer"},
+        "output": {"type": "string"},
+        "artifact": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

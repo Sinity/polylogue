@@ -1,0 +1,1319 @@
+nodeid	body_lines	source_or_ast	source_literal_membership	mock_interaction	patches_collaborator	coarse_weak_assertions_only	evidence
+tests/benchmarks/test_concurrent_throughput.py::test_read_throughput_with_writes	59	0	0	0	0	1
+tests/benchmarks/test_concurrent_throughput.py::test_concurrent_reader_scaling	51	0	0	0	0	1
+tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_cli_query	22	0	0	0	0	1
+tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_health_probe	22	0	0	0	0	1
+tests/benchmarks/test_fts_trigger_amplification.py::test_messages_fts_trigger_growth_is_subquadratic	36	0	0	0	0	1
+tests/benchmarks/test_fts_trigger_amplification.py::test_content_blocks_batch_insert_is_linear	44	0	0	0	0	1
+tests/benchmarks/test_graph_resolve_deferred_tail.py::test_graph_resolve_deferred_tail_scales_linearly_not_quadratically	30	0	0	0	0	1
+tests/benchmarks/test_reader_api.py::test_bench_reader_get_session	19	0	0	0	0	1
+tests/benchmarks/test_reader_api.py::test_bench_reader_context_image	22	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_small_fts_search_returns_results	4	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_small_list_sessions	4	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_medium_fts_search_returns_results	3	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_medium_list_sessions	3	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_large_fts_search_returns_results	3	0	0	0	0	1
+tests/benchmarks/test_scale_tiers.py::test_scale_large_list_sessions	3	0	0	0	0	1
+tests/benchmarks/test_schema_linear_scaling.py::test_schema_check_completes_quickly	5	0	0	0	0	1
+tests/benchmarks/test_schema_linear_scaling.py::test_schema_check_linear_scaling	15	0	0	0	0	1
+tests/benchmarks/test_search_latency.py::test_search_latency_distribution	31	0	0	0	0	1
+tests/benchmarks/test_search_latency.py::test_search_cold_vs_warm_first_query	33	0	0	0	0	1
+tests/benchmarks/test_search_latency.py::test_search_result_count_stability	28	0	0	0	0	1
+tests/benchmarks/test_thread_refresh_scale.py::test_thread_refresh_full_reorder_scales_linearly_not_quadratically	19	0	0	0	0	1
+tests/fuzz/fuzz_fts5_escape.py::test_fts5_escape_security_invariant	22	0	0	0	0	1
+tests/fuzz/fuzz_fts5_escape.py::test_fts5_escape_no_crashes	15	0	0	0	0	1
+tests/integration/test_daemon_resilience.py::test_sigterm_read_only_daemon_records_forensics	50	1	1	0	0	0	daemon_log.read_text
+tests/integration/test_daemon_resilience.py::test_large_session_file	98	1	0	0	0	0	status_path.read_text
+tests/integration/test_facade.py::test_ingest_claude_file	16	0	0	0	0	1
+tests/integration/test_facade.py::test_ingest_with_custom_source_name	11	0	0	0	0	1
+tests/integration/test_facade.py::test_parse_sources	26	0	0	0	0	1
+tests/integration/test_facade.py::test_get_session_nonexistent	9	0	0	0	0	1
+tests/integration/test_facade.py::test_list_sessions_all	16	0	0	0	0	1
+tests/integration/test_facade.py::test_session_without_noise	15	0	0	0	0	1
+tests/integration/test_live_read_amplification.py::test_missing_cursor_reconciles_archived_prefix_for_append	40	1	0	0	1	0	patch.object,path.read_bytes
+tests/integration/test_live_write_amplification.py::test_configure_skips_absent_surfaces	16	0	0	0	0	1
+tests/integration/test_security.py::test_symlink_circular_reference	15	0	0	0	0	1
+tests/integration/test_security.py::test_zip_path_traversal_filenames_handled	12	0	0	0	0	1
+tests/integration/test_workflows.py::test_multi_source_concurrent_sync	23	0	0	0	0	1
+tests/integration/test_workflows.py::test_sync_partial_success_with_mixed_sources	26	0	0	0	0	1
+tests/integration/test_workflows.py::test_search_with_special_characters	61	0	0	0	0	1
+tests/property/test_paste_evidence_laws.py::test_no_paste_returns_none	9	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_string_field_accepts_str_rejects_other_types	4	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_boolean_field_rejects_non_bool	4	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_enum_field_rejects_unknown_value	4	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_integer_field_rejects_float_and_bool	5	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_number_field_accepts_int_and_float	5	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_numeric_field_accepts_arbitrarily_large_finite_integer_without_crashing	3	0	0	0	0	1
+tests/unit/annotations/test_schema.py::test_numeric_bounds_enforced	6	0	0	0	0	1
+tests/unit/api/test_embedding_readiness_api.py::test_embedding_status_returns_canonical_payload	17	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/api/test_embedding_readiness_api.py::test_embedding_preflight_returns_canonical_payload	26	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/api/test_facade_contracts.py::test_health_check_returns_readiness_report	10	0	0	0	0	1
+tests/unit/api/test_facade_contracts.py::test_get_session_returns_none_for_unknown_id	11	0	0	0	0	1
+tests/unit/api/test_facade_contracts.py::test_search_returns_typed_result_on_empty_archive	10	0	0	0	0	1
+tests/unit/api/test_facade_contracts.py::test_search_envelope_returns_typed_envelope_on_empty_archive	12	0	0	0	0	1
+tests/unit/api/test_facade_contracts.py::test_archive_tiers_api_tool_usage_reads_index_actions	78	0	0	1	0	0	call_count
+tests/unit/api/test_facade_contracts.py::test_archive_tiers_api_threads_read_index_tier	196	1	1	0	0	0	export_result.coverage_path.read_text,export_result.manifest_path.read_text,read_text
+tests/unit/api/test_repo_facet_canonicalization.py::test_canonical_repo_facet_label_omits_archive_path_noise	7	0	0	0	0	1
+tests/unit/api/test_search_envelope_builder.py::test_search_envelope_builder_accepts_auto_followup_for_resolved_cursor	19	0	0	1	1	0	assert_awaited_once,await_args,monkeypatch.setattr
+tests/unit/api/test_search_envelope_builder.py::test_spec_builder_preserves_filters_when_advancing_cursor_fetch	38	0	0	1	1	0	assert_awaited_once,await_args,monkeypatch.setattr
+tests/unit/api/test_session_analytics_facade.py::test_aggregate_sessions_fetches_full_scope_not_a_page_limit	11	0	0	1	0	0	await_args
+tests/unit/api/test_session_analytics_facade.py::test_aggregate_sessions_maps_provider_filter_through	10	0	0	1	0	0	await_args
+tests/unit/api/test_session_analytics_facade.py::test_correlate_sessions_fetches_full_scope_not_a_page_limit	11	0	0	1	0	0	await_args
+tests/unit/api/test_session_analytics_facade.py::test_correlate_sessions_validates_metrics_before_fetching	8	0	0	1	0	0	assert_not_awaited
+tests/unit/api/test_session_analytics_facade.py::test_find_similar_sessions_by_metadata_returns_none_for_unknown_session	7	0	0	0	0	1
+tests/unit/architecture/test_surface_storage_boundary.py::test_surface_module_does_not_import_storage_repository	13	1	0	0	0	0	path.read_text
+tests/unit/architecture/test_surface_storage_boundary.py::test_allow_list_does_not_grow_silently	8	1	0	0	0	0	path.read_text
+tests/unit/architecture/test_topology_invariants.py::test_topology_status_doc_rendered	5	1	0	0	0	0	path.read_text
+tests/unit/archive/test_filter_executor.py::test_sql_pushdown_params_never_crashes	30	0	0	0	0	1
+tests/unit/archive/test_model_runtime_no_runtime_classify.py::test_model_runtime_does_not_import_classifier	3	0	0	0	0	1
+tests/unit/archive/test_paste_boundary_resolution.py::test_no_evidence_any_source	9	0	0	0	0	1
+tests/unit/archive/test_paste_boundary_resolution.py::test_no_evidence_none_text	9	0	0	0	0	1
+tests/unit/archive/test_paste_boundary_resolution.py::test_no_evidence_empty_text	9	0	0	0	0	1
+tests/unit/archive/test_paste_boundary_resolution.py::test_resolver_returns_none_when_detect_paste_returns_zero	9	0	0	0	0	1
+tests/unit/archive/test_query_miss_diagnostics.py::test_diagnose_query_miss_reports_empty_archive_scope	11	0	0	1	0	0	assert_awaited_once_with
+tests/unit/archive/test_query_miss_diagnostics.py::test_diagnose_query_miss_reports_raw_backlog_for_selected_origin	18	0	0	1	0	0	assert_awaited_once_with
+tests/unit/archive/test_query_miss_diagnostics.py::test_diagnose_query_miss_does_not_require_action_read_model	11	0	0	1	0	0	assert_not_awaited
+tests/unit/archive/test_query_miss_diagnostics.py::test_diagnose_query_miss_reports_degraded_message_index	26	0	0	1	1	0	assert_called_once,patch
+tests/unit/archive/test_query_search_runtime.py::test_search_action_results_uses_ready_path_and_raises_on_error	30	0	0	1	1	0	assert_awaited_once_with,monkeypatch.setattr
+tests/unit/archive/test_raw_materialization.py::test_claude_ai_conversation_with_text_remains_session_shaped	30	0	0	0	0	1
+tests/unit/archive/test_raw_materialization.py::test_claude_ai_conversation_with_content_text_remains_session_shaped	30	0	0	0	0	1
+tests/unit/archive/test_raw_materialization.py::test_claude_ai_conversation_with_attachment_content_remains_session_shaped	37	0	0	0	0	1
+tests/unit/archive/test_tool_path_extraction.py::test_clean_path_candidate_rejects_sed_substitution	2	0	0	0	0	1
+tests/unit/archive/test_tool_path_extraction.py::test_clean_path_candidate_rejects_angle_brace_wrappers	2	0	0	0	0	1
+tests/unit/archive/test_with_units_projection.py::test_parse_expression_ast_strips_clause	4	0	0	0	0	1
+tests/unit/archive/test_work_event_text_signals.py::test_substring_false_positives_no_longer_match	5	0	0	0	0	1
+tests/unit/browser_capture/test_backfill_checkpoint.py::test_read_missing_checkpoint_returns_none	2	0	0	0	0	1
+tests/unit/browser_capture/test_backfill_checkpoint.py::test_malformed_stored_checkpoint_file_reads_back_as_none_not_fabricated_empty	21	0	0	0	0	1
+tests/unit/browser_capture/test_launch_jobs.py::test_handoff_completion_requires_locally_validated_cohesive_zip	48	1	0	0	0	0	read_bytes
+tests/unit/browser_capture/test_post_commands.py::test_ack_unknown_command	4	0	0	0	0	1
+tests/unit/browser_capture/test_receiver.py::test_write_capture_envelope_replaces_same_artifact	10	1	0	0	0	0	first.path.read_text
+tests/unit/browser_capture/test_receiver_contract.py::test_empty_role_on_turn_is_rejected	10	0	0	0	0	1
+tests/unit/browser_capture/test_receiver_token.py::test_load_or_mint_receiver_token_creates_0600_file_and_persists	9	1	0	0	0	0	token_path.read_text
+tests/unit/browser_capture/test_receiver_token.py::test_resolve_receiver_auth_token_default_mints_and_matches_persisted_file	9	1	0	0	0	0	token_path.read_text
+tests/unit/cli/commands/test_status.py::test_parse_cmdline_api_port_rejects_invalid_port	2	0	0	0	0	1
+tests/unit/cli/commands/test_status.py::test_facade_tier_route_counts_populated	5	0	0	0	0	1
+tests/unit/cli/commands/test_status.py::test_cli_tier_route_counts_populated	5	0	0	0	0	1
+tests/unit/cli/commands/test_status.py::test_returns_none_when_primary_table_missing	4	0	0	0	0	1
+tests/unit/cli/commands/test_status.py::test_returns_none_for_unknown_tier	4	0	0	0	0	1
+tests/unit/cli/commands/test_status.py::test_paths_are_path_objects	5	0	0	0	0	1
+tests/unit/cli/test_annotation_import_command.py::test_cli_annotation_import_delegates_to_product_operation	65	0	0	1	1	0	assert_awaited_once,await_args,patch
+tests/unit/cli/test_annotation_join_command.py::test_cli_annotation_join_maps_the_complete_request	46	0	0	1	1	0	assert_awaited_once,await_args,patch
+tests/unit/cli/test_archive_maintenance_cli.py::test_assertion_export_cli_filters_and_writes_json_file	32	1	0	0	0	0	out_path.read_text
+tests/unit/cli/test_archive_maintenance_cli.py::test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest	34	1	0	0	0	0	manifest.read_text
+tests/unit/cli/test_archive_maintenance_cli.py::test_blob_reference_replace_from_source_cli_applies_with_manifest	35	1	0	0	0	0	manifest.read_text
+tests/unit/cli/test_archive_maintenance_cli.py::test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs	37	1	0	0	0	0	quarantine_file.read_text
+tests/unit/cli/test_archive_maintenance_cli.py::test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_changes	33	1	1	0	0	0	copied_tier.read_bytes
+tests/unit/cli/test_archive_query.py::test_none_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_false_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_none_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_false_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_non_int_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_none_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_empty_string_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_whitespace_string_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_none_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_false_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_valid_iso_date	5	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_none_value	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_empty_string_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_whitespace_only_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_decode_none_returns_none	4	0	0	0	0	1
+tests/unit/cli/test_archive_query.py::test_plain_forceless_delete_aborts_without_prompt	19	0	0	1	0	0	assert_not_called
+tests/unit/cli/test_archive_query.py::test_dry_run_evidence_lists_matched_sessions	17	0	0	1	0	0	assert_not_called
+tests/unit/cli/test_archive_query.py::test_plain_forced_delete_proceeds_without_prompt	12	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/cli/test_archive_query.py::test_interactive_forceless_delete_still_prompts	12	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_assertion_candidates.py::test_candidates_list_emits_shared_json_payload	11	0	0	1	0	0	assert_awaited_once_with
+tests/unit/cli/test_assertion_candidates.py::test_candidates_review_emits_status_and_disabled_action_reasons	44	0	0	1	0	0	assert_awaited_once_with
+tests/unit/cli/test_assertion_candidates.py::test_candidates_accept_emits_bulk_judgment_payload	49	0	0	1	0	0	await_args
+tests/unit/cli/test_auth.py::test_get_drive_paths_returns_path_objects	5	0	0	0	0	1
+tests/unit/cli/test_auth.py::test_get_drive_paths_falls_back_on_config_error	6	0	0	0	1	1	patch
+tests/unit/cli/test_auth.py::test_oauth_calls_load_credentials_on_auth_manager	12	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_auth.py::test_refresh_deletes_token_before_reauth	12	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_auth.py::test_refresh_without_token_still_reauths	10	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_auth.py::test_revoke_calls_auth_manager_revoke	12	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_auth.py::test_revoke_without_token_does_not_raise	11	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_check.py::test_check_schemas_forwards_record_chunk_options	48	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_check.py::test_check_schemas_rejects_retired_schema_provider_flag	20	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_check.py::test_check_schemas_forwards_quarantine_flag	30	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_check.py::test_check_artifact_coverage_forwards_artifact_scope	36	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_check.py::test_check_artifact_coverage_rejects_retired_artifact_provider_flag	22	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_check_rendering_plain_runtime.py::test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_modes	46	0	0	1	1	0	assert_called_once_with,assert_not_called,call_args_list,patch
+tests/unit/cli/test_check_rendering_plain_runtime.py::test_render_plain_output_delegates_to_summary_and_maintenance	12	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_check_runtime.py::test_runtime_health_returns_health_report	15	0	0	0	0	1
+tests/unit/cli/test_check_support_runtime.py::test_run_blob_store_check_reports_missing_orphaned_and_verified_states	19	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_check_support_runtime.py::test_schema_verification_and_maintenance_helpers_cover_runtime_paths	80	0	0	1	1	0	assert_called_once,assert_called_once_with,call_args,patch
+tests/unit/cli/test_check_support_runtime.py::test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths	42	0	0	1	1	0	assert_called_once,assert_called_once_with,patch
+tests/unit/cli/test_check_support_runtime.py::test_run_check_workflow_includes_daemon_status_when_requested	16	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_cli_action_contracts.py::test_delete_contract_guard_refuses_plain_forceless_delete	16	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_cli_action_contracts.py::test_delete_contract_plain_forceless_delete_does_not_emit_mutation	13	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_cli_action_contracts.py::test_delete_contract_guard_requires_all_for_multi_match	14	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_cli_action_contracts.py::test_read_contract_guard_allows_first_for_multi_match	20	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_cli_action_contracts.py::test_mark_contract_guard_requires_all_or_first_for_multi_match	15	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_cli_action_contracts.py::test_mark_contract_guard_allows_first_for_multi_match	19	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_cli_output_schemas.py::test_published_schema_matches_current_model	17	1	0	0	0	0	target.read_text
+tests/unit/cli/test_click_app.py::test_read_verb_messages_view_forwards_options	27	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_read_verb_messages_view_forwards_full	23	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_read_verb_raw_view_forwards_options	13	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_run_cli_honors_explicit_cwd	13	0	0	1	1	0	call_args,monkeypatch.delenv,patch
+tests/unit/cli/test_click_app.py::test_run_cli_defaults_cwd_to_project_root	10	0	0	1	1	0	call_args,monkeypatch.delenv,patch
+tests/unit/cli/test_click_app.py::test_run_cli_uses_python_bootstrap_under_mutmut	22	0	0	1	1	0	call_args,monkeypatch.setenv,patch
+tests/unit/cli/test_click_app.py::test_no_args_routes_to_archive_executor	6	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_click_app.py::test_verbose_no_args_routes_to_archive_executor	4	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_click_app.py::test_query_terms_trigger_query	16	0	0	1	1	0	assert_called_once,assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_filter_flags_trigger_query	29	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_click_app.py::test_output_mode_flags_trigger_query	7	0	0	1	0	0	assert_called_once
+tests/unit/cli/test_click_app.py::test_modifier_flags_trigger_query	8	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_click_app.py::test_query_terms_forwarded	16	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_root_json_flag_reaches_query_request	12	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_positional_args_become_query_terms	7	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_query_option_before_find_query_stays_query_mode	11	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_option_args_preserved	10	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_mixed_options_and_positionals	13	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_no_args_routes_to_archive_executor	10	0	0	1	1	0	assert_called_once,assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_no_subcommand_routes_to_archive_executor	10	0	0	1	1	0	assert_called_once,assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_analyze_by_subcommand_preserves_grouped_stats_mode	10	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_query_mode_with_positional_args	6	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_click_app.py::test_find_keyword_is_stripped_from_query	6	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_bare_multi_token_root_hints_and_does_not_search	8	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_bare_single_plain_word_hints	8	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_field_expression_root_still_searches	7	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_click_app.py::test_quoted_free_text_root_still_searches	7	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_click_app.py::test_double_dash_escape_forces_query	6	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_click_app.py::test_verb_word_after_find_is_a_query_term	8	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_click_app.py::test_non_leading_find_stays_a_literal_query_term	7	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_click_app.py::test_verbose_configures_debug_logging	9	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_click_app.py::test_no_verbose_keeps_structlog_setup_lazy	9	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_click_app.py::test_ctx_obj_set_to_appenv	12	0	0	0	1	1	patch
+tests/unit/cli/test_click_app.py::test_calls_print_summary_verbose	7	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_click_app.py::test_calls_print_summary_not_verbose	10	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_click_app.py::test_dashboard_launches_app	7	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_click_app.py::test_dashboard_creates_app_with_facade	12	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_color_and_layout.py::test_no_color_env_does_not_leak_into_other_tests	8	0	0	0	1	1	monkeypatch.delenv
+tests/unit/cli/test_color_and_layout.py::test_title_budget_keeps_room_at_40_cols	3	0	0	0	0	1
+tests/unit/cli/test_color_and_layout.py::test_title_budget_handles_pathologically_narrow	3	0	0	0	0	1
+tests/unit/cli/test_command_aux_runtime.py::test_query_structural_session_field_examples_are_executable	8	0	0	0	0	1
+tests/unit/cli/test_completion_matrix.py::test_dynamic_completers_empty_archive_per_shell	16	0	0	0	1	1	monkeypatch.setenv
+tests/unit/cli/test_context_view.py::test_compose_context_preamble_includes_injectable_assertion_claims	38	0	0	1	0	0	assert_awaited_once_with
+tests/unit/cli/test_context_view.py::test_compose_context_preamble_missing_session_exits	8	0	0	1	0	0	assert_called_once
+tests/unit/cli/test_convergence_feedback.py::test_convergence_warning_line_omits_classified_raw_gaps	19	0	0	0	1	1	monkeypatch.setattr
+tests/unit/cli/test_correlate_view.py::test_run_correlation_view_json_emits_payload	18	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_correlate_view.py::test_run_correlation_view_missing_session_exits	8	0	0	1	0	0	assert_called_once
+tests/unit/cli/test_correlate_view.py::test_run_correlation_view_plain_renders_window	10	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_daemon_client.py::test_daemon_probe_rejects_the_tmp_archive_config_trap	24	0	0	0	1	1	monkeypatch.setattr
+tests/unit/cli/test_daemon_client.py::test_daemon_client_probes_the_production_uds_server	41	0	0	0	1	1	monkeypatch.setattr
+tests/unit/cli/test_demo_command.py::test_demo_tour_writes_report_transcript_and_recording	60	1	1	0	1	0	monkeypatch.setenv,recording.read_text,report.read_text,transcript.read_text
+tests/unit/cli/test_demo_command.py::test_demo_tour_plain_output_reports_artifacts	52	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_diagnostics.py::test_usage_report_text_renders_pricing_lanes	51	0	0	1	0	0	call_args_list
+tests/unit/cli/test_diagnostics.py::test_pace_reports_active_model_and_idle_gaps	20	0	0	1	1	0	call_args_list,monkeypatch.setattr
+tests/unit/cli/test_diagnostics.py::test_pace_reports_sparse_sessions	12	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/cli/test_diagnostics.py::test_turns_reports_duration_thinking_tools_and_characters	28	0	0	1	1	0	call_args_list,monkeypatch.setattr
+tests/unit/cli/test_diagnostics.py::test_tools_renders_tool_usage_insight	39	0	0	1	0	0	call_args_list
+tests/unit/cli/test_diagnostics.py::test_tools_renders_observed_event_basis	42	0	0	1	0	0	call_args_list
+tests/unit/cli/test_diagnostics.py::test_tools_reports_empty_archives	17	0	0	1	0	0	call_args
+tests/unit/cli/test_embed_activation.py::test_writes_config_on_yes	17	1	1	0	1	0	monkeypatch.setenv,patch,target.read_text
+tests/unit/cli/test_embed_activation.py::test_no_store_key_omits_secret	19	1	1	0	1	0	monkeypatch.setenv,patch,target.read_text
+tests/unit/cli/test_embed_activation.py::test_preflight_passes_bounded_window_options	25	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_embed_activation.py::test_disable_writes_disabled_flag	12	1	1	0	1	0	monkeypatch.setenv,target.read_text
+tests/unit/cli/test_embed_activation.py::test_backfill_passes_bounded_window_options	34	0	0	1	1	0	call_args,monkeypatch.setenv,patch
+tests/unit/cli/test_embed_activation.py::test_backfill_routes_archive_to_materializer	42	0	0	1	1	0	assert_called_once_with,assert_not_called,call_args,monkeypatch.setenv,patch
+tests/unit/cli/test_embed_activation.py::test_backfill_stop_after_seconds_stops_before_next_session	45	0	0	1	1	0	call_count,monkeypatch.setenv,patch
+tests/unit/cli/test_embed_activation.py::test_backfill_max_errors_stops_after_provider_error	44	0	0	1	1	0	call_count,monkeypatch.setenv,patch
+tests/unit/cli/test_embed_activation.py::test_backfill_run_cost_cap_stops_before_provider_call	44	0	0	1	1	0	call_count,monkeypatch.setenv,patch
+tests/unit/cli/test_embed_activation.py::test_auto_with_fresh_embeddings_stays_dialogue	15	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_hooks.py::test_install_recommended_is_idempotent_and_preserves_unrelated_hooks	50	1	1	0	0	0	target.read_bytes,target.read_text
+tests/unit/cli/test_hooks.py::test_uninstall_removes_only_polylogue_handlers	22	1	0	0	0	0	target.read_text
+tests/unit/cli/test_hooks.py::test_codex_install_uses_hooks_json_and_preserves_config_toml	18	1	1	0	0	0	config.read_bytes,read_text
+tests/unit/cli/test_hooks.py::test_hook_runtime_provider_override_records_codex_event	12	1	0	0	1	0	monkeypatch.setattr,sidecar.read_text
+tests/unit/cli/test_import.py::test_import_command_stages_local_path_before_daemon_request	59	1	1	0	1	0	patch,source.read_text,staged.read_text
+tests/unit/cli/test_import.py::test_stage_for_daemon_removes_stale_sqlite_provenance	23	1	0	0	0	0	replacement.read_bytes,staged.read_bytes
+tests/unit/cli/test_init.py::test_init_command_writes_starter_config	11	1	1	0	0	0	target.read_text
+tests/unit/cli/test_init.py::test_init_command_refuses_overwrite_without_force	10	1	1	0	0	0	target.read_text
+tests/unit/cli/test_init.py::test_init_command_force_overwrites	11	1	1	0	0	0	target.read_text
+tests/unit/cli/test_insights_command_runtime.py::test_make_callback_renders_insights_and_surfaces_query_errors	20	0	0	1	1	0	assert_called_once,assert_called_once_with,patch
+tests/unit/cli/test_insights_command_runtime.py::test_insights_status_command_emits_json_and_inherits_root_filters	26	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_insights_command_runtime.py::test_insights_export_command_covers_json_plain_and_error_paths	64	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_interactive_cli.py::test_select_uses_fzf_first_ranked_candidate_in_a_real_pty	31	1	0	0	0	0	trace_path.read_text
+tests/unit/cli/test_interactive_cli.py::test_select_propagates_requested_pty_size_to_fzf	27	1	0	0	0	0	size_path.read_text
+tests/unit/cli/test_judge_command.py::test_judge_noninteractive_accept_uses_bulk_lifecycle_payload	40	0	0	1	0	0	await_args
+tests/unit/cli/test_judge_command.py::test_judge_edit_preserves_the_candidate_lifecycle_kind	18	0	0	1	0	0	await_args
+tests/unit/cli/test_judge_command.py::test_judge_accept_all_of_kind_applies_the_real_queue_filters	22	0	0	1	0	0	assert_awaited_once_with,await_args
+tests/unit/cli/test_latest_resolver.py::test_no_filters_returns_none	3	0	0	0	0	1
+tests/unit/cli/test_latest_resolver.py::test_latest_returns_none_when_archive_empty	22	0	0	0	1	1	monkeypatch.setattr
+tests/unit/cli/test_machine_main_runtime.py::test_extract_option_returns_none_for_non_option_messages	2	0	0	0	0	1
+tests/unit/cli/test_maintenance_registration.py::test_maintenance_group_in_ops_commands	3	0	0	0	0	1
+tests/unit/cli/test_maintenance_registration.py::test_maintenance_group_is_click_group	3	0	0	0	0	1
+tests/unit/cli/test_maintenance_registration.py::test_maintenance_plan_is_click_command	3	0	0	0	0	1
+tests/unit/cli/test_maintenance_registration.py::test_maintenance_run_is_click_command	3	0	0	0	0	1
+tests/unit/cli/test_maintenance_registration.py::test_maintenance_status_is_click_command	3	0	0	0	0	1
+tests/unit/cli/test_messages.py::test_write_messages_file_streams_json_payload	31	1	0	0	1	0	out.read_text,patch
+tests/unit/cli/test_messages.py::test_run_messages_markdown_and_not_found_paths	20	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/cli/test_messages.py::test_run_messages_text_alias_emits_human_rows	19	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_messages.py::test_run_raw_emits_json_yaml_and_empty_error	34	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/cli/test_neighbors_command.py::test_read_view_neighbors_emits_json_payload	29	0	0	1	0	0	assert_called_once_with
+tests/unit/cli/test_neighbors_command.py::test_read_view_neighbors_requires_a_seed	20	0	0	1	0	0	assert_not_called
+tests/unit/cli/test_operator_support_runtime.py::test_build_drive_source_client_wires_auth_gateway_and_client	31	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_paths.py::test_archive_override_unifies_blob_write_read_maintenance_report_and_reset	21	1	0	0	0	0	read_bytes
+tests/unit/cli/test_query_exec_laws.py::test_daemon_session_fetch_has_wall_clock_deadline	20	0	0	0	1	1	monkeypatch.setattr
+tests/unit/cli/test_query_exec_laws.py::test_async_execute_query_archive_delivers_to_output_path	55	1	0	1	1	0	assert_called_once_with,monkeypatch.setattr,output_path.read_text
+tests/unit/cli/test_query_exec_laws.py::test_async_execute_query_archive_open_uses_first_list_result	59	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr,patch
+tests/unit/cli/test_query_expression.py::test_cross_field_or_paren_builds_boolean_ast	3	0	0	0	0	1
+tests/unit/cli/test_query_expression.py::test_exists_supported_unit_sources_compile_to_session_selectors	9	0	0	0	0	1
+tests/unit/cli/test_query_expression.py::test_unsupported_terminal_action_raises_typed_error	29	0	0	0	0	1
+tests/unit/cli/test_query_expression.py::test_cross_field_or_compiles_to_boolean_predicate	3	0	0	0	0	1
+tests/unit/cli/test_query_expression.py::test_cross_field_or_reaches_boolean_predicate	3	0	0	0	0	1
+tests/unit/cli/test_query_expression.py::test_words_lte_did_not_set_wrong_field	5	0	0	0	0	1
+tests/unit/cli/test_query_fmt.py::test_output_stats_by_empty_contract	7	0	0	1	0	0	assert_called_once_with
+tests/unit/cli/test_query_fmt.py::test_output_stats_by_action_json_contract	49	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/cli/test_query_fmt.py::test_output_stats_by_tool_json_contract	49	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/cli/test_query_set_read.py::test_read_spec_to_file_writes_composed_projection_contract	32	1	1	0	0	0	out_path.read_text
+tests/unit/cli/test_query_support_runtime.py::test_emit_no_results_warns_when_archive_is_converging	16	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_query_support_runtime.py::test_emit_no_results_omits_convergence_warning_when_archive_is_ready	10	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_query_support_runtime.py::test_query_actions_cover_error_branches_and_abort_paths	93	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_query_support_runtime.py::test_query_semantic_stats_render_from_native_actions	24	0	0	1	1	0	assert_awaited_once,assert_called_once,call_args_list,patch,patch.object
+tests/unit/cli/test_query_support_runtime.py::test_query_stats_helpers_cover_structured_sql_and_profile_paths	98	0	0	1	1	0	assert_called_once,call_args_list,call_count,patch
+tests/unit/cli/test_query_support_runtime.py::test_query_output_helpers_cover_stream_dates_headers_and_rich_lists	63	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_execute_query_verb_dispatches_typed_request	8	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_all_and_analyze_count_update_parent_request	58	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_direct_ref_emits_shared_resolution_payload	25	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_analyze_verb_toggles_stats_only_and_updates_grouping	22	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_select_verb_invokes_query_backed_selector	14	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_select_verb_format_json_overrides_print_field	9	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_select_verb_inherits_root_json_format	9	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_summary_dispatches_to_execute_query_verb	16	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_summary_exact_ref_dispatches_direct_read	15	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_summary_preserves_search_within_exact_ref	18	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_all_non_summary_invokes_query_set_read_view	11	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_dialogue_query_set_uses_selection_limit	19	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_dialogue_query_set_keeps_max_tokens_as_projection	16	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_context_composes_preamble_not_passthrough	18	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_context_image_invokes_pack_view	26	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_verb_context_image_projection_spec_records_resolved_refs	34	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_continue_candidates_ranks_context_without_session_resolution	33	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_view_temporal_projects_selected_summaries	69	0	0	1	1	0	assert_awaited_once,assert_called_once,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_exact_read_summaries_resolves_id_without_query_enumeration	36	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_temporal_message_events_use_indexed_session_message_query	30	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_temporal_action_events_use_lightweight_occurrence_query	28	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_chronicle_uses_projection_spec_edge_limit	23	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_messages_uses_projection_spec_body_window	20	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_read_neighbors_uses_projection_spec_neighbor_policy	24	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_query_verbs_runtime.py::test_resolve_target_session_id_returns_none_without_filters_or_latest	3	0	0	0	0	1
+tests/unit/cli/test_query_verbs_runtime.py::test_delete_verb_updates_confirmation_and_dry_run_flags	45	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_schema_command_support_builds_payloads_from_privacy_inputs	47	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_render_schema_explain_result_json_and_verbose_text_paths	21	0	0	1	1	0	assert_called_once_with,call_args_list,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_render_explain_verbose_and_review_evidence_surfaces	47	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_render_schema_generate_result_covers_plain_and_json_paths	54	0	0	1	1	0	assert_called_once,call_args,call_args_list,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_render_schema_list_result_covers_selected_global_json_and_empty_paths	67	0	0	1	1	0	assert_called_once_with,call_args_list,patch
+tests/unit/cli/test_schema_helper_runtime.py::test_render_schema_compare_promote_and_audit_result_variants	44	0	0	1	1	0	call_args_list,patch
+tests/unit/cli/test_select.py::test_choose_select_row_rejects_ambiguous_non_interactive	15	0	0	1	1	1	assert_not_called,patch
+tests/unit/cli/test_select.py::test_choose_select_row_returns_singleton_when_not_interactive	7	0	0	1	0	0	assert_not_called
+tests/unit/cli/test_select.py::test_choose_select_row_prefers_fzf_then_falls_back_to_ui	22	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/cli/test_select.py::test_select_session_rows_compiles_query_terms_before_filtering	48	0	0	1	1	0	assert_not_called,patch,patch.object
+tests/unit/cli/test_select.py::test_noninteractive_select_does_not_initialize_ui	11	0	0	0	1	1	patch
+tests/unit/cli/test_source_selection_helpers.py::test_load_last_source_returns_none_for_missing	2	0	0	0	0	1
+tests/unit/cli/test_source_selection_helpers.py::test_load_last_source_returns_none_for_invalid_json	5	0	0	0	0	1
+tests/unit/cli/test_source_selection_helpers.py::test_save_and_load_last_source_roundtrip	5	1	0	0	0	0	path.read_text
+tests/unit/cli/test_source_selection_helpers.py::test_maybe_prompt_sources_returns_none_in_plain_mode	8	0	0	0	0	1
+tests/unit/cli/test_source_selection_helpers.py::test_maybe_prompt_sources_skips_prompt_for_single_source	10	0	0	1	0	1	assert_not_called
+tests/unit/cli/test_source_selection_helpers.py::test_maybe_prompt_sources_prompts_and_persists_selection	15	0	0	1	0	0	call_args
+tests/unit/cli/test_source_selection_helpers.py::test_maybe_prompt_sources_prioritizes_saved_selection	14	0	0	1	0	0	call_args
+tests/unit/cli/test_source_selection_helpers.py::test_print_summary_basic_contract	22	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_source_selection_helpers.py::test_print_summary_verbose_health_matrix	15	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/cli/test_status.py::test_direct_status_reads_archive_file_set_from_archive_tiers	44	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_status.py::test_direct_status_reports_sqlite_maintenance_state	34	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_status.py::test_direct_status_reports_archive_surface_blockers	59	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_status.py::test_direct_status_uses_active_archive_root	40	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_status.py::test_explicit_status_has_short_daemon_timeout_before_direct_fallback	14	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_status.py::test_status_command_full_json_direct_fallback_skips_exact_readiness	19	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_status.py::test_status_command_exact_archive_readiness_direct_fallback_opts_in	25	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_streaming_markdown_read_view.py::test_stream_exact_session_markdown_writes_full_file	12	1	1	0	0	0	out.read_text
+tests/unit/cli/test_streaming_markdown_read_view.py::test_stream_exact_session_markdown_prose_only_omits_tools	10	1	1	0	0	0	out.read_text
+tests/unit/cli/test_verb_cardinality.py::test_query_set_view_multi_match_projects_without_cardinality_guard	14	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/cli/test_verb_cardinality.py::test_multi_match_with_first_reads_first_match	12	0	0	1	1	0	call_args,patch
+tests/unit/cli/test_verb_cardinality.py::test_read_uses_shared_check_cardinality	20	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_verb_cardinality.py::test_mark_uses_shared_check_cardinality	24	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_verb_cardinality.py::test_dry_run_probes_before_resolving_ids	22	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/cli/test_verb_cardinality.py::test_multi_match_dry_run_requires_all_before_resolving_ids	14	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_verb_cardinality.py::test_dry_run_all_previews_full_resolved_set_not_truncated_query	28	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/cli/test_verb_cardinality.py::test_multi_match_with_yes_and_all_delegates	16	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_verb_cardinality.py::test_delete_uses_shared_check_cardinality	24	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/cli/test_verb_cardinality.py::test_resolver_rejects_sample	12	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_verb_cardinality.py::test_resolver_allows_absent_sample	23	0	0	1	1	0	assert_called_once,patch
+tests/unit/cli/test_verb_cardinality.py::test_analyze_does_not_call_check_cardinality	13	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_verb_cardinality.py::test_mark_and_delete_import_check_cardinality_from_same_module	11	1	1	0	0	0	inspect.getsource
+tests/unit/cli/test_verb_cardinality.py::test_analyze_does_not_use_cardinality_module	6	1	1	0	0	0	inspect.getsource
+tests/unit/cli/test_verb_cardinality.py::test_delete_does_not_call_execute_query_verb_for_non_dry_run	17	0	0	1	1	0	assert_not_called,patch
+tests/unit/cli/test_verb_cardinality.py::test_resolve_ids_calls_query_spec_not_raw_params	14	1	1	0	0	0	inspect.getsource
+tests/unit/core/test_audit.py::test_to_json_no_provider	4	0	0	0	0	1
+tests/unit/core/test_code_detection.py::test_returns_none_for_plain_text	2	0	0	0	0	1
+tests/unit/core/test_code_detection.py::test_all_languages_have_patterns	3	0	0	0	0	1
+tests/unit/core/test_code_detection.py::test_non_code_text	4	0	0	0	0	1
+tests/unit/core/test_config.py::test_get_logger_returns_structlog_logger	2	0	0	0	0	1
+tests/unit/core/test_config.py::test_stderr_proxy_exposes_terminal_capabilities	4	0	0	0	0	1
+tests/unit/core/test_config.py::test_config_optional_fields_default_none	9	0	0	0	0	1
+tests/unit/core/test_config.py::test_from_env_defaults	5	0	0	0	1	1	monkeypatch.delenv
+tests/unit/core/test_dates.py::test_no_query_time_module_bypasses_the_parse_date_seam	17	1	0	0	0	0	path.read_text
+tests/unit/core/test_facade_api.py::test_init_with_defaults	4	0	0	0	0	1
+tests/unit/core/test_facade_api.py::test_get_session_empty_db	3	0	0	0	0	1
+tests/unit/core/test_facade_api.py::test_filter_returns_session_filter	4	0	0	0	0	1
+tests/unit/core/test_facade_api.py::test_filter_chaining	3	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_empty_string_returns_none	2	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_long_string_returns_none	2	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_plain_text_returns_none	2	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_dominant_format_no_winner	8	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_dominant_format_empty	3	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_string_length_stats_empty	3	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_monotonicity_score_none	3	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_avg_array_length_none	3	0	0	0	0	1
+tests/unit/core/test_field_stats.py::test_approximate_entropy_none	3	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_filter_chain_never_crashes_on_execution	37	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_rrf_symmetric_scores	12	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_rrf_never_crashes	3	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_rrf_formula_correctness	8	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_rrf_combined_formula	11	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_filter_first	4	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_filter_first_empty	3	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_date_method_accepts_string_formats	11	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_filter_sort	3	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_sort_field_produces_results	7	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_has_content_type_returns_list	7	0	0	0	0	1
+tests/unit/core/test_filters_props.py::test_list_summaries_returns_summary_objects	5	0	0	0	0	1
+tests/unit/core/test_health_core.py::test_get_readiness_contract	7	0	0	0	0	1
+tests/unit/core/test_insight_export_bundles.py::test_insight_export_bundle_protects_existing_targets	14	1	0	0	0	0	marker.read_text
+tests/unit/core/test_insight_export_bundles.py::test_insight_export_bundle_records_stale_readiness	29	1	0	0	0	0	read_text
+tests/unit/core/test_insight_registry_parity.py::test_mcp_registered_insights_have_query_model	5	0	0	0	0	1
+tests/unit/core/test_insight_registry_runtime.py::test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths	32	0	0	1	1	0	assert_called_once_with,call_args_list,patch
+tests/unit/core/test_json.py::test_provider_from_string_value_never_empty	5	0	0	0	0	1
+tests/unit/core/test_message_laws.py::test_message_role_is_typed_enum	2	0	0	0	0	1
+tests/unit/core/test_message_laws.py::test_extract_thinking_empty_wrapper_returns_none	4	0	0	0	0	1
+tests/unit/core/test_models.py::test_detect_language_returns_none_for_non_code	2	0	0	0	0	1
+tests/unit/core/test_paths.py::test_long_prefix_truncated	5	0	0	0	0	1
+tests/unit/core/test_payload_coercion.py::test_none_returns_none	2	0	0	0	0	1
+tests/unit/core/test_pricing.py::test_tokencost_is_not_a_dependency_or_import_anywhere	18	1	1	0	0	0	path.read_text,read_text
+tests/unit/core/test_pricing.py::test_canonical_model_family_returns_none_for_unknown_model	2	0	0	0	0	1
+tests/unit/core/test_pricing.py::test_canonical_model_family_returns_none_for_empty_or_none	3	0	0	0	0	1
+tests/unit/core/test_privacy_config.py::test_no_overrides	3	0	0	0	0	1
+tests/unit/core/test_privacy_config.py::test_no_match_returns_none	6	0	0	0	0	1
+tests/unit/core/test_refs.py::test_parse_delegation_edge_object_id_returns_none_for_non_edge_shapes	2	0	0	0	0	1
+tests/unit/core/test_runtime_registry_helpers.py::test_get_element_schema_handles_missing_elements_and_files	16	0	0	0	0	1
+tests/unit/core/test_runtime_registry_helpers.py::test_resolve_payload_returns_none_when_catalog_is_absent	5	0	0	0	1	1	monkeypatch.setattr
+tests/unit/core/test_sampling.py::test_codex_has_session_dir	2	0	0	0	0	1
+tests/unit/core/test_sampling.py::test_chatgpt_no_record_type_key	2	0	0	0	0	1
+tests/unit/core/test_sampling.py::test_max_samples_limits_output	9	0	0	0	0	1
+tests/unit/core/test_sampling.py::test_max_sessions_limits_files	13	0	0	0	0	1
+tests/unit/core/test_sampling.py::test_unreadable_file_skipped	18	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_foreign_key_annotation_at_root	27	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_time_delta_annotation_at_root	31	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_mutual_exclusion_annotation_at_root	32	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_string_length_annotation_at_root	21	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_relational_annotations_in_generated_schema	15	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_model_field_not_scored_as_title	25	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_id_suffix_field_penalized	18	0	0	0	0	1
+tests/unit/core/test_schema_annotation_contracts.py::test_path_like_values_penalized	25	0	0	0	0	1
+tests/unit/core/test_schema_cluster_assignment.py::test_representative_paths_capped_at_5	6	0	0	0	0	1
+tests/unit/core/test_schema_cluster_assignment.py::test_dominant_keys_capped_at_20	5	0	0	0	0	1
+tests/unit/core/test_schema_corpus_alignment.py::test_extract_record_samples_capped_returns_fewer	10	0	0	0	0	1
+tests/unit/core/test_schema_corpus_alignment.py::test_evidence_entry_fields	9	0	0	0	0	1
+tests/unit/core/test_schema_generation.py::test_load_limited_samples	3	0	0	0	0	1
+tests/unit/core/test_schema_generation.py::test_max_sessions_limits_files	8	0	0	0	0	1
+tests/unit/core/test_schema_generation.py::test_cli_with_no_db	12	0	0	0	0	1
+tests/unit/core/test_schema_registry.py::test_packaged_provider_schema_is_valid_draft202012	3	1	0	0	0	0	schema_path.read_bytes
+tests/unit/core/test_schema_registry.py::test_load_cluster_manifest_missing	2	0	0	0	0	1
+tests/unit/core/test_schema_registry.py::test_classified_changes_relational	19	0	0	0	0	1
+tests/unit/core/test_schema_registry_versions.py::test_get_nonexistent_version_returns_none	4	0	0	0	0	1
+tests/unit/core/test_schema_registry_versions.py::test_get_schema_unknown_provider_returns_none	3	0	0	0	0	1
+tests/unit/core/test_schema_registry_versions.py::test_age_returns_none_for_unknown_provider	2	0	0	0	0	1
+tests/unit/core/test_schema_relational_inference.py::test_returns_relational_annotations_object	8	0	0	0	0	1
+tests/unit/core/test_schema_relational_inference.py::test_terminal_name_matching	25	0	0	0	0	1
+tests/unit/core/test_schema_relational_inference.py::test_ignores_dynamic_key_children	15	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_shallow_depth_bonus	17	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_high_cardinality_rejected	16	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_too_short_rejected	17	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_iso8601_format	17	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_monotonicity_bonus	20	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_multiline_penalizes	20	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_too_long_rejected	17	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_inside_array_penalizes	19	0	0	0	0	1
+tests/unit/core/test_schema_semantic_inference.py::test_deep_path_penalizes	22	0	0	0	0	1
+tests/unit/core/test_sources.py::test_source_to_provider_returns_none_for_unknown_family	5	0	0	0	0	1
+tests/unit/core/test_sources.py::test_source_for_family_returns_none_for_unknown_token	2	0	0	0	0	1
+tests/unit/core/test_sources.py::test_origin_from_provider_is_total	5	0	0	0	0	1
+tests/unit/core/test_sync_surface_runtime.py::test_sync_session_queries_forward_through_sync_bridge	108	0	0	1	1	0	call_count,patch
+tests/unit/core/test_sync_surface_runtime.py::test_sync_product_queries_forward_through_sync_bridge	45	0	0	1	1	0	call_count,patch
+tests/unit/core/test_sync_surface_runtime.py::test_sync_polylogue_wraps_async_facade_and_context_manager	18	0	0	1	1	0	assert_called_once_with,call_args_list,patch
+tests/unit/core/test_sync_surface_runtime.py::test_polylogue_products_mixin_forwards_all_product_calls	70	0	0	1	1	0	assert_called,assert_called_once,assert_called_once_with,assert_not_called,patch
+tests/unit/core/test_synthetic_relations.py::test_resolve_returns_none_when_no_reference_defined	4	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_resolve_returns_none_when_target_has_no_ids	6	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_resolve_returns_none_for_unregistered_path	4	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_get_time_delta_returns_value_within_bounds	19	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_get_time_delta_symmetric_lookup	20	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_get_time_delta_returns_none_for_unknown_pair	4	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_truncates_long_text	10	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_extends_short_text	10	0	0	0	0	1
+tests/unit/core/test_synthetic_relations.py::test_result_within_min_max_bounds	11	0	0	0	0	1
+tests/unit/core/test_synthetic_semantic_wiring.py::test_semantic_gen_set_after_generate	8	0	0	0	0	1
+tests/unit/core/test_synthetic_semantics.py::test_known_roles_return_nonempty_text	5	0	0	0	0	1
+tests/unit/core/test_synthetic_semantics.py::test_generated_data_parses	13	0	0	0	0	1
+tests/unit/core/test_synthetic_semantics.py::test_single_message_session	10	0	0	0	0	1
+tests/unit/core/test_synthetic_semantics.py::test_available_providers_is_nonempty	3	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_timestamp_result_always_utc_aware	5	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_date_returns_none_for_invalid_input	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_timestamp_accepts_valid_epoch_numbers	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_timestamp_format_parse_roundtrip	5	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_archive_datetime_returns_none_for_none	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_archive_datetime_returns_none_for_empty_string	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_parse_archive_datetime_is_always_aware_for_valid_iso_input	5	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_year_strings_not_treated_as_epoch	3	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_boundary_86399_not_treated_as_epoch	3	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_epoch_with_decimal	3	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_iso_with_z_is_utc_aware	4	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_iso_with_offset_preserves_tz	4	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_none_returns_none	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_empty_string_returns_none	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_garbage_string_returns_none	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_negative_epoch_returns_none	2	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_zero_as_string_not_epoch	3	0	0	0	0	1
+tests/unit/core/test_timestamp_guards.py::test_unparseable_timestamp_returns_none	2	0	0	0	0	1
+tests/unit/core/test_verification.py::test_report_structure_matches_schema	12	0	0	0	0	1
+tests/unit/core/test_verification.py::test_provider_stats_have_required_fields	16	0	0	0	0	1
+tests/unit/core/test_version_runtime.py::test_read_packed_ref_handles_missing_file_and_read_errors	16	0	0	0	1	1	patch
+tests/unit/core/test_version_runtime.py::test_read_head_commit_returns_none_for_invalid_or_missing_head	12	0	0	0	0	1
+tests/unit/core/test_web_urls.py::test_local_or_unconfirmed_origins_have_no_url	2	0	0	0	0	1
+tests/unit/core/test_web_urls.py::test_missing_native_id	3	0	0	0	0	1
+tests/unit/cost/test_outlook.py::test_no_cycle_anchor_returns_none	4	0	0	0	0	1
+tests/unit/cost/test_outlook.py::test_outlook_is_frozen	8	0	0	0	0	1
+tests/unit/cost/test_plans.py::test_cycle_for_missing_anchor_returns_none	8	0	0	0	0	1
+tests/unit/cost/test_plans.py::test_resolve_plan_none_returns_none	2	0	0	0	0	1
+tests/unit/daemon/test_backup.py::test_backup_retries_a_writer_commit_between_checkpoint_and_lock	40	1	0	0	1	0	monkeypatch.setattr,read_bytes,read_text
+tests/unit/daemon/test_backup.py::test_backup_archive_copies_precious_tiers_and_referenced_blobs	122	1	1	0	0	0	copied_tier.read_bytes,key_path.read_bytes,read_bytes,read_text,receipt_path.read_text
+tests/unit/daemon/test_backup.py::test_backup_archive_full_evidence_profile_includes_all_tiers	37	1	0	0	0	0	read_text
+tests/unit/daemon/test_backup.py::test_full_evidence_backup_restores_index_only_attachment_blob	40	1	0	0	0	0	read_bytes,read_text
+tests/unit/daemon/test_backup.py::test_backup_archive_full_evidence_profile_treats_ops_as_optional	26	1	0	0	0	0	read_text
+tests/unit/daemon/test_backup.py::test_backup_archive_user_overlays_profile_copies_only_user_tier	23	1	0	0	0	0	read_text
+tests/unit/daemon/test_backup.py::test_backup_archive_diagnostics_profile_copies_only_ops_tier	23	1	0	0	0	0	read_text
+tests/unit/daemon/test_backup.py::test_backup_missing_blob_warnings_are_bounded	42	1	1	0	0	0	read_text
+tests/unit/daemon/test_backup.py::test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory	32	1	0	0	0	0	copied.read_bytes,read_text
+tests/unit/daemon/test_backup.py::test_backup_verification_refuses_receipt_when_backup_changes_after_scratch_restore	24	1	1	0	1	0	copied_tier.read_bytes,monkeypatch.setattr
+tests/unit/daemon/test_browser_capture_instance_attribution.py::test_multiple_receiver_processes_deduplicate_without_corrupting_spool	27	1	1	0	0	0	read_bytes
+tests/unit/daemon/test_browser_capture_instance_attribution.py::test_concurrent_extension_instances_deduplicate_without_corrupting_spool	41	1	0	0	0	0	path.read_text
+tests/unit/daemon/test_convergence_stages.py::test_fts_session_debt_uses_targeted_repair_not_full_rebuild	33	0	0	1	1	0	assert_called_once,assert_not_called,mock.patch.object
+tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_inserts_missing_rows_without_reset	21	0	0	1	1	0	assert_not_called,mock.patch.object
+tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_deletes_excess_rows_without_reset	30	0	0	1	1	0	assert_not_called,mock.patch.object
+tests/unit/daemon/test_convergence_stages.py::test_archive_repair_sessions_fts_skips_unknown_scope	20	0	0	1	1	0	assert_not_called,mock.patch.object
+tests/unit/daemon/test_cost_panel_endpoint.py::test_unknown_session_returns_404	10	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_cost_panel_endpoint.py::test_known_session_returns_typed_panel	21	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_cursor_lag_baseline.py::test_ensure_lag_sample_table_is_idempotent	12	0	0	0	0	1
+tests/unit/daemon/test_daemon_cli.py::test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy	19	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry	27	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry	23	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_periodic_convergence_check_warns_on_non_lock_failures	20	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_polylogued_run_uses_default_sources	15	0	0	1	1	0	assert_called_once_with,call_args,patch
+tests/unit/daemon/test_daemon_cli.py::test_polylogued_watch_uses_default_sources	16	0	0	1	1	0	assert_called_once_with,call_args,patch
+tests/unit/daemon/test_daemon_cli.py::test_polylogued_watch_builds_sources_from_roots	21	0	0	1	1	0	call_args,patch
+tests/unit/daemon/test_daemon_cli.py::test_drive_source_catchup_skips_when_no_drive_sources	19	0	0	1	1	0	assert_not_called,patch
+tests/unit/daemon/test_daemon_cli.py::test_drive_source_catchup_ingests_configured_drive_source	55	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/daemon/test_daemon_cli.py::test_drive_source_catchup_safe_wrapper_logs_failure	14	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_run_daemon_services_checks_archive_identity_before_component_startup	28	0	0	1	1	0	assert_not_called,patch
+tests/unit/daemon/test_daemon_cli.py::test_run_daemon_services_waits_for_fts_startup_before_watcher	169	0	0	1	1	0	call_args,patch,patch.object
+tests/unit/daemon/test_daemon_cli.py::test_default_run_mints_a_receiver_token	6	0	0	0	0	1
+tests/unit/daemon/test_daemon_cli.py::test_allow_no_auth_serves_with_no_token	4	0	0	0	0	1
+tests/unit/daemon/test_daemon_convergence.py::test_converger_start_skips_process_pool_for_io_only_stages	19	0	0	1	1	1	assert_not_called,monkeypatch.setattr
+tests/unit/daemon/test_daemon_convergence.py::test_converger_start_creates_process_pool_for_cpu_bound_stages	36	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_with_no_events_returns_empty_envelope	10	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_returns_events_after_since	15	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_kinds_filter_whitelist	13	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_since_is_strict_gt	13	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_sse_resumes_from_last_event_id_header	21	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_selective_subscription_via_kinds	19	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_coalesces_burst_into_snapshot	20	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_poll_below_threshold_returns_individual_events	13	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_events_endpoint.py::test_credential_in_query_string_is_rejected	26	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_events_endpoint.py::test_access_token_in_query_string_is_rejected_on_non_sse_routes	18	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_events_endpoint.py::test_valid_cookie_cannot_make_query_credential_reach_dispatch	34	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_daemon_http_contracts.py::test_required_keys_always_present	24	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_route_fails_closed_when_cached_payload_omits_frontier	38	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_component_state_envelope_has_documented_subsystems	18	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_component_readiness_envelope_has_canonical_status_components	27	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_health_envelope_has_documented_fields	23	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_health_endpoint_uses_bounded_db_probe	23	0	0	1	1	0	assert_called_once,call_args,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_endpoint_does_not_mutate_archive	33	0	0	1	0	0	assert_called_once
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_reports_daemon_liveness_false_when_no_pidfile	22	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_health_check_endpoint_reports_503_on_degraded_health	39	0	0	1	1	0	assert_called_once,call_args,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_contracts.py::test_health_check_endpoint_returns_503_on_internal_error	31	0	0	1	1	0	assert_called_once,call_args,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_fts_readiness_is_structured_field	16	0	0	1	0	1	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_dev_loop_payload_reports_allowlisted_launcher_metadata	38	0	0	1	1	0	call_args,monkeypatch.setenv
+tests/unit/daemon/test_daemon_http_contracts.py::test_dev_loop_payload_is_disabled_without_launcher_metadata	22	0	0	1	1	0	call_args,monkeypatch.delenv
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_payload_does_not_leak_secrets	27	0	0	1	1	0	call_args,monkeypatch.setenv
+tests/unit/daemon/test_daemon_http_contracts.py::test_status_payload_does_not_leak_full_environment	23	0	0	1	1	0	call_args,monkeypatch.setenv
+tests/unit/daemon/test_daemon_http_contracts.py::test_get_session_does_not_leak_adjacent_sessions	43	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_send_error_emits_canonical_envelope	8	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_send_error_includes_detail_when_provided	12	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_do_options_error_routes_through_canonical_envelope	11	0	0	1	0	0	call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_daemon_safe_handler_maps_timeout_to_503_with_retry_after	19	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_daemon_http_contracts.py::test_archive_query_executor_is_bounded	6	0	0	0	0	1
+tests/unit/daemon/test_daemon_http_security.py::test_missing_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_invalid_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_missing_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_invalid_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_no_origin_passes_gates	17	0	0	1	1	0	call_args_list,patch,patch.object
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_same_origin_passes_gates	23	0	0	1	1	0	call_args_list,patch,patch.object
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_cross_origin_returns_403	17	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_missing_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_invalid_token_returns_401	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_cross_origin_returns_403	11	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_no_origin_passes_gates	11	0	0	1	1	0	call_args_list,patch
+tests/unit/daemon/test_daemon_http_security.py::test_valid_token_same_origin_passes_gates	17	0	0	1	1	0	call_args_list,patch
+tests/unit/daemon/test_daemon_http_security.py::test_foreign_host_returns_403_before_auth_is_even_checked	8	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_loopback_host_reaches_the_auth_gate	9	0	0	1	0	0	call_args_list
+tests/unit/daemon/test_daemon_http_security.py::test_foreign_host_returns_403	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_foreign_host_returns_403_even_with_valid_token	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_foreign_host_returns_403_even_with_valid_token	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_accepts_absolute_reference_only_by_matching_inbox_entry	51	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/daemon/test_daemon_http_security.py::test_rejects_staged_unsupported_import_shape	25	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/daemon/test_daemon_http_security.py::test_accepts_degraded_staged_import_with_preflight_caveat	45	0	0	1	1	0	assert_called_once,assert_not_called,call_args,patch
+tests/unit/daemon/test_daemon_http_security.py::test_rejects_unstaged_absolute_local_path	21	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/daemon/test_daemon_http_security.py::test_traversal_attempt_cannot_escape_inbox	41	0	0	1	1	0	assert_not_called,patch
+tests/unit/daemon/test_daemon_http_security.py::test_traversal_basename_matches_inbox_entry_is_accepted	48	0	0	1	1	0	assert_not_called,call_args,patch
+tests/unit/daemon/test_daemon_http_security.py::test_symlink_escape_is_rejected	29	0	0	1	1	0	assert_called_once_with,assert_not_called,patch
+tests/unit/daemon/test_daemon_http_security.py::test_options_405	5	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_daemon_http_security.py::test_no_token_in_log_or_print_calls	298	1	0	0	0	0	ast.parse,ast.walk,py_file.read_text
+tests/unit/daemon/test_daemon_http_security.py::test_foreign_host_returns_403_before_observability_special_case	16	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_security.py::test_disabled_observability_returns_404	11	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_security.py::test_enabled_non_loopback_without_token_returns_401	21	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/daemon/test_daemon_http_security.py::test_body_over_cap_returns_413	17	0	0	1	1	0	assert_called_with,monkeypatch.setattr
+tests/unit/daemon/test_daemon_lifecycle.py::test_sigterm_dumps_threads_and_persists_signal_before_exit	20	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/daemon/test_daemon_status.py::test_status_snapshot_reports_disk_free_for_archive_parent	10	0	0	0	1	1	monkeypatch.setattr
+tests/unit/daemon/test_daemon_status.py::test_status_snapshot_refresh_default_builds_rich_payload	27	0	0	1	1	0	call_count,monkeypatch.setattr
+tests/unit/daemon/test_daemon_status.py::test_build_daemon_status_uses_one_lifecycle_snapshot	19	0	0	1	1	0	call_count,patch
+tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_reuses_bounded_probe_results	70	0	0	1	1	0	call_count,patch
+tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_noop_when_config_disabled	9	0	0	0	1	1	patch
+tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_noop_when_index_missing	9	0	0	0	1	1	patch
+tests/unit/daemon/test_health_check_endpoint_tiers.py::test_health_check_endpoint_defaults_to_fast_tier	19	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_probe_payloads_are_orjson_serializable	39	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_liveness_returns_200_with_documented_envelope	17	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_health_contract.py::test_liveness_uses_shared_process_start_anchor	15	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_liveness_reports_in_process_heartbeat_age	13	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_liveness_does_not_query_health_subsystem	20	0	0	1	1	0	assert_not_called,call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_liveness_is_unauthenticated	17	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_health_contract.py::test_readiness_returns_200_when_healthy	17	0	0	1	0	0	call_args
+tests/unit/daemon/test_health_contract.py::test_readiness_uses_bounded_fts_freshness_not_exact_scan	23	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_readiness_returns_503_on_critical_check	31	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_readiness_returns_503_when_fts_not_fresh	35	0	0	1	0	0	call_args
+tests/unit/daemon/test_health_contract.py::test_readiness_returns_503_on_schema_mismatch	23	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_readiness_surfaces_degraded_reason_taxonomy	30	0	0	1	0	0	call_args
+tests/unit/daemon/test_health_contract.py::test_readiness_probe_error_returns_503_not_500	21	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/daemon/test_health_contract.py::test_readiness_is_unauthenticated	11	0	0	1	0	0	assert_called_once
+tests/unit/daemon/test_http_write_coordination.py::test_standalone_http_server_stops_loop_after_late_writer_drain	13	0	0	1	1	0	await_count,patch.object
+tests/unit/daemon/test_insights_browser_endpoint.py::test_unknown_session_returns_404	10	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_insights_browser_endpoint.py::test_known_session_returns_typed_envelope	22	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_insights_browser_endpoint.py::test_include_param_restricts_kinds	12	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_insights_browser_endpoint.py::test_include_param_with_unknown_tokens_drops_them	8	0	0	1	0	0	call_args
+tests/unit/daemon/test_insights_browser_endpoint.py::test_envelope_carries_origin_and_id	8	0	0	1	0	0	call_args
+tests/unit/daemon/test_insights_browser_endpoint.py::test_envelope_is_json_serialisable	8	0	0	1	0	0	call_args
+tests/unit/daemon/test_live_ingest_attempt_progress.py::test_below_min_samples_returns_none	5	0	0	0	0	1
+tests/unit/daemon/test_maintenance_endpoints.py::test_plan_route_dispatched	6	0	0	1	1	0	assert_called_once,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_run_route_dispatched	6	0	0	1	1	0	assert_called_once,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_unknown_maintenance_post_route_404	6	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_plan_returns_backfill_operation_dict	22	0	0	1	1	0	assert_called_once,call_args,patch,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_run_returns_backfill_operation_dict	23	0	0	1	1	0	assert_called_once,call_args,patch,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_plan_invalid_json_400	9	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_run_invalid_json_400	9	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_status_route_dispatched	6	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_operations_route_dispatched	6	0	0	1	1	0	assert_called_once_with,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_status_not_found_returns_404	7	0	0	1	1	0	assert_called_once_with,monkeypatch.setenv,patch.object
+tests/unit/daemon/test_maintenance_endpoints.py::test_status_returns_envelope_with_metadata	51	0	0	1	1	0	assert_called_once,call_args,monkeypatch.setenv,patch.object
+tests/unit/daemon/test_metrics_endpoint.py::test_metrics_route_responds_200_with_prometheus_content_type	12	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_metrics_endpoint.py::test_metrics_endpoint_is_unauthenticated	12	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_metrics_endpoint.py::test_metrics_body_contains_expected_series	11	0	0	1	0	0	call_args
+tests/unit/daemon/test_notification_backends.py::test_email_smtplib_classes_are_present_for_documentation	5	0	0	0	0	1
+tests/unit/daemon/test_notification_backends.py::test_resolve_backend_accepts_comma_separated_string_for_fanout	10	0	0	0	0	1
+tests/unit/daemon/test_notification_backends.py::test_resolve_backend_accepts_single_log_name	3	0	0	0	0	1
+tests/unit/daemon/test_notification_webhook.py::test_resolve_backend_webhook_returns_backend_when_url_present	9	0	0	0	0	1
+tests/unit/daemon/test_notification_webhook.py::test_webhook_resolve_propagates_secret_from_config	10	0	0	0	0	1
+tests/unit/daemon/test_otlp_receiver.py::test_response_is_valid_protobuf	9	0	0	0	0	1
+tests/unit/daemon/test_provenance_endpoint.py::test_display_source_path_returns_none_for_falsy	3	0	0	0	0	1
+tests/unit/daemon/test_provenance_endpoint.py::test_returns_none_for_missing_session	2	0	0	0	0	1
+tests/unit/daemon/test_provenance_endpoint.py::test_missing_session_returns_404	10	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_provenance_endpoint.py::test_default_request_omits_raw_preview	22	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_provenance_endpoint.py::test_include_raw_query_param_attaches_preview	20	0	0	1	0	0	assert_called_once,call_args
+tests/unit/daemon/test_provenance_endpoint.py::test_client_cannot_widen_raw_preview_cap	31	0	0	1	0	0	call_args
+tests/unit/daemon/test_provider_usage_endpoint.py::test_returns_200_with_empty_origins_when_archive_has_no_sessions	13	0	0	1	0	0	call_args
+tests/unit/daemon/test_provider_usage_endpoint.py::test_returns_200_with_origin_usage_for_seeded_session	17	0	0	1	0	0	call_args
+tests/unit/daemon/test_provider_usage_endpoint.py::test_default_detail_is_headline_not_full	14	0	0	1	0	0	call_args
+tests/unit/daemon/test_provider_usage_endpoint.py::test_respects_detail_and_limit_query_params	9	0	0	1	0	0	call_args
+tests/unit/daemon/test_raw_failure_sample.py::test_null_provider_hint_defaults_to_none	4	0	0	0	0	1
+tests/unit/daemon/test_route_contracts.py::test_unknown_route_has_no_contract	2	0	0	0	0	1
+tests/unit/daemon/test_route_contracts.py::test_shell_bootstrap_is_unauthenticated_on_loopback	13	0	0	1	0	0	call_args_list
+tests/unit/daemon/test_route_contracts.py::test_shell_bootstrap_requires_token_on_non_loopback	15	0	0	1	0	0	assert_called_once_with
+tests/unit/daemon/test_similarity_endpoint.py::test_returns_none_for_missing_session	6	0	0	0	0	1
+tests/unit/daemon/test_similarity_endpoint.py::test_missing_session_returns_404	12	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_similarity_endpoint.py::test_disabled_envelope_routes_through_200	25	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_similarity_endpoint.py::test_limit_query_param_propagates_to_envelope	12	0	0	1	0	0	call_args
+tests/unit/daemon/test_similarity_endpoint.py::test_unparseable_limit_falls_back_to_default	12	0	0	1	0	0	call_args
+tests/unit/daemon/test_similarity_endpoint.py::test_not_embedded_envelope_when_pipeline_dormant	13	0	0	1	0	0	call_args
+tests/unit/daemon/test_thread_continue.py::test_endpoint_returns_envelope	9	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_endpoint.py::test_zero_rejected	2	0	0	0	0	1
+tests/unit/daemon/test_topology_endpoint.py::test_negative_rejected	2	0	0	0	0	1
+tests/unit/daemon/test_topology_endpoint.py::test_above_hard_cap_rejected	2	0	0	0	0	1
+tests/unit/daemon/test_topology_endpoint.py::test_non_numeric_rejected	2	0	0	0	0	1
+tests/unit/daemon/test_topology_endpoint.py::test_unknown_session_returns_404	10	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_topology_endpoint.py::test_descendant_request_anchors_at_root	18	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_endpoint.py::test_isolated_session_renders_empty_readiness	12	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_endpoint.py::test_node_limit_hard_cap_rejects_unbounded_request	14	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_topology_endpoint.py::test_node_limit_clamps_payload_size	16	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_stack.py::test_unknown_session_returns_404	10	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_topology_stack.py::test_grandchild_walks_back_to_root_and_orders_chain	17	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_stack.py::test_isolated_session_returns_single_element_chain	11	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_topology_stack.py::test_descendants_query_param_excludes_descendants	10	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_get_routes_dispatch_to_named_handler	18	0	0	1	1	0	assert_called_once,monkeypatch.setattr
+tests/unit/daemon/test_user_state_http.py::test_post_routes_dispatch_to_named_handler	18	0	0	1	1	0	assert_called_once,monkeypatch.setattr
+tests/unit/daemon/test_user_state_http.py::test_delete_routes_dispatch_to_named_handler	18	0	0	1	1	0	assert_called_once,monkeypatch.setattr
+tests/unit/daemon/test_user_state_http.py::test_empty_list_envelope_shape	18	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_create_then_list_then_delete_roundtrip	51	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_create_validates_body	14	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_create_rejects_malformed_json	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_create_rejects_non_object_json	10	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_delete_requires_session_id_and_mark_type	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_then_get_then_list_then_delete	61	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_get_missing_annotation_returns_404	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_validates_body	13	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_save_then_get_then_list_then_delete	73	0	0	1	0	0	call_args
+tests/unit/daemon/test_user_state_http.py::test_get_missing_view_returns_404	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_validates_body	10	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_then_get_then_list_then_delete	60	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_get_missing_pack_returns_404	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_validates_body	10	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_then_get_then_list_then_delete	68	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_user_state_http.py::test_get_missing_workspace_returns_404	9	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_user_state_http.py::test_save_validates_body	10	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_web_auth.py::test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route	45	0	0	1	0	0	assert_called_once_with,assert_not_called,call_args
+tests/unit/daemon/test_web_auth.py::test_web_credential_cannot_execute_archive_control_routes	22	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_web_auth.py::test_bootstrap_rejects_wrong_origin_without_minting_cookie	17	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/daemon/test_web_auth.py::test_bootstrap_host_rejection_uses_typed_wrong_origin_contract	16	0	0	1	0	0	call_args
+tests/unit/daemon/test_web_auth.py::test_non_loopback_bootstrap_rejection_uses_typed_wrong_origin_contract	19	0	0	1	0	0	call_args
+tests/unit/daemon/test_web_auth.py::test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke	47	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_auth.py::test_browser_missing_credential_has_explicit_recoverable_state	15	0	0	1	0	0	call_args
+tests/unit/daemon/test_web_reader.py::test_web_reader_archive_root_rejects_schema_mismatch	12	0	0	0	1	1	patch
+tests/unit/daemon/test_web_reader.py::test_archive_bounded_query_progress_handler_interrupts_after_client_abort	35	0	0	0	0	1
+tests/unit/daemon/test_web_reader.py::test_archive_session_list_route_uses_bounded_sql_helper	11	1	1	0	0	0	inspect.getsource
+tests/unit/daemon/test_web_reader.py::test_reader_smoke_lane_is_documented	9	1	1	0	0	0	read_text
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_marks_endpoint_accepts_selection_js_payload_shape	20	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_every_toolbar_mark_type_round_trips	18	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_api_stack_requires_ids	6	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_api_stack_blank_ids_token_rejected	7	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_api_compare_validates_params	6	0	0	1	0	0	assert_called_once_with,assert_not_called
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_save_workspace_endpoint_accepts_toolbar_payload	39	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_save_recall_pack_endpoint_accepts_toolbar_payload	31	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_shell_endpoint_contracts.py::test_save_view_endpoint_accepts_toolbar_payload	17	0	0	1	0	0	assert_not_called,call_args
+tests/unit/daemon/test_web_shell_xss_escaping.py::test_no_escattr_call_remains_inside_a_js_string_literal_context	12	1	0	0	0	0	path.read_text
+tests/unit/daemon/test_web_shell_xss_escaping.py::test_esc_js_attr_helper_is_defined_exactly_once	10	1	0	0	0	0	path.read_text
+tests/unit/daemon/test_web_shell_xss_escaping.py::test_esc_attr_helper_is_defined_exactly_once_in_the_shared_scope	18	1	1	0	0	0	path.read_text
+tests/unit/daemon/test_web_shell_xss_escaping.py::test_no_partial_lt_amp_only_escape_remains	11	1	0	0	0	0	path.read_text
+tests/unit/daemon/test_web_shell_xss_escaping.py::test_previously_unescaped_row_builder_fields_are_now_wrapped	7	1	0	0	0	0	read_text
+tests/unit/demo/test_demo_seed_verify.py::test_seed_injects_demo_cost_for_postmortem	21	0	0	0	0	1
+tests/unit/demo/test_workspace.py::test_run_pipeline_for_configured_sources_uses_all_sources	21	0	0	1	1	0	await_args,patch
+tests/unit/demo/test_workspace.py::test_run_pipeline_for_configured_sources_filters_named_sources	21	0	0	1	1	0	await_args,patch
+tests/unit/demo/test_workspace.py::test_run_pipeline_for_fixture_workspace_mirrors_fixtures_to_inbox	16	0	0	1	1	0	await_args,patch
+tests/unit/demo/test_workspace.py::test_seed_workspace_from_corpus_request_routes_through_pipeline	15	0	0	1	1	0	await_args,patch
+tests/unit/demo/test_workspace.py::test_seed_workspace_from_corpus_options_builds_request_routes_through_pipeline	12	0	0	1	1	0	await_args,patch
+tests/unit/demo/test_workspace.py::test_seed_workspace_from_scenarios_routes_through_pipeline	20	0	0	1	1	0	await_args,patch
+tests/unit/devtools/test_affordance_usage.py::test_affordance_usage_report_and_files	64	1	1	0	0	0	read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_atomic_promote_keeps_a_named_rollback	12	1	0	0	0	0	active.read_text,rollback.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_atomic_promote_copies_across_subvolumes_before_local_replace	32	1	0	0	1	0	active.read_text,monkeypatch.setattr,rollback.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_activation_failure_restores_durable_snapshots_without_cross_device_rename	62	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_activation_final_evidence_failure_is_rolled_back_inside_transaction	59	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_index_generation_promotion_preserves_active_symlink_protocol	18	1	0	0	0	0	old_target.read_text,read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_index_generation_promotion_copies_staging_clone_before_local_replace	36	1	0	0	1	0	monkeypatch.setattr,old_target.read_text,read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_write_index_clone_checkpoint_records_a_self_checking_receipt	26	1	0	0	0	0	checkpoint_path.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_reuse_index_clone_ignores_a_tampered_checkpoint_receipt	20	1	0	0	0	0	checkpoint_path.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_plan_clone_forward_writes_index_clone_checkpoint_before_later_tier_work	24	1	0	0	1	0	checkpoint_path.read_text,monkeypatch.setattr
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_activate_prepared_forward_holds_writer_exclusion_across_the_whole_migration	53	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/devtools/test_archive_schema_fast_forward.py::test_activate_prepared_forward_fails_before_first_write_when_writer_already_owns_archive	52	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/devtools/test_benchmark_campaign.py::test_parse_pytest_benchmark_fixture_matches_real_schema	19	1	0	0	0	0	PYTEST_BENCHMARK_FIXTURE.read_text
+tests/unit/devtools/test_benchmark_campaign.py::test_campaign_result_round_trips_path_targets_from_artifact	35	1	0	0	0	0	artifact.read_text
+tests/unit/devtools/test_benchmark_campaigns.py::test_daemon_live_workload_uses_synthetic_provider_wire_formats	23	1	0	0	0	0	claude_file.read_bytes,claude_file.read_text,codex_file.read_bytes,codex_file.read_text
+tests/unit/devtools/test_benchmark_campaigns.py::test_daemon_live_append_preserves_generated_session_identity	21	1	0	0	0	0	claude_file.read_text,codex_file.read_text
+tests/unit/devtools/test_benchmark_campaigns.py::test_daemon_live_workload_generation_replaces_stale_jsonl	11	1	0	0	0	0	stale_file.read_text
+tests/unit/devtools/test_claim_vs_evidence.py::test_claim_vs_evidence_builds_bounded_artifacts	232	1	1	0	0	0	read_text
+tests/unit/devtools/test_claim_vs_evidence.py::test_claim_vs_evidence_refuses_aggregate_rates_below_n_min	27	1	1	0	0	0	read_text
+tests/unit/devtools/test_claim_vs_evidence.py::test_claim_vs_evidence_public_reproduction_handles_unlabeled_sample	18	1	1	0	0	0	read_text
+tests/unit/devtools/test_claim_vs_evidence.py::test_claim_vs_evidence_seeded_demo_reproduces_method	24	1	1	0	0	0	read_text
+tests/unit/devtools/test_cli_surface_audit.py::test_cli_surface_audit_prunes_stale_unbounded_output_by_default	41	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_cli_wrapper.py::test_repo_wrapper_script_has_no_hardcoded_paths	9	1	1	0	0	0	WRAPPER.read_text
+tests/unit/devtools/test_demo_packet.py::test_validate_packet_rejects_missing_epistemic_contract_fields	13	1	0	0	0	0	read_text
+tests/unit/devtools/test_demo_packet.py::test_validate_packet_requires_canonical_report_section_order	13	1	0	0	0	0	report_path.read_text
+tests/unit/devtools/test_demo_packet.py::test_production_validator_rejects_reproduced_false_green_mutations	45	1	0	0	0	0	report_path.read_text
+tests/unit/devtools/test_demo_packet.py::test_single_packet_cli_returns_one_for_missing_falsifier	14	1	1	0	0	0	read_text
+tests/unit/devtools/test_demo_shelf.py::test_demo_shelf_writes_manifest_and_summary_index	48	1	1	0	0	0	read_text
+tests/unit/devtools/test_demo_shelf.py::test_demo_shelf_summary_index_reports_coverage_gaps	14	1	0	0	0	0	read_text
+tests/unit/devtools/test_demo_shelf.py::test_demo_shelf_reports_unsummarized_current_entries	26	1	0	0	0	0	read_text
+tests/unit/devtools/test_demo_shelf.py::test_repository_closure_rejects_ignored_demo_with_bounded_accounting	30	1	0	0	0	0	read_bytes
+tests/unit/devtools/test_demo_shelf.py::test_private_projection_keeps_ignored_demo_accessible	24	1	1	0	0	0	read_text
+tests/unit/devtools/test_demo_shelf.py::test_tracked_projection_is_byte_identical_in_clean_clone	17	1	0	0	0	0	read_bytes
+tests/unit/devtools/test_dev_loop.py::test_extension_smoke_runs_background_worker_against_receiver	48	1	0	0	1	0	event_path.read_text,monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_plan_writes_local_extension_launch_artifacts	77	1	1	0	1	0	live_env_example.read_text,markdown_plan.read_text,monkeypatch.setattr,monkeypatch.setenv,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_plan_and_extension_smoke_can_share_one_dev_loop_run	49	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_smoke_records_real_chrome_extension_artifacts	75	1	0	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_provider_smoke_records_content_script_artifacts	124	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_provider_live_follow_composes_daemon_capture_and_api_read	143	1	0	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_browser_live_proof_records_operator_local_artifacts	142	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_tui_plan_writes_visual_inspection_artifacts	50	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_cli_capture_runs_command_with_branch_local_artifacts	70	1	0	0	1	0	env_path.read_text,event_path.read_text,monkeypatch.setattr,monkeypatch.setenv,stdout_path.read_text,summary_path.read_text,transcript_path.read_text
+tests/unit/devtools/test_dev_loop.py::test_cli_capture_treats_forwarded_trailing_json_as_wrapper_flag	33	1	0	0	1	0	monkeypatch.setattr,stdout_path.read_text
+tests/unit/devtools/test_dev_loop.py::test_daemon_launch_writes_branch_local_process_artifacts	123	1	1	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_dev_loop.py::test_daemon_launch_rejects_occupied_branch_local_ports	30	1	1	0	1	0	event_path.read_text,monkeypatch.setattr
+tests/unit/devtools/test_index_fast_forward.py::test_fast_forward_failure_keeps_user_version_and_source_counts	25	1	0	0	0	0	read_text
+tests/unit/devtools/test_index_fast_forward.py::test_receipt_hash_tamper_blocks_activation	23	1	0	0	0	0	receipt_path.read_text
+tests/unit/devtools/test_index_fast_forward.py::test_activation_reuses_receipt_proof_and_rejects_identity_drift	41	1	0	0	1	0	monkeypatch.setattr,receipt_path.read_text
+tests/unit/devtools/test_index_fast_forward.py::test_failed_restart_contract_automatically_restores_v32_symlink	41	1	0	0	1	0	monkeypatch.setattr,receipt_path.read_text
+tests/unit/devtools/test_index_fast_forward.py::test_interrupted_activation_leaves_rollbackable_receipt	51	1	0	0	1	0	monkeypatch.setattr,receipt_path.read_text
+tests/unit/devtools/test_lab_scenario.py::test_module_imports	2	0	0	0	0	1
+tests/unit/devtools/test_lab_scenario.py::test_storage_correctness_manifest_records_the_realized_archive_family	18	1	1	0	0	0	manifest_path.read_text
+tests/unit/devtools/test_lab_scenario.py::test_main_writes_direct_archive_smoke_report	20	1	0	0	1	0	patch,read_text
+tests/unit/devtools/test_lab_scenario.py::test_reader_visual_smoke_json_reports_artifact_inventory	22	1	0	1	1	0	call_args,patch,read_text
+tests/unit/devtools/test_lab_scenario.py::test_storage_correctness_json_runs_archive_backed_checks	59	1	1	0	0	0	read_text
+tests/unit/devtools/test_lineage_validation.py::test_lineage_validation_writes_demo_artifacts	14	1	1	0	0	0	read_text
+tests/unit/devtools/test_pipeline_probe.py::test_main_writes_json_summary	29	1	0	0	0	0	json_out.read_text
+tests/unit/devtools/test_pipeline_probe.py::test_run_probe_can_sample_archive_subset_and_persist_manifest	25	1	0	0	0	0	manifest_out.read_text
+tests/unit/devtools/test_pipeline_probe.py::test_run_probe_can_sample_archive_file_set_subset	51	1	0	0	0	0	manifest_out.read_text
+tests/unit/devtools/test_public_claims.py::test_public_claims_gate_is_declared_in_ci_and_release_readiness	7	1	1	0	0	0	read_text
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_records_call_and_setup_failures	21	1	0	0	1	0	events_path.read_text,monkeypatch.setenv
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_records_node_start_and_finish	17	1	0	0	1	0	events_path.read_text,monkeypatch.setenv
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_writes_worker_scoped_event_files	18	1	0	0	1	0	monkeypatch.setenv,read_text
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_records_final_selected_nodes	27	1	0	0	1	0	events_path.read_text,monkeypatch.setenv,selection_path.read_text
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_bounds_selection_nodeid_payload	34	1	0	0	1	0	monkeypatch.setenv,selection_path.read_text
+tests/unit/devtools/test_pytest_progress_plugin.py::test_progress_plugin_records_collection_duration_and_summary	36	1	0	0	1	0	events_path.read_text,monkeypatch.setattr,monkeypatch.setenv,selection_path.read_text,summary_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_repository_pytest_timeout_policy_is_bounded_and_installed	9	1	0	0	0	0	read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_supervisor_refuses_controller_without_subreaper	29	1	0	0	1	0	monkeypatch.setattr,receipt_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_supervisor_kills_controller_when_receipt_publication_fails	52	1	1	0	0	0	ready_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_surviving_owned_process_forces_nonzero_containment_result	29	1	0	0	1	0	monkeypatch.setattr,receipt_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_managed_runner_retains_responsible_node_for_per_test_timeout	51	1	1	0	1	0	monkeypatch.setenv,read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_auto_mode_retries_when_systemd_scope_launch_fails	35	1	1	0	1	0	monkeypatch.setattr,monkeypatch.setenv,read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_whole_run_deadline_bounds_stalled_supervisor_startup	38	1	1	0	1	0	monkeypatch.setattr,monkeypatch.setenv,read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_runner_refuses_launch_without_subreaper	22	1	0	0	1	0	monkeypatch.setattr,monkeypatch.setenv,read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_runner_deadline_cleans_group_when_fallback_supervisor_is_sigkilled	87	1	1	0	1	0	monkeypatch.setenv,read_text,ready_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_controller_sigkill_clears_exact_owned_xdist_cgroup	108	1	1	0	0	0	ready_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_owner_sigkill_clears_exact_owned_xdist_cgroup	58	1	0	0	0	0	ready_path.read_text
+tests/unit/devtools/test_pytest_supervisor.py::test_runner_bounds_post_supervisor_pipe_drain	75	1	0	0	1	0	monkeypatch.setattr,monkeypatch.setenv,ready_path.read_text
+tests/unit/devtools/test_render_cli_reference.py::test_write_if_changed_reuses_existing_output	10	1	0	0	0	0	output_path.read_text
+tests/unit/devtools/test_render_devtools_reference.py::test_write_if_changed_reuses_existing_output	10	1	0	0	0	0	output_path.read_text
+tests/unit/devtools/test_render_devtools_reference.py::test_write_if_changed_uses_unique_temp_files_for_concurrent_writers	10	1	0	0	0	0	output_path.read_text
+tests/unit/devtools/test_render_quality_reference.py::test_write_if_changed_reuses_existing_output	10	1	0	0	0	0	output_path.read_text
+tests/unit/devtools/test_run_tests.py::test_git_head_degrades_to_none_without_git	6	0	0	0	1	1	monkeypatch.setattr
+tests/unit/devtools/test_run_tests.py::test_git_head_degrades_to_none_when_probe_cannot_run	6	0	0	0	1	1	monkeypatch.setattr
+tests/unit/devtools/test_self_verify.py::test_self_verify_capture_and_compare_cli	27	1	1	0	0	0	out_path.read_text
+tests/unit/devtools/test_slo_catalog.py::test_catalog_exists_and_covers_required_surfaces	19	1	0	0	0	0	CATALOG_PATH.read_text
+tests/unit/devtools/test_slo_catalog.py::test_verify_slos_passes_when_under_budget	15	1	1	0	1	0	CATALOG_PATH.read_text,monkeypatch.setattr
+tests/unit/devtools/test_slo_catalog.py::test_verify_slos_fails_when_surface_exceeds_budget	16	1	1	0	1	0	CATALOG_PATH.read_text,monkeypatch.setattr
+tests/unit/devtools/test_slo_catalog.py::test_verify_slos_json_reports_violation	21	1	0	0	1	0	CATALOG_PATH.read_text,monkeypatch.setattr
+tests/unit/devtools/test_slo_catalog.py::test_catalog_required_surfaces_are_cheap_local_tier	19	1	0	0	0	0	CATALOG_PATH.read_text
+tests/unit/devtools/test_slo_catalog.py::test_real_pytest_benchmark_json_fixture_parses	22	1	0	0	0	0	fixture.read_text
+tests/unit/devtools/test_slo_catalog.py::test_verify_slos_scores_against_real_pytest_benchmark_fixture	52	1	0	0	1	0	monkeypatch.setattr,read_text
+tests/unit/devtools/test_task_history.py::test_stats_resources_reports_peak_distribution	13	1	0	0	0	0	isolated_task_history_file.read_text
+tests/unit/devtools/test_task_history.py::test_prune_keeps_latest_n	14	1	0	0	0	0	isolated_task_history_file.read_text
+tests/unit/devtools/test_task_history.py::test_prune_zero_keeps_nothing	7	1	0	0	0	0	isolated_task_history_file.read_text
+tests/unit/devtools/test_task_history.py::test_devtools_main_auto_logs_invocation	20	1	1	0	0	0	isolated_task_history_file.read_text
+tests/unit/devtools/test_task_history.py::test_devtools_main_respects_task_history_disable	6	1	0	0	1	0	isolated_task_history_file.read_text,monkeypatch.setenv
+tests/unit/devtools/test_temporal_archive_aggregates.py::test_temporal_archive_aggregates_report_and_files	44	1	0	0	0	0	read_text
+tests/unit/devtools/test_temporal_read_profile.py::test_temporal_read_profile_main_writes_report	11	1	0	0	1	0	out.read_text,patch
+tests/unit/devtools/test_topology_gates.py::test_layering_unmarked_production_writer_mutation_fails	15	1	0	0	0	0	source_writer.read_text
+tests/unit/devtools/test_topology_gates.py::test_layering_user_ops_mutation_fails_without_a_twin_write_contract	17	1	0	0	0	0	user_writer.read_text
+tests/unit/devtools/test_topology_gates.py::test_layering_delegated_public_writer_is_inventoried	23	1	1	0	0	0	source_writer.read_text
+tests/unit/devtools/test_topology_gates.py::test_layering_imported_sql_cannot_hide_a_mutation	18	1	0	0	0	0	source_writer.read_text
+tests/unit/devtools/test_validation_lanes.py::test_module_imports	2	0	0	0	0	1
+tests/unit/devtools/test_verify.py::test_testmon_preflight_accepts_seeded_database	17	0	0	0	1	1	monkeypatch.setattr
+tests/unit/devtools/test_verify.py::test_testmon_preflight_allows_seed_and_full_without_database	7	0	0	0	0	1
+tests/unit/devtools/test_verify.py::test_run_records_managed_basetemp_cleanup_metadata	14	0	0	1	1	0	assert_called_once,patch
+tests/unit/devtools/test_verify.py::test_run_forces_subprocesses_to_current_checkout	15	0	0	1	1	0	call_args,monkeypatch.setenv,patch
+tests/unit/devtools/test_verify.py::test_verify_subprocess_env_replaces_cloud_basetemp_in_local_worktree	9	0	0	1	1	0	call_args,monkeypatch.setenv,patch
+tests/unit/devtools/test_verify.py::test_pytest_run_heartbeat_reports_latest_test_node	23	1	0	0	1	0	monkeypatch.setenv,read_text
+tests/unit/devtools/test_verify.py::test_pytest_run_writes_live_progress_artifact	14	1	1	0	0	0	progress_path.read_text,read_text
+tests/unit/devtools/test_verify.py::test_pytest_run_terminates_after_runtime_budget	38	1	1	0	1	0	monkeypatch.setenv,read_text
+tests/unit/devtools/test_verify.py::test_read_pytest_report_returns_none_for_missing_file	2	0	0	0	0	1
+tests/unit/devtools/test_verify.py::test_read_pytest_report_returns_none_for_invalid_json	4	0	0	0	0	1
+tests/unit/devtools/test_verify.py::test_read_pytest_report_returns_none_for_non_object	4	0	0	0	0	1
+tests/unit/devtools/test_verify.py::test_verify_does_not_notify_on_pass	17	0	0	1	1	0	assert_not_called,patch
+tests/unit/devtools/test_verify.py::test_verify_notifies_on_failure	17	0	0	1	1	0	assert_called_once,patch
+tests/unit/devtools/test_verify_ci_workflows.py::test_returns_nonempty_frozenset	4	0	0	0	0	1
+tests/unit/devtools/test_verify_mutation_freshness.py::test_initial_registry_covers_required_modules	22	1	0	0	0	0	verify_mutation_freshness.MANIFEST.read_text
+tests/unit/devtools/test_visual_vhs.py::test_writes_to_output_dir	10	1	0	0	0	0	read_text
+tests/unit/insights/judgment/test_calibration.py::test_no_gold_at_all_is_unknown	5	0	0	0	0	1
+tests/unit/insights/judgment/test_calibration.py::test_no_cross_context_pooling_function_is_exposed	7	0	0	0	0	1
+tests/unit/insights/judgment/test_comparative.py::test_hidden_rationale_is_not_serialized	15	0	0	0	0	1
+tests/unit/insights/judgment/test_elicitation.py::test_select_next_returns_none_once_all_pairs_are_exhausted	15	0	0	0	0	1
+tests/unit/insights/judgment/test_elicitation.py::test_budget_caps_selection_even_with_pairs_remaining	15	0	0	0	0	1
+tests/unit/insights/judgment/test_rankers.py::test_bradley_terry_mle_returns_none_for_unobserved_items	4	0	0	0	0	1
+tests/unit/insights/judgment/test_types.py::test_abstain_and_insufficient_evidence_have_no_undirected_pair_kind	5	0	0	0	0	1
+tests/unit/insights/measurement/test_metric.py::test_registry_get_returns_none_for_unknown_ref	4	0	0	0	0	1
+tests/unit/insights/test_cost_rollup_summary_path.py::test_cost_rollups_aggregate_typed_cost_rows_without_message_load	79	0	0	1	1	0	call_count,patch
+tests/unit/insights/test_no_metadata_cost_reads.py::test_cost_readers_do_not_inspect_metadata_escape_hatches	18	1	0	0	0	0	ast.parse,path.read_text
+tests/unit/insights/test_registry.py::test_build_query_returns_correct_type	5	0	0	0	0	1
+tests/unit/insights/test_session_commit.py::test_none_timestamps_uses_now	5	0	0	0	0	1
+tests/unit/insights/test_session_commit.py::test_naive_datetime_gets_tz	4	0	0	0	0	1
+tests/unit/insights/test_session_commit.py::test_bare_number_ref	4	0	0	0	0	1
+tests/unit/insights/test_temporal_source_taxonomy.py::test_weakest_of_empty_is_none	2	0	0	0	0	1
+tests/unit/insights/test_tool_usage.py::test_non_mcp_tool	4	0	0	0	0	1
+tests/unit/insights/test_tool_usage.py::test_malformed_mcp_prefix	5	0	0	0	0	1
+tests/unit/insights/test_tool_usage.py::test_aggregates_per_origin_and_tool	60	0	0	1	0	0	call_count
+tests/unit/insights/test_tool_usage.py::test_query_filters_entries_without_narrowing_coverage	53	0	0	1	0	0	call_count
+tests/unit/maintenance/test_failure_routing.py::test_route_failure_sample_never_writes_raw_paths_to_disk	14	1	1	0	0	0	read_text
+tests/unit/maintenance/test_planner_contract.py::test_missing_cursor_is_none	7	0	0	0	0	1
+tests/unit/maintenance/test_planner_contract.py::test_ready_status_yields_no_reason	3	0	0	0	0	1
+tests/unit/maintenance/test_planner_contract.py::test_non_status_input_is_ignored	2	0	0	0	0	1
+tests/unit/maintenance/test_planner_contract.py::test_status_to_dict_omits_reason_when_none	4	0	0	0	0	1
+tests/unit/maintenance/test_registry.py::test_get_operation_missing_returns_none	4	0	0	0	0	1
+tests/unit/maintenance/test_resume.py::test_kill_mid_run_resumes_from_persisted_cursor	59	1	0	0	1	0	patch,rewind.read_text
+tests/unit/material_protocol/v1/test_compatibility_mutations.py::test_reordering_a_record_fails	8	0	0	0	0	1
+tests/unit/material_protocol/v1/test_segmentation_append.py::test_large_session_seals_multiple_segments	5	0	0	0	0	1
+tests/unit/mcp/test_aggregate_sessions.py::test_aggregate_sessions_delegates_to_facade_method	22	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_aggregate_sessions.py::test_aggregate_sessions_default_group_by_is_workflow_shape	16	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_annotation_import_tool.py::test_mcp_annotation_import_delegates_to_product_operation	50	0	0	1	1	0	assert_awaited_once,await_args,patch
+tests/unit/mcp/test_annotation_join_tool.py::test_mcp_annotation_join_maps_the_complete_request	26	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_assertion_judgment_tools.py::test_mcp_supersede_preserves_operator_replacement_fields	24	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_assertion_judgment_tools.py::test_mcp_bulk_judgment_rejects_non_boolean_injection	15	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_assertion_judgment_tools.py::test_mcp_bulk_judgment_rejects_invalid_supersede_replacement_fields	22	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_blackboard_tools.py::test_blackboard_list_returns_typed_items	25	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_blackboard_tools.py::test_blackboard_post_passes_fields_and_returns_note	38	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_candidate_capture_tool.py::test_capture_candidate_returns_the_shared_assertion_payload	37	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_cli.py::test_polylogue_mcp_runs_stdio_server_with_default_role	8	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_cli.py::test_polylogue_mcp_accepts_role	8	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_cli.py::test_polylogue_mcp_console_script_is_declared	5	1	0	0	0	0	pyproject.read_text
+tests/unit/mcp/test_compose_context_preamble.py::test_repo_path_forwarded	22	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_compose_context_preamble.py::test_recent_files_forwarded	22	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_compose_context_preamble.py::test_assertion_guidance_keeps_directive_looking_quoted_content_inert	48	0	0	1	0	0	assert_awaited_once_with
+tests/unit/mcp/test_compose_context_preamble.py::test_limit_is_clamped	23	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_context_image.py::test_returns_context_image_payload	22	0	0	1	1	0	call_args,patch
+tests/unit/mcp/test_context_image.py::test_summary_detail_omits_messages	14	0	0	1	1	0	call_args,patch
+tests/unit/mcp/test_context_image.py::test_redact_paths_passthrough	13	0	0	1	1	0	call_args,patch
+tests/unit/mcp/test_contract_evidence.py::test_find_resume_candidates_returns_ranked_envelope	36	0	0	1	1	0	assert_awaited_once,patch
+tests/unit/mcp/test_distilled_bundle_tools.py::test_get_postmortem_bundle_delegates_and_serializes	20	0	0	1	1	0	await_args,await_count,patch
+tests/unit/mcp/test_distilled_bundle_tools.py::test_get_pathologies_delegates_and_serializes	23	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_embedding_status_tool.py::test_embedding_status_returns_canonical_payload	33	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/mcp/test_embedding_status_tool.py::test_embedding_status_detail_requests_exact_readiness_bands	24	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/mcp/test_embedding_status_tool.py::test_embedding_preflight_returns_canonical_payload	46	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_embedding_status_tool.py::test_embedding_preflight_forwards_rebuild_flag	12	0	0	1	1	0	call_args,patch
+tests/unit/mcp/test_facets_tool_contract.py::test_forwards_query_filters_to_shared_contract	21	0	0	1	1	0	assert_awaited_once,await_args,patch
+tests/unit/mcp/test_facets_tool_contract.py::test_without_filters_requests_global_view	11	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_insight_shape_tools.py::test_workflow_shape_distribution_delegates_to_facade_method	28	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_insight_shape_tools.py::test_find_abandoned_sessions_delegates_to_facade_method	39	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_insight_shape_tools.py::test_tool_call_latency_distribution_delegates_to_facade_method	35	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_mcp_call_log.py::test_every_session_tool_forwards_telemetry_identity	56	1	0	0	0	0	ast.parse,ast.walk,path.read_text
+tests/unit/mcp/test_mcp_call_log.py::test_context_preamble_declares_successor_session_correlation	17	1	1	0	0	0	ast.parse,ast.walk,path.read_text
+tests/unit/mcp/test_mcp_call_log.py::test_session_alias_tools_forward_telemetry_identity	18	1	0	0	0	0	ast.parse,ast.walk,path.read_text
+tests/unit/mcp/test_mcp_edge_cases.py::test_unicode_tag	17	0	0	0	1	1	patch
+tests/unit/mcp/test_mcp_edge_cases.py::test_empty_query	23	0	0	0	1	1	patch
+tests/unit/mcp/test_mcp_edge_cases.py::test_limit_zero	18	0	0	0	1	1	patch
+tests/unit/mcp/test_mcp_edge_cases.py::test_limit_negative	18	0	0	0	1	1	patch
+tests/unit/mcp/test_per_tool_contracts.py::test_personal_state_tools_depend_on_parent_composition_seam	21	1	0	1	1	0	assert_called_once,inspect.getsource,patch
+tests/unit/mcp/test_per_tool_contracts.py::test_mutation_tool_count_nonzero	5	0	0	0	0	1
+tests/unit/mcp/test_per_tool_contracts.py::test_happy_path_returns_json_envelope	19	0	0	0	0	1
+tests/unit/mcp/test_per_tool_contracts.py::test_happy_path_validates_against_shared_mutation_schema	18	1	1	0	0	0	_MUTATION_SCHEMA.read_text
+tests/unit/mcp/test_query_tool_schema_derivation.py::test_archive_list_sessions_stops_after_requested_distinct_page	54	0	0	1	0	0	call_count
+tests/unit/mcp/test_server_runtime.py::test_build_server_registers_tools_resources_and_prompts	19	0	0	1	1	0	assert_called_once,assert_called_once_with,call_args,patch
+tests/unit/mcp/test_server_runtime.py::test_get_server_caches_instance_and_updates_runtime_services	17	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_server_runtime.py::test_serve_stdio_runs_cached_server	8	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_archive_debt_tool_reads_shared_facade_payload	26	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_explain_import_reads_shared_facade_payload	37	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_compile_context_reads_shared_context_image	39	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_server_surfaces.py::test_get_context_delivery_reads_recipient_scoped_facade_receipt	57	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_get_context_delivery_hides_missing_receipt_or_recipient_mismatch	21	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_list_assertion_claims_reads_shared_facade_claims	51	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_resolve_ref_reads_shared_facade_payload	25	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_server_surfaces.py::test_extract_code_null_message_text	16	0	0	0	1	1	patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_compare_sessions_delegates_to_facade_with_parsed_ids	22	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_compare_sessions_rejects_empty_input_without_calling_facade	14	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_compare_sessions_rejects_single_id_without_calling_facade	14	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_compare_sessions_rejects_too_many_ids_without_calling_facade	15	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_find_similar_sessions_metadata_delegates_to_facade	24	0	0	1	1	0	assert_awaited_once,await_args,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_find_similar_sessions_prefers_embedding_neighbors_when_enabled	26	0	0	1	1	0	assert_not_awaited,patch
+tests/unit/mcp/test_session_analysis_primitives.py::test_correlate_sessions_delegates_to_facade	31	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_query_tools_reject_unknown_message_type	20	0	0	1	1	0	assert_not_called,patch
+tests/unit/mcp/test_tool_contracts.py::test_neighbor_candidates_exposes_candidate_reasons	28	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_archive_list_sessions_returns_summary_envelope	115	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_get_messages_rejects_unknown_message_type	15	0	0	1	1	0	assert_not_called,patch
+tests/unit/mcp/test_tool_contracts.py::test_get_with_nonexistent_id	11	0	0	0	1	1	patch
+tests/unit/mcp/test_tool_contracts.py::test_explain_query_expression_uses_facade_contract	19	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_query_completions_uses_facade_contract	39	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_insight_list_tools_use_archive_queries	239	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_tool_contracts.py::test_registry_rollup_tool_pages_after_complete_fetch	45	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_tool_contracts.py::test_add_tag_success	28	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_add_tag_error	17	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_remove_tag_success	15	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_remove_tag_error	17	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_bulk_tag_sessions_applies_every_tag_to_every_session	30	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_list_tags_with_origin	10	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_set_metadata_string_value	19	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_set_metadata_json_value	19	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_delete_metadata_success	20	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_delete_requires_confirm	14	0	0	1	1	0	assert_not_called,patch
+tests/unit/mcp/test_tool_contracts.py::test_delete_with_confirm	18	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_contracts.py::test_rebuild_session_insights_success	22	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_tool_discovery.py::test_tool_returns_valid_response_envelope	33	0	0	0	0	1
+tests/unit/mcp/test_user_state_tools.py::test_list_marks_returns_typed_items	35	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_add_mark_resolves_session_and_reports_idempotency	24	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_remove_mark_reports_missing_mark	22	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_add_mark_accepts_message_target	23	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_annotations_roundtrip_through_typed_mcp_payloads	48	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_delete_annotation_reports_status	12	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_list_saved_views_decodes_query_json	21	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_save_saved_view_validates_query_spec	17	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_save_saved_view_default_id_is_content_addressed	19	0	0	1	1	0	await_args,patch
+tests/unit/mcp/test_user_state_tools.py::test_delete_saved_view_reports_status	12	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_recall_pack_tools_roundtrip_typed_payloads	44	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_delete_recall_pack_reports_status	12	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_workspace_tools_roundtrip_typed_payloads	46	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/mcp/test_user_state_tools.py::test_delete_workspace_reports_status	12	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/operations/test_archive_debt.py::test_archive_debt_reports_chatgpt_browser_capture_session_ids	52	1	1	0	0	0	browser_capture.read_text
+tests/unit/operations/test_mutations.py::test_accepts_well_formed_key	3	0	0	0	0	1
+tests/unit/operations/test_mutations.py::test_rejects_empty_or_whitespace	3	0	0	0	0	1
+tests/unit/operations/test_mutations.py::test_rejects_non_string	3	0	0	0	0	1
+tests/unit/pipeline/test_archive_write.py::test_validation_strict_detects_malformed_jsonl_beyond_large_prefix	44	0	0	1	1	0	await_args,monkeypatch.setattr,monkeypatch.setenv
+tests/unit/pipeline/test_archive_write.py::test_validation_progress_callback_reports_counts	49	0	0	1	1	0	assert_any_call,monkeypatch.setattr
+tests/unit/pipeline/test_archive_write.py::test_validation_persists_payload_provider_from_decoded_payload	42	0	0	1	1	0	await_args,monkeypatch.setattr
+tests/unit/pipeline/test_differential_paths.py::test_bom_handling_agrees	9	0	0	0	0	1
+tests/unit/pipeline/test_differential_paths.py::test_orphaned_message_count_agrees	8	0	0	0	0	1
+tests/unit/pipeline/test_differential_paths.py::test_empty_session_count_agrees	19	0	0	0	0	1
+tests/unit/pipeline/test_hermes_raw_identity.py::test_identical_hermes_profiles_persist_and_reprocess_independently	224	1	0	0	0	0	first_db.read_bytes,second_db.read_bytes
+tests/unit/pipeline/test_indexing.py::test_update_index_empty_ids_ensures_index	12	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/pipeline/test_ingest_batch.py::test_sync_index_connection_ensures_runtime_indexes	10	0	0	0	0	1
+tests/unit/pipeline/test_ingest_batch.py::test_write_session_clears_missing_parent_fk	26	0	0	0	0	1
+tests/unit/pipeline/test_ingest_batch.py::test_refresh_session_insights_bulk_dedupes_related_refreshes	98	0	0	1	1	0	assert_awaited_once,await_args,monkeypatch.setattr
+tests/unit/pipeline/test_ingest_batch.py::test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw	49	0	0	1	0	0	await_args_list,await_count
+tests/unit/pipeline/test_ingest_batch.py::test_persist_batch_raw_state_updates_marks_skipped_raw_before_success	41	0	0	1	0	0	assert_awaited_once,await_args
+tests/unit/pipeline/test_ingest_batch.py::test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine	39	0	0	1	0	0	assert_awaited_once,await_args
+tests/unit/pipeline/test_ingestion_chaos.py::test_iter_json_stream_handles_malformed_json_without_crash	9	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_malformed_json_in_jsonl_batch_does_not_poison_valid_lines	10	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_bad_utf8_no_crash	10	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_truncated_jsonl_line_in_codex_raw	11	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_wrong_envelope_in_codex_raw	11	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_bad_utf8_lines_are_counted_and_salvaged	21	1	0	0	0	0	path.read_bytes
+tests/unit/pipeline/test_ingestion_chaos.py::test_y2038_records_parse	10	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_far_future_records_parse	12	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_none_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_missing_timestamp_records_have_none_for_absent	16	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_empty_string_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_whitespace_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_very_large_epoch_returns_none	4	0	0	0	0	1
+tests/unit/pipeline/test_ingestion_chaos.py::test_non_numeric_string_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_no_cli_imports.py::test_pipeline_does_not_import_cli	9	1	0	0	0	0	path.read_text
+tests/unit/pipeline/test_parsing_service.py::test_ingest_empty_sources_returns_empty_result	32	0	0	1	1	0	assert_awaited_once_with,assert_not_called,patch,patch.object
+tests/unit/pipeline/test_parsing_service.py::test_ingest_calls_acquire_then_parse	46	0	0	1	1	0	assert_awaited_once,assert_awaited_once_with,patch,patch.object
+tests/unit/pipeline/test_parsing_service.py::test_ingest_dedupes_backlog_without_rebuilding_raw_id_list	50	0	0	1	1	0	assert_awaited_once_with,patch,patch.object
+tests/unit/pipeline/test_parsing_service.py::test_ingest_skips_parse_when_nothing_acquired	30	0	0	1	1	0	assert_awaited_once,assert_awaited_once_with,assert_not_called,patch,patch.object
+tests/unit/pipeline/test_parsing_service.py::test_progress_callback_passed_to_both_stages	38	0	0	1	1	0	assert_awaited_once_with,patch,patch.object
+tests/unit/pipeline/test_parsing_service.py::test_parse_from_raw_uses_raw_headers_without_prefetching_full_records	21	0	0	1	1	0	assert_called_once_with,await_count,patch
+tests/unit/pipeline/test_parsing_service.py::test_parse_from_raw_splits_explicit_raw_ids_by_blob_budget	31	0	0	1	1	0	assert_awaited_once_with,await_args_list,patch
+tests/unit/pipeline/test_parsing_service.py::test_parse_from_raw_splits_streamed_backlog_by_blob_budget	32	0	0	1	1	0	assert_called_once_with,await_args_list,patch
+tests/unit/pipeline/test_parsing_service.py::test_parse_plan_uses_existing_raw_scope_without_scanning_sources	27	0	0	1	1	0	assert_not_called,patch
+tests/unit/pipeline/test_parsing_service.py::test_build_plan_uses_count_query_for_render_and_index	13	0	0	1	0	0	assert_awaited_once_with
+tests/unit/pipeline/test_prepare_semantic.py::test_shell_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_other_tool_returns_none	3	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_uncategorized_tool_use_block_has_no_semantic_type	8	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_thinking_block_has_no_semantic_type	5	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_text_block_has_no_semantic_type	3	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_non_git_bash	3	0	0	0	0	1
+tests/unit/pipeline/test_prepare_semantic.py::test_non_bash_tool	3	0	0	0	0	1
+tests/unit/pipeline/test_resilience.py::test_parse_jsonl_all_invalid_lines_surfaces_error	12	0	0	0	0	1
+tests/unit/pipeline/test_resilience.py::test_parse_very_large_session_does_not_crash	35	0	0	0	0	1
+tests/unit/pipeline/test_resilience.py::test_validation_law_matches_mode_and_payload_contract	76	0	0	1	1	0	await_args_list,patch
+tests/unit/pipeline/test_run_stages_runtime.py::test_execute_materialize_stage_covers_noop_and_incremental_refresh_paths	52	0	0	1	1	0	assert_called_with,assert_not_awaited,await_args,patch
+tests/unit/pipeline/test_run_stages_runtime.py::test_execute_materialize_stage_covers_refresh_scoped_and_unscoped_paths	77	0	0	1	1	0	await_args,patch
+tests/unit/pipeline/test_run_stages_runtime.py::test_execute_ingest_stage_routes_active_archive_to_native_writer	43	0	0	1	1	0	assert_not_called,patch
+tests/unit/pipeline/test_run_stages_runtime.py::test_execute_index_stage_covers_parse_index_reprocess_and_error_paths	88	0	0	1	1	0	await_count,patch
+tests/unit/pipeline/test_run_stages_runtime.py::test_execute_embed_stage_covers_stats_errors_single_and_batch_paths	66	0	0	1	1	0	assert_called_once,call_args,patch
+tests/unit/pipeline/test_search_text_coverage_contract.py::test_documented_coverage_matrix_matches_live_search_text_ddl	36	1	1	0	0	0	_INDEX_DDL.read_text
+tests/unit/rendering/test_html_sanitizer.py::test_sanitize_returns_markup	4	0	0	0	0	1
+tests/unit/rendering/test_rendering.py::test_both_none_returns_none	8	0	0	0	0	1
+tests/unit/rendering/test_semantic_cards.py::test_semantic_card_golden_cases_satisfy_public_schema	4	1	0	0	0	0	SCHEMA_PATH.read_text
+tests/unit/rendering/test_semantic_cards.py::test_registry_is_explicit_unique_and_evidence_backed	21	1	0	0	0	0	evidence_path.read_text
+tests/unit/rendering/test_semantic_cards.py::test_pure_renderer_modules_do_not_import_storage_api_or_daemon	21	1	0	0	0	0	ast.parse,ast.walk,path.read_text
+tests/unit/scenarios/test_corpus.py::test_build_demo_corpus_specs_materializes_with_synthetic_generator	61	1	1	0	0	0	path.read_text
+tests/unit/schemas/test_corpus_edge_cases.py::test_generated_claude_code_contains_varied_block_types	17	0	0	0	0	1
+tests/unit/security/test_attachment_security.py::test_attachment_path_special_characters	8	0	0	0	0	1
+tests/unit/security/test_attachment_security.py::test_attachment_path_very_long	8	0	0	0	0	1
+tests/unit/security/test_attachment_security.py::test_attachment_path_unicode	7	0	0	0	0	1
+tests/unit/security/test_attachment_security.py::test_filename_reserved_names_handled	9	0	0	0	0	1
+tests/unit/security/test_attachment_security.py::test_symlink_paths_create_valid_attachment	7	0	0	0	0	1
+tests/unit/security/test_no_secret_leak_in_logs.py::test_no_secret_leak_in_log_or_print_calls	18	1	0	0	0	0	ast.parse,path.read_text
+tests/unit/security/test_no_secret_leak_in_logs.py::test_audited_sites_are_real_violations	23	1	0	0	0	0	ast.parse,ast.walk,path.read_text
+tests/unit/security/test_path_sanitization.py::test_none_returns_none	2	0	0	0	0	1
+tests/unit/security/test_path_sanitization.py::test_load_nonexistent_returns_none	3	0	0	0	0	1
+tests/unit/security/test_path_sanitization.py::test_path_pattern_adversarial_input	13	0	0	0	0	1
+tests/unit/security/test_path_sanitization.py::test_uuid_pattern_adversarial_input	17	0	0	0	0	1
+tests/unit/security/test_path_sanitization.py::test_fts5_special_adversarial_input	12	0	0	0	0	1
+tests/unit/security/test_secret_scan.py::test_no_matched_literal_anywhere_in_the_database_file	20	1	0	0	0	0	user_db.read_bytes
+tests/unit/security/test_secret_scan.py::test_never_persists_the_matched_literal	10	1	0	0	0	0	read_bytes
+tests/unit/sinex/test_service.py::test_retry_pending_eventually_confirms_and_reports_zero_remaining_lag	28	0	0	1	0	0	call_count
+tests/unit/sinex/test_service.py::test_obligation_survives_a_process_restart_between_commit_and_transport_attempt	33	0	0	1	0	0	call_count
+tests/unit/sinex/test_transport.py::test_local_reference_transport_default_confirms	5	0	0	1	0	0	call_count
+tests/unit/sinex/test_transport.py::test_local_reference_transport_is_idempotent_by_request_id_once_confirmed	18	0	0	1	0	0	call_count
+tests/unit/sinex/test_transport.py::test_local_reference_transport_fault_injection_does_not_cache_non_unlocking_states	20	0	0	1	0	0	call_count
+tests/unit/site/test_renderer_behavior.py::test_no_unresolved_template_placeholders	8	1	1	0	0	0	path.read_text
+tests/unit/sources/parsers/test_beads.py::test_parse_rejects_mixed_issue_timeline	8	0	0	0	0	1
+tests/unit/sources/parsers/test_hermes_spans.py::test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser	16	1	0	0	0	0	REAL_ATIF_FIXTURE.read_text
+tests/unit/sources/test_acquisition_encoding.py::test_cursor_state_records_corrupt_entries	9	0	0	0	0	1
+tests/unit/sources/test_antigravity_language_server.py::test_discover_language_server_returns_none_when_absent	7	0	0	0	1	1	monkeypatch.delenv,monkeypatch.setattr
+tests/unit/sources/test_assembly.py::test_claude_code_returns_spec	3	0	0	0	0	1
+tests/unit/sources/test_assembly.py::test_codex_returns_spec	3	0	0	0	0	1
+tests/unit/sources/test_assembly.py::test_gemini_returns_spec	3	0	0	0	0	1
+tests/unit/sources/test_assembly.py::test_no_spec_for_other_providers	2	0	0	0	0	1
+tests/unit/sources/test_browser_capture.py::test_browser_capture_does_not_launder_capture_time_as_provider_update	9	0	0	0	0	1
+tests/unit/sources/test_compaction.py::test_non_compaction_returns_none	4	0	0	0	0	1
+tests/unit/sources/test_compaction.py::test_system_without_compact_boundary_not_detected	4	0	0	0	0	1
+tests/unit/sources/test_compaction.py::test_modern_no_preserved_segment	10	0	0	0	0	1
+tests/unit/sources/test_cursor_adversary.py::test_failure_count_increments	7	0	0	0	0	1
+tests/unit/sources/test_cursor_adversary.py::test_rename_detection_via_stat	21	0	0	0	0	1
+tests/unit/sources/test_decoders.py::test_unicode_content_preserved	7	0	0	0	0	1
+tests/unit/sources/test_decoders.py::test_cursor_state_records_failures	13	0	0	0	0	1
+tests/unit/sources/test_drive_auth.py::test_resolve_credentials_path_contract	48	1	0	0	1	0	default_path.read_text,monkeypatch.delenv,monkeypatch.setattr,monkeypatch.setenv
+tests/unit/sources/test_drive_auth.py::test_ui_auth_prompter_announces_url	6	0	0	1	0	0	assert_any_call
+tests/unit/sources/test_drive_auth.py::test_ui_auth_prompter_returns_none_for_empty_code	5	0	0	0	0	1
+tests/unit/sources/test_drive_auth.py::test_load_credentials_state_machine	50	0	0	1	1	0	assert_called_once,assert_called_once_with,monkeypatch.setattr
+tests/unit/sources/test_drive_auth.py::test_load_cached_credentials_prefers_store_then_file	16	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/sources/test_drive_auth.py::test_refresh_credentials_if_needed_contract	26	0	0	1	1	0	assert_called_once,assert_called_once_with,monkeypatch.setattr
+tests/unit/sources/test_drive_auth.py::test_load_credentials_uses_manual_flow_when_local_server_fails	30	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr,patch.object
+tests/unit/sources/test_drive_auth.py::test_load_credentials_returns_local_server_result	33	0	0	1	1	0	assert_called_once_with,assert_not_called,monkeypatch.setattr,patch.object
+tests/unit/sources/test_drive_auth.py::test_revoke_deletes_token_store_and_file	10	0	0	1	0	0	assert_called_once_with
+tests/unit/sources/test_drive_auth.py::test_revoke_without_token_file_is_harmless	9	0	0	1	0	0	assert_called_once_with
+tests/unit/sources/test_drive_gateway.py::test_service_handle_rebuilds_on_expired_credentials	22	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/sources/test_drive_gateway.py::test_service_handle_builds_and_caches_service	22	0	0	1	1	0	assert_called_once_with,monkeypatch.setattr
+tests/unit/sources/test_drive_ops.py::test_download_drive_files_contract	20	1	0	0	0	0	read_bytes
+tests/unit/sources/test_drive_ops.py::test_apply_drive_attachments_contract	33	0	0	1	0	0	call_args_list
+tests/unit/sources/test_drive_ops.py::test_apply_drive_attachments_skips_inline_and_external_media	24	0	0	1	0	0	assert_not_called
+tests/unit/sources/test_drive_ops.py::test_iter_drive_sessions_uses_injected_client_without_recreating	14	0	0	1	1	0	assert_not_called,patch
+tests/unit/sources/test_drive_source_client.py::test_resolve_folder_helper_contracts	19	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/sources/test_drive_source_client.py::test_download_to_path_contract	29	1	0	0	0	0	dest.read_bytes
+tests/unit/sources/test_fuzz_targets_executable.py::test_fuzz_module_has_libfuzzer_entrypoint	13	1	1	0	0	0	read_text
+tests/unit/sources/test_fuzz_targets_executable.py::test_fuzz_readme_lists_every_module	7	1	0	0	0	0	read_text
+tests/unit/sources/test_hermes_export_contract.py::test_fixture_covers_every_required_message_state	12	0	0	0	0	1
+tests/unit/sources/test_hermes_export_contract.py::test_export_never_carries_a_second_full_copy_via_tool_output_preview	8	0	0	0	0	1
+tests/unit/sources/test_hook_spool.py::test_hook_entrypoint_spools_and_materializes_configured_runtime_events	24	1	0	0	1	0	monkeypatch.setattr,monkeypatch.setenv,read_text
+tests/unit/sources/test_hook_spool.py::test_transcript_duplication_policy_stays_in_sync_across_hook_producers	40	1	0	0	0	0	read_text
+tests/unit/sources/test_live_batch_support.py::test_streaming_sized_browser_capture_json_uses_native_payload_detection	120	1	0	0	1	0	monkeypatch.setattr,source.read_bytes
+tests/unit/sources/test_live_batch_support.py::test_live_append_chain_survives_post_ingest_compaction	161	1	0	0	1	0	monkeypatch.setattr,path.read_bytes
+tests/unit/sources/test_live_batch_support.py::test_append_plan_rejects_malformed_hash_authority	32	0	0	0	0	1
+tests/unit/sources/test_live_batch_support.py::test_append_cursor_redetects_source_rewrite_after_handoff	129	1	0	0	1	0	monkeypatch.setattr,path.read_bytes
+tests/unit/sources/test_live_batch_support.py::test_append_cursor_rejects_truncation_after_append_persistence	52	1	0	0	1	0	monkeypatch.setattr,source_path.read_bytes
+tests/unit/sources/test_live_batch_support.py::test_single_session_full_terminally_supersedes_older_membership_prefix	84	1	1	0	1	0	monkeypatch.setattr,older.read_bytes
+tests/unit/sources/test_live_catchup_planning.py::test_catch_up_plan_carries_statted_candidates_without_payload_reads	48	1	0	0	1	0	monkeypatch.setattr,unchanged.read_bytes
+tests/unit/sources/test_live_catchup_planning.py::test_catch_up_repairs_missing_cursor_from_archive_source_row	56	1	0	0	0	0	archived.read_bytes
+tests/unit/sources/test_live_catchup_planning.py::test_catch_up_reconciles_browser_capture_cursor_from_archive_origin	63	1	0	0	0	0	archived.read_bytes
+tests/unit/sources/test_live_cursor_locking.py::test_archive_lock_never_advances_or_excludes_cursor	51	0	0	0	1	1	monkeypatch.setattr
+tests/unit/sources/test_live_cursor_persistence.py::test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materialization	38	1	0	0	0	0	source_path.read_bytes
+tests/unit/sources/test_live_hot_session_convergence.py::test_same_size_prefix_rewrite_outside_tail_returns_to_full_route	32	0	0	1	1	0	await_count,monkeypatch.setattr
+tests/unit/sources/test_live_hot_session_convergence.py::test_legacy_same_size_cursor_without_authority_requires_reauthorization	19	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size	45	0	0	1	1	0	call_args,monkeypatch.setattr
+tests/unit/sources/test_live_watcher.py::test_skip_when_file_not_grown	12	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_reingest_when_file_grows	14	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_size_only_cursor_reingests_to_populate_fingerprint	16	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_parser_fingerprint_change_triggers_reingest	15	0	0	1	1	0	await_count,monkeypatch.setattr
+tests/unit/sources/test_live_watcher.py::test_truncate_rewrite_triggers_reingest	12	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_partial_trailing_line_keeps_cursor_at_last_newline	18	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_incomplete_append_event_defers_without_ingest_until_newline	35	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_append_after_partial_line_reingests_completed_record	15	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_year_old_file_resumed_triggers_reingest	14	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_missing_file_is_silent	6	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_parse_failure_is_recorded_and_backed_off	21	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_ingest_files_emits_observable_batch_metrics	49	0	0	1	0	0	assert_called_once,call_args
+tests/unit/sources/test_live_watcher.py::test_parse_failure_retries_after_backoff	23	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_processes_pre_existing_files	13	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_skips_already_processed	13	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_finds_subagent_files	13	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_ignores_non_jsonl	12	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_uses_source_suffix_contract_for_json_sessions	14	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_recurses_like_live_watch	11	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_catch_up_handles_empty_roots	6	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_debounce_coalesces_rapid_changes	19	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_end_to_end_modify_triggers_ingest	31	0	0	1	0	0	await_count
+tests/unit/sources/test_live_watcher.py::test_end_to_end_new_file_creation_triggers_ingest	22	0	0	1	0	1	await_count
+tests/unit/sources/test_live_watcher.py::test_end_to_end_hidden_root_file_creation_triggers_ingest	28	0	0	1	0	1	await_count
+tests/unit/sources/test_live_watcher.py::test_periodic_catch_up_drains_missed_browser_capture_event	30	0	0	1	1	1	await_count,monkeypatch.setattr
+tests/unit/sources/test_live_watcher.py::test_end_to_end_deletion_does_not_ingest	25	0	0	1	0	0	await_count
+tests/unit/sources/test_models.py::test_meta_with_dict_message_no_usage	8	0	0	0	0	1
+tests/unit/sources/test_models.py::test_to_token_usage_all_none	5	0	0	0	0	1
+tests/unit/sources/test_models.py::test_extract_content_blocks	13	0	0	0	0	1
+tests/unit/sources/test_models.py::test_text_content_parts_dict_with_non_string_text	9	0	0	0	0	1
+tests/unit/sources/test_models.py::test_session_with_invalid_timestamps	20	0	0	0	0	1
+tests/unit/sources/test_models.py::test_invalid_create_time	8	0	0	0	0	1
+tests/unit/sources/test_models.py::test_session_invalid_create_time	13	0	0	0	0	1
+tests/unit/sources/test_models.py::test_invalid_timestamp_parsing	4	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_is_tool_use_never_crashes	4	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_is_thinking_never_crashes	4	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_is_substantive_never_crashes	3	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_is_noise_never_crashes	3	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_is_context_dump_never_crashes	3	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_iter_messages_never_crashes	4	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_chatgpt_parts_extraction_never_crashes	12	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_gemini_text_extraction_never_crashes	13	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_claude_code_text_content_never_crashes	11	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_claude_code_content_blocks_raw_never_crashes	11	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_display_title_never_crashes	18	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_parse_timestamp_numeric_always_utc_or_none	5	0	0	0	0	1
+tests/unit/sources/test_null_guard_properties.py::test_digit_strings_either_none_or_utc	5	0	0	0	0	1
+tests/unit/sources/test_parser_contract_v1.py::test_parsed_message_exposes_optional_archive_contract_fields	10	0	0	0	0	1
+tests/unit/sources/test_parser_contract_v1.py::test_parsed_session_tracks_active_leaf_without_requiring_parser_changes	8	0	0	0	0	1
+tests/unit/sources/test_parser_crashlessness.py::test_looks_like_never_crashes	16	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_extract_text_from_segments_ignores_empty_and_unknown_segments	3	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_parse_code_progress_record_text_never_none	9	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_parse_code_result_record_text_never_none	9	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_parse_code_assistant_no_text_blocks_text_never_none	19	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_parse_payload_shallow_nesting_succeeds	31	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_extract_file_changes_truncates_long_content	8	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_thinking_extraction_never_crashes	3	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_attachment_from_meta_empty_dict	4	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_attachment_from_meta_not_dict	7	0	0	0	0	1
+tests/unit/sources/test_parsers_base.py::test_attachment_from_meta_invalid_size	5	0	0	0	0	1
+tests/unit/sources/test_parsers_claude_code_artifacts.py::test_parse_code_keeps_task_only_completion_unknown_when_background_start_is_ambiguous	28	0	0	0	0	1
+tests/unit/sources/test_parsers_claude_code_artifacts.py::test_parse_code_keeps_exact_pair_completion_unknown_when_start_is_duplicated	32	0	0	0	0	1
+tests/unit/sources/test_parsers_local_agent.py::test_hermes_state_db_contract_matches_parser_capability_map	16	1	0	0	0	0	contract_path.read_text
+tests/unit/sources/test_parsers_local_agent.py::test_hermes_state_db_source_iterator_snapshots_wal_before_parsing	50	1	0	0	0	0	retained_path.read_bytes
+tests/unit/sources/test_parsers_props.py::test_timestamp_normalization_preserves_seconds	6	0	0	0	0	1
+tests/unit/sources/test_parsers_props.py::test_timestamp_normalization_handles_milliseconds	6	0	0	0	0	1
+tests/unit/sources/test_parsers_props.py::test_message_timestamps_are_parseable	17	0	0	0	0	1
+tests/unit/sources/test_parsers_props.py::test_at_least_one_message_has_text	9	0	0	0	0	1
+tests/unit/sources/test_provider_contracts.py::test_schema_conformant_payload_parses_without_error	7	0	0	0	0	1
+tests/unit/sources/test_provider_contracts.py::test_unknown_fields_in_payload_do_not_crash_parser	22	0	0	0	0	1
+tests/unit/sources/test_provider_contracts.py::test_unknown_fields_at_record_level_do_not_crash	27	0	0	0	0	1
+tests/unit/sources/test_provider_contracts.py::test_parse_payload_returns_typed_session	9	0	0	0	0	1
+tests/unit/sources/test_source_laws.py::test_detect_provider_returns_none_for_unknown_payloads_without_shape_match	2	0	0	0	0	1
+tests/unit/sources/test_source_laws.py::test_session_emitter_resolves_schema_for_payloads	51	0	0	1	1	0	call_args_list,call_count,monkeypatch.setattr
+tests/unit/sources/test_source_laws.py::test_download_drive_files_contract	20	1	0	0	0	0	read_bytes
+tests/unit/sources/test_source_laws.py::test_latin1_file_does_not_crash	9	0	0	0	0	1
+tests/unit/sources/test_source_laws.py::test_empty_bytes_returns_none	4	0	0	0	0	1
+tests/unit/sources/test_source_laws.py::test_normalize_role_never_raises_for_nonempty	8	0	0	0	0	1
+tests/unit/sources/test_token_store.py::test_load_nonexistent_returns_none	4	0	0	0	0	1
+tests/unit/sources/test_token_store.py::test_delete	7	0	0	0	0	1
+tests/unit/sources/test_token_store.py::test_delete_with_fallback	9	0	0	0	0	1
+tests/unit/sources/test_token_store.py::test_returns_token_store	9	0	0	0	0	1
+tests/unit/storage/test_archive_tier_init.py::test_initialize_archive_tier_files_backs_up_replaceable_targets	22	1	0	0	1	0	monkeypatch.setattr,read_text
+tests/unit/storage/test_archive_tiers_archive.py::test_archive_tiers_archive_facade_acquires_empty_inline_attachment	39	1	0	0	0	0	read_bytes
+tests/unit/storage/test_archive_tiers_search_guard.py::test_hyphenated_token_does_not_raise	8	0	0	0	0	1
+tests/unit/storage/test_archive_tiers_search_guard.py::test_special_tokens_do_not_raise	5	0	0	0	0	1
+tests/unit/storage/test_archive_tiers_write.py::test_instructions_text_none_when_absent	22	0	0	0	0	1
+tests/unit/storage/test_archive_tiers_write.py::test_title_source_none_when_absent	20	0	0	0	0	1
+tests/unit/storage/test_attachment_first_class_ids.py::test_attachment_identity_query_does_not_extract_native_ids_from_json	23	1	0	0	0	0	inspect.getsource
+tests/unit/storage/test_blob_gc.py::test_run_blob_gc_max_batch_bound	16	0	0	0	0	1
+tests/unit/storage/test_blob_integrity.py::test_prune_orphan_blob_reference_debt_quarantines_before_delete	92	1	0	0	0	0	quarantine_path.read_text
+tests/unit/storage/test_blob_integrity.py::test_plan_raw_backed_blob_reference_recovery_writes_manifest	110	1	0	0	0	0	manifest_path.read_text
+tests/unit/storage/test_blob_integrity.py::test_replace_raw_backed_blob_reference_debt_from_source_updates_raw_refs	118	1	0	0	0	0	manifest_path.read_text
+tests/unit/storage/test_blob_store.py::test_write_from_fileobj_invokes_heartbeat	13	0	0	0	0	1
+tests/unit/storage/test_blob_store_contracts.py::test_write_once_does_not_clobber_existing_content	25	1	0	0	0	0	read_bytes
+tests/unit/storage/test_browser_capture_origin_repair.py::test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idempotent	76	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_browser_origin_repair_resumes_prelegacy_planned_receipt	35	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_legacy_browser_native_id_copy_forward_preserves_evidence_and_is_idempotent	79	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_legacy_browser_native_id_crash_boundary_recovers_planned_receipt	61	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_legacy_browser_native_id_copy_forwards_from_semantic_canonical_witness	50	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_legacy_browser_native_id_atomic_apply_rolls_back_after_source_stage	30	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_browser_origin_repair_accepts_exact_semantic_superseded_sibling	66	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_browser_origin_repair_refuses_mutated_terminal_byte_authority	68	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_browser_origin_repair_refuses_competing_terminal_copy_application	39	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_byte_proven_browser_rekey_copy_forwards_each_no_head_shape	56	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_browser_capture_origin_repair.py::test_byte_proven_browser_rekey_refuses_stale_proof_and_rolls_back	48	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_column_spec_reordering.py::test_messages_insert_placeholder_string_has_null_for_parent	5	0	0	0	0	1
+tests/unit/storage/test_corruption_recovery.py::test_zeroed_header	27	1	1	0	0	0	db.read_bytes
+tests/unit/storage/test_corruption_recovery.py::test_truncated_file	19	1	0	0	0	0	db.read_bytes
+tests/unit/storage/test_cost_queries.py::test_subscription_credit_cost	9	0	0	0	0	1
+tests/unit/storage/test_delegations_view.py::test_delegation_requested_model_unknown_when_not_recorded	14	0	0	0	0	1
+tests/unit/storage/test_duplicate_raw_identity_repair.py::test_apply_resumes_planned_receipt_after_a_crash_before_the_terminal_append	60	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_durable_migrations.py::test_public_hash_forged_receipt_cannot_authorize_user_migration	48	1	0	0	0	0	manifest.read_text
+tests/unit/storage/test_durable_migrations.py::test_migration_rejects_signed_artifact_source_fingerprint_mismatch	35	1	0	0	0	0	manifest.read_bytes,manifest.read_text,receipt_path.read_text
+tests/unit/storage/test_durable_migrations.py::test_migration_rejects_post_receipt_wal_without_main_file_change	32	1	0	0	0	0	copied_user_db.read_bytes
+tests/unit/storage/test_fts5_query_correctness.py::test_escape_fts5_query_strips_or_quotes_format_chars	28	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_escape_fts5_query_cjk_and_unicode	21	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_extract_match_terms_cjk_individual_chars	20	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_normalize_fts5_query_empty_produces_none	5	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_normalize_fts5_query_bare_special_chars_produces_none	11	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_fts5_search_finds_cjk_content	21	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_fts5_prefix_search	14	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_fts5_prefix_search_without_escaping_demonstrates_expected_behavior	18	0	0	0	0	1
+tests/unit/storage/test_fts5_query_correctness.py::test_escape_fts5_query_regression_safety	17	0	0	0	0	1
+tests/unit/storage/test_fts_bloat_invariants.py::test_messages_fts_storage_does_not_duplicate_message_bodies	46	0	0	0	0	1
+tests/unit/storage/test_fts_escape_in_insights.py::test_list_work_events_escapes_fts5_query	10	0	0	0	0	1
+tests/unit/storage/test_fts_escape_in_insights.py::test_list_threads_escapes_fts5_query	9	0	0	0	0	1
+tests/unit/storage/test_holdout_cohorts.py::test_deleting_a_holdout_marked_result_set_is_blocked_by_the_durable_fk	31	0	0	0	0	1
+tests/unit/storage/test_parse_tracking.py::test_mark_success_after_failure	10	0	0	0	0	1
+tests/unit/storage/test_parse_tracking.py::test_modified_file_not_skipped	23	0	0	0	0	1
+tests/unit/storage/test_parse_tracking.py::test_no_known_mtimes_processes_all	20	0	0	0	0	1
+tests/unit/storage/test_perf_rescue_1314.py::test_session_insight_rebuild_page_size_is_at_least_50	11	0	0	0	0	1
+tests/unit/storage/test_pricing_chain_roundtrip.py::test_unknown_model_gets_null_cost	21	0	0	0	0	1
+tests/unit/storage/test_pricing_chain_roundtrip.py::test_zero_token_model_gets_null_cost	19	0	0	0	0	1
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent	94	1	0	0	0	0	receipt_path.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_rejects_duplicates_and_rolls_back_batch	37	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_resumes_planned_receipt_after_committed_source	38	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_does_not_claim_a_competing_receipt_commit	28	1	0	0	0	0	competing_receipt.read_text,interrupted_receipt.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_attributes_from_locked_state	42	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_writes_every_receipt_record_in_full	24	1	0	0	1	0	monkeypatch.setattr,receipt.read_text
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_recovers_preserved_torn_terminal	75	1	0	0	1	0	monkeypatch.setattr,receipt.read_bytes
+tests/unit/storage/test_quarantined_accepted_raw_repair.py::test_quarantined_accepted_raw_repair_rejects_corrupt_receipt_records	28	1	0	0	0	0	receipt.read_text
+tests/unit/storage/test_query_mappers.py::test_none_returns_none	4	0	0	0	0	1
+tests/unit/storage/test_query_mappers.py::test_empty_string_returns_none	4	0	0	0	0	1
+tests/unit/storage/test_query_mappers.py::test_default_none	4	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_session_id_sql_injection_select	2	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_session_id_sql_injection_drop_table	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_session_id_sql_injection_union	2	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_message_id_sql_injection	2	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_session_title_sql_injection	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_multiple_injection_attempts_in_sequence	9	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_empty_string_parameters_handled	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_none_parameters_handled	7	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_very_long_string_parameters	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_unicode_in_parameters	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_sql_injection_escaping_property	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_control_chars_in_queries_handled	3	0	0	0	0	1
+tests/unit/storage/test_query_security.py::test_repository_survives_injection_property	4	0	0	0	0	1
+tests/unit/storage/test_raw.py::test_get_raw_session_not_found	5	0	0	0	0	1
+tests/unit/storage/test_raw.py::test_session_without_raw_id	22	0	0	0	0	1
+tests/unit/storage/test_raw_revision_authority.py::test_quarantined_append_records_observation_without_claiming_raw_parent	14	0	0	0	0	1
+tests/unit/storage/test_repository_insight_runtime.py::test_repository_insight_profile_reads_build_typed_queries	59	0	0	1	1	0	await_args_list,patch
+tests/unit/storage/test_repository_insight_runtime.py::test_repository_insight_thread_and_timeline_reads_build_typed_queries	77	0	0	1	1	0	await_args_list,patch
+tests/unit/storage/test_repository_insight_runtime.py::test_repository_insight_summary_reads_build_typed_queries	21	0	0	1	0	0	await_args
+tests/unit/storage/test_repository_insight_runtime.py::test_repository_raw_forwards_query_and_mutation_calls	124	0	0	1	1	0	assert_awaited_once_with,patch
+tests/unit/storage/test_repository_insight_runtime.py::test_repository_raw_streams_iterators	44	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/storage/test_scale.py::test_fts_search_budget	9	0	0	0	0	1
+tests/unit/storage/test_schema_policy_contracts.py::test_fts_freshness_state_has_one_production_ddl_owner	12	1	0	0	0	0	path.read_text
+tests/unit/storage/test_schema_safety.py::test_async_backend_imports_shared_schema_ddl	10	1	1	0	0	0	inspect.getsource
+tests/unit/storage/test_schema_safety.py::test_schema_version_is_positive_int	3	0	0	0	0	1
+tests/unit/storage/test_schema_safety.py::test_build_filters_with_title_contains_special	8	0	0	0	0	1
+tests/unit/storage/test_search_misc.py::test_fresh_schema_creates_vec0_table_when_available	23	0	0	0	0	1
+tests/unit/storage/test_search_misc.py::test_write_asset_success	9	1	0	0	0	0	result_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_concurrent_write_same_asset_no_corruption	17	1	0	0	0	0	final_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_write_asset_atomic	10	1	0	0	0	0	final_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_write_asset_creates_parent_directories	11	1	0	0	0	0	final_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_write_asset_overwrites_existing	14	1	0	0	0	0	final_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_write_asset_empty_content	10	1	0	0	0	0	final_path.read_bytes
+tests/unit/storage/test_search_misc.py::test_returns_none_when_no_index	8	0	0	0	0	1
+tests/unit/storage/test_search_text_write_tool_coverage.py::test_search_text_ddl_matches_documented_coverage_matrix	38	1	1	0	0	0	_SEARCH_DOC.read_text,read_text
+tests/unit/storage/test_session_insight_profiles.py::test_session_profile_record_defaults_primary_model_fields_to_none	5	0	0	0	0	1
+tests/unit/storage/test_session_topology.py::test_topology_missing_session_returns_none	8	0	0	0	0	1
+tests/unit/storage/test_storage_twins.py::test_async_divergence_documentation_exists	18	1	1	0	0	0	async_archive.read_text
+tests/unit/storage/test_storage_twins.py::test_async_write_methods_exist	13	1	1	0	0	0	async_archive.read_text
+tests/unit/storage/test_storage_twins.py::test_async_uses_mixin_pattern	10	1	1	0	0	0	async_archive.read_text
+tests/unit/storage/test_storage_twins.py::test_async_delegates_reads	10	1	1	0	0	0	async_archive.read_text
+tests/unit/storage/test_tree_laws.py::test_get_root_returns_node_without_parent	12	0	0	0	0	1
+tests/unit/storage/test_vec.py::test_get_embeddings_batches_large_input	31	0	0	1	1	0	assert_called_once,patch
+tests/unit/storage/test_vec.py::test_upsert_noop_contract	22	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/storage/test_vec.py::test_ensure_vec_available_contract	30	0	0	1	0	0	assert_called_once,assert_not_called
+tests/unit/surfaces/test_search_envelope_contract.py::test_envelope_omits_cursor_when_page_is_last	13	0	0	0	0	1
+tests/unit/surfaces/test_search_envelope_contract.py::test_openapi_schema_is_present_and_well_formed	10	1	1	0	0	0	openapi_path.read_text
+tests/unit/test_entrypoints_runtime.py::test_module_entrypoints_delegate_to_click_main	6	0	0	1	1	0	call_count,patch
+tests/unit/test_logging_runtime.py::test_configure_logging_supports_console_and_json_modes_and_get_logger	24	0	0	1	1	0	assert_called_once_with,call_args,patch
+tests/unit/test_logging_runtime.py::test_configure_logging_accepts_typed_force_plain_config	11	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/test_mutmut_campaign.py::test_copy_workspace_preserves_symlinked_files	12	1	0	0	0	0	copied.read_text
+tests/unit/test_protocol_conformance.py::test_isinstance	6	0	0	0	0	1
+tests/unit/test_protocol_conformance.py::test_extension_loadable	20	0	0	0	0	1
+tests/unit/test_protocol_conformance.py::test_plain_console_isinstance	2	0	0	0	0	1
+tests/unit/test_protocol_conformance.py::test_parse_functions_return_parsed_session	20	0	0	0	0	1
+tests/unit/test_read_surface_coherence.py::test_none_is_accepted	4	0	0	0	0	1
+tests/unit/test_read_surface_coherence.py::test_daemon_safe_handler_maps_polylogue_error_to_its_status	53	0	0	1	0	0	assert_called_once,assert_not_called,call_args
+tests/unit/test_session_profile_staleness_predicate.py::test_session_profile_stale_predicate_has_exactly_one_definition	26	1	1	0	0	0	inspect.getsource
+tests/unit/test_sqlite_connection_hygiene.py::test_swept_modules_do_not_reference_bare_with_connect	20	1	1	0	0	0	inspect.getsource
+tests/unit/ui/test_facade_console_runtime.py::test_plain_console_print_renders_space_joined_plain_values	7	0	0	1	1	0	assert_called_once_with,patch
+tests/unit/ui/test_tui.py::test_worker_failure_recovery	12	0	0	0	0	1
+tests/unit/ui/test_ui.py::test_init_accepts_extra_args	2	0	0	0	0	1
+tests/unit/ui/test_ui.py::test_rich_choose_fallback_paths	9	0	0	1	0	0	assert_called_once
+tests/unit/ui/test_ui.py::test_rich_confirm_and_input_fallback_paths	8	0	0	1	0	0	assert_called_once
+tests/unit/ui/test_ui.py::test_ui_delegation_contract	12	0	0	1	0	0	assert_called_with
+tests/unit/ui/test_ui.py::test_ui_prompt_delegation_contract	10	0	0	1	0	1	assert_called_once_with
+tests/unit/ui/test_ui.py::test_ui_plain_prompt_abort_contract	10	0	0	1	0	0	assert_called
+tests/unit/ui/test_ui.py::test_plain_progress_tracker_contract	15	0	0	1	0	1	call_count
+tests/unit/ui/test_ui.py::test_rich_progress_tracker_contract	11	0	0	1	0	0	assert_called,assert_called_once,assert_called_with
+tests/visual/test_reader_semantic_cards.py::test_semantic_card_web_json_contract	62	1	1	0	0	0	SEMANTIC_CARD_SCHEMA_PATH.read_text

@@ -12,6 +12,14 @@ survivor and exercise irrelevant-growth equivalence, selected-work scaling,
 lossless pagination/addressability, cancellation/deadline propagation, truthful
 progress, and cleanup through real SQLite/repository/public routes.
 
+Use `architecture/06-query-cancellation-and-bounds.md` as the recommended
+contract: one outer `QueryExecutionContext`, one owned read lifecycle, a
+dedicated read-only SQLite connection in its worker thread, progress-handler
+and interrupt cancellation, typed terminal states, and lossless page/spool
+results. Validate integration names against current source and Beads. Do not
+substitute renderer truncation, hard semantic row caps, a shared connection, or
+surface-local timeouts.
+
 Use an existing work/progress counter if current source provides one. Add a
 minimal production observation seam only if it measures actual SQLite/runner
 work and has at least the concrete consumer in this survivor; do not duplicate
@@ -19,10 +27,11 @@ the query algorithm in a test counter. Prefer deterministic cancellation over
 wall-clock flakiness.
 
 Name work-amplification, ignored-cancellation, depth-limit, leaked temporary
-state, or double-counted-progress mutations and the expected failure. Read the
-current product decision for oversized results and cancellation; implement no
-semantics that remain undecided. Propose slow/redundant examples for later
-certification without deleting them.
+state, or double-counted-progress mutations and the expected failure. If the
+entire contract is too large for one coherent patch, implement one end-to-end
+route through the shared context and return a decision-complete continuation
+map; do not invent different semantics for the remaining surfaces. Propose
+slow/redundant examples for later certification without deleting them.
 
 ## Context and authority
 

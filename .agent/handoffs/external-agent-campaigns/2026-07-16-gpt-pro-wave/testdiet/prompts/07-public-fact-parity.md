@@ -19,6 +19,13 @@ surface adapters and their shared substrate. Identify MCP/web areas currently
 owned by rewrites and transfer their obligations precisely rather than
 strengthening obsolete implementation.
 
+Follow the `Query × Projection × Render` separation and stable result/object
+reference contract in
+`architecture/07-evidence-provenance-and-public-algebra.md`. A surface may
+change presentation or omit detail only by declared policy; it may not repair,
+strengthen, or recompute domain facts. Preserve the explicit MCP and web rewrite
+boundaries instead of adding compatibility aliases to obsolete surfaces.
+
 Name a surface-disagreement mutation such as bypassing origin projection,
 dropping a filter, coercing absence, or reading a stale model. Propose
 mock-forwarding and snapshot tests dominated by the survivor, but do not delete

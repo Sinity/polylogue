@@ -1,0 +1,1484 @@
+{
+  "cluster": {
+    "authoritative_routes": [
+      {
+        "path": "devtools/devloop_temporal.py",
+        "symbols": [
+          "operating_log_events",
+          "structured_devloop_events",
+          "build_report",
+          "main"
+        ]
+      },
+      {
+        "path": "devtools/command_catalog.py",
+        "symbols": [
+          "CommandSpec"
+        ]
+      },
+      {
+        "path": "devtools/verify_closure_matrix.py",
+        "symbols": [
+          "_validate",
+          "main"
+        ]
+      },
+      {
+        "path": "devtools/scenario_coverage.py",
+        "symbols": [
+          "build_runtime_scenario_coverage"
+        ]
+      },
+      {
+        "path": "devtools/verify_manifests.py",
+        "symbols": [
+          "check_coverage_gaps",
+          "check_campaign_coverage_catalog",
+          "check_test_coverage_domains",
+          "main"
+        ]
+      }
+    ],
+    "avoid_files": [
+      "devtools/dev_loop.py",
+      "tests/unit/devtools/test_dev_loop.py",
+      "polylogue/mcp",
+      "polylogue/web"
+    ],
+    "deletion_candidates": [
+      "devtools/devloop_temporal.py",
+      "tests/unit/devtools/test_devloop_temporal.py",
+      "workspace temporal-devloop CommandSpec",
+      "verify_closure_matrix path/prose mirror",
+      "scenario coverage completeness claims",
+      "verify_manifests authored coverage-gap/domain/CI-substring checks"
+    ],
+    "focused_tests": [
+      "devtools test tests/unit/devtools/test_devloop_temporal.py",
+      "devtools test -k 'command_catalog or docs_coverage or validation_lane or mutation_catalog or benchmark_catalog'"
+    ],
+    "helper_files": [],
+    "id": "devtools-verification-subtraction",
+    "incoming_prerequisites": [
+      {
+        "bead": "polylogue-b054.1.1.3",
+        "reason": "Preserve the complete seed/resource receipt and avoid its implementation files."
+      },
+      {
+        "bead": "polylogue-b054.1.1.4",
+        "reason": "Preserve the real production-mutation/testmon proof and avoid its implementation files."
+      },
+      {
+        "bead": "polylogue-b054.1.1.5",
+        "reason": "Preserve repeated isolated/xdist hang-witness evidence and avoid its implementation files."
+      }
+    ],
+    "obligations": [
+      "retired temporal conductor has no live consumer",
+      "branch-local dev-loop operations remain",
+      "executable validation lanes propagate failures",
+      "mutation and benchmark receipt freshness checks real artifacts",
+      "live docs inventory detects an undocumented public surface",
+      "authored mirrors cannot claim behavioral completeness"
+    ],
+    "planned_files": [],
+    "proposed_survivors": [
+      "focused command-catalog dispatch tests",
+      "live docs inventory mutation test",
+      "executable validation-lane failure propagation test",
+      "mutation/benchmark real-receipt freshness tests",
+      "branch-local dev-loop focused tests"
+    ],
+    "responsibility": "Retired conductor and self-referential verification machinery are removed while executable lanes, live inventory/docs checks, mutation/benchmark receipts, and branch-local dev-loop behavior remain.",
+    "sensitivity_witnesses": [
+      {
+        "description": "Deleting devloop_temporal leaves live routes green; deleting dev_loop or bypassing an executable lane/docs inventory must fail focused survivors.",
+        "evidence_globs": [
+          ".local/testsuite-diet/sensitivity/devtools-verification-subtraction*.json"
+        ],
+        "kind": "consumer-and-behavior-differential"
+      }
+    ],
+    "test_files": [
+      "tests/unit/devtools/test_devloop_temporal.py",
+      "tests/unit/devtools/test_verify_closure_matrix.py",
+      "tests/unit/devtools/test_scenario_coverage.py",
+      "tests/unit/devtools/test_verify_manifests.py",
+      "tests/unit/devtools/test_render_quality_reference.py"
+    ],
+    "title": "Devtools verification subtraction without proof loops"
+  },
+  "coupling_census": {
+    "available": true,
+    "findings": [
+      {
+        "body_lines": 10,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "output_path.read_text"
+        ],
+        "line": 236,
+        "mock_interaction": false,
+        "nodeid": "tests/unit/devtools/test_render_quality_reference.py::test_write_if_changed_reuses_existing_output",
+        "patches_collaborator": false,
+        "path": "tests/unit/devtools/test_render_quality_reference.py",
+        "source_literal_membership": false,
+        "source_or_ast": true
+      }
+    ],
+    "path": ".agent/scratch/testsuite_diet/census/test-coupling-census.json",
+    "sha256": "4226e083400ecd4883c0ec1b272880d67a8465f5b961a97858f54811303d5fac"
+  },
+  "coverage_contexts": {
+    "available": false,
+    "path": ".cache/coverage/coverage.json",
+    "routes": []
+  },
+  "fixture_inventory": {
+    "available": true,
+    "path": ".agent/scratch/testsuite_diet/census/test-infra-consumers.tsv",
+    "rows": [],
+    "sha256": "bd1c066bb8ec0976abc768c8cc95f133fd3268cbade37bffce694c1ae18cfe70"
+  },
+  "history": {
+    "commits": [
+      "f0c1b489b84cd04aac840315e7e55fa23eb97e39\t2026-07-16\tfix: restore archive contract verification (#2932) (#2932)",
+      "10a1212f4b17b9359494949dccb032456f26c4ef\t2026-07-09\tfeat(devtools): accept bead: owners in coverage-manifest gap records (#2611)",
+      "3b90e9e33eb1e66f50e019a822a18622bc4f57ca\t2026-07-05\tfix(daemon): align browser capture spool watching",
+      "349898106783020294e52e30d3a2296021094940\t2026-07-04\tfeat: integrate archive convergence and capture platform (#2534)",
+      "c37cb0dc390c539e0a121993d1e970d7977c9587\t2026-07-03\tfix(devtools): keep dev-loop daemon source-only",
+      "d40d00a312e5530a76e3e1ba29f3ddc37ce89d82\t2026-07-02\tfeat: converge dogfood branch state (#2504)",
+      "ce2f62ac65e6e7c29558a74f1dd10ba78d0999e2\t2026-07-02\tfeat(read): add projection render specs (#2503)",
+      "7120bde619a1ffaaef6a82afcba13de904adf80f\t2026-07-02\tfix(archive): report evidence and convergence honestly (#2502)",
+      "c6c1aa659633d22600b5f206f3de4a3c21d589b1\t2026-06-24\tfix(devtools): align browser plan with Chromium smokes (#2374)",
+      "373f9e3c34fc747ee83604f3e75bf6e43e983a1f\t2026-06-24\tfix(ops): restore runtime materialization trust (#2351)",
+      "8ae4eaf8660a1f26fa39f8b3b94ae45bf269708c\t2026-06-24\tfeat: integrate query-action archive diagnostics (#2350)",
+      "6049c778615a12825eb6fd878652533521a9ef52\t2026-06-23\tfix: stabilize live Polylogue dogfooding loop (#2319)",
+      "90f04a1a781bbc272ac72bfbbd4e7fc8fa184b5d\t2026-06-22\tfix(devtools): pin dev-loop daemon to worktree source",
+      "3809a1a0d8627b8d673a3470ea180cfb6c93b135\t2026-06-21\tchore(dev): summarize dev-loop failure artifacts (#2248) (#2284)",
+      "9cab7031a7f06f8d71bc7ee617b6fe487a538605\t2026-06-21\tchore(dev): add real browser extension smoke (#2248) (#2280)",
+      "c6f0820c268b7d74df4ca41db458af82bccebf0b\t2026-06-21\tfix(dev): compose dev-loop browser artifacts (#2248) (#2279)",
+      "04d5b964f020e60404cc68a9624df8582fa6519f\t2026-06-21\tchore(dev): add isolated ports to dev-loop preflight (#2248) (#2276)",
+      "d8902f4a901b6da45a461c076b1972ea6f234815\t2026-06-21\tchore(dev): summarize dev-loop artifacts and TUI plans (#2248) (#2274)",
+      "5ef1d3097d4247243292136fed2c7f0dccce8051\t2026-06-21\tchore(dev): write browser extension launch plans (#2248) (#2271)",
+      "87feac67260221d8945e374fa217ec8c940e79c1\t2026-06-21\tchore(dev): smoke-test browser extension receiver loop (#2248) (#2268)"
+    ],
+    "dogfood_witnesses": {
+      "closure matrix": [
+        "8ecc34eccec26d99639a12df2108c1d99e15c274\t2026-07-16\tfix(capture): satisfy CaptureJob type contracts",
+        "3082c72f0c046d184e6c5088d31cf87faac548e6\t2026-07-13\tfeat(cli): add hot daemon read routing (#2827)",
+        "4ee892d7188e4c9844e4445a6589ff32e777a4ec\t2026-06-24\tdocs(verifiability): clarify closure matrix ownership (#2369)",
+        "5bf20f746326433348a4b477d51d5c272e869afd\t2026-06-21\trefactor(verifiability): move showcase helpers to owners (#2302)",
+        "41b111e1a99a767de7974bc46047dbf9217ff40a\t2026-06-20\trefactor(devtools): drop verification owner-map gates (#2177) (#2217)",
+        "c573241431a595243ff827e743fde1f152324970\t2026-05-20\ttest(publication): site renderer behavioral tests (#1301) (#1408)",
+        "83a7fe80955c0fefd182151e5f60732fa0c36a2f\t2026-05-20\ttest(daemon): dedicated coverage for user_state_http handlers (#1290) (#1397)",
+        "dd059e0d6f0a28f8951a9ab6cbe2f8dbd3eb884b\t2026-05-17\ttest(coverage): closure matrix YAML + lint (#1186) (#1191)"
+      ],
+      "scenario coverage": [
+        "085a21c790195d87cd62a8219deff2e59e7ab05b\t2026-07-10\ttest(devtools): add real storage correctness scenarios (#2678)",
+        "b4aa67801e8d5895d328ce2b630dd0bfa12120f0\t2026-06-25\tperf: avoid full-session active-leaf churn (#2394)",
+        "f4c1d717336ee2bb3169be68b3d66e591c9030a2\t2026-06-20\trefactor(devtools): make task history and surface inputs explicit (#2177) (#2212)",
+        "c5d82f6323d4ae7647eaa6ebb27f44e021f9f6f9\t2026-06-19\trefactor(cli): move cost and insights under ops (#2190)",
+        "7d6dd65a7a929d8465ff1351e385259918ca7304\t2026-05-17\tfeat(insights): tool usage analytics per provider (#1133) (#1164)",
+        "6ce8400bc744bbb4451c7456711392bcadd7d2fa\t2026-05-06\ttest(devtools): refresh run removal coverage witnesses",
+        "fe06634774773bb4f4321e33bad42b81902acbee\t2026-05-02\trefactor(verification): use insight vocabulary for read models (#687)",
+        "c2fb3eeeceb4dae2b90bca4b5e045947770452e1\t2026-05-02\trefactor(verification): use insight vocabulary for read models (#687)"
+      ],
+      "temporal-devloop": [],
+      "test coverage domains": []
+    },
+    "paths": [
+      "devtools/devloop_temporal.py",
+      "devtools/dev_loop.py",
+      "devtools/verify_closure_matrix.py",
+      "devtools/scenario_coverage.py",
+      "devtools/verify_manifests.py"
+    ]
+  },
+  "mutation_artifacts": [],
+  "prerequisites": [
+    {
+      "bead": "polylogue-b054.1.1.3",
+      "reason": "Preserve the complete seed/resource receipt and avoid its implementation files."
+    },
+    {
+      "bead": "polylogue-b054.1.1.4",
+      "reason": "Preserve the real production-mutation/testmon proof and avoid its implementation files."
+    },
+    {
+      "bead": "polylogue-b054.1.1.5",
+      "reason": "Preserve repeated isolated/xdist hang-witness evidence and avoid its implementation files."
+    }
+  ],
+  "pytest_receipts": {
+    "available": true,
+    "receipts": [
+      {
+        "matching_nodeids": [
+          "tests/unit/devtools/test_devloop_temporal.py::test_build_report_prefers_structured_event_log",
+          "tests/unit/devtools/test_devloop_temporal.py::test_build_report_uses_shared_temporal_window",
+          "tests/unit/devtools/test_devloop_temporal.py::test_default_paths_use_conductor_devloop",
+          "tests/unit/devtools/test_devloop_temporal.py::test_git_commit_events_reads_local_repo",
+          "tests/unit/devtools/test_devloop_temporal.py::test_operating_log_events_parse_focus_and_checkpoint",
+          "tests/unit/devtools/test_devloop_temporal.py::test_structured_devloop_events_parse_jsonl",
+          "tests/unit/devtools/test_render_quality_reference.py::test_build_document_includes_live_registry_sections",
+          "tests/unit/devtools/test_render_quality_reference.py::test_build_document_includes_runtime_coverage_section",
+          "tests/unit/devtools/test_render_quality_reference.py::test_write_if_changed_reuses_existing_output",
+          "tests/unit/devtools/test_scenario_coverage.py::test_build_runtime_scenario_coverage_tracks_the_current_authored_map",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_absent_gate_requires_known_gaps",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_committed_matrix_is_clean",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_duplicate_domain_blocks",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_invalid_gate_blocks",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_missing_representative_test_blocks",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_missing_target_file_blocks",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_nodeid_form_accepted",
+          "tests/unit/devtools/test_verify_closure_matrix.py::test_required_gate_requires_representative_tests",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_artifact_glob_must_resolve",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_catalog_accepts_authored_catalog",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_catalog_rejects_stale_manifest",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_fails_when_artifact_is_stale",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_fails_when_artifact_missing",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_passes_for_recent_artifact",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_inactive_status_skips_path_check",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_rejects_empty_tests_list",
+          "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_rejects_missing_test_path",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_accepts_bead_owner_in_place_of_issue",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_allows_pytest_filter_next_evidence",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_records_require_closure_path",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_coverage_subject_slug_collision",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_gap_without_closure_path",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_malformed_bead_ref",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_non_command_next_evidence",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_reference_manifest_accepts_existing_commands_and_paths",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_reference_manifest_rejects_missing_command_and_path",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_accept_realized_implemented_item",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_reject_implemented_item_without_evidence",
+          "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_reject_missing_item_with_realized_evidence",
+          "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_accept_real_workflow",
+          "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_rejects_ci_build_without_build_command",
+          "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_rejects_unbacked_ci_build",
+          "tests/unit/devtools/test_verify_manifests.py::test_test_quality_ci_gate_accepts_real_workflow",
+          "tests/unit/devtools/test_verify_manifests.py::test_test_quality_ci_gate_rejects_unbacked_claim"
+        ],
+        "path": ".cache/verify/last-pytest-isolated.json",
+        "sha256": "ac6f0dc9b5bf42e9ab2002a6009b88a85248dcad8913f33a0acaec07374a24e1"
+      }
+    ]
+  },
+  "readiness": "prepared-not-execution-grade",
+  "readiness_gaps": [
+    "upstream Bead contract requires merged-source coordinator receipt: polylogue-b054.1.1.3",
+    "upstream Bead contract requires merged-source coordinator receipt: polylogue-b054.1.1.4",
+    "upstream Bead contract requires merged-source coordinator receipt: polylogue-b054.1.1.5",
+    "no realized sensitivity artifact found for the cluster"
+  ],
+  "route_evidence": [
+    {
+      "exists": true,
+      "path": "devtools/devloop_temporal.py",
+      "sha256": "d58a4a3976a1e7f8949be16466e3cc52a6500ca8cb9a79c0647af4d01cbb7c1b",
+      "symbols": {
+        "build_report": true,
+        "main": true,
+        "operating_log_events": true,
+        "structured_devloop_events": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "devtools/command_catalog.py",
+      "sha256": "68746c18882fb353f338330d6ba8adb24693b432168f21771668c744ca41871c",
+      "symbols": {
+        "CommandSpec": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "devtools/verify_closure_matrix.py",
+      "sha256": "b20401a0c83d174cc9527f9674170ad82af9498e0e79c533fb8dfae60574e2b5",
+      "symbols": {
+        "_validate": true,
+        "main": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "devtools/scenario_coverage.py",
+      "sha256": "b30ad2051fd7e22281598195291bdc0814d9f7cb24851821df7ebccc75e29b08",
+      "symbols": {
+        "build_runtime_scenario_coverage": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "devtools/verify_manifests.py",
+      "sha256": "b241a3021849501dfd73ee9e8528a26dd5d27f80c97b809f5b5bd53db187a9f5",
+      "symbols": {
+        "check_campaign_coverage_catalog": true,
+        "check_coverage_gaps": true,
+        "check_test_coverage_domains": true,
+        "main": true
+      }
+    }
+  ],
+  "schema_version": 1,
+  "scope_fingerprints": [
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/devtools/test_devloop_temporal.py",
+      "sha256": "64dca9d28b726859c3feec269cda3275350b786ff8467b1715d072bc8c813f8d"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/devtools/test_verify_closure_matrix.py",
+      "sha256": "8aa50865a78fce90b288c27fcb2b015d315dc42c8c516e4f9d5a211fd92239e2"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/devtools/test_scenario_coverage.py",
+      "sha256": "1e1e321fd693acaddfb6831c89b440df891aff964dabf3c8ef98a014235451da"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/devtools/test_verify_manifests.py",
+      "sha256": "aa642266484fdfdeb0151e7a5a4ea93adec9c8e779dc9d4f87310dab3e05f6b0"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/devtools/test_render_quality_reference.py",
+      "sha256": "2899646d8ff646cf26f88dd447048370596db0ea50ebaf79a3240ca712ec3db9"
+    },
+    {
+      "exists": true,
+      "group": "avoid_files",
+      "path": "devtools/dev_loop.py",
+      "sha256": "80477ccfbe91689d64d6de5219d5581e6e4b349248914815e3eec1f21389a6ea"
+    },
+    {
+      "exists": true,
+      "group": "avoid_files",
+      "path": "tests/unit/devtools/test_dev_loop.py",
+      "sha256": "cee58e85c681ed1175547706c855419fcb60749f323ef8c258a0eafebefa7c0b"
+    },
+    {
+      "exists": false,
+      "group": "avoid_files",
+      "path": "polylogue/mcp",
+      "sha256": null
+    },
+    {
+      "exists": false,
+      "group": "avoid_files",
+      "path": "polylogue/web",
+      "sha256": null
+    }
+  ],
+  "sensitivity_artifacts": [],
+  "source": {
+    "git_head": "21f78b4db2ba62ff44b5f16dfab96067bc249b4c",
+    "selector": ".agent/scratch/testsuite_diet/census/clusters.json",
+    "selector_sha256": "001ab9ed3ab21e2c738f3513bc449b176a5dc06ff344cf19e30ab0633295256b"
+  },
+  "testmon": {
+    "available": true,
+    "path": ".cache/testmon/testmondata",
+    "sha256": "153a9e1f480cfb1cd6ea196c4fa7185ff97ec1643b81e59aa3465574a388d4c1",
+    "tests": [
+      {
+        "dependencies": [
+          "devtools/scenario_coverage.py"
+        ],
+        "duration_s": 0.04481016499630641,
+        "nodeid": "tests/unit/devtools/test_artifact_graph.py::test_render_artifact_graph_json_is_machine_readable"
+      },
+      {
+        "dependencies": [
+          "devtools/scenario_coverage.py"
+        ],
+        "duration_s": 0.03098224801942706,
+        "nodeid": "tests/unit/devtools/test_artifact_graph.py::test_render_artifact_graph_text_mentions_the_current_runtime_paths"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.00514054398809094,
+        "nodeid": "tests/unit/devtools/test_command_catalog.py::test_control_plane_helpers_render_consistent_invocations"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0026198529958492145,
+        "nodeid": "tests/unit/devtools/test_command_catalog.py::test_featured_command_specs_are_actionable"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002478398018865846,
+        "nodeid": "tests/unit/devtools/test_command_catalog.py::test_grouped_command_specs_preserves_declared_category_order"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.012463302002288401,
+        "nodeid": "tests/unit/devtools/test_command_catalog.py::test_verification_lab_surface_is_explicit_and_implemented"
+      },
+      {
+        "dependencies": [
+          "devtools/devloop_temporal.py"
+        ],
+        "duration_s": 0.00342733200523071,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_build_report_prefers_structured_event_log"
+      },
+      {
+        "dependencies": [
+          "devtools/devloop_temporal.py"
+        ],
+        "duration_s": 0.003438856001594104,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_build_report_uses_shared_temporal_window"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0030351960012922063,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_default_paths_use_conductor_devloop"
+      },
+      {
+        "dependencies": [
+          "devtools/devloop_temporal.py"
+        ],
+        "duration_s": 0.01951606599322986,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_git_commit_events_reads_local_repo"
+      },
+      {
+        "dependencies": [
+          "devtools/devloop_temporal.py"
+        ],
+        "duration_s": 0.0030139429873088375,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_operating_log_events_parse_focus_and_checkpoint"
+      },
+      {
+        "dependencies": [
+          "devtools/devloop_temporal.py"
+        ],
+        "duration_s": 0.010740806988906115,
+        "nodeid": "tests/unit/devtools/test_devloop_temporal.py::test_structured_devloop_events_parse_jsonl"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.008473687019431964,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_default_command_group_dispatches_bare_verify"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.008798511989880353,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_default_command_group_forwards_verify_flags"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.003150677977828309,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_global_json_flag_is_forwarded_to_command"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0036958680138923228,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_list_commands_human_output"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.014737591001903638,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_list_commands_json_includes_generated_surface"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.008156937998137437,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_nested_render_command_dispatches_to_catalog_entry"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.006408891000319272,
+        "nodeid": "tests/unit/devtools/test_devtools_main.py::test_nested_workspace_command_dispatches_to_catalog_entry"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004924370994558558,
+        "nodeid": "tests/unit/devtools/test_execution_specs.py::test_memory_budget_execution_wraps_structured_execution"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005091336002806202,
+        "nodeid": "tests/unit/devtools/test_execution_specs.py::test_pipeline_probe_execution_renders_control_plane_command"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0024501680163666606,
+        "nodeid": "tests/unit/devtools/test_failure_context.py::test_command_registered_in_catalog"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0031902920018183067,
+        "nodeid": "tests/unit/devtools/test_project_motd.py::test_main_can_write_motd_to_stderr"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0025548199919285253,
+        "nodeid": "tests/unit/devtools/test_project_motd.py::test_render_motd_can_verify_generated_surfaces"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002444529003696516,
+        "nodeid": "tests/unit/devtools/test_project_motd.py::test_render_motd_contains_expected_sections"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004136888004723005,
+        "nodeid": "tests/unit/devtools/test_project_motd.py::test_status_snapshot_includes_machine_readable_commands"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004858768981648609,
+        "nodeid": "tests/unit/devtools/test_render_cli_reference.py::test_build_document_includes_sections"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.003182282016496174,
+        "nodeid": "tests/unit/devtools/test_render_demo_corpus_datasheet.py::test_build_document_is_generated_from_families_and_measurements"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 2.1715353919862537,
+        "nodeid": "tests/unit/devtools/test_render_demo_corpus_datasheet.py::test_main_check_reports_out_of_sync"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.006817401008447632,
+        "nodeid": "tests/unit/devtools/test_render_devtools_reference.py::test_build_command_catalog_includes_discovery_and_commands"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.06831228800001554,
+        "nodeid": "tests/unit/devtools/test_render_openapi.py::test_openapi_publishes_route_contract_extension"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.06948215400916524,
+        "nodeid": "tests/unit/devtools/test_render_openapi.py::test_openapi_publishes_stable_evidence_routes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.06765389701467939,
+        "nodeid": "tests/unit/devtools/test_render_openapi.py::test_openapi_publishes_typed_first_party_credential_contract"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0703454049944412,
+        "nodeid": "tests/unit/devtools/test_render_openapi.py::test_openapi_read_view_route_uses_shared_http_capability_contract"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/scenario_coverage.py"
+        ],
+        "duration_s": 0.008637032995466143,
+        "nodeid": "tests/unit/devtools/test_render_quality_reference.py::test_build_document_includes_live_registry_sections"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/scenario_coverage.py"
+        ],
+        "duration_s": 0.005516841993085109,
+        "nodeid": "tests/unit/devtools/test_render_quality_reference.py::test_build_document_includes_runtime_coverage_section"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.005543698003748432,
+        "nodeid": "tests/unit/devtools/test_render_quality_reference.py::test_write_if_changed_reuses_existing_output"
+      },
+      {
+        "dependencies": [
+          "devtools/scenario_coverage.py"
+        ],
+        "duration_s": 0.013698591006686911,
+        "nodeid": "tests/unit/devtools/test_scenario_coverage.py::test_build_runtime_scenario_coverage_tracks_the_current_authored_map"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.031678041006671265,
+        "nodeid": "tests/unit/devtools/test_task_history.py::test_devtools_main_auto_logs_invocation"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.018017839989624918,
+        "nodeid": "tests/unit/devtools/test_task_history.py::test_devtools_main_respects_task_history_disable"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004534030013019219,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_live_archive_subset_parse_probe_lane_uses_medium_archive_subset_probe"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0024693029845366254,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_live_lane_uses_module_entrypoint"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002241845999378711,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_long_haul_lane_uses_campaign_runner"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004372229988803156,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_maintenance_memory_budget_lane_uses_check_preview"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004116561001865193,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_memory_budget_lane_uses_budget_runner"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004020228996523656,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_pipeline_probe_chatgpt_lane_uses_probe_budgets"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0036242169881006703,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_scale_regression_lane_uses_seeded_probe"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004196169975330122,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestCommandConstruction::test_storage_correctness_lane_uses_lab_smoke_scenario"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0028909899992868304,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_domain_read_model_hardening_dry_run_expands_both_subtrees"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0028686630103038624,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_domain_read_model_live_dry_run_includes_new_insight_and_maintenance_lanes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0029090640018694103,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_evidence_hardening_dry_run_expands_both_subtrees"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002927330002421513,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_evidence_live_dry_run_includes_tiered_and_repair_lanes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.003126158000668511,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_frontier_extended_dry_run_includes_pipeline_probe_lane"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.003767926013097167,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_live_maintenance_small_dry_run_includes_preview_and_budget"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0031748790061101317,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_runtime_substrate_hardening_dry_run_expands_both_subtrees"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002873145989724435,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_runtime_substrate_live_dry_run_includes_live_and_budget_lanes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.002826593001373112,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_semantic_insight_hardening_dry_run_expands_both_subtrees"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0027941259904764593,
+        "nodeid": "tests/unit/devtools/test_validation_lanes.py::TestLaneAssertions::test_semantic_insight_live_dry_run_includes_normalized_insight_and_maintenance_lanes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004648718982934952,
+        "nodeid": "tests/unit/devtools/test_verify_ci_workflows.py::TestCheckWorkflow::test_unknown_devtools_command_is_error"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.00423289199534338,
+        "nodeid": "tests/unit/devtools/test_verify_ci_workflows.py::TestCheckWorkflow::test_valid_workflow_no_errors"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.17381699799443595,
+        "nodeid": "tests/unit/devtools/test_verify_ci_workflows.py::TestMain::test_json_output_structure"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.17759976000525057,
+        "nodeid": "tests/unit/devtools/test_verify_ci_workflows.py::TestMain::test_passes_on_real_workflows"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004282360008801334,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_absent_gate_requires_known_gaps"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.03699247397889849,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_committed_matrix_is_clean"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004865185983362608,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_duplicate_domain_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004173724999418482,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_invalid_gate_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004332260985393077,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_missing_representative_test_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004387866996694356,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_missing_target_file_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.004158971016295254,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_nodeid_form_accepted"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_closure_matrix.py"
+        ],
+        "duration_s": 0.0049680229858495295,
+        "nodeid": "tests/unit/devtools/test_verify_closure_matrix.py::test_required_gate_requires_representative_tests"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.1458764140115818,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestCheckDocsRepoBaseline::test_repo_docs_pass"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.006407160995877348,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestCheckDocsTmpFixtures::test_known_devtools_command_passes"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.006995996009209193,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestCheckDocsTmpFixtures::test_unknown_devtools_command_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.00704874299117364,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestCheckDocsTmpFixtures::test_unknown_nested_devtools_command_blocks"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.2852622989885276,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestMainEntrypoint::test_exit_zero_on_clean_tree"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.14911752598709427,
+        "nodeid": "tests/unit/devtools/test_verify_doc_commands.py::TestMainEntrypoint::test_json_mode_emits_blocking_field"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.00397358498594258,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_artifact_glob_must_resolve"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.005698857989045791,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_catalog_accepts_authored_catalog"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.005427389012766071,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_catalog_rejects_stale_manifest"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004280551002011634,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_fails_when_artifact_is_stale"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.0038192950014490634,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_fails_when_artifact_missing"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.003978577995439991,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_freshness_passes_for_recent_artifact"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007270988993695937,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_inactive_status_skips_path_check"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.00689500400039833,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_rejects_empty_tests_list"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004072107985848561,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_campaign_coverage_rejects_missing_test_path"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004337985985330306,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_accepts_bead_owner_in_place_of_issue"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.00399445800576359,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_allows_pytest_filter_next_evidence"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004280258988728747,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_records_require_closure_path"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.005955631990218535,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_coverage_subject_slug_collision"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007264468993525952,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_gap_without_closure_path"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004871113007538952,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_malformed_bead_ref"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.004118775003007613,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_gap_manifest_rejects_non_command_next_evidence"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.005219251004746184,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_reference_manifest_accepts_existing_commands_and_paths"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007513635006034747,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_reference_manifest_rejects_missing_command_and_path"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007479412000975572,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_accept_realized_implemented_item"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.006886199000291526,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_reject_implemented_item_without_evidence"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.0069074369966983795,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_coverage_status_claims_reject_missing_item_with_realized_evidence"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.008646656016935594,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_accept_real_workflow"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.003117158994427882,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_rejects_ci_build_without_build_command"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.0065970080031547695,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_distribution_ci_claims_rejects_unbacked_ci_build"
+      },
+      {
+        "dependencies": [
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007344906989601441,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_test_quality_ci_gate_accepts_real_workflow"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py",
+          "devtools/verify_manifests.py"
+        ],
+        "duration_s": 0.007030577020486817,
+        "nodeid": "tests/unit/devtools/test_verify_manifests.py::test_test_quality_ci_gate_rejects_unbacked_claim"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 9.796172668022336,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_committed_registered_verifier_is_clean"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.00499551699613221,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_bounded_marker_aliases[import pytest\\n\\nCASE_MARK = pytest.mark.timeout(30)\\nCASE = pytest.param(1, marks=CASE_MARK)\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004279446002328768,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_bounded_marker_aliases[import pytest\\n\\nEXTRA_MARKS = (pytest.mark.timeout(30),)\\npytestmark = []\\npytestmark += EXTRA_MARKS\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004898980987491086,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_bounded_marker_aliases[import pytest\\n\\nMARKS = (pytest.mark.timeout(30),)\\npytestmark = MARKS\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005046751000918448,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_bounded_pytest_param_marks[from pytest import mark, param\\n\\nCASE = param(1, marks=[mark.timeout(30), mark.slow])\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005154044003575109,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_bounded_pytest_param_marks[import pytest\\n\\nCASE = pytest.param(1, marks=pytest.mark.timeout(30))\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004697773008956574,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_single_assignment_marker_aliases[import pytest\\n\\nCASE = pytest.mark.timeout(30)\\npytest.param(1, marks=CASE)\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005677180000930093,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_single_assignment_marker_aliases[import pytest\\n\\nEXTRA = (pytest.mark.timeout(30),)\\npytestmark = []\\npytestmark += EXTRA\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004078068013768643,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_single_assignment_marker_aliases[import pytest\\n\\nMARKS = (pytest.mark.timeout(30),)\\npytestmark = MARKS\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004952883988153189,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_supported_static_decorator_options[import pytest\\n\\n@pytest.mark.timeout(30, method='thread')\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004872955993050709,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_accepts_supported_static_decorator_options[import pytest\\n\\n@pytest.mark.timeout(timeout=30, func_only=True)\\ndef test_target():\\n    pass\\n]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004017151994048618,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_cyclic_marker_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005281232006382197,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_incremental_timeout_mark_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005082980016595684,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[from pytest import mark\\n\\n@mark.timeout(None)\\ndef test_target():\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005264668012387119,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest as pt\\n\\n@pt.mark.timeout(0)\\ndef test_target():\\n    pass\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0050707010086625814,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest as pt\\n\\nLIMIT = 30\\nCASE = pt.param(1, marks=[pt.mark.timeout(LIMIT)])\\ndef test_target():\\n    pass\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004776465008035302,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout()\\ndef test_target():\\n    pass\\n-malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005031470995163545,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout(-1)\\ndef test_target():\\n    pass\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004884081005002372,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout(0)\\ndef test_target():\\n    pass\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005159711989108473,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout(None)\\nclass TestTarget:\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004997334006475285,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout(None)\\ndef test_target():\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0048837979848030955,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\n@pytest.mark.timeout\\ndef test_target():\\n    pass\\n-missing a timeout value]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004827219003345817,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\nCASE = pytest.param(1, marks=pytest.mark.timeout(None))\\ndef test_target():\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005093542000395246,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\nLIMIT = 30\\n@pytest.mark.timeout(LIMIT)\\ndef test_target():\\n    pass\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.01426778499444481,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\npytestmark = []\\npytestmark += [pytest.mark.timeout(None)]\\ndef test_target():\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.009429184006876312,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_decorator_overrides[import pytest\\n\\npytestmark = pytest.mark.timeout(None)\\ndef test_target():\\n    pass\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0048238279996439815,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest', '--timeout']\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.008446691994322464,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest', '--timeout=-1']\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004976249998435378,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest', '--timeout=0']\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005461259002913721,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest', '--timeout=forever']\\n-malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004306315997382626,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest', *['--timeout=0']]\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004888913012109697,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[COMMAND = ['pytest'] + ['--timeout=0']\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005095282002002932,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[LIMIT = '30'\\nCOMMAND = ['pytest', '--timeout', LIMIT]\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005231238013948314,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[LIMIT = 0\\nCOMMAND = ['pytest', f'--timeout={LIMIT}']\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005138666994753294,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[LIMIT = 0\\nTIMEOUT_ARG = f'--timeout={LIMIT}'\\nCOMMAND = ['pytest', TIMEOUT_ARG]\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004861333000008017,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[LIMIT = 0\\nTIMEOUT_ARGS = [f'--timeout={LIMIT}']\\nexecution = pytest_execution(*TIMEOUT_ARGS)\\n-dynamic or malformed]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005283963982947171,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[TIMEOUT_ARGS = ['--timeout=0']\\nexecution = pytest_execution(*TIMEOUT_ARGS)\\n-must be positive]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005001313998945989,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_invalid_managed_command_overrides[execution = pytest_execution('--timeout=')\\n-unbounded]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004820500980713405,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_module_timeout_mark_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004361813989817165,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_mutable_marker_aliases[import pytest\\n\\nMARKS = []\\nMARKS.append(pytest.mark.timeout(None))\\npytest.param(1, marks=MARKS)\\ndef test_target():\\n    pass\\n-mutable pytest marker alias]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0048711900162743405,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_mutable_marker_aliases[import pytest\\n\\nMARKS = []\\nMARKS.append(pytest.mark.timeout(None))\\npytestmark = MARKS\\ndef test_target():\\n    pass\\n-mutable pytest marker alias]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.005073968990473077,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_mutable_marker_aliases[import pytest\\n\\nMARKS = [pytest.mark.timeout(30)]\\nMARKS[0] = pytest.mark.timeout(None)\\npytestmark = MARKS\\ndef test_target():\\n    pass\\n-mutable pytest marker alias]"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004006072005722672,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_parameter_timeout_mark_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004840333014726639,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_rebound_incremental_marker_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.01565850000770297,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_rebound_managed_command_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0050193690112791955,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_rebound_module_marker_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004754155001137406,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_rebound_parameter_marker_alias"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004944387008436024,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_rejects_stale_or_rationaleless_manifest_entry"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004998727992642671,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_requires_exact_rationale_manifest_for_longer_values"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004032594995805994,
+        "nodeid": "tests/unit/devtools/test_verify_pytest_timeout_overrides.py::test_registered_verifier_scans_nested_devtools_commands"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.0038705799961462617,
+        "nodeid": "tests/unit/product/test_query_action_workflows.py::test_issue_2317_registry_spells_out_exact_refs_facets_and_mark_ownership"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.004045037014293484,
+        "nodeid": "tests/unit/product/test_query_action_workflows.py::test_product_workflow_doc_is_registry_backed"
+      },
+      {
+        "dependencies": [
+          "devtools/command_catalog.py"
+        ],
+        "duration_s": 0.00300792399502825,
+        "nodeid": "tests/unit/scenarios/test_runtime.py::test_run_execution_dispatches_devtools_through_the_checkout_module"
+      }
+    ]
+  }
+}
