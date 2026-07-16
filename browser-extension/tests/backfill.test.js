@@ -285,6 +285,40 @@ describe("background backfill coordinator", () => {
     expect(writes[1].jobs[0].status).toBe("paused");
   });
 
+  it("commits a healthy job mutation after a concurrent job checkpoint fails", async () => {
+    let releaseCheckpoint;
+    const checkpointGate = new Promise((resolve) => { releaseCheckpoint = resolve; });
+    const writes = [];
+    const h = harness();
+    const failed = await startJob(h);
+    const healthy = {
+      ...await h.store.getJob(failed.id),
+      id: "healthy-concurrent-job",
+      provider: "claude-ai",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    await h.store.createJob(healthy);
+    h.coordinator.checkpoint = vi.fn(async (snapshot) => {
+      writes.push(structuredClone(snapshot));
+      if (writes.length === 1) await checkpointGate;
+      return { failures: [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }] };
+    });
+
+    const readingFailed = h.coordinator.status(failed.id);
+    await vi.waitFor(() => expect(h.coordinator.checkpoint).toHaveBeenCalledTimes(1));
+    const pausingHealthy = h.coordinator.control(healthy.id, "pause");
+    await vi.waitFor(async () => expect((await h.store.getJob(healthy.id)).status).toBe("paused"));
+    releaseCheckpoint();
+    const [failedStatus, healthyStatus] = await Promise.all([readingFailed, pausingHealthy]);
+
+    expect(h.coordinator.checkpoint).toHaveBeenCalledTimes(2);
+    expect(writes[0].jobs.find((job) => job.id === healthy.id).status).toBe("running");
+    expect(writes[1].jobs.find((job) => job.id === healthy.id).status).toBe("paused");
+    expect(failedStatus.recovery_checkpoint_error).toBe("capture_job_receiver_unavailable");
+    expect(healthyStatus.recovery_checkpoint_error).toBeNull();
+  });
+
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
     let compatible = false;
     const receiver = vi.fn(async (_envelope, serialized) => compatible

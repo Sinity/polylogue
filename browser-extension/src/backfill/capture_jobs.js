@@ -56,29 +56,28 @@ export class CaptureJobClient {
   async request(method, path, body) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-    let response;
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}`, "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL) },
         ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
         cache: "no-store",
         signal: controller.signal,
       });
+      const payload = await response.json();
+      if (!response.ok) {
+        const error = new Error(payload?.error?.code || "capture_job_request_failed");
+        error.code = payload?.error?.code;
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
     } catch (error) {
       if (controller.signal.aborted) throw new Error("capture_job_request_timeout");
       throw error;
     } finally {
       clearTimeout(timeout);
     }
-    const payload = await response.json();
-    if (!response.ok) {
-      const error = new Error(payload?.error?.code || "capture_job_request_failed");
-      error.code = payload?.error?.code;
-      error.status = response.status;
-      throw error;
-    }
-    return payload;
   }
 
   async scopeNamespace() {
@@ -108,13 +107,17 @@ export class CaptureJobClient {
 
   async adoptExisting(job, accountScope, sessionId) {
     const key = `capture-job-cache:v1:${job.intent_key}`;
-    const cached = (await this.cache.get({ [key]: null }))[key];
-    const request_id = cached?.job_id === job.job_id ? cached.request_id : crypto.randomUUID();
+    const request_id = await digest({ kind: "capture-job-adoption", job_id: job.job_id, session_id: sessionId });
     const adopted = await this.request("POST", `/v1/capture-jobs/${job.job_id}/adopt`, {
       provider: job.provider, account_scope: accountScope, request_id, session_id: sessionId, expected_revision: job.revision,
       expected_lease_generation: job.lease_generation, lease_ttl_seconds: 120,
     });
-    await this.cache.set({ [key]: { job_id: job.job_id, request_id } });
+    try {
+      await this.cache?.set({ [key]: { job_id: job.job_id, request_id } });
+    } catch {
+      // Receiver adoption is authoritative. This opaque convenience cache may
+      // disappear or reject writes without turning a valid lease into failure.
+    }
     return { ...adopted, account_scope: accountScope, intent_key: job.intent_key };
   }
 

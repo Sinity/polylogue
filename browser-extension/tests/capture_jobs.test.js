@@ -25,6 +25,38 @@ describe("CaptureJob extension recovery", () => {
     expect(JSON.stringify(cache.values)).not.toContain("account@example.test");
   });
 
+  it("keeps a receiver adoption valid when its opaque chrome.storage cache write fails", async () => {
+    const requestIds = [];
+    const cache = { set: vi.fn(async () => { throw new Error("storage_local_quota"); }) };
+    const job = {
+      job_id: "receiver-job",
+      provider: "chatgpt",
+      intent_key: "intent",
+      revision: 0,
+      lease_generation: 0,
+    };
+    const fetchImpl = vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requestIds.push(body.request_id);
+      return {
+        ok: true,
+        json: async () => ({
+          job: { ...job, revision: 1, lease_generation: 1 },
+          lease: { lease_id: "lease", generation: 1, proof: "proof" },
+        }),
+      };
+    });
+    const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "receiver-token", cache, fetchImpl });
+
+    const first = await client.adoptExisting(job, "opaque-scope", "replacement-profile");
+    const second = await client.adoptExisting(job, "opaque-scope", "replacement-profile");
+
+    expect(first.job.revision).toBe(1);
+    expect(second.job.revision).toBe(1);
+    expect(cache.set).toHaveBeenCalledTimes(2);
+    expect(requestIds[0]).toBe(requestIds[1]);
+  });
+
   it("keeps discovery scope stable when the receiver bearer rotates", async () => {
     const discovered = [];
     const cache = { get: vi.fn(async () => ({})), set: vi.fn(async () => undefined) };
@@ -55,6 +87,24 @@ describe("CaptureJob extension recovery", () => {
   it("bounds a stalled CaptureJob receiver request", async () => {
     const fetchImpl = vi.fn(async (_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    }));
+    const client = new CaptureJobClient({
+      baseUrl: "http://receiver",
+      token: "receiver-token",
+      cache: { get: vi.fn(), set: vi.fn() },
+      fetchImpl,
+      requestTimeoutMs: 1,
+    });
+
+    await expect(client.scopeNamespace()).rejects.toThrow("capture_job_request_timeout");
+  });
+
+  it("keeps the CaptureJob timeout active while reading the response body", async () => {
+    const fetchImpl = vi.fn(async (_url, options) => ({
+      ok: true,
+      json: async () => new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
     }));
     const client = new CaptureJobClient({
       baseUrl: "http://receiver",

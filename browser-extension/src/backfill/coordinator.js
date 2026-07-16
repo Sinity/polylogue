@@ -579,9 +579,8 @@ export class BackfillCoordinator {
     let checkpoint = await this.store.exportRecoveryCheckpoint();
     while (true) {
       const error = await this.commitCheckpoint(checkpoint);
-      if (error) return error;
       const latest = await this.store.exportRecoveryCheckpoint();
-      if (JSON.stringify(latest) === JSON.stringify(checkpoint)) return null;
+      if (JSON.stringify(latest) === JSON.stringify(checkpoint)) return error;
       checkpoint = latest;
     }
   }
