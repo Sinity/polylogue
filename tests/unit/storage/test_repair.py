@@ -256,6 +256,8 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         "raw_materialization_before_component_count": 1.0,
         "raw_materialization_selected_executable_component_count": 1.0,
         "raw_materialization_selected_blocked_component_count": 0.0,
+        "raw_materialization_census_sequence": 1.0,
+        "raw_materialization_census_fixed_point": 0.0,
     }
     assert "per-session revision authority" in result.detail
     assert "selected raw payload bytes total=" in result.detail

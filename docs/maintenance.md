@@ -334,6 +334,25 @@ structural (missing columns, corrupted index file, or a broken write path).
 Stop the daemon, restore from backup or rebuild the affected index tier, and
 open an issue with the probe output attached.
 
+### Inspecting a raw-authority census
+
+Raw source-to-index convergence records an immutable census in `source.db`.
+Status and daemon receipts expose a bounded summary plus a URI such as
+`polylogue://raw-authority-census/census:42:.../0`. Resolve that same URI from
+the CLI without copying every plan into the status payload:
+
+```bash
+polylogue ops maintenance raw-authority-census \
+  'polylogue://raw-authority-census/census:42:.../0' \
+  --output-format json
+```
+
+The response includes the census digests, complete witnesses and outcome for
+the current page, any linked stale-plan blockers, and `next_query_handle` when
+more rows remain. `--limit` is bounded to 1–500; `--offset` can override the
+offset encoded in the URI. MCP clients resolve the URI directly through the
+matching resource template.
+
 ### Draining the convergence-debt queue
 
 **Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial

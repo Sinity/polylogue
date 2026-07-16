@@ -17,6 +17,7 @@ from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.raw_authority import record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -30,6 +31,40 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
+
+
+def test_raw_authority_census_cli_resolves_receipt_handle(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    receipt = record_raw_authority_census(
+        root,
+        (),
+        selected_plan_ids=set(),
+        executable_plan_ids=set(),
+        scope={"source_family": "codex"},
+        residual={},
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-census",
+            receipt.query_handle,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["query_handle"] == receipt.query_handle
+    assert payload["census"]["census_id"] == receipt.census_id
 
 
 def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:

@@ -614,7 +614,9 @@ def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pyte
                     "raw_materialization_candidate_count": 1.0,
                     "raw_materialization_remaining_candidate_count": 0.0,
                 },
-                "plan_outcomes": [outcome.to_dict()],
+                "plan_outcome_count": 1,
+                "plan_outcome_sample": [outcome.to_dict()],
+                "plan_outcome_sample_truncated": False,
             },
         )
     ]
@@ -641,7 +643,34 @@ def test_raw_materialization_pass_emits_zero_work_receipt(monkeypatch: pytest.Mo
     )
 
     assert events[0][1]["success"] is True
-    assert events[0][1]["plan_outcomes"] == []
+    assert events[0][1]["plan_outcome_count"] == 0
+    assert events[0][1]["plan_outcome_sample"] == []
+    assert events[0][1]["plan_outcome_sample_truncated"] is False
+
+
+def test_raw_materialization_pass_bounds_outcome_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    outcomes = tuple(SimpleNamespace(to_dict=lambda index=index: {"plan_id": f"plan:{index}"}) for index in range(9))
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=outcomes,
+        )
+    )
+
+    assert events[0][1]["plan_outcome_count"] == 9
+    assert len(cast(list[object], events[0][1]["plan_outcome_sample"])) == 8
+    assert events[0][1]["plan_outcome_sample_truncated"] is True
 
 
 def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -663,7 +692,7 @@ def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: py
         residual_plan_count=2,
         predecessor_census_id="census:1:inventory:residual",
         fixed_point=False,
-        query_handle="raw-authority-census:census:2:inventory:residual",
+        query_handle="polylogue://raw-authority-census/census:2:inventory:residual/0",
     )
 
     daemon_cli._emit_raw_materialization_pass(

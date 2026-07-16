@@ -12,6 +12,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.raw_authority import (
     build_raw_replay_plans,
+    read_raw_authority_census,
     record_raw_authority_census,
     reject_stale_raw_replay_plan,
     validate_raw_replay_plan,
@@ -86,7 +87,7 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
 
     assert result.census_receipt is not None
     assert result.census_receipt.plan_count == 2
-    assert result.census_receipt.executable_plan_count == 1
+    assert result.census_receipt.executable_plan_count == 2
     assert result.census_receipt.residual_plan_count == 1
     assert result.metrics["raw_materialization_plan_outcome_count"] == 2.0
     assert result.metrics["raw_materialization_plan_carried_forward_count"] == 1.0
@@ -124,9 +125,19 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
     assert census_status["inventory_digest"] == result.census_receipt.inventory_digest
     assert census_status["residual_digest"] == result.census_receipt.residual_digest
     assert census_status["plan_count"] == 2
-    assert census_status["executable_plan_count"] == 1
+    assert census_status["executable_plan_count"] == 2
     assert census_status["residual_plan_count"] == 1
     assert census_status["query_handle"] == result.census_receipt.query_handle
+    first_page = read_raw_authority_census(tmp_path, result.census_receipt.query_handle, limit=1)
+    assert first_page["returned_count"] == 1
+    assert first_page["next_query_handle"] is not None
+    second_page = read_raw_authority_census(tmp_path, cast(str, first_page["next_query_handle"]), limit=1)
+    assert second_page["returned_count"] == 1
+    assert second_page["next_query_handle"] is None
+    assert {
+        cast(dict[str, object], item)["outcome_status"]
+        for item in (*cast(list[object], first_page["plans"]), *cast(list[object], second_page["plans"]))
+    } == {"executed", "carried_forward"}
 
 
 def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path: Path) -> None:
@@ -134,8 +145,8 @@ def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path
     _write_codex_raw(tmp_path, native_id="fixed", source_path="fixed.jsonl", acquired_at_ms=1)
     assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
 
-    first_empty = repair_raw_materialization(_config(tmp_path))
-    second_empty = repair_raw_materialization(_config(tmp_path))
+    first_empty = repair_raw_materialization(_config(tmp_path), dry_run=True)
+    second_empty = repair_raw_materialization(_config(tmp_path), dry_run=True)
 
     assert first_empty.census_receipt is not None
     assert second_empty.census_receipt is not None

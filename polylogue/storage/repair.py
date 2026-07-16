@@ -6498,32 +6498,32 @@ def repair_raw_materialization(
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
-    census_receipt: RawAuthorityCensusReceipt | None = None
-    if not dry_run:
-        census_receipt = record_raw_authority_census(
-            archive_root,
-            plans,
-            selected_plan_ids={plan_by_component[component].plan_id for component in selected_components},
-            scope={
-                "raw_artifact_id": raw_artifact_id,
-                "provider": provider,
-                "source_family": source_family,
-                "source_root": str(source_root) if source_root is not None else None,
-                "raw_artifact_limit": raw_artifact_limit,
-            },
-            residual={
-                "missing_blobs": missing_blobs,
-                "missing_blob_source_available": candidates.missing_blob_source_available,
-                "missing_blob_source_missing": candidates.missing_blob_source_missing,
-                "adoption_deferred": candidates.adoption_deferred,
-                "authority_quarantined": candidates.authority_quarantined,
-                "byte_authority_fragments": candidates.byte_authority_fragments,
-                "byte_authority_quarantined": candidates.byte_authority_quarantined,
-                "byte_authority_pending": candidates.byte_authority_pending,
-            },
-        )
-        metrics["raw_materialization_census_sequence"] = float(census_receipt.sequence_no)
-        metrics["raw_materialization_census_fixed_point"] = float(census_receipt.fixed_point)
+    selected_plan_ids = {plan_by_component[component].plan_id for component in selected_components}
+    census_receipt = record_raw_authority_census(
+        archive_root,
+        plans,
+        selected_plan_ids=set() if dry_run else selected_plan_ids,
+        executable_plan_ids={plan.plan_id for plan in plans},
+        scope={
+            "raw_artifact_id": raw_artifact_id,
+            "provider": provider,
+            "source_family": source_family,
+            "source_root": str(source_root) if source_root is not None else None,
+            "raw_artifact_limit": raw_artifact_limit,
+        },
+        residual={
+            "missing_blobs": missing_blobs,
+            "missing_blob_source_available": candidates.missing_blob_source_available,
+            "missing_blob_source_missing": candidates.missing_blob_source_missing,
+            "adoption_deferred": candidates.adoption_deferred,
+            "authority_quarantined": candidates.authority_quarantined,
+            "byte_authority_fragments": candidates.byte_authority_fragments,
+            "byte_authority_quarantined": candidates.byte_authority_quarantined,
+            "byte_authority_pending": candidates.byte_authority_pending,
+        },
+    )
+    metrics["raw_materialization_census_sequence"] = float(census_receipt.sequence_no)
+    metrics["raw_materialization_census_fixed_point"] = float(census_receipt.fixed_point)
     if not candidate_raw_ids:
         detail = "Executable raw replay converged"
         if (
@@ -6606,8 +6606,6 @@ def repair_raw_materialization(
             census_receipt=census_receipt,
         )
 
-    if census_receipt is None:
-        raise RuntimeError("apply-mode raw materialization requires a durable census receipt")
     for outcome in blocked_plan_outcomes:
         record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
 

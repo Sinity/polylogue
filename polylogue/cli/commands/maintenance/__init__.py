@@ -54,6 +54,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Inspect or execute an authority-safe source-to-index rebuild.",
     ),
     (
+        "raw-authority-census",
+        "_raw_identity",
+        "raw_authority_census_command",
+        "Read a bounded page from a durable raw-authority census ledger.",
+    ),
+    (
         "missing-raw-blob-cursors",
         "_raw_identity",
         "missing_raw_blob_cursors_command",

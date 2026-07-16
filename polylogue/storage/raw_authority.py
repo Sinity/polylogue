@@ -22,6 +22,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
+RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
 logger = get_logger(__name__)
 
 
@@ -94,7 +95,167 @@ class RawAuthorityCensusReceipt:
 
     @property
     def query_handle(self) -> str:
-        return f"raw-authority-census:{self.census_id}"
+        return raw_authority_census_query_handle(self.census_id)
+
+
+def raw_authority_census_query_handle(census_id: str, *, offset: int = 0) -> str:
+    """Return a directly resolvable, paginated census-ledger URI."""
+    if not census_id or "/" in census_id:
+        raise ValueError("raw authority census id must be non-empty and contain no slash")
+    if offset < 0:
+        raise ValueError("raw authority census offset must be non-negative")
+    return f"{RAW_AUTHORITY_CENSUS_QUERY_PREFIX}{census_id}/{offset}"
+
+
+def _raw_authority_census_ref(value: str, *, offset: int | None) -> tuple[str, int]:
+    embedded_offset = 0
+    if value.startswith(RAW_AUTHORITY_CENSUS_QUERY_PREFIX):
+        suffix = value.removeprefix(RAW_AUTHORITY_CENSUS_QUERY_PREFIX)
+        try:
+            census_id, encoded_offset = suffix.rsplit("/", 1)
+            embedded_offset = int(encoded_offset)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid raw authority census query handle") from exc
+    elif value.startswith("raw-authority-census:"):
+        # Read compatibility for the short-lived pre-URI receipt shape.
+        census_id = value.removeprefix("raw-authority-census:")
+    else:
+        census_id = value
+    resolved_offset = embedded_offset if offset is None else offset
+    if not census_id or "/" in census_id or resolved_offset < 0:
+        raise ValueError("invalid raw authority census query handle")
+    return census_id, resolved_offset
+
+
+def _decode_json_field(value: object) -> object:
+    if not isinstance(value, str):
+        raise RuntimeError("raw authority ledger contains a non-text JSON field")
+    return json.loads(value)
+
+
+def read_raw_authority_census(
+    archive_root: Path,
+    query_handle: str,
+    *,
+    limit: int = 100,
+    offset: int | None = None,
+) -> JSONDocument:
+    """Read one bounded page from an immutable source-tier census ledger."""
+    if not 1 <= limit <= 500:
+        raise ValueError("raw authority census limit must be between 1 and 500")
+    census_id, resolved_offset = _raw_authority_census_ref(query_handle, offset=offset)
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        raise FileNotFoundError(source_db)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        census = conn.execute(
+            """
+            SELECT census_id, sequence_no, scope_json, parser_fingerprint,
+                   inventory_digest, residual_digest, plan_count,
+                   executable_plan_count, residual_plan_count,
+                   predecessor_census_id, fixed_point, created_at_ms,
+                   completed_at_ms
+            FROM raw_authority_censuses WHERE census_id = ?
+            """,
+            (census_id,),
+        ).fetchone()
+        if census is None:
+            raise KeyError(census_id)
+        rows = conn.execute(
+            """
+            SELECT cp.ordinal, cp.selected, cp.outcome_status, cp.reason,
+                   cp.next_action, cp.application_receipt_json, cp.recorded_at_ms,
+                   p.plan_id, p.input_digest, p.input_raw_ids_json,
+                   p.logical_keys_json, p.authority_witness_json,
+                   p.source_preconditions_json, p.index_preconditions_json,
+                   p.created_at_ms
+            FROM raw_authority_census_plans AS cp
+            JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+            WHERE cp.census_id = ?
+            ORDER BY cp.ordinal
+            LIMIT ? OFFSET ?
+            """,
+            (census_id, limit, resolved_offset),
+        ).fetchall()
+        plan_ids = [str(row["plan_id"]) for row in rows]
+        blockers: list[dict[str, object]] = []
+        if plan_ids:
+            marks = ",".join("?" for _ in plan_ids)
+            blockers = [
+                {
+                    "blocker_id": str(row["blocker_id"]),
+                    "plan_id": str(row["plan_id"]),
+                    "reason": str(row["reason"]),
+                    "expected": _decode_json_field(row["expected_json"]),
+                    "observed": _decode_json_field(row["observed_json"]),
+                    "created_at_ms": int(row["created_at_ms"]),
+                    "resolved_at_ms": row["resolved_at_ms"],
+                    "resolution": row["resolution"],
+                }
+                for row in conn.execute(
+                    f"""
+                    SELECT blocker_id, plan_id, reason, expected_json,
+                           observed_json, created_at_ms, resolved_at_ms, resolution
+                    FROM raw_authority_blockers
+                    WHERE plan_id IN ({marks})
+                    ORDER BY created_at_ms, blocker_id
+                    """,
+                    plan_ids,
+                )
+            ]
+    plans = [
+        {
+            "ordinal": int(row["ordinal"]),
+            "selected": bool(row["selected"]),
+            "outcome_status": str(row["outcome_status"]),
+            "reason": str(row["reason"]),
+            "next_action": str(row["next_action"]),
+            "application_receipt": _decode_json_field(row["application_receipt_json"]),
+            "recorded_at_ms": int(row["recorded_at_ms"]),
+            "plan": {
+                "plan_id": str(row["plan_id"]),
+                "input_digest": str(row["input_digest"]),
+                "input_raw_ids": _decode_json_field(row["input_raw_ids_json"]),
+                "logical_keys": _decode_json_field(row["logical_keys_json"]),
+                "authority_witness": _decode_json_field(row["authority_witness_json"]),
+                "source_preconditions": _decode_json_field(row["source_preconditions_json"]),
+                "index_preconditions": _decode_json_field(row["index_preconditions_json"]),
+                "created_at_ms": int(row["created_at_ms"]),
+            },
+        }
+        for row in rows
+    ]
+    total = int(census["plan_count"])
+    next_offset = resolved_offset + len(plans)
+    return json_document(
+        {
+            "query_handle": raw_authority_census_query_handle(census_id, offset=resolved_offset),
+            "next_query_handle": (
+                raw_authority_census_query_handle(census_id, offset=next_offset) if next_offset < total else None
+            ),
+            "offset": resolved_offset,
+            "limit": limit,
+            "returned_count": len(plans),
+            "census": {
+                "census_id": str(census["census_id"]),
+                "sequence_no": int(census["sequence_no"]),
+                "scope": _decode_json_field(census["scope_json"]),
+                "parser_fingerprint": str(census["parser_fingerprint"]),
+                "inventory_digest": str(census["inventory_digest"]),
+                "residual_digest": str(census["residual_digest"]),
+                "plan_count": total,
+                "executable_plan_count": int(census["executable_plan_count"]),
+                "residual_plan_count": int(census["residual_plan_count"]),
+                "predecessor_census_id": census["predecessor_census_id"],
+                "fixed_point": bool(census["fixed_point"]),
+                "created_at_ms": int(census["created_at_ms"]),
+                "completed_at_ms": int(census["completed_at_ms"]),
+            },
+            "plans": plans,
+            "blockers": blockers,
+        }
+    )
 
 
 def _canonical_json(value: object) -> str:
@@ -273,6 +434,7 @@ def record_raw_authority_census(
     plans: Sequence[RawReplayPlan],
     *,
     selected_plan_ids: set[str],
+    executable_plan_ids: set[str] | None = None,
     scope: Mapping[str, object],
     residual: Mapping[str, object],
 ) -> RawAuthorityCensusReceipt:
@@ -291,7 +453,12 @@ def record_raw_authority_census(
         ).fetchone()
         sequence_no = int(previous[1]) + 1 if previous is not None else 1
         predecessor = str(previous[0]) if previous is not None else None
-        executable_count = len(selected_plan_ids)
+        executable_ids = selected_plan_ids if executable_plan_ids is None else executable_plan_ids
+        unknown_ids = (selected_plan_ids | executable_ids) - {plan.plan_id for plan in plans}
+        if unknown_ids:
+            raise RuntimeError(f"raw authority census references unknown plans: {sorted(unknown_ids)}")
+        executable_count = len(executable_ids)
+        residual_count = len(plans) - len(selected_plan_ids)
         fixed_point = bool(
             previous is not None
             and int(previous[4]) == 0
@@ -352,7 +519,7 @@ def record_raw_authority_census(
                 residual_digest,
                 len(plans),
                 executable_count,
-                len(plans) - executable_count,
+                residual_count,
                 predecessor,
                 int(fixed_point),
                 now,
@@ -387,7 +554,7 @@ def record_raw_authority_census(
         residual_digest=residual_digest,
         plan_count=len(plans),
         executable_plan_count=executable_count,
-        residual_plan_count=len(plans) - executable_count,
+        residual_plan_count=residual_count,
         predecessor_census_id=predecessor,
         fixed_point=fixed_point,
     )
@@ -530,6 +697,7 @@ def reject_stale_raw_replay_plan(
 
 
 __all__ = [
+    "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawAuthorityCensusReceipt",
     "RawReplayPlan",
@@ -538,7 +706,9 @@ __all__ = [
     "build_raw_replay_plan",
     "build_raw_replay_plans",
     "raw_replay_application_receipt",
+    "raw_authority_census_query_handle",
     "raw_replay_plan_last_attempts",
+    "read_raw_authority_census",
     "record_raw_authority_census",
     "record_raw_replay_outcome",
     "reject_stale_raw_replay_plan",

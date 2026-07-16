@@ -20,6 +20,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibi
 from polylogue.core.refs import EvidenceRef
 from polylogue.core.types import SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 from polylogue.surfaces.payloads import (
@@ -557,6 +558,36 @@ class TestResourceSurfaces:
         assert component_readiness["database"]["counts"] == {"count": 1}
         assert component_readiness["index"]["state"] == "degraded"
         assert component_readiness["index"]["caveats"] == ["messages_fts_row_mismatch"]
+
+    def test_raw_authority_census_query_handle_resolves_bounded_ledger(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root):
+            pass
+        receipt = record_raw_authority_census(
+            archive_root,
+            (),
+            selected_plan_ids=set(),
+            executable_plan_ids=set(),
+            scope={"origin": "codex-session"},
+            residual={},
+        )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://raw-authority-census/{census_id}/{offset}"].fn,
+                census_id=receipt.census_id,
+                offset="0",
+            )
+
+        payload = json.loads(result)
+        assert payload["query_handle"] == receipt.query_handle
+        assert payload["census"]["census_id"] == receipt.census_id
+        assert payload["plans"] == []
 
 
 class TestArchiveGenericToolSurfaces:

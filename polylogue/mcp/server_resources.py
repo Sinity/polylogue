@@ -190,5 +190,29 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
+    @mcp.resource("polylogue://raw-authority-census/{census_id}/{offset}")
+    def raw_authority_census_resource(census_id: str, offset: str) -> str:
+        """Resolve one bounded page from a durable raw-authority ledger."""
+        try:
+            from polylogue.storage.raw_authority import read_raw_authority_census
+
+            root = mcp_archive_root(hooks.get_config())
+            handle = f"polylogue://raw-authority-census/{census_id}/{offset}"
+            return hooks.json_payload(MCPRootPayload(root=read_raw_authority_census(root, handle)))
+        except KeyError:
+            return hooks.error_json(f"Raw authority census not found: {census_id}", code="not_found")
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            return hooks.error_json(
+                f"Failed to read raw authority census {census_id}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
+        except Exception as exc:
+            return hooks.error_json(
+                f"Failed to read raw authority census {census_id}: {exc}",
+                code="internal_error",
+                detail=type(exc).__name__,
+            )
+
 
 __all__ = ["register_resources"]

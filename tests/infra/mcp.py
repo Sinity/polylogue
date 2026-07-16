@@ -128,6 +128,7 @@ EXPECTED_RESOURCE_URIS = {
 
 EXPECTED_RESOURCE_TEMPLATE_URIS = {
     "polylogue://session/{conv_id}",
+    "polylogue://raw-authority-census/{census_id}/{offset}",
 }
 
 EXPECTED_PROMPT_NAMES = {

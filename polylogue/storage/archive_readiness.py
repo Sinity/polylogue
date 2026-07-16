@@ -251,7 +251,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                         "predecessor_census_id": census_row["predecessor_census_id"],
                         "fixed_point": bool(census_row["fixed_point"]),
                         "completed_at_ms": int(census_row["completed_at_ms"]),
-                        "query_handle": f"raw-authority-census:{census_row['census_id']}",
+                        "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
                     }
             authority_blocker_count = 0
             if _table_columns(conn, "source", "raw_authority_blockers"):

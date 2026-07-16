@@ -639,6 +639,7 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
 def _emit_raw_materialization_pass(result: Any) -> None:
     """Persist the conserved plan outcomes for one bounded daemon pass."""
     outcomes = tuple(getattr(result, "plan_outcomes", ()))
+    outcome_sample_limit = 8
     from polylogue.daemon.events import emit_daemon_event
 
     metrics = dict(getattr(result, "metrics", {}))
@@ -663,7 +664,9 @@ def _emit_raw_materialization_pass(result: Any) -> None:
         "repaired_count": int(result.repaired_count),
         "detail": str(result.detail),
         "metrics": metrics,
-        "plan_outcomes": [outcome.to_dict() for outcome in outcomes],
+        "plan_outcome_count": len(outcomes),
+        "plan_outcome_sample": [outcome.to_dict() for outcome in outcomes[:outcome_sample_limit]],
+        "plan_outcome_sample_truncated": len(outcomes) > outcome_sample_limit,
     }
     if census_payload is not None:
         payload["census"] = census_payload
