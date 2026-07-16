@@ -185,6 +185,24 @@ def test_adoption_and_checkpoint_conflicts_are_real_route_guards(tmp_path: Path)
             "generation": adopted["lease"]["generation"],
             "proof": adopted["lease"]["proof"],
         }
+        forged = {
+            **base,
+            "request_id": "forged",
+            "proof": "not-the-lease-proof",
+            "checkpoint": {"sequence": 5, "payload": {"cursor": 5}, "digest": canonical_digest({"cursor": 5})},
+        }
+        status, rejected_proof = request(host, port, "PUT", f"/v1/capture-jobs/{job['job_id']}/checkpoint", forged)
+        assert status == 409 and rejected_proof["error"]["code"] == "lease_replaced"
+        stale_revision = {
+            **base,
+            "request_id": "stale-revision",
+            "expected_revision": adopted["job"]["revision"] - 1,
+            "checkpoint": {"sequence": 5, "payload": {"cursor": 5}, "digest": canonical_digest({"cursor": 5})},
+        }
+        status, rejected_revision = request(
+            host, port, "PUT", f"/v1/capture-jobs/{job['job_id']}/checkpoint", stale_revision
+        )
+        assert status == 409 and rejected_revision["error"]["code"] == "cas_mismatch"
         status, first = request(
             host,
             port,
@@ -263,6 +281,23 @@ def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Pa
         assert status == 409 and held["error"]["code"] == "lease_held"
 
         monkeypatch.setattr(capture_jobs, "_now", lambda: datetime(2099, 1, 1, tzinfo=UTC))
+        status, expired = request(
+            host,
+            port,
+            "PUT",
+            f"/v1/capture-jobs/{job['job_id']}/checkpoint",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "request_id": "expired-checkpoint",
+                "expected_revision": first["job"]["revision"],
+                "lease_id": first["lease"]["lease_id"],
+                "generation": first["lease"]["generation"],
+                "proof": first["lease"]["proof"],
+                "checkpoint": {"sequence": 1, "payload": {}, "digest": canonical_digest({})},
+            },
+        )
+        assert status == 409 and expired["error"]["code"] == "lease_expired"
         status, replacement = request(
             host,
             port,
@@ -279,6 +314,23 @@ def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Pa
         )
         assert status == 200
         assert replacement["lease"]["generation"] == first["lease"]["generation"] + 1
+        status, replaced = request(
+            host,
+            port,
+            "PUT",
+            f"/v1/capture-jobs/{job['job_id']}/checkpoint",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "request_id": "replaced-checkpoint",
+                "expected_revision": replacement["job"]["revision"],
+                "lease_id": first["lease"]["lease_id"],
+                "generation": first["lease"]["generation"],
+                "proof": first["lease"]["proof"],
+                "checkpoint": {"sequence": 1, "payload": {}, "digest": canonical_digest({})},
+            },
+        )
+        assert status == 409 and replaced["error"]["code"] == "lease_replaced"
 
 
 def test_state_update_renews_lease_is_idempotent_and_exposes_receipts(tmp_path: Path) -> None:
@@ -307,6 +359,16 @@ def test_state_update_renews_lease_is_idempotent_and_exposes_receipts(tmp_path: 
         assert updated["job"]["retry"] == update["retry"]
         assert updated["receipt"]["kind"] == "capture_job_update"
         assert updated["job"]["lease_expires_at"] != adopted["job"]["lease_expires_at"]
+
+        missing_proof = {**update, "request_id": "missing-proof", "expected_revision": updated["job"]["revision"]}
+        missing_proof.pop("proof")
+        status, rejected_proof = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", missing_proof)
+        assert status == 409 and rejected_proof["error"]["code"] == "lease_replaced"
+        stale_revision = {**update, "request_id": "stale-update"}
+        status, rejected_revision = request(
+            host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", stale_revision
+        )
+        assert status == 409 and rejected_revision["error"]["code"] == "cas_mismatch"
 
         status, duplicate = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update)
         assert status == 200 and duplicate["duplicate"] is True
@@ -338,14 +400,24 @@ def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: P
         )
         assert status == 200
         assert found["jobs"] == []
-        assert len(found["orphans"]) == 1
-        assert found["orphans"][0]["orphan_kind"] == "legacy_backfill_checkpoint"
-        assert "legacy-instance" not in json.dumps(found["orphans"])
+        assert "orphans" not in found
+        status, orphan_census = request(
+            host,
+            port,
+            "GET",
+            "/v1/capture-jobs/orphans?client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert len(orphan_census["orphans"]) == 1
+        assert orphan_census["orphans"][0]["orphan_kind"] == "legacy_backfill_checkpoint"
+        assert "legacy-instance" not in json.dumps(orphan_census["orphans"])
 
     routes = {
         ("POST", "/v1/capture-jobs"),
         ("POST", "/v1/capture-jobs/discover"),
         ("GET", "/v1/capture-jobs/job-id"),
+        ("GET", "/v1/capture-jobs/orphans"),
         ("POST", "/v1/capture-jobs/job-id/adopt"),
         ("POST", "/v1/capture-jobs/job-id/update"),
         ("PUT", "/v1/capture-jobs/job-id/checkpoint"),

@@ -204,14 +204,37 @@ describe("background backfill coordinator", () => {
     expect(h.adapter.enumerateCalls).toBe(0);
   });
 
-  it("reports a recovery-checkpoint write failure without failing durable backfill work", async () => {
+  it("holds provider work when the receiver-authority checkpoint cannot commit", async () => {
     const checkpoint = vi.fn(async () => { throw new Error("storage_local_quota"); });
     const h = harness({ checkpoint });
     const job = await startJob(h);
-    expect(job).toMatchObject({ status: "running", recovery_checkpoint_error: "storage_local_quota" });
+    expect(job).toMatchObject({
+      status: "paused",
+      cooldown_reason: "receiver_capture_job_authority_unavailable",
+      recovery_checkpoint_error: "storage_local_quota",
+    });
     await h.coordinator.wake(job.id);
-    expect(h.adapter.enumerateCalls).toBe(1);
+    expect(h.adapter.enumerateCalls).toBe(0);
     expect((await h.coordinator.status(job.id)).recovery_checkpoint_error).toBe("storage_local_quota");
+  });
+
+  it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
+    let releaseCheckpoint;
+    const checkpoint = vi.fn(async () => new Promise((resolve) => { releaseCheckpoint = resolve; }));
+    const h = harness({ checkpoint });
+    const starting = h.coordinator.start({ provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    releaseCheckpoint();
+    const job = await starting;
+    checkpoint.mockClear();
+
+    const first = h.coordinator.status(job.id);
+    const second = h.coordinator.status(job.id);
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    releaseCheckpoint();
+    await Promise.all([first, second]);
+
+    expect(checkpoint).toHaveBeenCalledTimes(1);
   });
 
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
@@ -413,6 +436,35 @@ describe("background backfill coordinator", () => {
     const coordinator = new BackfillCoordinator({ store, adapters: { chatgpt: new FixtureAdapter(["one"]) }, receiver: vi.fn(), alarms: { create: vi.fn() }, clock: () => 100000 });
     await expect(coordinator.control("running", "resume")).rejects.toThrow("browser_profile_recovery_required");
     await expect(coordinator.control("paused-recovery", "resume")).rejects.toThrow("browser_profile_recovery_required");
+  });
+
+  it("replaces a stale browser cache with the receiver-authoritative checkpoint", async () => {
+    const store = new MemoryBackfillStore();
+    await store.restoreRecoveryCheckpoint({
+      version: 1,
+      jobs: [{ id: "stale", provider: "chatgpt", status: "paused", policy: { maxDailyRequests: 10 } }],
+      queue: [],
+      revisions: [],
+    });
+
+    expect(await store.replaceRecoveryCheckpoint({
+      version: 1,
+      jobs: [{
+        id: "receiver", provider: "chatgpt", status: "running", inventory_cursor: "9",
+        policy: { maxDailyRequests: 10 }, last_ack: { receiver_request_id: "ack-new" },
+      }],
+      queue: [{
+        id: "done", job_id: "receiver", provider: "chatgpt", native_id: "native", state: "complete",
+      }],
+      revisions: [{ id: "chatgpt:native", provider: "chatgpt", native_id: "native" }],
+    })).toEqual({ restored: 1, reason: "receiver_authority_reconciled" });
+
+    expect(await store.getJob("stale")).toBeUndefined();
+    expect(await store.getJob("receiver")).toMatchObject({
+      status: "paused", inventory_cursor: "9", last_ack: { receiver_request_id: "ack-new" },
+    });
+    expect(await store.listQueue("receiver")).toMatchObject([{ id: "done", state: "complete" }]);
+    expect(await store.getRevision("chatgpt", "native")).toMatchObject({ id: "chatgpt:native" });
   });
 
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {

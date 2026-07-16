@@ -123,14 +123,8 @@ async function withExtensionInstanceAttribution(envelope) {
   };
 }
 
-// polylogue-06zm: best-effort mirror of the backfill-ledger checkpoint to the
-// local receiver. IndexedDB is always the fast primary source and the local
-// chrome.storage.local copy (BACKFILL_RECOVERY_CHECKPOINT_KEY, jlme.4) is the
-// first fallback; this receiver mirror only matters when BOTH of those are
-// gone (a browser profile that was fully destroyed/reinstalled, not merely
-// restarted). A mirror failure must never surface as a checkpoint error --
-// see BackfillCoordinator.persistCheckpoint(), which awaits only the
-// checkpoint() callback itself and already tolerates that throwing.
+// Legacy per-instance mirror retained only as migration evidence. CaptureJobs
+// below are the durability authority for new writes.
 function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
   postJson(
     "/v1/backfill-checkpoint",
@@ -140,40 +134,29 @@ function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
   ).catch(() => undefined);
 }
 
-async function mirrorCaptureJobsToReceiver(instanceId, checkpoint) {
+async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
   const settings = await receiverSettings();
-  if (!settings.authToken || !Array.isArray(checkpoint?.jobs)) return;
+  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
+  if (!Array.isArray(checkpoint?.jobs)) throw new Error("capture_job_checkpoint_invalid");
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
   const handles = new Map();
   await Promise.all([...new Set(checkpoint.jobs.map((job) => job.provider))].map(async (provider) => {
-    try {
-      handles.set(provider, await providerAccountHandle(provider));
-    } catch (error) {
-      await appendDebugLog({
-        stage: "capture_job_identity_unavailable",
-        provider,
-        error: String(error.message || error),
-      });
-    }
+    handles.set(provider, await providerAccountHandle(provider));
   }));
   await Promise.all(checkpoint.jobs.map(async (job) => {
     const accountHandle = handles.get(job.provider);
     // Exact authenticated provider identity is mandatory. Guessing from the
     // receiver pairing or extension profile can adopt another account's job.
-    if (!accountHandle) return;
+    if (!accountHandle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
     const payload = {
       version: checkpoint.version,
       jobs: [job],
       queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
       revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
     };
-    try {
-      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
-      adopted = await client.update(adopted, captureJobRetryState(job));
-      await client.checkpoint(adopted, payload);
-    } catch (error) {
-      await appendDebugLog({ stage: "capture_job_mirror_error", provider: job.provider, error: String(error.message || error) });
-    }
+    let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+    adopted = await client.update(adopted, captureJobRetryState(job));
+    await client.checkpoint(adopted, payload);
   }));
 }
 
@@ -212,22 +195,25 @@ async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
   return { restored: 0, reason: "checkpoint_unavailable" };
 }
 
-async function restoreBackfillCheckpointFromCaptureJobs(store) {
+async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
   const settings = await receiverSettings();
-  if (!settings.authToken) return { restored: 0, reason: "checkpoint_unavailable" };
+  if (!settings.authToken) return null;
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
-  for (const provider of ["chatgpt", "claude-ai"]) {
+  const recovered = [];
+  for (const provider of providers) {
     try {
       const accountHandle = await providerAccountHandle(provider);
-      const jobs = await client.discoverRecovery(provider, accountHandle);
-      const checkpoint = mergeCaptureJobRecoveryCheckpoints(jobs);
-      if (checkpoint) return store.restoreRecoveryCheckpoint(checkpoint);
-    } catch {
-      // Exact-scope discovery is intentionally best effort. A provider with a
-      // different account handle does not disclose any other account's jobs.
+      const adopted = await client.discoverRecovery(provider, accountHandle, instanceId);
+      recovered.push(...adopted.map((entry) => entry.job));
+    } catch (error) {
+      await appendDebugLog({
+        stage: "capture_job_recovery_unavailable",
+        provider,
+        error: String(error.message || error),
+      });
     }
   }
-  return { restored: 0, reason: "checkpoint_unavailable" };
+  return mergeCaptureJobRecoveryCheckpoints(recovered);
 }
 
 function mergeCaptureJobRecoveryCheckpoints(jobs) {
@@ -250,14 +236,18 @@ async function backfillCoordinator() {
       const store = new IndexedDbBackfillStore();
       const instanceId = await extensionInstanceId();
       const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      const localRestore = await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
-      if (localRestore.reason === "checkpoint_unavailable") {
-        // Neither IndexedDB nor the local chrome.storage.local mirror had a
-        // usable checkpoint (restoreRecoveryCheckpoint already refuses to
-        // touch a non-empty IndexedDB, so this only ever runs when there is
-        // truly nothing local to lose).
-        const receiverRestore = await restoreBackfillCheckpointFromReceiver(store, instanceId);
-        if (receiverRestore.reason === "checkpoint_unavailable") await restoreBackfillCheckpointFromCaptureJobs(store);
+      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      const localCheckpoint = await store.exportRecoveryCheckpoint();
+      const localProviders = [...new Set(localCheckpoint.jobs.map((job) => job.provider))];
+      const providers = localProviders.length ? localProviders : ["chatgpt", "claude-ai"];
+      const receiverCheckpoint = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
+      if (receiverCheckpoint) {
+        await store.replaceRecoveryCheckpoint(receiverCheckpoint);
+      } else if (!localCheckpoint.jobs.length) {
+        // The per-instance route is legacy migration input only. It is tried
+        // after the receiver-authoritative registry and never overwrites a
+        // CaptureJob checkpoint.
+        await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
       return new BackfillCoordinator({
         store,
@@ -271,9 +261,9 @@ async function backfillCoordinator() {
         ),
         receiverPreflight: backfillReceiverPreflight,
         checkpoint: async (checkpoint) => {
+          await commitCaptureJobsToReceiver(instanceId, checkpoint);
           await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
-          await mirrorCaptureJobsToReceiver(instanceId, checkpoint);
         },
         captureOverride: async ({ provider, nativeId, response }) => {
           if (provider !== "chatgpt") return null;

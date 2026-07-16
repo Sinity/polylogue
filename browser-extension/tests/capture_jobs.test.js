@@ -9,8 +9,8 @@ describe("CaptureJob extension recovery", () => {
     expect(scope).not.toContain("account");
     const responses = [
       { jobs: [] },
-      { job: { job_id: "receiver-job", provider: "chatgpt", revision: 0, lease_generation: 0 } },
-      { job: { job_id: "receiver-job", provider: "chatgpt", revision: 1, lease_generation: 1 }, lease: { lease_id: "lease", generation: 1, proof: "proof" } },
+      { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
+      { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 1, lease_generation: 1 }, lease: { lease_id: "lease", generation: 1, proof: "proof" } },
     ];
     const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => responses.shift() }));
     const client = new CaptureJobClient({ baseUrl: "http://receiver", token: "receiver-token", cache, fetchImpl });
@@ -31,9 +31,9 @@ describe("CaptureJob extension recovery", () => {
     };
     const responses = [
       { jobs: [] },
-      { job: { job_id: "receiver-job", provider: "chatgpt", revision: 0, lease_generation: 0 } },
+      { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
       {
-        job: { job_id: "receiver-job", provider: "chatgpt", revision: 1, lease_generation: 1 },
+        job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 1, lease_generation: 1 },
         lease: { lease_id: "lease", generation: 1, proof: "proof", expires_at: "old" },
       },
       {

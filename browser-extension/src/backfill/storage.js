@@ -379,6 +379,27 @@ export class IndexedDbBackfillStore {
     return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
   }
 
+  async replaceRecoveryCheckpoint(checkpoint) {
+    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) {
+      return { restored: 0, reason: "checkpoint_unavailable" };
+    }
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions"], "readwrite");
+    const jobs = tx.objectStore("jobs");
+    const queue = tx.objectStore("queue");
+    const revisions = tx.objectStore("revisions");
+    jobs.clear();
+    queue.clear();
+    revisions.clear();
+    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
+    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
+    for (const job of checkpoint.jobs || []) jobs.put(recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
+    for (const item of restoredQueue) queue.put(item);
+    for (const revision of checkpoint.revisions || []) revisions.put(structuredClone(revision));
+    await transactionDone(tx);
+    return { restored: (checkpoint.jobs || []).length, reason: "receiver_authority_reconciled" };
+  }
+
   async recoverExpiredLeases(jobId, nowMs) {
     const db = await this.database();
     const tx = db.transaction("queue", "readwrite");
@@ -558,6 +579,18 @@ export class MemoryBackfillStore {
     for (const item of restoredQueue) this.queue.set(item.id, structuredClone(item));
     for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
     return { restored: (checkpoint.jobs || []).length, reason: "browser_profile_recovery_required" };
+  }
+  async replaceRecoveryCheckpoint(checkpoint) {
+    if (!checkpoint || checkpoint.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION) return { restored: 0, reason: "checkpoint_unavailable" };
+    this.jobs.clear();
+    this.queue.clear();
+    this.revisions.clear();
+    const restoredQueue = (checkpoint.queue || []).map((item) => recoveryRequiredItem(structuredClone(item)));
+    const recoveryRequiredJobs = new Set(restoredQueue.filter((item) => item.state === "recovery_required").map((item) => item.job_id));
+    for (const job of checkpoint.jobs || []) this.jobs.set(job.id, recoveryCheckpointJob(job, recoveryRequiredJobs.has(job.id)));
+    for (const item of restoredQueue) this.queue.set(item.id, structuredClone(item));
+    for (const revision of checkpoint.revisions || []) this.revisions.set(revision.id, structuredClone(revision));
+    return { restored: (checkpoint.jobs || []).length, reason: "receiver_authority_reconciled" };
   }
   async recoverExpiredLeases(jobId, nowMs) {
     let recovered = 0;

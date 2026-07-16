@@ -67,21 +67,28 @@ export class CaptureJobClient {
     const intent = { schema_version: 1, version: 1, intent_key, kind: "backfill-ledger", payload: intentPayload, digest: await digest(intentPayload) };
     const job = found.jobs.length ? found.jobs[0] : (await this.request("POST", "/v1/capture-jobs", { request_id: crypto.randomUUID(), provider, account_scope, intent })).job;
     if (found.jobs.length > 1) throw new Error("capture_job_ambiguous_adoption");
-    const key = `capture-job-cache:v1:${intent_key}`;
+    return this.adoptExisting(job, account_scope, sessionId);
+  }
+
+  async adoptExisting(job, accountScope, sessionId) {
+    const key = `capture-job-cache:v1:${job.intent_key}`;
     const cached = (await this.cache.get({ [key]: null }))[key];
     const request_id = cached?.job_id === job.job_id ? cached.request_id : crypto.randomUUID();
     const adopted = await this.request("POST", `/v1/capture-jobs/${job.job_id}/adopt`, {
-      provider, account_scope, request_id, session_id: sessionId, expected_revision: job.revision,
+      provider: job.provider, account_scope: accountScope, request_id, session_id: sessionId, expected_revision: job.revision,
       expected_lease_generation: job.lease_generation, lease_ttl_seconds: 120,
     });
     await this.cache.set({ [key]: { job_id: job.job_id, request_id } });
-    return { ...adopted, account_scope, intent_key };
+    return { ...adopted, account_scope: accountScope, intent_key: job.intent_key };
   }
 
-  async discoverRecovery(provider, accountHandle) {
+  async discoverRecovery(provider, accountHandle, sessionId) {
     const account_scope = await deriveAccountScope(this.token, provider, accountHandle);
     const result = await this.request("POST", "/v1/capture-jobs/discover", { provider, account_scope });
-    return result.jobs.filter((job) => job.checkpoint?.payload).sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
+    const jobs = result.jobs
+      .filter((job) => job.checkpoint?.payload)
+      .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
+    return Promise.all(jobs.map((job) => this.adoptExisting(job, account_scope, sessionId)));
   }
 
   async update(adopted, retry, leaseTtlSeconds = 120) {

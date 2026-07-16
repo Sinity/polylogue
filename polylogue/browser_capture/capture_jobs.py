@@ -121,6 +121,12 @@ class CaptureJobRegistry:
             )
         return provider, account_scope
 
+    def _validate_protocol(self, protocol: object) -> None:
+        if not isinstance(protocol, int) or not self.protocol_min <= protocol <= self.protocol_max:
+            raise CaptureJobError(
+                426, "incompatible_client", {"receiver_min": self.protocol_min, "receiver_max": self.protocol_max}
+            )
+
     @staticmethod
     def _intent(intent: object) -> dict[str, object]:
         if (
@@ -299,14 +305,19 @@ class CaptureJobRegistry:
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
         with self._connect() as connection:
-            orphans = self._census_legacy_orphans(connection)
             rows = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
                 + (" AND intent_key=?" if intent_key else "")
                 + " ORDER BY updated_at DESC",
                 (provider, scope, intent_key) if intent_key else (provider, scope),
             ).fetchall()
-            return {"jobs": [self._summary(row) for row in rows], "orphans": orphans}
+            return {"jobs": [self._summary(row) for row in rows]}
+
+    def list_orphans(self, protocol: object) -> dict[str, object]:
+        """Return the global legacy census only on its explicit operator route."""
+        self._validate_protocol(protocol)
+        with self._connect() as connection:
+            return {"orphans": self._census_legacy_orphans(connection)}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connect() as connection:

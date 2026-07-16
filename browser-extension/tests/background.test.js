@@ -60,6 +60,9 @@ function installChromeMock(storagePatch = {}) {
       executeScript: vi.fn(async (details) => {
         if (!details.func) return undefined;
         const request = details.args[0];
+        if (request.operation === "identity") {
+          return [{ result: { ok: true, response: { accountHandle: `test-account-${request.provider}` } } }];
+        }
         const body = request.operation === "inventory"
           ? { items: [{ id: "backfill-1", update_time: 1780000000 }], total: 1 }
           : { id: "backfill-1", mapping: {} };
@@ -141,11 +144,49 @@ function installChromeMock(storagePatch = {}) {
   };
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     fetchCalls.push({ url, options });
+    const captureJobResponse = captureJobFixtureResponse(url, options);
+    if (captureJobResponse) return captureJobResponse;
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
     }
     return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
   });
+}
+
+function captureJobFixtureResponse(url, options = {}) {
+  const path = new URL(url).pathname;
+  if (!path.startsWith("/v1/capture-jobs")) return null;
+  const body = options.body ? JSON.parse(options.body) : {};
+  if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
+  if (path === "/v1/capture-jobs") {
+    return responseJson({ job: {
+      job_id: "fixture-capture-job", provider: body.provider, account_scope: body.account_scope,
+      intent_key: body.intent.intent_key, revision: 0, lease_generation: 0,
+    } }, { status: 201 });
+  }
+  if (path.endsWith("/adopt")) {
+    return responseJson({
+      job: {
+        job_id: "fixture-capture-job", provider: body.provider, account_scope: body.account_scope,
+        intent_key: "fixture-intent", revision: 1, lease_generation: 1,
+      },
+      lease: { lease_id: "fixture-lease", generation: 1, proof: "fixture-proof", expires_at: "2099-01-01T00:00:00Z" },
+    });
+  }
+  if (path.endsWith("/update")) {
+    return responseJson({
+      job: {
+        job_id: "fixture-capture-job", provider: body.provider, account_scope: body.account_scope,
+        intent_key: "fixture-intent", revision: 2, lease_generation: 1,
+        lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: null,
+      },
+      receipt: { kind: "capture_job_update", revision: 2 },
+    });
+  }
+  if (path.endsWith("/checkpoint")) {
+    return responseJson({ job: { job_id: "fixture-capture-job", revision: 3, checkpoint_sequence: 0 }, receipt: {} });
+  }
+  return responseJson({ error: "unexpected_capture_job_request" }, { ok: false, status: 500 });
 }
 
 async function loadBackground(storagePatch = {}) {
@@ -577,6 +618,8 @@ describe("background receiver diagnostics", () => {
   it("routes backfill inventory through a dedicated inactive provider page", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
+      const captureJobResponse = captureJobFixtureResponse(url, options);
+      if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
       }
@@ -603,11 +646,10 @@ describe("background receiver diagnostics", () => {
     })));
     // Provider inventory/conversation fetches route through the page bridge
     // (chrome.scripting.executeScript above), never through this
-    // service-worker `fetch`. The receiver capability preflight and the
-    // best-effort backfill-checkpoint mirror/restore traffic (polylogue-06zm)
-    // are the only legitimate service-worker fetches for this flow.
+    // service-worker `fetch`. Receiver capability and CaptureJob durability
+    // traffic are the only legitimate service-worker fetches for this flow.
     for (const call of fetchCalls) {
-      expect(call.url).toMatch(/\/v1\/(browser-captures\/capabilities|backfill-checkpoint)/);
+      expect(call.url).toMatch(/\/v1\/(browser-captures\/capabilities|capture-jobs|backfill-checkpoint)/);
     }
     expect(fetchCalls.filter((call) => String(call.url).includes("/v1/browser-captures/capabilities"))).toHaveLength(1);
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
@@ -699,9 +741,11 @@ describe("background receiver diagnostics", () => {
     )).toHaveLength(pageWorkBeforeAlarm);
   });
 
-  it("mirrors every backfill-ledger checkpoint persist to the receiver (polylogue-06zm)", async () => {
+  it("commits CaptureJobs before updating the local checkpoint cache", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
+      const captureJobResponse = captureJobFixtureResponse(url, options);
+      if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
       }
@@ -723,11 +767,10 @@ describe("background receiver diagnostics", () => {
     const body = JSON.parse(mirrorCall.options.body);
     expect(body.extension_instance_id).toBe(stored.polylogueExtensionInstanceId);
     expect(body.checkpoint).toMatchObject({ version: 1, jobs: [expect.objectContaining({ provider: "chatgpt" })] });
-    // The local chrome.storage.local copy stays authoritative and is written
-    // regardless of the receiver mirror's reachability -- confirmed here by
-    // the fact the start() call above still returned a running job even
-    // though this fetch mock is a fresh handler with no bearing on local
-    // storage.
+    const captureJobCommit = fetchCalls.findIndex((call) => new URL(call.url).pathname.endsWith("/checkpoint"));
+    const localMirror = fetchCalls.findIndex((call) => new URL(call.url).pathname === "/v1/backfill-checkpoint" && call.options.method === "POST");
+    expect(captureJobCommit).toBeGreaterThanOrEqual(0);
+    expect(localMirror).toBeGreaterThan(captureJobCommit);
     expect(stored.polylogueBackfillRecoveryCheckpoint).toMatchObject({ version: 1 });
   });
 
@@ -839,7 +882,7 @@ describe("background receiver diagnostics", () => {
     expect(JSON.stringify(stored)).not.toContain("paired:chatgpt");
   });
 
-  it("never lets a receiver mirror failure surface as a checkpoint error", async () => {
+  it("holds the job visibly when the receiver authority cannot commit", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
@@ -857,8 +900,12 @@ describe("background receiver diagnostics", () => {
       cutoff: "2026-01-01T00:00:00Z",
     });
 
-    expect(started.job.recovery_checkpoint_error).toBeNull();
-    expect(started.job.status).toBe("running");
+    expect(started.job.recovery_checkpoint_error).toBe("capture_job_request_failed");
+    expect(started.job).toMatchObject({
+      status: "paused",
+      cooldown_reason: "receiver_capture_job_authority_unavailable",
+    });
+    expect(stored.polylogueBackfillRecoveryCheckpoint).toBeUndefined();
   });
 
   it("restores the backfill ledger from the receiver mirror when local checkpoint state is gone", async () => {
@@ -926,11 +973,27 @@ describe("background receiver diagnostics", () => {
         return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
       }
       if (path === "/v1/capture-jobs/discover") {
+        const body = JSON.parse(options.body);
+        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
         return responseJson({ jobs: [{
           job_id: "receiver-capture-job",
+          provider: "chatgpt",
+          account_scope: "opaque-scope",
+          intent_key: "receiver-intent",
+          revision: 4,
+          lease_generation: 1,
           updated_at: "2026-07-16T10:00:00Z",
           checkpoint: { payload: remoteCheckpoint },
         }] });
+      }
+      if (path.endsWith("/adopt")) {
+        return responseJson({
+          job: {
+            job_id: "receiver-capture-job", provider: "chatgpt", intent_key: "receiver-intent",
+            revision: 5, lease_generation: 2, checkpoint: { payload: remoteCheckpoint },
+          },
+          lease: { lease_id: "recovery-lease", generation: 2, proof: "recovery-proof" },
+        });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -949,6 +1012,105 @@ describe("background receiver diagnostics", () => {
     expect(JSON.parse(discoverCall.options.body).account_scope).toMatch(/^h1:/);
     expect(stored.polylogueExtensionInstanceId).toBeDefined();
     expect(JSON.stringify(stored)).not.toContain(accountHandle);
+    expect(fetchCalls.some((call) => new URL(call.url).pathname.endsWith("/adopt"))).toBe(true);
+  });
+
+  it("adopts and merges every provider checkpoint without replaying acknowledged work", async () => {
+    const checkpoints = Object.fromEntries(["chatgpt", "claude-ai"].map((provider) => [provider, {
+      version: 1,
+      jobs: [{
+        id: `local-${provider}`, provider, cutoff: "2026-01-01T00:00:00Z", status: "running",
+        inventory_cursor: "done", inventory_complete: true,
+        policy: { leaseMs: 180000, maxDailyRequests: 10, maxCapturesPerWake: 1 },
+        execution_generation: 2, learned_cadence_ms: 40000, daily_requests: 3,
+        last_ack: { receiver_request_id: `ack-${provider}`, content_hash: `hash-${provider}` },
+      }],
+      queue: [{
+        id: `queue-${provider}`, job_id: `local-${provider}`, provider, native_id: `native-${provider}`,
+        state: "complete", content_hash: `hash-${provider}`, completed_at: "2026-07-16T10:00:00Z",
+      }],
+      revisions: [{
+        id: `${provider}:native-${provider}`, provider, native_id: `native-${provider}`,
+        provider_updated_at: "2026-07-16T09:00:00Z", content_hash: `hash-${provider}`,
+      }],
+    }]));
+    let providerWorkCalls = 0;
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      const request = details.args?.[0];
+      if (request?.operation === "identity") {
+        return [{ result: { ok: true, response: { accountHandle: `${request.provider}-account` } } }];
+      }
+      providerWorkCalls += 1;
+      return [{ result: { ok: false, error: "provider_work_must_not_replay" } }];
+    });
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = new URL(url).pathname;
+      const body = options.body ? JSON.parse(options.body) : {};
+      if (path === "/v1/backfill-checkpoint") {
+        return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
+      }
+      if (path === "/v1/browser-captures/capabilities") {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      if (path === "/v1/capture-jobs/discover") {
+        const provider = body.provider;
+        return responseJson({ jobs: checkpoints[provider] ? [{
+          job_id: `receiver-${provider}`, provider, intent_key: `intent-${provider}`,
+          revision: 4, lease_generation: 1, checkpoint_sequence: 1,
+          updated_at: "2026-07-16T10:00:00Z", checkpoint: { payload: checkpoints[provider] },
+        }] : [] });
+      }
+      if (path.endsWith("/adopt")) {
+        const provider = body.provider;
+        return responseJson({
+          job: {
+            job_id: `receiver-${provider}`, provider, intent_key: `intent-${provider}`,
+            revision: 5, lease_generation: 2, checkpoint_sequence: 1,
+            checkpoint: { payload: checkpoints[provider] },
+          },
+          lease: { lease_id: `lease-${provider}`, generation: 2, proof: `proof-${provider}` },
+        });
+      }
+      if (path.endsWith("/update")) {
+        return responseJson({
+          job: {
+            job_id: path.split("/")[3], provider: body.provider, intent_key: `intent-${body.provider}`,
+            revision: 6, lease_generation: 2, lease_expires_at: "2099-01-01T00:00:00Z",
+            checkpoint_sequence: 1,
+          },
+          receipt: { kind: "capture_job_update", revision: 6 },
+        });
+      }
+      if (path.endsWith("/checkpoint")) {
+        return responseJson({ job: { job_id: path.split("/")[3], revision: 7, checkpoint_sequence: 2 }, receipt: {} });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+
+    expect(status.jobs.map((job) => job.id).sort()).toEqual(["local-chatgpt", "local-claude-ai"]);
+    expect(status.jobs.every((job) => job.status === "paused")).toBe(true);
+    expect(status.jobs.map((job) => job.last_ack.receiver_request_id).sort()).toEqual([
+      "ack-chatgpt", "ack-claude-ai",
+    ]);
+    const adoptedPaths = fetchCalls
+      .filter((call) => new URL(call.url).pathname.endsWith("/adopt"))
+      .map((call) => new URL(call.url).pathname);
+    expect(new Set(adoptedPaths)).toEqual(new Set([
+      "/v1/capture-jobs/receiver-chatgpt/adopt",
+      "/v1/capture-jobs/receiver-claude-ai/adopt",
+    ]));
+    await sendRuntimeMessage({
+      type: "polylogue.backfill.control", job_id: "local-chatgpt", action: "resume",
+    });
+    alarmListener({ name: "polylogueBackfillWake:local-chatgpt" });
+    await vi.waitFor(async () => {
+      const refreshed = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+      expect(refreshed.jobs.find((job) => job.id === "local-chatgpt")?.status).toBe("complete");
+    });
+    expect(providerWorkCalls).toBe(0);
   });
 
   it("does not query the receiver mirror when a local recovery checkpoint already restored jobs", async () => {
@@ -991,6 +1153,10 @@ describe("background receiver diagnostics", () => {
   it("preserves page-bridge Retry-After through the adapter and coordinator", async () => {
     globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
       if (details.func) {
+        const request = details.args?.[0];
+        if (request?.operation === "identity") {
+          return [{ result: { ok: true, response: { accountHandle: "retry-account" } } }];
+        }
         return [{ result: { ok: true, response: {
           ok: false,
           status: 429,
@@ -1018,7 +1184,10 @@ describe("background receiver diagnostics", () => {
   });
 
   it("holds a browser scripting-result size rejection without spending retry attempts", async () => {
-    globalThis.chrome.scripting.executeScript = vi.fn(async () => {
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (details.args?.[0]?.operation === "identity") {
+        return [{ result: { ok: true, response: { accountHandle: "oversize-account" } } }];
+      }
       throw new Error("The message length exceeded the maximum allowed size");
     });
 
@@ -1063,9 +1232,13 @@ describe("background receiver diagnostics", () => {
 
   it("surfaces a stale Claude UI selection as a cancel-and-restart reason", async () => {
     tabs = [{ id: 52, url: "https://claude.ai/new", title: "Claude" }];
-    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => details.func
-      ? [{ result: { ok: false, error: "backfill_bridge_selected_organization_stale" } }]
-      : undefined);
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (!details.func) return undefined;
+      if (details.args?.[0]?.operation === "identity") {
+        return [{ result: { ok: true, response: { accountHandle: "claude-account" } } }];
+      }
+      return [{ result: { ok: false, error: "backfill_bridge_selected_organization_stale" } }];
+    });
 
     const started = await sendRuntimeMessage({
       type: "polylogue.backfill.start",

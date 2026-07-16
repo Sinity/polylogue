@@ -346,17 +346,21 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             except ValueError:
                 protocol = -1
             try:
-                capture_job_payload = registry_for_receiver(
+                registry = registry_for_receiver(
                     self.server.config.spool_path,
                     receiver_identity(self.server.config),
-                ).get(
-                    job_id,
-                    {
-                        "provider": params.get("provider", [""])[0],
-                        "account_scope": params.get("account_scope", [""])[0],
-                        "client_protocol": protocol,
-                    },
                 )
+                if job_id == "orphans":
+                    capture_job_payload = registry.list_orphans(protocol)
+                else:
+                    capture_job_payload = registry.get(
+                        job_id,
+                        {
+                            "provider": params.get("provider", [""])[0],
+                            "account_scope": params.get("account_scope", [""])[0],
+                            "client_protocol": protocol,
+                        },
+                    )
             except CaptureJobError as exc:
                 self._capture_job_error(exc)
                 return
