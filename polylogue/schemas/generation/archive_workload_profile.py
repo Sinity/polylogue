@@ -168,8 +168,19 @@ def _per_session_tool_distributions(conn: sqlite3.Connection) -> tuple[JSONDocum
         return {}, {}
     uses = DistributionSketch()
     results = DistributionSketch()
-    rows = conn.execute(
+    if _table_exists(conn, "sessions"):
+        query = """
+        SELECT
+            SUM(CASE WHEN b.block_type = 'tool_use' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN b.block_type = 'tool_result' THEN 1 ELSE 0 END)
+        FROM sessions AS s
+        LEFT JOIN blocks AS b
+          ON b.session_id = s.session_id
+         AND b.block_type IN ('tool_use', 'tool_result')
+        GROUP BY s.session_id
         """
+    else:
+        query = """
         SELECT
             SUM(CASE WHEN block_type = 'tool_use' THEN 1 ELSE 0 END),
             SUM(CASE WHEN block_type = 'tool_result' THEN 1 ELSE 0 END)
@@ -177,14 +188,12 @@ def _per_session_tool_distributions(conn: sqlite3.Connection) -> tuple[JSONDocum
         WHERE block_type IN ('tool_use', 'tool_result')
         GROUP BY session_id
         """
-    )
+    rows = conn.execute(query)
     for row in rows:
         use_count = int(row[0] or 0)
         result_count = int(row[1] or 0)
-        if use_count:
-            uses.observe(use_count)
-        if result_count:
-            results.observe(result_count)
+        uses.observe(use_count)
+        results.observe(result_count)
     use_payload = uses.to_payload()
     use_payload["null_count"] = 0
     result_payload = results.to_payload()

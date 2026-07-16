@@ -334,7 +334,10 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
                 ('s2', 'claude-code-session', 'standard', 'subagent', 'path', 's1',
                  'other title', NULL, 'private-branch', 'ssh://private/repo',
                  'other-project', 1, 8, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 8,
-                 NULL, 1500, 2500, 2500);
+                 NULL, 1500, 2500, 2500),
+                ('s3', 'codex-session', 'standard', NULL, 'origin', NULL,
+                 NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, 0,
+                 0, 0, 0, 0, 0, 0, 0, 0, NULL, 1600, 2600, 2600);
             INSERT INTO messages VALUES
                 ('s1', 0, 0, 'user', 'message', 'human_authored',
                  'private-model-name', 'private context', 10, 12, 0, 0, 0, 20),
@@ -408,11 +411,17 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     row_counts = cast(dict[str, JSONValue], index["row_counts"])
     action_shapes = cast(dict[str, JSONValue], index["action_shapes"])
     pairing = cast(dict[str, JSONValue], action_shapes["tool_pairing"])
+    tool_uses = cast(dict[str, JSONValue], action_shapes["tool_uses_per_session"])
+    tool_results = cast(dict[str, JSONValue], action_shapes["tool_results_per_session"])
     archive_mix = cast(dict[str, JSONValue], profile["archive_mix"])
-    assert row_counts == {"sessions": 2, "messages": 3, "blocks": 5}
+    assert row_counts == {"sessions": 3, "messages": 3, "blocks": 5}
     assert pairing["paired"] == 1
     assert pairing["unknown_identity_uses"] == 1
     assert pairing["unknown_identity_results"] == 1
+    assert tool_uses["count"] == 3
+    assert tool_uses["min"] == 0
+    assert tool_results["count"] == 3
+    assert tool_results["min"] == 0
     assert archive_mix["package_bundle_scope_counts"] == {"codex": {"v1": 2}}
     assert profile["profile_id"] == repeated["profile_id"]
 
