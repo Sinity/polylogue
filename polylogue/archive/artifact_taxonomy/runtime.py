@@ -37,6 +37,19 @@ def classify_artifact_path(
         return None
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
+    if provider_token is Provider.HERMES and inner_name in {
+        "verification_evidence.db",
+        "verification_evidence.sqlite",
+        "verification_evidence.sqlite3",
+    }:
+        return ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind.METADATA_DOCUMENT,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Hermes SQLite evidence sidecar",
+        )
     if provider_token is Provider.ANTIGRAVITY:
         if inner_name.endswith(".md.metadata.json"):
             return None

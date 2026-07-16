@@ -231,7 +231,8 @@ class ObservationJournal:
                     profile_tokens_json BLOB NOT NULL,
                     schema_sample_count INTEGER NOT NULL,
                     profile_family_id TEXT,
-                    package_family_id TEXT
+                    package_family_id TEXT,
+                    package_selected INTEGER NOT NULL DEFAULT 0 CHECK (package_selected IN (0, 1))
                 ) STRICT;
 
                 CREATE TABLE samples (
@@ -274,7 +275,7 @@ class ObservationJournal:
                 CREATE INDEX units_artifact_kind_idx ON units(artifact_kind, unit_id);
                 CREATE INDEX units_bundle_scope_idx ON units(bundle_scope, unit_id);
                 CREATE INDEX units_profile_family_idx ON units(profile_family_id, unit_id);
-                CREATE INDEX units_package_family_idx ON units(package_family_id, artifact_kind, unit_id);
+                CREATE INDEX units_package_family_idx ON units(package_family_id, package_selected, artifact_kind, unit_id);
                 CREATE INDEX profile_summaries_family_idx
                     ON profile_summaries(profile_family_id, artifact_kind, profile_tokens_json);
                 """
@@ -554,8 +555,142 @@ class ObservationJournal:
 
     def assign_package_family(self, unit_id: int, package_family_id: str) -> None:
         self._connection.execute(
-            "UPDATE units SET package_family_id = ? WHERE unit_id = ?",
+            "UPDATE units SET package_family_id = ?, package_selected = 1 WHERE unit_id = ?",
             (package_family_id, unit_id),
+        )
+
+    def assign_canonical_package_families(self, anchor_kinds: frozenset[str]) -> dict[str, int]:
+        """Assign one canonical unit per scope/kind/structure in SQLite.
+
+        Package assembly used to collect every unit in a scope into Python merely
+        to remove duplicate structural observations and choose a sole anchor.
+        The journal already owns the necessary identity columns, so retain that
+        relation here and expose only the resulting replay views.
+        """
+        if not anchor_kinds:
+            raise ValueError("Package assignment needs at least one anchor artifact kind")
+        placeholders = ", ".join("?" for _ in anchor_kinds)
+        anchor_parameters = tuple(sorted(anchor_kinds))
+        scope_key = _SCOPE_KEY_SQL
+        self._connection.execute("UPDATE units SET package_family_id = NULL, package_selected = 0")
+        self._connection.execute(
+            f"""
+            WITH canonical AS (
+                SELECT
+                    unit_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
+                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
+                    ) AS row_number
+                FROM units
+                WHERE profile_family_id IS NOT NULL
+            )
+            UPDATE units
+            SET package_family_id = profile_family_id, package_selected = 1
+            WHERE unit_id IN (
+                SELECT unit_id FROM canonical
+                WHERE row_number = 1 AND artifact_kind IN ({placeholders})
+            )
+            """,
+            anchor_parameters,
+        )
+        self._connection.execute(
+            f"""
+            WITH canonical AS (
+                SELECT
+                    unit_id,
+                    artifact_kind,
+                    {scope_key} AS scope_key,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
+                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
+                    ) AS row_number
+                FROM units
+                WHERE profile_family_id IS NOT NULL
+            ), scope_anchors AS (
+                SELECT
+                    {scope_key} AS scope_key,
+                    MIN(package_family_id) AS package_family_id,
+                    COUNT(DISTINCT package_family_id) AS family_count
+                FROM units
+                WHERE package_selected = 1 AND artifact_kind IN ({placeholders})
+                GROUP BY {scope_key}
+            )
+            UPDATE units
+            SET package_family_id = (
+                SELECT package_family_id FROM scope_anchors
+                WHERE scope_anchors.scope_key = {scope_key}
+            ), package_selected = 1
+            WHERE unit_id IN (
+                SELECT canonical.unit_id
+                FROM canonical JOIN scope_anchors USING(scope_key)
+                WHERE canonical.row_number = 1
+                  AND canonical.artifact_kind NOT IN ({placeholders})
+                  AND scope_anchors.family_count = 1
+            )
+            """,
+            (*anchor_parameters, *anchor_parameters),
+        )
+        rows = self._connection.execute(
+            f"""
+            WITH canonical AS (
+                SELECT
+                    artifact_kind,
+                    {scope_key} AS scope_key,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
+                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
+                    ) AS row_number
+                FROM units
+                WHERE profile_family_id IS NOT NULL
+            ), scope_anchors AS (
+                SELECT {scope_key} AS scope_key, COUNT(DISTINCT package_family_id) AS family_count
+                FROM units
+                WHERE package_selected = 1 AND artifact_kind IN ({placeholders})
+                GROUP BY {scope_key}
+            )
+            SELECT canonical.artifact_kind, COUNT(*) AS count
+            FROM canonical LEFT JOIN scope_anchors USING(scope_key)
+            WHERE canonical.row_number = 1
+              AND canonical.artifact_kind NOT IN ({placeholders})
+              AND COALESCE(scope_anchors.family_count, 0) != 1
+            GROUP BY canonical.artifact_kind
+            """,
+            (*anchor_parameters, *anchor_parameters),
+        )
+        return {str(row["artifact_kind"]): int(row["count"]) for row in rows}
+
+    def iter_package_family_ids(self) -> Iterator[str]:
+        for row in self._connection.execute(
+            """
+            SELECT DISTINCT package_family_id FROM units
+            WHERE package_selected = 1 AND package_family_id IS NOT NULL
+            ORDER BY package_family_id
+            """
+        ):
+            yield str(row[0])
+
+    def package_metadata(self, package_family_id: str) -> tuple[str | None, str | None, list[str]]:
+        """Return bounded metadata for one already-assigned output package."""
+        where = "package_selected = 1 AND package_family_id = ?"
+        first_seen, last_seen = self._connection.execute(
+            f"SELECT MIN(observed_at), MAX(observed_at) FROM units WHERE {where}", (package_family_id,)
+        ).fetchone()
+        paths = [
+            str(row[0])
+            for row in self._connection.execute(
+                f"""
+                SELECT DISTINCT source_path FROM units
+                WHERE {where} AND source_path IS NOT NULL AND source_path != ''
+                ORDER BY source_path LIMIT 5
+                """,
+                (package_family_id,),
+            )
+        ]
+        return (
+            str(first_seen) if first_seen is not None else None,
+            str(last_seen) if last_seen is not None else None,
+            paths,
         )
 
     def memberships(
@@ -591,6 +726,8 @@ class ObservationJournal:
             if value is not None:
                 predicates.append(f"{column} = ?")
                 parameters.append(value)
+        if package_family_id is not None:
+            predicates.append("package_selected = 1")
         return " AND ".join(predicates), parameters
 
     def iter_identified_memberships(

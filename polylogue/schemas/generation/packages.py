@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from itertools import groupby
 
 from polylogue.schemas.generation.models import (
     PackageAssemblyResult,
@@ -222,63 +221,23 @@ def _assemble_journal_package_candidates(
     journal: ObservationJournal,
     clusters: dict[str, _ClusterAccumulator],
 ) -> PackageAssemblyResult:
-    """Assemble packages one bundle scope at a time and persist assignments."""
+    """Persist canonical scope assignment in SQLite, then replay output packages."""
+    orphan_adjunct_counts = journal.assign_canonical_package_families(frozenset(_ANCHOR_ELEMENT_KINDS))
     packages: dict[str, _PackageAccumulator] = {}
-    orphan_adjunct_counts: Counter[str] = Counter()
-    identified = journal.iter_identified_memberships(scope_order=True, include_samples=False)
-
-    for _scope, group in groupby(identified, key=lambda item: _membership_scope_key(item[1])):
-        seen: set[tuple[str, str]] = set()
-        items: list[tuple[int, _UnitMembership]] = []
-        for unit_id, membership in group:
-            dedupe_key = (membership.unit.artifact_kind, membership.unit.exact_structure_id)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            items.append((unit_id, membership))
-
-        anchor_families = sorted(
-            {
-                membership.profile_family_id
-                for _unit_id, membership in items
-                if membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS
-            }
+    for family_id in journal.iter_package_family_ids():
+        cluster = clusters[family_id]
+        first_seen, last_seen, representative_paths = journal.package_metadata(family_id)
+        package = _PackageAccumulator(
+            provider=provider,
+            anchor_family_id=family_id,
+            anchor_kind=cluster.artifact_kind,
+            representative_paths=representative_paths,
+            first_seen=first_seen,
+            last_seen=last_seen,
         )
-        if not anchor_families:
-            for _unit_id, membership in items:
-                orphan_adjunct_counts[membership.unit.artifact_kind] += 1
-            continue
-
-        for family_id in anchor_families:
-            acc = packages.get(family_id)
-            if acc is None:
-                cluster = clusters[family_id]
-                acc = _PackageAccumulator(
-                    provider=provider,
-                    anchor_family_id=family_id,
-                    anchor_kind=cluster.artifact_kind,
-                )
-                packages[family_id] = acc
-            for unit_id, membership in items:
-                if membership.profile_family_id == family_id and membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS:
-                    _observe_journal_package_membership(acc, membership)
-                    journal.assign_package_family(unit_id, family_id)
-
-        if len(anchor_families) == 1:
-            family_id = anchor_families[0]
-            target = packages[family_id]
-            for unit_id, membership in items:
-                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
-                    _observe_journal_package_membership(target, membership)
-                    journal.assign_package_family(unit_id, family_id)
-        else:
-            for _unit_id, membership in items:
-                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
-                    orphan_adjunct_counts[membership.unit.artifact_kind] += 1
-
-    for family_id, package in packages.items():
         package.memberships = journal.memberships(package_family_id=family_id)
         package.journal_bundle_scope_count = package.memberships.scope_count()
+        packages[family_id] = package
 
     ordered = sorted(
         packages.values(),

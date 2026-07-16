@@ -315,6 +315,42 @@ def test_metadata_membership_passes_do_not_decode_sample_payloads(
             list(memberships)
 
 
+def test_journal_assigns_one_canonical_package_member_per_scope_structure(tmp_path: Path) -> None:
+    """One pathological scope must not become a Python-sized assembly batch."""
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        for index in range(512):
+            unit_id = journal.append_unit(
+                SchemaUnit(
+                    cluster_payload={"index": index},
+                    schema_samples=[{"index": index}],
+                    artifact_kind="session_document",
+                    bundle_scope="one-large-scope",
+                    exact_structure_id=f"shape-{index % 4}",
+                    profile_tokens=("field:index",),
+                ),
+                retain_cluster_payload=False,
+            )
+            journal.assign_profile_family(unit_id, "anchor-family")
+        adjunct_id = journal.append_unit(
+            SchemaUnit(
+                cluster_payload={"meta": True},
+                schema_samples=[{"meta": True}],
+                artifact_kind="metadata_document",
+                bundle_scope="one-large-scope",
+                exact_structure_id="metadata-shape",
+                profile_tokens=("field:meta",),
+            ),
+            retain_cluster_payload=False,
+        )
+        journal.assign_profile_family(adjunct_id, "adjunct-family")
+
+        assert journal.assign_canonical_package_families(frozenset({"session_document"})) == {}
+        package = journal.memberships(package_family_id="anchor-family")
+        assert len(package) == 5
+        assert package.scope_count() == 1
+        assert package.sample_count == 5
+
+
 def test_journal_rejects_archive_or_broad_permission_roots(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
