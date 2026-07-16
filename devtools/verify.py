@@ -75,6 +75,17 @@ from devtools.verify_runs import (
     pytest_tmpfs_budget_kb,
     utc_now,
 )
+from polylogue.scenarios.workload import (
+    BudgetMeasure,
+    BudgetSemantics,
+    MeasurementScope,
+    WorkloadBudget,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -334,6 +345,148 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     else:
         metadata["pytest_selection"] = "full"
     return metadata
+
+
+def _pytest_workload_receipt(
+    *,
+    label: str,
+    cmd: list[str],
+    elapsed_s: float,
+    returncode: int,
+    termination_reason: str | None,
+    resource_summary: Mapping[str, object],
+    last_resource_sample: Mapping[str, object] | None,
+    tmpfs_budget_mb: float | None,
+    basetemp_cleanup: Path | None,
+    concurrency: int,
+) -> dict[str, Any]:
+    """Adapt managed-pytest accounting to the shared workload receipt."""
+    input_digest = hashlib.sha256(
+        json.dumps(cmd, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    budgets: list[WorkloadBudget] = []
+    if (timeout_s := _pytest_timeout_s()) > 0:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.WALL_MS,
+                timeout_s * 1000,
+                BudgetSemantics.CONTAINMENT,
+                phase="execute",
+            )
+        )
+    if tmpfs_budget_mb is not None:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.TEMP_STORAGE_BYTES,
+                tmpfs_budget_mb * 1024 * 1024,
+                BudgetSemantics.CONTAINMENT,
+                phase="execute",
+            )
+        )
+    spec = WorkloadEnvelopeSpec(
+        workload_id=f"verify:{label}",
+        family_id="verify-pytest",
+        version=1,
+        inputs=(WorkloadInputRef(input_id=f"pytest-selection:sha256:{input_digest}"),),
+        phases=("execute", "quiescent"),
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+        concurrency=concurrency,
+        admission="memory-headroom",
+        budgets=tuple(budgets),
+    )
+    peak_rss_kb = resource_summary.get("peak_tree_rss_kb")
+    peak_pss_kb = resource_summary.get("peak_tree_pss_kb")
+    peak_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
+    final_rss_kb = last_resource_sample.get("tree_rss_kb") if last_resource_sample is not None else None
+    final_pss_kb = last_resource_sample.get("tree_pss_kb") if last_resource_sample is not None else None
+    total_cpu_s = last_resource_sample.get("tree_cpu_s") if last_resource_sample is not None else None
+    execute_unavailable = [
+        "current_rss_bytes",
+        "current_pss_bytes",
+        "anon_bytes",
+        "file_cache_bytes",
+        "swap_bytes",
+        "storage_bytes",
+        "read_io_bytes",
+        "write_io_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "progress_completed",
+        "progress_total",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+    ]
+    if not isinstance(peak_rss_kb, int):
+        execute_unavailable.append("peak_rss_bytes")
+    if not isinstance(peak_pss_kb, int):
+        execute_unavailable.append("peak_pss_bytes")
+    if not isinstance(peak_basetemp_kb, int):
+        execute_unavailable.append("temp_storage_bytes")
+    if not isinstance(total_cpu_s, int | float):
+        execute_unavailable.append("cpu_ms")
+    quiescent_unavailable = [
+        "wall_ms",
+        "cpu_ms",
+        "peak_rss_bytes",
+        "peak_pss_bytes",
+        "anon_bytes",
+        "file_cache_bytes",
+        "swap_bytes",
+        "temp_storage_bytes",
+        "storage_bytes",
+        "read_io_bytes",
+        "write_io_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "progress_completed",
+        "progress_total",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+    ]
+    if not isinstance(final_rss_kb, int):
+        quiescent_unavailable.append("current_rss_bytes")
+    if not isinstance(final_pss_kb, int):
+        quiescent_unavailable.append("current_pss_bytes")
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=(
+            WorkloadRunStatus.CANCELLED
+            if termination_reason is not None
+            else WorkloadRunStatus.SUCCEEDED
+            if returncode == 0
+            else WorkloadRunStatus.FAILED
+        ),
+        build_id=f"git:{head}" if (head := _git_head()) is not None else None,
+        runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(
+                name="execute",
+                wall_ms=elapsed_s * 1000,
+                cpu_ms=float(total_cpu_s) * 1000 if isinstance(total_cpu_s, int | float) else None,
+                peak_rss_bytes=peak_rss_kb * 1024 if isinstance(peak_rss_kb, int) else None,
+                peak_pss_bytes=peak_pss_kb * 1024 if isinstance(peak_pss_kb, int) else None,
+                temp_storage_bytes=peak_basetemp_kb * 1024 if isinstance(peak_basetemp_kb, int) else None,
+                unavailable=tuple(execute_unavailable),
+            ),
+            WorkloadPhaseObservation(
+                name="quiescent",
+                current_rss_bytes=final_rss_kb * 1024 if isinstance(final_rss_kb, int) else None,
+                current_pss_bytes=final_pss_kb * 1024 if isinstance(final_pss_kb, int) else None,
+                cleanup_complete=True if basetemp_cleanup is not None else None,
+                quiescent=final_rss_kb == 0,
+                unavailable=tuple(quiescent_unavailable),
+            ),
+        ),
+        cancellation_requested=termination_reason is not None,
+        cleanup_complete=True if basetemp_cleanup is not None else None,
+        notes=("Managed pytest process-tree sampler adapter.",),
+    )
+    return dict(receipt.to_payload())
 
 
 def _pytest_artifact_paths(cmd: Sequence[str]) -> tuple[Path, ...]:
@@ -1382,11 +1535,13 @@ def _run(
                 if source_key in containment:
                     metadata[metadata_key] = containment[source_key]
         resource_summary: dict[str, Any] = {}
+        last_resource_row: dict[str, Any] | None = None
         if artifacts is not None and artifacts.resources_path.exists():
             sample_count = 0
             peak_rss = 0
             peak_pss: int | None = None
             peak_process_count = 0
+            peak_basetemp_size_kb: int | None = None
             with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
                 for line in resource_handle:
                     if not line.strip():
@@ -1395,11 +1550,19 @@ def _run(
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(row, dict):
+                        continue
+                    last_resource_row = row
                     sample_count += 1
                     peak_rss = max(peak_rss, int(row.get("tree_rss_kb") or 0))
                     if row.get("tree_pss_kb") is not None:
                         peak_pss = max(peak_pss or 0, int(row["tree_pss_kb"]))
                     peak_process_count = max(peak_process_count, int(row.get("process_count") or 0))
+                    if row.get("basetemp_size_kb") is not None:
+                        peak_basetemp_size_kb = max(
+                            peak_basetemp_size_kb or 0,
+                            int(row["basetemp_size_kb"]),
+                        )
             if sample_count:
                 resource_summary = {
                     "resource_sample_count": sample_count,
@@ -1408,6 +1571,10 @@ def _run(
                     "peak_tree_pss_kb": peak_pss,
                     "peak_tree_pss_mb": round(peak_pss / 1024, 1) if peak_pss is not None else None,
                     "peak_process_count": peak_process_count,
+                    "peak_basetemp_size_kb": peak_basetemp_size_kb,
+                    "peak_basetemp_size_mb": (
+                        round(peak_basetemp_size_kb / 1024, 1) if peak_basetemp_size_kb is not None else None
+                    ),
                 }
                 metadata.update(resource_summary)
         diagnosis = classify_pytest_result(
@@ -1420,6 +1587,22 @@ def _run(
             progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
         )
         metadata["diagnosis"] = diagnosis
+        termination_reason = (
+            metadata.get("termination_reason") if isinstance(metadata.get("termination_reason"), str) else None
+        )
+        workload_receipt = _pytest_workload_receipt(
+            label=label,
+            cmd=cmd,
+            elapsed_s=elapsed,
+            returncode=result.returncode,
+            termination_reason=termination_reason,
+            resource_summary=resource_summary,
+            last_resource_sample=last_resource_row,
+            tmpfs_budget_mb=pytest_tmpfs_budget_mb,
+            basetemp_cleanup=basetemp_cleanup,
+            concurrency=runtime_policy.workers if runtime_policy is not None else 1,
+        )
+        metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
             postmortem = {
                 "updated_at": utc_now(),
@@ -1435,6 +1618,7 @@ def _run(
                 "pytest_controller_pgid": metadata.get("pytest_controller_pgid"),
                 "containment_signals_sent": metadata.get("containment_signals_sent"),
                 "containment_escalated_to_sigkill": metadata.get("containment_escalated_to_sigkill"),
+                "workload_receipt": workload_receipt,
                 **resource_summary,
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")

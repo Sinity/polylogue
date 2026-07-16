@@ -705,6 +705,22 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
     assert not basetemp.exists()
 
 
+def test_cleanup_managed_pytest_basetemp_does_not_receipt_residual_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path / "scratch")}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-residual", env=env)
+    basetemp.mkdir(parents=True)
+    (basetemp / "still-open").write_text("residual")
+    monkeypatch.setattr("devtools.verify_runs.shutil.rmtree", lambda _path: None)
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-residual", env=env)
+
+    assert cleaned is None
+    assert basetemp.exists()
+
+
 def test_cleanup_managed_pytest_basetemp_keeps_seed_cache(tmp_path: Path) -> None:
     env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
     seeded = pytest_basetemp_path(root=tmp_path, run_id="seeded-cache", env=env)
@@ -757,6 +773,9 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert metadata["output_path"] == str(PYTEST_OUTPUT_PATH)
     assert metadata["pytest_workers"] == "unset"
     assert metadata["pytest_selection"] == "full"
+    receipt = metadata["workload_receipt"]
+    assert receipt["spec"]["semantic_result"] == "complete"
+    assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:

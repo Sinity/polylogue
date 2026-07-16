@@ -94,10 +94,29 @@ from .runtime import (
 )
 from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
+from .workload import (
+    BudgetAggregation,
+    BudgetMeasure,
+    BudgetSemantics,
+    BudgetVerdict,
+    MeasurementScope,
+    WorkloadBudget,
+    WorkloadBudgetResult,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+    evaluate_budgets,
+)
 
 __all__ = [
     "AssertionClass",
     "AssertionSpec",
+    "BudgetAggregation",
+    "BudgetMeasure",
+    "BudgetSemantics",
+    "BudgetVerdict",
     "classification_label",
     "build_default_corpus_specs",
     "build_demo_corpus_specs",
@@ -114,6 +133,7 @@ __all__ = [
     "devtools_execution",
     "flatten_corpus_specs",
     "memory_budget_execution",
+    "MeasurementScope",
     "pipeline_probe_execution",
     "resolve_corpus_scenarios",
     "resolve_corpus_specs",
@@ -176,4 +196,12 @@ __all__ = [
     "runtime_maintenance_target_names",
     "runtime_operation_target_names",
     "runtime_path_target_names",
+    "WorkloadBudget",
+    "WorkloadBudgetResult",
+    "WorkloadEnvelopeSpec",
+    "WorkloadInputRef",
+    "WorkloadPhaseObservation",
+    "WorkloadReceipt",
+    "WorkloadRunStatus",
+    "evaluate_budgets",
 ]

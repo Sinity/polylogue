@@ -144,6 +144,7 @@ from polylogue.storage.insights.session.status import session_insight_status_syn
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     archive_tier_spec,
     initialize_active_archive_root,
@@ -866,6 +867,61 @@ action_rows AS (
     ) aft
 )
 """
+
+
+def _exact_session_ids_from_predicate(predicate: QueryPredicate) -> tuple[str, ...] | None:
+    """Return a safe owning-session bound implied by a predicate subtree."""
+    if isinstance(predicate, QueryFieldPredicate):
+        session_field = _predicate_session_field(predicate)
+        if session_field not in {"id", "session"} or not predicate.values:
+            return None
+        # Session identity equality follows ordinary predicate lowering and uses
+        # the final parsed value.  Do not broaden the physical relation beyond
+        # the predicate's actual semantics.
+        return tuple(value for value in predicate.values[-1:] if value)
+    if isinstance(predicate, QueryBoolPredicate):
+        child_bounds = [
+            bound for child in predicate.children if (bound := _exact_session_ids_from_predicate(child)) is not None
+        ]
+        if not child_bounds:
+            return None
+        if predicate.op == "or":
+            if len(child_bounds) != len(predicate.children):
+                return None
+            return tuple(dict.fromkeys(session_id for bound in child_bounds for session_id in bound))
+        intersection = set(child_bounds[0])
+        for bound in child_bounds[1:]:
+            intersection.intersection_update(bound)
+        return tuple(session_id for session_id in child_bounds[0] if session_id in intersection)
+    return None
+
+
+def _action_relation_for_query(
+    *,
+    predicate: QueryPredicate | None = None,
+    session_ids: Sequence[str] = (),
+    include_followup: bool,
+) -> tuple[str, str, list[object]]:
+    """Select the canonical action relation, physically bounded when safe."""
+    explicit_ids = tuple(dict.fromkeys(session_id for session_id in session_ids if session_id))
+    predicate_ids = _exact_session_ids_from_predicate(predicate) if predicate is not None else None
+    normalized_ids = explicit_ids if explicit_ids else predicate_ids
+    if normalized_ids is None:
+        return (
+            (_ACTION_FOLLOWUP_RELATION_SQL if include_followup else ""),
+            ("action_rows" if include_followup else "actions"),
+            [],
+        )
+    bounded_cte = bounded_action_relation_cte(
+        relation_name="bounded_actions",
+        session_count=len(normalized_ids),
+    )
+    relation_params: list[object] = [*normalized_ids, *normalized_ids, *normalized_ids]
+    if not include_followup:
+        return f"WITH {bounded_cte}", "bounded_actions", relation_params
+    followup_ctes = _ACTION_FOLLOWUP_RELATION_SQL.strip().removeprefix("WITH ")
+    followup_ctes = followup_ctes.replace("FROM actions a", "FROM bounded_actions a", 1)
+    return f"WITH {bounded_cte},\n{followup_ctes}", "action_rows", relation_params
 
 
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
@@ -7253,13 +7309,17 @@ class ArchiveStore:
         if needs_session and active_session_filters and session_filters is not None:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         action_needs_followup = unit == "action" and _action_query_needs_followup_relation(predicate, group_by=group_by)
+        action_prefix_sql = ""
+        action_relation_name = "actions"
+        action_relation_params: list[object] = []
+        if unit == "action":
+            action_prefix_sql, action_relation_name, action_relation_params = _action_relation_for_query(
+                predicate=predicate,
+                include_followup=action_needs_followup,
+            )
         from_sql_by_unit = {
             "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-            "action": (
-                "action_rows a JOIN sessions s ON s.session_id = a.session_id"
-                if action_needs_followup
-                else "actions a JOIN sessions s ON s.session_id = a.session_id"
-            ),
+            "action": (f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id"),
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
             "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
@@ -7273,8 +7333,8 @@ class ArchiveStore:
             source_where, source_params = observed_event_source_pushdown(predicate)
         if unit == "observed-event":
             prefix_sql = observed_event_relation_sql(source_where=source_where)
-        elif action_needs_followup:
-            prefix_sql = _ACTION_FOLLOWUP_RELATION_SQL
+        elif unit == "action":
+            prefix_sql = action_prefix_sql
         else:
             prefix_sql = ""
         rows = self._conn.execute(
@@ -7288,7 +7348,14 @@ class ArchiveStore:
             ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
-            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
+            [
+                *action_relation_params,
+                *source_params,
+                *params,
+                *session_params,
+                normalized_limit,
+                normalized_offset,
+            ],
         ).fetchall()
         return [
             ArchiveQueryUnitAggregateRow(
@@ -7322,13 +7389,17 @@ class ArchiveStore:
         else:
             order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), a.tool_use_block_id"
         clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            predicate=predicate,
+            include_followup=True,
+        )
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {_ACTION_FOLLOWUP_RELATION_SQL}
+            {prefix_sql}
             SELECT
                 a.session_id,
                 a.message_id,
@@ -7346,7 +7417,7 @@ class ArchiveStore:
                 a.exit_code,
                 a.followup_class,
                 a.followup_message_ref
-            FROM action_rows a
+            FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE {clause}
@@ -7354,7 +7425,7 @@ class ArchiveStore:
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*relation_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
@@ -7377,9 +7448,13 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            session_ids=normalized_session_ids,
+            include_followup=True,
+        )
         rows = self._conn.execute(
             f"""
-            {_ACTION_FOLLOWUP_RELATION_SQL}
+            {prefix_sql}
             SELECT
                 a.session_id,
                 a.message_id,
@@ -7397,7 +7472,7 @@ class ArchiveStore:
                 a.exit_code,
                 a.followup_class,
                 a.followup_message_ref
-            FROM action_rows a
+            FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE a.session_id IN ({placeholders})
@@ -7405,7 +7480,7 @@ class ArchiveStore:
                      a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
@@ -9487,6 +9562,39 @@ def _predicate_uses_session_scope(predicate: QueryPredicate) -> bool:
     )
 
 
+_UNIT_SESSION_ID_EXPRESSION: dict[str, str] = {
+    "message": "{alias}.session_id",
+    "action": "{alias}.session_id",
+    "file": "{alias}.session_id",
+    "block": "{alias}.session_id",
+    "assertion": "substr({alias}.target_ref, 9)",
+    "run": "{alias}.session_id",
+    "observed-event": "{alias}.session_id",
+    "context-snapshot": "{alias}.session_id",
+    "delegation": "{alias}.parent_session_id",
+}
+
+
+def _unit_owned_session_identity_clause(
+    unit: str,
+    row_alias: str,
+    predicate: QueryFieldPredicate,
+    session_field: str,
+) -> tuple[str, list[object]] | None:
+    """Push exact owning-session identity onto the unit relation itself.
+
+    A semantically equivalent predicate on a joined ``sessions`` alias is not
+    planner-equivalent for views that rank both sides before joining. Keeping
+    the bound on the owning relation lets SQLite push it into those branches.
+    """
+    if session_field not in {"id", "session"} or not predicate.values:
+        return None
+    expression_template = _UNIT_SESSION_ID_EXPRESSION.get(unit)
+    if expression_template is None:
+        return None
+    return f"{expression_template.format(alias=row_alias)} = ?", [predicate.values[-1]]
+
+
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
     normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
     if not normalized:
@@ -10026,6 +10134,14 @@ def _structural_predicate_clause(
     if isinstance(predicate, QueryFieldPredicate):
         session_field = _predicate_session_field(predicate)
         if session_field is not None:
+            owned_identity_clause = _unit_owned_session_identity_clause(
+                unit,
+                row_alias,
+                predicate,
+                session_field,
+            )
+            if owned_identity_clause is not None:
+                return owned_identity_clause
             if session_alias is None:
                 raise ValueError(f"session-scoped {unit} predicate requires a session alias")
             return _field_predicate_clause(

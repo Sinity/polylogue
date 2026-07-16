@@ -567,8 +567,9 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
         return None
     with contextlib.suppress(OSError):
         if basetemp.exists():
-            shutil.rmtree(basetemp, ignore_errors=True)
-            return basetemp
+            shutil.rmtree(basetemp)
+            if not basetemp.exists():
+                return basetemp
     return None
 
 

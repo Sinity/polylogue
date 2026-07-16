@@ -18,7 +18,7 @@ from polylogue.sources.parsers.base import (
     ParsedPasteEvidence,
     ParsedSession,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveQueryUnitAggregateRow, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
     assertion_id_for_session_tag,
@@ -163,6 +163,93 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
     assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
     assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
     assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
+
+
+def test_exact_session_action_count_bounds_pairing_before_global_ranking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C-03: irrelevant sessions cannot amplify an exact-session action count."""
+    root = tmp_path / "archive"
+    target_session_id = "codex-session:target"
+    session_rows = []
+    message_rows = []
+    block_rows = []
+    for index in range(512):
+        native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
+        session_id = f"codex-session:{native_id}"
+        message_id = f"{session_id}:m1"
+        tool_id = f"tool-{index:04d}"
+        session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
+        message_rows.append(
+            (session_id, "m1", 0, Role.ASSISTANT.value, "message", sha256(message_id.encode()).digest())
+        )
+        block_rows.extend(
+            (
+                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
+                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+            )
+        )
+
+    with ArchiveStore(root) as facade:
+        facade._conn.executemany(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            session_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            message_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            block_rows,
+        )
+        source = parse_unit_source_expression(f"actions where session.id:{target_session_id}")
+        assert source is not None
+
+        def measure_query() -> tuple[list[ArchiveQueryUnitAggregateRow], int]:
+            progress_calls = 0
+
+            def count_vm_steps() -> int:
+                nonlocal progress_calls
+                progress_calls += 1
+                return 0
+
+            facade._conn.set_progress_handler(count_vm_steps, 100)
+            try:
+                result_rows = facade.query_unit_counts("action", source.predicate)
+            finally:
+                facade._conn.set_progress_handler(None, 0)
+            return list(result_rows), progress_calls * 100
+
+        rows, bounded_vm_steps = measure_query()
+        contradictory_source = parse_unit_source_expression(
+            f"actions where session.id:{target_session_id} and session.id:codex-session:absent"
+        )
+        assert contradictory_source is not None
+        facade._conn.set_progress_handler(lambda: 0, 100)
+        try:
+            contradictory_rows = facade.query_unit_counts("action", contradictory_source.predicate)
+        finally:
+            facade._conn.set_progress_handler(None, 0)
+        monkeypatch.setattr(
+            "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+            lambda **_kwargs: ("", "actions", []),
+        )
+        mutant_rows, global_first_vm_steps = measure_query()
+
+    assert [(row.group_key, row.count) for row in rows] == [("all", 1)]
+    assert contradictory_rows == []
+    assert [(row.group_key, row.count) for row in mutant_rows] == [("all", 1)]
+    assert bounded_vm_steps < 50_000
+    assert global_first_vm_steps >= 50_000
 
 
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:

@@ -31,6 +31,10 @@ def test_run_memory_budget_reports_success_for_small_command() -> None:
     assert peak_parent_rss_mb >= 0
     assert peak_rss_mb >= 0
     assert peak_rss_mb >= peak_parent_rss_mb
+    receipt = result["workload_receipt"]
+    assert receipt["status"] == "succeeded"
+    assert receipt["spec"]["measurement_scope"] == "process-tree"
+    assert receipt["phases"][0]["unavailable"]
 
 
 def test_main_emits_json_summary(capsys: pytest.CaptureFixture[str]) -> None:
@@ -47,3 +51,4 @@ def test_main_emits_json_summary(capsys: pytest.CaptureFixture[str]) -> None:
     assert isinstance(peak_rss_mb, (int, float))
     assert isinstance(peak_parent_rss_mb, (int, float))
     assert peak_rss_mb >= peak_parent_rss_mb
+    assert payload["workload_receipt"]["spec"]["semantic_result"] == "complete"
