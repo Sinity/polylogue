@@ -24,6 +24,33 @@ describe("CaptureJob extension recovery", () => {
     expect(JSON.stringify(cache.values)).not.toContain("account@example.test");
   });
 
+  it("keeps discovery scope stable when the receiver bearer rotates", async () => {
+    const discovered = [];
+    const cache = { get: vi.fn(async () => ({})), set: vi.fn(async () => undefined) };
+    for (const token of ["old-bearer", "rotated-bearer"]) {
+      const fetchImpl = vi.fn(async (_url, options) => {
+        if (options.method === "GET") {
+          return {
+            ok: true,
+            json: async () => ({
+              schema: "polylogue.capture-jobs.capabilities.v1",
+              protocol_min: 1,
+              protocol_max: 1,
+              scope_namespace: "cjs1:stable-receiver-namespace",
+            }),
+          };
+        }
+        discovered.push({ token: options.headers.Authorization, body: JSON.parse(options.body) });
+        return { ok: true, json: async () => ({ jobs: [] }) };
+      });
+      const client = new CaptureJobClient({ baseUrl: "http://receiver", token, cache, fetchImpl });
+      await client.discoverRecovery("chatgpt", "same-account", "replacement-profile");
+    }
+
+    expect(discovered.map((request) => request.token)).toEqual(["Bearer old-bearer", "Bearer rotated-bearer"]);
+    expect(discovered[0].body.account_scope).toBe(discovered[1].body.account_scope);
+  });
+
   it("renews the proven lease before checkpointing the returned revision", async () => {
     const cache = {
       values: {},

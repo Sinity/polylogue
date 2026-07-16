@@ -566,7 +566,7 @@ export class BackfillCoordinator {
   async persistCheckpoint() {
     if (!this.checkpoint) return null;
     if (this.checkpointPromise) return this.checkpointPromise;
-    const pending = this.commitCheckpoint();
+    const pending = this.commitCheckpointUntilStable();
     this.checkpointPromise = pending;
     try {
       return await pending;
@@ -575,9 +575,20 @@ export class BackfillCoordinator {
     }
   }
 
-  async commitCheckpoint() {
+  async commitCheckpointUntilStable() {
+    let checkpoint = await this.store.exportRecoveryCheckpoint();
+    while (true) {
+      const error = await this.commitCheckpoint(checkpoint);
+      if (error) return error;
+      const latest = await this.store.exportRecoveryCheckpoint();
+      if (JSON.stringify(latest) === JSON.stringify(checkpoint)) return null;
+      checkpoint = latest;
+    }
+  }
+
+  async commitCheckpoint(checkpoint) {
     try {
-      await this.checkpoint(await this.store.exportRecoveryCheckpoint());
+      await this.checkpoint(checkpoint);
       return null;
     } catch (error) {
       const detail = String(error?.message || error);

@@ -104,7 +104,19 @@ export class CaptureJobClient {
     const jobs = result.jobs
       .filter((job) => job.checkpoint?.payload)
       .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
-    return Promise.all(jobs.map((job) => this.adoptExisting(job, account_scope, sessionId)));
+    return Promise.all(jobs.map(async (job) => {
+      try {
+        return await this.adoptExisting(job, account_scope, sessionId);
+      } catch (error) {
+        // A wiped profile cannot prove ownership of the destroyed profile's
+        // still-live lease. Retain its scoped checkpoint for visible recovery;
+        // later status/checkpoint attempts retry adoption after lease expiry.
+        if (error?.code === "lease_held") {
+          return { job, account_scope, intent_key: job.intent_key, recovery_state: "lease_held" };
+        }
+        throw error;
+      }
+    }));
   }
 
   async update(adopted, retry, leaseTtlSeconds = 120) {

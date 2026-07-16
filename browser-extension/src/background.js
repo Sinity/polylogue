@@ -218,15 +218,37 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
 
 function mergeCaptureJobRecoveryCheckpoints(jobs) {
   const checkpoints = jobs
-    .map((job) => job.checkpoint?.payload)
-    .filter((checkpoint) => checkpoint?.version === 1 && Array.isArray(checkpoint.jobs));
+    .filter((job) => job.checkpoint?.payload?.version === 1 && Array.isArray(job.checkpoint.payload.jobs))
+    .map((job) => {
+      const updatedAtMs = Date.parse(job.updated_at);
+      if (!Number.isFinite(updatedAtMs)) throw new Error(`capture_job_recovery_timestamp_invalid:${job.job_id}`);
+      return { jobId: job.job_id, updatedAtMs, payload: job.checkpoint.payload };
+    });
   if (!checkpoints.length) return null;
-  const byId = (items) => [...new Map(items.filter((item) => item?.id).map((item) => [item.id, item])).values()];
+  const reconcile = (field) => {
+    const winners = new Map();
+    for (const checkpoint of checkpoints) {
+      for (const item of checkpoint.payload[field] || []) {
+        if (!item?.id) continue;
+        const current = winners.get(item.id);
+        if (!current) {
+          winners.set(item.id, { item, ...checkpoint });
+          continue;
+        }
+        if (JSON.stringify(current.item) === JSON.stringify(item)) continue;
+        if (checkpoint.updatedAtMs === current.updatedAtMs) {
+          throw new Error(`capture_job_recovery_conflict:${field}:${item.id}`);
+        }
+        if (checkpoint.updatedAtMs > current.updatedAtMs) winners.set(item.id, { item, ...checkpoint });
+      }
+    }
+    return [...winners.values()].map((winner) => winner.item);
+  };
   return {
     version: 1,
-    jobs: byId(checkpoints.flatMap((checkpoint) => checkpoint.jobs || [])),
-    queue: byId(checkpoints.flatMap((checkpoint) => checkpoint.queue || [])),
-    revisions: byId(checkpoints.flatMap((checkpoint) => checkpoint.revisions || [])),
+    jobs: reconcile("jobs"),
+    queue: reconcile("queue"),
+    revisions: reconcile("revisions"),
   };
 }
 

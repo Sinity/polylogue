@@ -237,6 +237,30 @@ describe("background backfill coordinator", () => {
     expect(checkpoint).toHaveBeenCalledTimes(1);
   });
 
+  it("commits state mutated during an in-flight receiver checkpoint before returning", async () => {
+    let releaseCheckpoint;
+    const checkpointGate = new Promise((resolve) => { releaseCheckpoint = resolve; });
+    const writes = [];
+    const checkpoint = vi.fn(async (snapshot) => {
+      writes.push(structuredClone(snapshot));
+      if (writes.length === 1) await checkpointGate;
+    });
+    const h = harness();
+    const job = await startJob(h);
+    h.coordinator.checkpoint = checkpoint;
+
+    const reading = h.coordinator.status(job.id);
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    const pausing = h.coordinator.control(job.id, "pause");
+    await vi.waitFor(async () => expect((await h.store.getJob(job.id)).status).toBe("paused"));
+    releaseCheckpoint();
+    await Promise.all([reading, pausing]);
+
+    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(writes[0].jobs[0].status).toBe("running");
+    expect(writes[1].jobs[0].status).toBe("paused");
+  });
+
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
     let compatible = false;
     const receiver = vi.fn(async (_envelope, serialized) => compatible

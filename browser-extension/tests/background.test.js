@@ -992,6 +992,7 @@ describe("background receiver diagnostics", () => {
         ok: true, status: 200, contentType: "application/json", body: JSON.stringify({ items: [], total: 0 }),
       } } }];
     });
+    let adoptAttempts = 0;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = new URL(url).pathname;
@@ -1021,6 +1022,10 @@ describe("background receiver diagnostics", () => {
         }] });
       }
       if (path.endsWith("/adopt")) {
+        adoptAttempts += 1;
+        if (adoptAttempts <= 2) {
+          return responseJson({ error: { code: "lease_held" } }, { ok: false, status: 409 });
+        }
         return responseJson({
           job: {
             job_id: "receiver-capture-job", provider: "chatgpt", intent_key: "receiver-intent",
@@ -1028,6 +1033,19 @@ describe("background receiver diagnostics", () => {
           },
           lease: { lease_id: "recovery-lease", generation: 2, proof: "recovery-proof" },
         });
+      }
+      if (path.endsWith("/update")) {
+        return responseJson({
+          job: {
+            job_id: "receiver-capture-job", provider: "chatgpt", intent_key: "receiver-intent",
+            revision: 6, lease_generation: 2, lease_expires_at: "2099-01-01T00:00:00Z",
+            checkpoint_sequence: 1, checkpoint: { payload: remoteCheckpoint },
+          },
+          receipt: { kind: "capture_job_update", revision: 6 },
+        });
+      }
+      if (path.endsWith("/checkpoint")) {
+        return responseJson({ job: { job_id: "receiver-capture-job", revision: 7, checkpoint_sequence: 2 }, receipt: {} });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -1047,6 +1065,104 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueExtensionInstanceId).toBeDefined();
     expect(JSON.stringify(stored)).not.toContain(accountHandle);
     expect(fetchCalls.some((call) => new URL(call.url).pathname.endsWith("/adopt"))).toBe(true);
+    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    expect(adoptAttempts).toBe(3);
+    expect(fetchCalls.some((call) => new URL(call.url).pathname.endsWith("/checkpoint"))).toBe(true);
+  });
+
+  it("keeps the newest same-provider recovery revision after a partial receiver commit", async () => {
+    const checkpoint = (contentHash) => ({
+      version: 1,
+      jobs: [{
+        id: "local-chatgpt", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z",
+        status: "complete", inventory_cursor: "done", inventory_complete: true,
+        policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 2,
+        learned_cadence_ms: 40000, daily_requests: 3,
+        cooldown_reason: null, last_error: null,
+        last_ack: { receiver_request_id: `ack-${contentHash}`, content_hash: contentHash },
+      }],
+      queue: [{
+        id: "queue-chatgpt", job_id: "local-chatgpt", provider: "chatgpt", native_id: "native-chatgpt",
+        state: "complete", content_hash: contentHash, completed_at: "2026-07-16T10:00:00Z",
+      }],
+      revisions: [{
+        id: "chatgpt:native-chatgpt", provider: "chatgpt", native_id: "native-chatgpt",
+        provider_updated_at: "2026-07-16T09:00:00Z", content_hash: contentHash,
+      }],
+    });
+    const receiverJobs = [
+      {
+        job_id: "receiver-new", provider: "chatgpt", intent_key: "intent-new", revision: 8,
+        lease_generation: 2, checkpoint_sequence: 2, updated_at: "2026-07-16T10:05:00Z",
+        checkpoint: { payload: checkpoint("hash-new") },
+      },
+      {
+        job_id: "receiver-old", provider: "chatgpt", intent_key: "intent-old", revision: 4,
+        lease_generation: 1, checkpoint_sequence: 1, updated_at: "2026-07-16T10:00:00Z",
+        checkpoint: { payload: checkpoint("hash-old") },
+      },
+    ];
+    let providerWorkCalls = 0;
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      const request = details.args?.[0];
+      if (request?.operation === "identity") {
+        return [{ result: { ok: true, response: { accountHandle: `${request.provider}-account` } } }];
+      }
+      providerWorkCalls += 1;
+      return [{ result: { ok: false, error: "provider_work_must_not_replay" } }];
+    });
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = new URL(url).pathname;
+      const body = options.body ? JSON.parse(options.body) : {};
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1,
+          scope_namespace: "cjs1:revision-recovery-namespace",
+        });
+      }
+      if (path === "/v1/backfill-checkpoint") {
+        return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
+      }
+      if (path === "/v1/capture-jobs/discover") {
+        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
+        return responseJson({ jobs: body.intent_key ? [receiverJobs[0]] : receiverJobs });
+      }
+      if (path.endsWith("/adopt")) {
+        const recovered = receiverJobs.find((job) => path.includes(job.job_id));
+        return responseJson({
+          job: { ...recovered, revision: recovered.revision + 1, lease_generation: recovered.lease_generation + 1 },
+          lease: { lease_id: `lease-${recovered.job_id}`, generation: recovered.lease_generation + 1, proof: `proof-${recovered.job_id}` },
+        });
+      }
+      if (path.endsWith("/update")) {
+        return responseJson({
+          job: {
+            job_id: "receiver-new", provider: "chatgpt", intent_key: "intent-new", revision: 10,
+            lease_generation: 3, lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: 2,
+          },
+          receipt: { kind: "capture_job_update", revision: 10 },
+        });
+      }
+      if (path.endsWith("/checkpoint")) {
+        return responseJson({ job: { job_id: "receiver-new", revision: 11, checkpoint_sequence: 3 }, receipt: {} });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+
+    expect(status.jobs[0].recovery_checkpoint_error).toBeNull();
+    expect(status.jobs[0].last_ack.content_hash).toBe("hash-new");
+    const committed = fetchCalls
+      .filter((call) => {
+        const path = new URL(call.url).pathname;
+        return path.startsWith("/v1/capture-jobs/") && path.endsWith("/checkpoint");
+      })
+      .map((call) => JSON.parse(call.options.body).checkpoint.payload)
+      .at(-1);
+    expect(committed.revisions).toEqual([expect.objectContaining({ content_hash: "hash-new" })]);
+    expect(providerWorkCalls).toBe(0);
   });
 
   it("adopts and merges every provider checkpoint without replaying acknowledged work", async () => {
@@ -1109,6 +1225,7 @@ describe("background receiver diagnostics", () => {
           job: {
             job_id: `receiver-${provider}`, provider, intent_key: `intent-${provider}`,
             revision: 5, lease_generation: 2, checkpoint_sequence: 1,
+            updated_at: "2026-07-16T10:00:00Z",
             checkpoint: { payload: checkpoints[provider] },
           },
           lease: { lease_id: `lease-${provider}`, generation: 2, proof: `proof-${provider}` },
