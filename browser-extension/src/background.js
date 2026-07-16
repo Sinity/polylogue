@@ -1212,7 +1212,13 @@ function exactChatGptConversation(url) {
   try {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
-    if (parsed.protocol !== "https:" || parsed.hostname !== "chatgpt.com" || parts.length !== 2 || parts[0] !== "c") {
+    if (
+      parsed.origin !== "https://chatgpt.com" ||
+      parsed.search ||
+      parsed.hash ||
+      parts.length !== 2 ||
+      parts[0] !== "c"
+    ) {
       return null;
     }
     return { conversation_id: parts[1], conversation_url: parsed.href };
@@ -1360,7 +1366,17 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       conversation_url: inspection.conversation_url,
     });
   }
-  if (inspection?.busy || !inspection?.assistant_turns) return;
+  if (inspection?.busy || !inspection?.assistant_turns) {
+    await updateLaunchJob(job.job_id, ownerInstanceId, {
+      outcome: "progress",
+      phase: "monitoring_heartbeat",
+      detail: "renewed exact-conversation completion monitor",
+      tab_id: job.tab_id,
+      conversation_id: inspection.conversation_id,
+      conversation_url: inspection.conversation_url,
+    });
+    return;
+  }
   if (!inspection.handoff_name) {
     await updateLaunchJob(job.job_id, ownerInstanceId, {
       outcome: "protocol_mismatch",
@@ -1535,8 +1551,7 @@ async function pollLaunchJobsOnce() {
       await chrome.tabs.remove(job.tab_id).catch(() => undefined);
     } else if (
       job.status === "submitted" &&
-      job.lease_owner === ownerInstanceId &&
-      (!job.next_attempt_at || Date.parse(job.next_attempt_at) <= Date.now())
+      job.lease_owner === ownerInstanceId
     ) {
       await monitorSubmittedLaunch(job, ownerInstanceId);
     } else if (job.status === "submitting" && job.lease_owner === ownerInstanceId) {

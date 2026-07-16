@@ -45,6 +45,7 @@ LAUNCH_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
 LAUNCH_JOB_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 LAUNCH_EVENT_LIMIT = 200
 LAUNCH_LEASE_SECONDS = 180
+LAUNCH_MONITOR_LEASE_SECONDS = 120
 LAUNCH_HANDOFF_MAX_BYTES = 64 * 1024 * 1024
 LAUNCH_HANDOFF_MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 LAUNCH_HANDOFF_MAX_FILES = 2_000
@@ -335,6 +336,34 @@ def _latest_submitted_at(jobs: list[BrowserLaunchJob]) -> datetime | None:
     return max((value for value in timestamps if value is not None), default=None)
 
 
+def _has_exact_conversation_identity(job: BrowserLaunchJob) -> bool:
+    if not job.conversation_id or not job.conversation_url:
+        return False
+    return job.conversation_url == f"https://chatgpt.com/c/{job.conversation_id}"
+
+
+def _monitorable_submitted_job(job: BrowserLaunchJob) -> bool:
+    if not _has_exact_conversation_identity(job):
+        return False
+    if job.status == "submitted":
+        return True
+    return job.status == "paused" and job.cooldown_reason in {
+        "soft_warning",
+        "rate_limited",
+        "safety_locked",
+    }
+
+
+def _monitor_lease_deadline(job: BrowserLaunchJob) -> datetime | None:
+    """Bound legacy long leases by their last receiver-visible heartbeat."""
+    if job.lease_owner is None:
+        return None
+    declared = _parse(job.lease_expires_at)
+    updated = _parse(job.updated_at)
+    heartbeat_deadline = updated + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS) if updated is not None else None
+    return min((value for value in (declared, heartbeat_deadline) if value is not None), default=None)
+
+
 @_serialized
 def claim_due_launch_job(
     owner_instance_id: str,
@@ -370,17 +399,31 @@ def claim_due_launch_job(
             _event(job, "lease_expired")
             _write_job(root, job)
 
-    for job in jobs:
-        if job.status != "submitted":
-            continue
-        expiry = _parse(job.lease_expires_at)
+    epoch = datetime.min.replace(tzinfo=UTC)
+    monitorable_jobs = sorted(
+        (job for job in jobs if _monitorable_submitted_job(job)),
+        key=lambda job: (_monitor_lease_deadline(job) or epoch, _parse(job.created_at) or epoch, job.job_id),
+    )
+    for job in monitorable_jobs:
+        expiry = _monitor_lease_deadline(job)
         if expiry is not None and expiry > now:
             continue
+        recovered_warning = job.status == "paused"
+        job.status = "submitted"
         job.lease_owner = owner_instance_id
         job.executor_instance_id = owner_instance_id
-        job.lease_expires_at = _iso(now + timedelta(hours=6))
+        job.lease_expires_at = _iso(now + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS))
         job.updated_at = _iso(now)
-        _event(job, "monitor_adopted", owner=owner_instance_id)
+        _event(
+            job,
+            "monitor_adopted",
+            detail=(
+                "resumed completion monitoring for a legacy post-submit provider warning"
+                if recovered_warning
+                else "adopted expired completion-monitor lease"
+            ),
+            owner=owner_instance_id,
+        )
         _write_job(root, job)
         return job
 
@@ -463,7 +506,9 @@ def update_launch_job(
         raise BrowserLaunchLeaseError("launch job lease owner mismatch")
     now = _now()
     was_submitted = job.status == "submitted"
-    job.phase = update.phase
+    monitor_heartbeat = was_submitted and update.outcome == "progress" and update.phase == "monitoring_heartbeat"
+    if not monitor_heartbeat:
+        job.phase = update.phase
     job.updated_at = _iso(now)
     job.tab_id = update.tab_id if update.tab_id is not None else job.tab_id
     job.conversation_id = update.conversation_id or job.conversation_id
@@ -477,9 +522,10 @@ def update_launch_job(
 
     if update.outcome == "progress":
         if job.status == "submitted":
-            job.lease_expires_at = _iso(now + timedelta(hours=6))
-            job.cooldown_reason = None
-            job.last_error = None
+            job.lease_expires_at = _iso(now + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS))
+            if not monitor_heartbeat:
+                job.cooldown_reason = None
+                job.last_error = None
             if update.phase == "provider_running":
                 provider_state = "accepted"
                 provider_circuit_streak = 0
@@ -493,7 +539,7 @@ def update_launch_job(
         job.status = "submitted"
         job.attempts += 1
         job.last_error = None
-        job.lease_expires_at = _iso(now + timedelta(hours=6))
+        job.lease_expires_at = _iso(now + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS))
     elif update.outcome == "submission_unknown":
         job.status = "submission_unknown"
         job.cooldown_reason = "submission_unknown"
@@ -536,23 +582,19 @@ def update_launch_job(
         job.cooldown_reason = update.outcome
         job.last_error = update.detail or update.outcome
         job.next_attempt_at = _iso(now + timedelta(seconds=delay))
-        if was_submitted and update.outcome == "soft_warning":
-            # The conversation may still run despite this advisory provider
-            # banner. Keep its durable identity monitored, never resubmit it,
-            # and use the warning only to pace later automatic launches.
+        if was_submitted and _has_exact_conversation_identity(job):
+            # A provider banner after the submit boundary is telemetry for the
+            # known conversation, not evidence that it stopped. Keep checking
+            # that exact identity and never turn the warning into a resubmit;
+            # the circuit still paces later automatic launches independently.
             job.status = "submitted"
-            job.lease_expires_at = _iso(now + timedelta(hours=6))
-        elif was_submitted and update.outcome in {"rate_limited", "safety_locked"}:
-            # The provider may already have accepted the conversation. Never
-            # turn a post-submit safety/rate response into an automatic new
-            # conversation; pause this job while its circuit protects all
-            # subsequent submissions.
-            job.status = "paused"
+            job.lease_expires_at = _iso(now + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS))
+        elif was_submitted:
+            job.status = "submission_unknown"
+            job.cooldown_reason = "submission_unknown"
+            job.last_error = "post-submit provider state has no exact recoverable conversation identity"
             job.lease_owner = None
             job.lease_expires_at = None
-        elif was_submitted:
-            job.status = "submitted"
-            job.lease_expires_at = _iso(now + timedelta(hours=6))
         else:
             job.status = "cooldown"
             job.lease_owner = None

@@ -1476,12 +1476,19 @@ describe("Sol Pro launch worker", () => {
     await sendRuntimeMessage({ type: "polylogue.launch.configure", launchEnabled: true });
 
     await vi.waitFor(() => expect(fetchCalls.some((call) => String(call.url).endsWith("/events"))).toBe(true));
-    const event = JSON.parse(fetchCalls.find((call) => String(call.url).endsWith("/events")).options.body);
-    expect(event).toMatchObject({
+    await vi.waitFor(() => expect(fetchCalls.filter((call) => String(call.url).endsWith("/events")).length).toBeGreaterThan(1));
+    const events = fetchCalls
+      .filter((call) => String(call.url).endsWith("/events"))
+      .map((call) => JSON.parse(call.options.body));
+    expect(events).toContainEqual(expect.objectContaining({
       outcome: "progress",
       phase: "provider_running",
       detail: expect.stringContaining("accepted"),
-    });
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      outcome: "progress",
+      phase: "monitoring_heartbeat",
+    }));
   });
 
   it("reuses canonical capture for a launched chat handoff", async () => {
@@ -1491,6 +1498,7 @@ describe("Sol Pro launch worker", () => {
       status: "submitted",
       phase: "submitted",
       lease_owner: "launch-executor-test",
+      next_attempt_at: "2099-01-01T00:00:00Z",
       tab_id: 42,
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",

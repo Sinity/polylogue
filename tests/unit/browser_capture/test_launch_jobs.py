@@ -230,6 +230,76 @@ def test_submitted_chats_continue_in_parallel_at_configured_cadence(tmp_path: Pa
     assert list_launch_jobs(spool_path=tmp_path)[-1].status == "submitted"
 
 
+def test_completion_monitor_lease_is_short_and_adoptable_after_extension_restart(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("old-extension", spool_path=tmp_path)
+    submitted = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="old-extension",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing submitted job")
+
+    expiry = datetime.fromisoformat(submitted.lease_expires_at or "")
+    assert frozen_clock.now() + timedelta(seconds=119) <= expiry
+    assert expiry <= frozen_clock.now() + timedelta(seconds=121)
+    assert claim_due_launch_job("new-extension", spool_path=tmp_path) is None
+
+    frozen_clock.advance(121)
+    adopted = claim_due_launch_job("new-extension", spool_path=tmp_path) or pytest.fail("monitor not adopted")
+    assert adopted.job_id == job.job_id
+    assert adopted.status == "submitted"
+    assert adopted.lease_owner == "new-extension"
+    assert adopted.events[-1].kind == "monitor_adopted"
+
+
+def test_adopted_monitor_heartbeats_let_one_worker_recover_every_stranded_job(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    jobs = [enqueue_launch_job(_request(job_id=f"stranded-{index}"), spool_path=tmp_path) for index in range(3)]
+    for index, job in enumerate(jobs):
+        control_launch_job(job.job_id, BrowserLaunchJobControlRequest(action="launch_now"), spool_path=tmp_path)
+        claimed = claim_due_launch_job(f"old-extension-{index}", spool_path=tmp_path) or pytest.fail("not claimed")
+        assert claimed.job_id == job.job_id
+        update_launch_job(
+            job.job_id,
+            BrowserLaunchJobUpdateRequest(
+                owner_instance_id=f"old-extension-{index}",
+                outcome="submitted",
+                phase="submitted",
+                conversation_id=f"conversation-{index}",
+                conversation_url=f"https://chatgpt.com/c/conversation-{index}",
+            ),
+            spool_path=tmp_path,
+        )
+
+    frozen_clock.advance(121)
+    adopted_ids: set[str] = set()
+    for _index in range(3):
+        adopted = claim_due_launch_job("new-extension", spool_path=tmp_path) or pytest.fail("monitor not adopted")
+        adopted_ids.add(adopted.job_id)
+        heartbeat = update_launch_job(
+            adopted.job_id,
+            BrowserLaunchJobUpdateRequest(
+                owner_instance_id="new-extension",
+                outcome="progress",
+                phase="monitoring_heartbeat",
+            ),
+            spool_path=tmp_path,
+        ) or pytest.fail("heartbeat failed")
+        assert heartbeat.phase != "monitoring_heartbeat"
+        frozen_clock.advance(60)
+
+    assert adopted_ids == {job.job_id for job in jobs}
+
+
 def test_launch_now_prioritizes_out_of_order_without_bypassing_provider_circuit(
     tmp_path: Path, frozen_clock: FrozenClock
 ) -> None:
@@ -340,7 +410,13 @@ def test_post_submit_provider_circuit_never_auto_launches_duplicate_conversation
     claim_due_launch_job("owner", spool_path=tmp_path)
     update_launch_job(
         job.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
         spool_path=tmp_path,
     )
     blocked = update_launch_job(
@@ -354,13 +430,14 @@ def test_post_submit_provider_circuit_never_auto_launches_duplicate_conversation
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
 
-    assert blocked.status == "paused"
-    assert blocked.conversation_url is None
+    assert blocked.status == "submitted"
+    assert blocked.conversation_url == "https://chatgpt.com/c/conversation-1"
     assert claim_due_launch_job("other", spool_path=tmp_path) is None
-    frozen_clock.advance(3601)
-    next_job = claim_due_launch_job("other", spool_path=tmp_path) or pytest.fail("next job not claimed")
-    assert next_job.job_id != blocked.job_id
-    assert list_launch_jobs(spool_path=tmp_path)[-1].status == "paused"
+    frozen_clock.advance(121)
+    adopted = claim_due_launch_job("other", spool_path=tmp_path) or pytest.fail("monitor not adopted")
+    assert adopted.job_id == blocked.job_id
+    assert adopted.lease_owner == "other"
+    assert all(item.status != "leased" for item in list_launch_jobs(spool_path=tmp_path))
 
 
 def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path, frozen_clock: FrozenClock) -> None:
@@ -368,7 +445,13 @@ def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path
     claim_due_launch_job("owner", spool_path=tmp_path)
     update_launch_job(
         job.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
         spool_path=tmp_path,
     )
 
@@ -383,10 +466,100 @@ def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path
     ) or pytest.fail("missing job")
 
     retry_at = datetime.fromisoformat(blocked.next_attempt_at)
-    assert blocked.status == "paused"
+    assert blocked.status == "submitted"
     assert blocked.retry_after_seconds is None
     assert frozen_clock.now() + timedelta(minutes=30) <= retry_at
     assert retry_at < frozen_clock.now() + timedelta(minutes=33)
+
+
+def test_legacy_paused_provider_warning_is_resumed_only_for_exact_conversation(tmp_path: Path) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("old-extension", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="old-extension",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    )
+    job_path = tmp_path / "launch-jobs" / job.job_id / "job.json"
+    legacy = json.loads(job_path.read_text(encoding="utf-8"))
+    legacy.update(
+        status="paused",
+        phase="provider_safety_lock",
+        cooldown_reason="safety_locked",
+        lease_owner=None,
+        lease_expires_at=None,
+    )
+    job_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    adopted = claim_due_launch_job("new-extension", spool_path=tmp_path) or pytest.fail("legacy monitor not adopted")
+    assert adopted.status == "submitted"
+    assert adopted.lease_owner == "new-extension"
+    assert adopted.events[-1].kind == "monitor_adopted"
+    assert "legacy post-submit provider warning" in (adopted.events[-1].detail or "")
+
+
+@pytest.mark.parametrize(
+    ("conversation_id", "conversation_url"),
+    (
+        (None, None),
+        ("conversation-1", "https://chatgpt.com/c/different"),
+        ("conversation-1", "https://chatgpt.com:443/c/conversation-1"),
+        ("conversation-1", "https://chatgpt.com/c/conversation-1?temporary-chat=true"),
+        ("conversation-1", "https://chatgpt.com/c/conversation-1#result"),
+    ),
+)
+def test_legacy_warning_monitor_rejects_noncanonical_conversation_identity(
+    tmp_path: Path, conversation_id: str | None, conversation_url: str | None
+) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    job_path = tmp_path / "launch-jobs" / job.job_id / "job.json"
+    legacy = json.loads(job_path.read_text(encoding="utf-8"))
+    legacy.update(
+        status="paused",
+        phase="provider_soft_warning",
+        cooldown_reason="soft_warning",
+        conversation_id=conversation_id,
+        conversation_url=conversation_url,
+        lease_owner=None,
+        lease_expires_at=None,
+    )
+    job_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    assert claim_due_launch_job("new-extension", spool_path=tmp_path) is None
+    stored = list_launch_jobs(spool_path=tmp_path)[0]
+    assert stored.status == "paused"
+    assert stored.lease_owner is None
+
+
+def test_post_submit_warning_without_exact_identity_is_quarantined(tmp_path: Path) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(owner_instance_id="owner", outcome="submitted", phase="submitted"),
+        spool_path=tmp_path,
+    )
+
+    quarantined = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="soft_warning",
+            phase="provider_soft_warning",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+
+    assert quarantined.status == "submission_unknown"
+    assert quarantined.cooldown_reason == "submission_unknown"
+    assert quarantined.lease_owner is None
+    assert quarantined.lease_expires_at is None
 
 
 def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
@@ -402,9 +575,33 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
         assert claimed.job_id == job_id
         update_launch_job(
             job_id,
-            BrowserLaunchJobUpdateRequest(owner_instance_id=owner, outcome="submitted", phase="submitted"),
+            BrowserLaunchJobUpdateRequest(
+                owner_instance_id=owner,
+                outcome="submitted",
+                phase="submitted",
+                conversation_id=job_id,
+                conversation_url=f"https://chatgpt.com/c/{job_id}",
+            ),
             spool_path=tmp_path,
         )
+
+    def renew_due_monitors(job_ids: set[str]) -> None:
+        remaining = set(job_ids)
+        while remaining:
+            adopted = claim_due_launch_job("replacement-monitor", spool_path=tmp_path) or pytest.fail(
+                "monitor not adopted"
+            )
+            assert adopted.job_id in remaining
+            remaining.remove(adopted.job_id)
+            update_launch_job(
+                adopted.job_id,
+                BrowserLaunchJobUpdateRequest(
+                    owner_instance_id="replacement-monitor",
+                    outcome="progress",
+                    phase="monitoring_heartbeat",
+                ),
+                spool_path=tmp_path,
+            )
 
     submit(jobs[0].job_id, "one")
     first = update_launch_job(
@@ -425,6 +622,7 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
     assert 900 <= (first_event.backoff_seconds or 0) < 990
 
     frozen_clock.advance(1_000)
+    renew_due_monitors({jobs[0].job_id})
     submit(jobs[1].job_id, "two")
     second = update_launch_job(
         jobs[1].job_id,
@@ -440,6 +638,7 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
     assert 1_800 <= (second_event.backoff_seconds or 0) < 1_980
 
     frozen_clock.advance(2_000)
+    renew_due_monitors({jobs[0].job_id, jobs[1].job_id})
     submit(jobs[2].job_id, "accepted")
     accepted = update_launch_job(
         jobs[2].job_id,
@@ -476,7 +675,13 @@ def test_manual_priority_can_bypass_soft_warning_circuit(
     claim_due_launch_job("one", spool_path=tmp_path)
     update_launch_job(
         warned.job_id,
-        BrowserLaunchJobUpdateRequest(owner_instance_id="one", outcome="submitted", phase="submitted"),
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="one",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="warning-conversation",
+            conversation_url="https://chatgpt.com/c/warning-conversation",
+        ),
         spool_path=tmp_path,
     )
     update_launch_job(
