@@ -2665,22 +2665,27 @@ class ArchiveStore:
             with self._conn:
                 existing_head = self._conn.execute(
                     """
-                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind
+                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id
                     FROM raw_revision_heads WHERE logical_source_key = ?
                     """,
                     (logical_source_key,),
                 ).fetchone()
                 if existing_head is not None:
                     existing_raw_id = str(existing_head[0])
-                    existing_projection = projections_by_raw_id.get(existing_raw_id)
                     classified_raw_ids = {
                         *classification.accepted_raw_ids,
                         *classification.equivalent_raw_ids,
                     }
+                    persisted_session = self._conn.execute(
+                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+                        (str(existing_head[3]),),
+                    ).fetchone()
                     if (
-                        existing_projection is None
-                        or existing_raw_id not in classified_raw_ids
-                        or bytes(existing_head[1]) != existing_projection.session_hash
+                        existing_raw_id not in classified_raw_ids
+                        or persisted_session is None
+                        or str(persisted_session[0]) != existing_raw_id
+                        or not isinstance(persisted_session[1], bytes)
+                        or bytes(existing_head[1]) != bytes(persisted_session[1])
                     ):
                         raise RuntimeError("membership replay cannot retire an unrelated accepted head")
                     existing_is_byte_governed = conn.execute(
