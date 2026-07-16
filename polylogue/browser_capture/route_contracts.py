@@ -24,6 +24,14 @@ BrowserCaptureRouteKind = Literal[
     "browser_action_attachment",
     "browser_action_update",
     "browser_action_reconcile",
+    "capture_job_capabilities",
+    "capture_job_create",
+    "capture_job_discover",
+    "capture_job_read",
+    "capture_job_orphan_list",
+    "capture_job_adopt",
+    "capture_job_update",
+    "capture_job_checkpoint",
     "backfill_checkpoint_store",
     "backfill_checkpoint_read",
 ]
@@ -33,7 +41,7 @@ BrowserCaptureRouteKind = Literal[
 class BrowserCaptureRouteContract:
     """Machine-readable contract for one browser-capture receiver route."""
 
-    method: Literal["GET", "POST"]
+    method: Literal["GET", "POST", "PUT"]
     pattern: str
     kind: BrowserCaptureRouteKind
     auth_policy: BrowserCaptureAuthPolicy
@@ -141,6 +149,78 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserActionReconcileRequest",
         "BrowserActionPayload | BrowserCaptureErrorPayload",
         "Explicitly binds provider evidence to an outcome_unknown action; never retries it implicitly.",
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/capture-jobs/capabilities",
+        "capture_job_capabilities",
+        "bearer_if_configured",
+        None,
+        "CaptureJob capabilities v1 | BrowserCaptureErrorPayload",
+        "Publishes protocol bounds and the bearer-rotation-stable scope namespace.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/capture-jobs",
+        "capture_job_create",
+        "bearer_if_web_origin",
+        "CaptureJob create request v1",
+        "CaptureJob create response v1 | BrowserCaptureErrorPayload",
+        "Creates or idempotently returns a receiver-authoritative exact-scope capture job.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/capture-jobs/discover",
+        "capture_job_discover",
+        "bearer_if_web_origin",
+        "CaptureJob scope query v1",
+        "CaptureJob discovery response v1 | BrowserCaptureErrorPayload",
+        "Lists only jobs in the keyed provider/account scope.",
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/capture-jobs/orphans",
+        "capture_job_orphan_list",
+        "bearer_if_configured",
+        "client_protocol query parameter",
+        "CaptureJob typed orphan census v1 | BrowserCaptureErrorPayload",
+        "Lists global legacy checkpoint fingerprints only on an explicit operator route.",
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/capture-jobs/{job_id}",
+        "capture_job_read",
+        "bearer_if_configured",
+        "provider + account_scope + client_protocol query parameters",
+        "CaptureJob detail and receipts v1 | BrowserCaptureErrorPayload",
+        "Reads one exact-scope job and its durable checkpoint/update receipts.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/capture-jobs/{job_id}/adopt",
+        "capture_job_adopt",
+        "bearer_if_web_origin",
+        "CaptureJob adoption request v1",
+        "CaptureJob lease response v1 | BrowserCaptureErrorPayload",
+        "Acquires or resumes a replaceable expiring client lease under revision CAS.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/capture-jobs/{job_id}/update",
+        "capture_job_update",
+        "bearer_if_web_origin",
+        "CaptureJob update request v1",
+        "CaptureJob update receipt v1 | BrowserCaptureErrorPayload",
+        "CAS-updates retry/hold state or renews the current proven lease.",
+    ),
+    BrowserCaptureRouteContract(
+        "PUT",
+        "/v1/capture-jobs/{job_id}/checkpoint",
+        "capture_job_checkpoint",
+        "bearer_if_web_origin",
+        "CaptureJob checkpoint request v1",
+        "CaptureJob checkpoint receipt v1 | BrowserCaptureErrorPayload",
+        "Acknowledges a monotonic checkpoint under lease proof and revision CAS.",
     ),
     BrowserCaptureRouteContract(
         "POST",

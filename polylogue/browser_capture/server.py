@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from http import HTTPStatus
@@ -30,6 +31,7 @@ from polylogue.browser_capture.actions import (
     reconcile_action,
     update_action,
 )
+from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for_receiver
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserActionCapabilitiesPayload,
@@ -225,8 +227,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT.value)
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Access-Control-Allow-Origin", origin or "null")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Request-ID, X-Polylogue-Client-Protocol",
+        )
         self.send_header("Access-Control-Max-Age", "600")
         # Chrome's Private Network Access policy blocks an already-origin-approved
         # extension fetch to this loopback receiver unless the preflight explicitly
@@ -331,6 +336,42 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
             return
+        if parsed.path.startswith("/v1/capture-jobs/"):
+            job_id = parsed.path.removeprefix("/v1/capture-jobs/")
+            if not job_id or "/" in job_id:
+                self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
+                return
+            params = parse_qs(parsed.query)
+            try:
+                protocol = int(params.get("client_protocol", ["-1"])[0])
+            except ValueError:
+                protocol = -1
+            try:
+                registry = registry_for_receiver(
+                    self.server.config.spool_path,
+                    receiver_identity(self.server.config),
+                )
+                if job_id == "capabilities":
+                    capture_job_payload = registry.capabilities()
+                elif job_id == "orphans":
+                    capture_job_payload = registry.list_orphans(protocol)
+                else:
+                    capture_job_payload = registry.get(
+                        job_id,
+                        {
+                            "provider": params.get("provider", [""])[0],
+                            "account_scope": params.get("account_scope", [""])[0],
+                            "client_protocol": protocol,
+                        },
+                    )
+            except CaptureJobError as exc:
+                self._capture_job_error(exc)
+                return
+            except (sqlite3.Error, OSError) as exc:
+                self._capture_job_storage_error(exc)
+                return
+            self._send_json(HTTPStatus.OK, capture_job_payload)
+            return
         if parsed.path == "/v1/backfill-checkpoint":
             params = parse_qs(parsed.query)
             instance_id = params.get("extension_instance_id", [""])[0]
@@ -390,6 +431,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             action_id = path[len("/v1/browser-actions/") : -len("/reconcile")]
             self._browser_action_reconcile(action_id)
             return
+        if path in {"/v1/capture-jobs", "/v1/capture-jobs/discover"} or (
+            path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update"))
+        ):
+            self._capture_job_post(path)
+            return
         if path == "/v1/backfill-checkpoint":
             self._backfill_checkpoint_store()
             return
@@ -445,6 +491,87 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 capture_instance_id=result.capture_instance_id,
             ).model_dump(mode="json"),
         )
+
+    def do_PUT(self) -> None:
+        self._observe_request("PUT", self._do_put)
+
+    def _do_put(self) -> None:
+        if self._reject_origin() or self._reject_token():
+            return
+        path = urlparse(self.path).path
+        if path.startswith("/v1/capture-jobs/") and path.endswith("/checkpoint"):
+            self._capture_job_checkpoint(path)
+            return
+        self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
+
+    def _capture_job_body(self) -> dict[str, object] | None:
+        payload = self._read_json_body()
+        if not isinstance(payload, dict):
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job")
+            return None
+        if "client_protocol" not in payload:
+            raw_protocol = self.headers.get("X-Polylogue-Client-Protocol", "-1")
+            try:
+                payload["client_protocol"] = int(raw_protocol)
+            except ValueError:
+                payload["client_protocol"] = -1
+        return payload
+
+    def _capture_job_error(self, exc: CaptureJobError) -> None:
+        try:
+            status = HTTPStatus(exc.status)
+        except ValueError:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+        self._send_json(status, {"error": {"code": exc.code, "details": exc.details}})
+
+    def _capture_job_storage_error(self, exc: sqlite3.Error | OSError) -> None:
+        logger.warning("browser_capture.capture_job_registry_unavailable", error=repr(exc))
+        self._capture_job_error(CaptureJobError(500, "registry_unavailable"))
+
+    def _capture_job_post(self, path: str) -> None:
+        payload = self._capture_job_body()
+        if payload is None:
+            return
+        try:
+            registry = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            )
+            if path == "/v1/capture-jobs":
+                status, result = registry.create(payload)
+            elif path == "/v1/capture-jobs/discover":
+                status, result = HTTPStatus.OK, registry.discover(payload)
+            elif path.endswith("/update"):
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
+                status, result = HTTPStatus.OK, registry.update(job_id, payload)
+            else:
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
+                status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
+        except CaptureJobError as exc:
+            self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
+            return
+        self._send_json(HTTPStatus(status), result)
+
+    def _capture_job_checkpoint(self, path: str) -> None:
+        payload = self._capture_job_body()
+        if payload is None:
+            return
+        job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
+        try:
+            result = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            ).checkpoint(job_id, payload)
+        except CaptureJobError as exc:
+            self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     def _browser_action_enqueue(self) -> None:
         payload = self._read_json_body()

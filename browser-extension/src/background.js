@@ -3,6 +3,7 @@ import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_M
 import { providerAdapters } from "./backfill/providers.js";
 import { executeProviderPageRequest } from "./backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "./backfill/storage.js";
+import { CaptureJobClient } from "./backfill/capture_jobs.js";
 import {
   classifyBrowserActionFailure,
   executeChatGptBrowserActionInPage,
@@ -122,14 +123,8 @@ async function withExtensionInstanceAttribution(envelope) {
   };
 }
 
-// polylogue-06zm: best-effort mirror of the backfill-ledger checkpoint to the
-// local receiver. IndexedDB is always the fast primary source and the local
-// chrome.storage.local copy (BACKFILL_RECOVERY_CHECKPOINT_KEY, jlme.4) is the
-// first fallback; this receiver mirror only matters when BOTH of those are
-// gone (a browser profile that was fully destroyed/reinstalled, not merely
-// restarted). A mirror failure must never surface as a checkpoint error --
-// see BackfillCoordinator.persistCheckpoint(), which awaits only the
-// checkpoint() callback itself and already tolerates that throwing.
+// Legacy per-instance mirror retained only as migration evidence. CaptureJobs
+// below are the durability authority for new writes.
 function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
   postJson(
     "/v1/backfill-checkpoint",
@@ -137,6 +132,59 @@ function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
     null,
     PROVIDER_REQUEST_TIMEOUT_MS,
   ).catch(() => undefined);
+}
+
+async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
+  const settings = await receiverSettings();
+  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
+  if (!Array.isArray(checkpoint?.jobs)) throw new Error("capture_job_checkpoint_invalid");
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
+  const handles = new Map();
+  const accountHandle = (provider) => {
+    if (!handles.has(provider)) handles.set(provider, providerAccountHandle(provider));
+    return handles.get(provider);
+  };
+  const results = await Promise.all(checkpoint.jobs.map(async (job) => {
+    try {
+      // Exact authenticated provider identity is mandatory. Guessing from the
+      // receiver pairing or extension profile can adopt another account's job.
+      const handle = await accountHandle(job.provider);
+      if (!handle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
+      const payload = {
+        version: checkpoint.version,
+        jobs: [job],
+        queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
+        revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
+      };
+      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      adopted = await client.update(adopted, captureJobRetryState(job));
+      await client.checkpoint(adopted, payload);
+      return null;
+    } catch (error) {
+      return { job_id: job.id, error: String(error?.message || error) };
+    }
+  }));
+  return { failures: results.filter(Boolean) };
+}
+
+function captureJobRetryState(job) {
+  const attempt = Number.isSafeInteger(job.transport_failures) && job.transport_failures >= 0
+    ? job.transport_failures
+    : 0;
+  const nextEligible = Number.isFinite(job.cooldown_until_ms)
+    ? new Date(job.cooldown_until_ms).toISOString()
+    : null;
+  let state = "ready";
+  if (job.status === "complete") state = "completed";
+  else if (job.status === "cancelled") state = "abandoned";
+  else if (job.status === "paused") state = "held";
+  else if (nextEligible) state = "retry_wait";
+  return {
+    state,
+    attempt,
+    reason: job.cooldown_reason || job.last_error || null,
+    next_eligible_at: state === "retry_wait" ? nextEligible : null,
+  };
 }
 
 async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
@@ -154,18 +202,90 @@ async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
   return { restored: 0, reason: "checkpoint_unavailable" };
 }
 
+async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
+  const settings = await receiverSettings();
+  if (!settings.authToken) return { checkpoint: null, successfulProviders: [] };
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
+  const recovered = [];
+  const successfulProviders = [];
+  for (const provider of providers) {
+    try {
+      const accountHandle = await providerAccountHandle(provider);
+      const adopted = await client.discoverRecovery(provider, accountHandle, instanceId);
+      recovered.push(...adopted.map((entry) => ({
+        ...entry.job,
+        recovery_checkpoint_updated_at: entry.recovery_updated_at,
+      })));
+      if (adopted.length) successfulProviders.push(provider);
+    } catch (error) {
+      await appendDebugLog({
+        stage: "capture_job_recovery_unavailable",
+        provider,
+        error: String(error.message || error),
+      });
+    }
+  }
+  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders };
+}
+
+function mergeCaptureJobRecoveryCheckpoints(jobs) {
+  const checkpoints = jobs
+    .filter((job) => job.checkpoint?.payload?.version === 1 && Array.isArray(job.checkpoint.payload.jobs))
+    .map((job) => {
+      const updatedAtMs = Date.parse(job.recovery_checkpoint_updated_at);
+      if (!Number.isFinite(updatedAtMs)) throw new Error(`capture_job_recovery_timestamp_invalid:${job.job_id}`);
+      return { jobId: job.job_id, updatedAtMs, payload: job.checkpoint.payload };
+    });
+  if (!checkpoints.length) return null;
+  const reconcile = (field) => {
+    const winners = new Map();
+    for (const checkpoint of checkpoints) {
+      for (const item of checkpoint.payload[field] || []) {
+        if (!item?.id) continue;
+        const current = winners.get(item.id);
+        if (!current) {
+          winners.set(item.id, { item, ...checkpoint });
+          continue;
+        }
+        if (JSON.stringify(current.item) === JSON.stringify(item)) continue;
+        if (checkpoint.updatedAtMs === current.updatedAtMs) {
+          throw new Error(`capture_job_recovery_conflict:${field}:${item.id}`);
+        }
+        if (checkpoint.updatedAtMs > current.updatedAtMs) winners.set(item.id, { item, ...checkpoint });
+      }
+    }
+    return [...winners.values()].map((winner) => winner.item);
+  };
+  return {
+    version: 1,
+    jobs: reconcile("jobs"),
+    queue: reconcile("queue"),
+    revisions: reconcile("revisions"),
+  };
+}
+
 async function backfillCoordinator() {
   if (!backfillCoordinatorPromise) {
     const candidate = (async () => {
       const store = new IndexedDbBackfillStore();
       const instanceId = await extensionInstanceId();
       const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      const localRestore = await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
-      if (localRestore.reason === "checkpoint_unavailable") {
-        // Neither IndexedDB nor the local chrome.storage.local mirror had a
-        // usable checkpoint (restoreRecoveryCheckpoint already refuses to
-        // touch a non-empty IndexedDB, so this only ever runs when there is
-        // truly nothing local to lose).
+      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      const localCheckpoint = await store.exportRecoveryCheckpoint();
+      const localProviders = [...new Set(localCheckpoint.jobs.map((job) => job.provider))];
+      const providers = [...new Set(["chatgpt", "claude-ai", ...localProviders])];
+      const recovery = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
+      if (recovery.successfulProviders.length) {
+        await store.reconcileRecoveryCheckpoint(
+          recovery.checkpoint || { version: 1, jobs: [], queue: [], revisions: [] },
+          recovery.successfulProviders,
+        );
+      }
+      const reconciledCheckpoint = await store.exportRecoveryCheckpoint();
+      if (!reconciledCheckpoint.jobs.length) {
+        // The per-instance route is legacy migration input only. It is tried
+        // after the receiver-authoritative registry and never overwrites a
+        // CaptureJob checkpoint.
         await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
       return new BackfillCoordinator({
@@ -180,8 +300,18 @@ async function backfillCoordinator() {
         ),
         receiverPreflight: backfillReceiverPreflight,
         checkpoint: async (checkpoint) => {
-          await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          const result = await commitCaptureJobsToReceiver(instanceId, checkpoint);
+          if (result.failures.length) return result;
+          try {
+            await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          } catch (error) {
+            await appendDebugLog({
+              stage: "capture_job_local_cache_write_failed",
+              error: String(error?.message || error),
+            });
+          }
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
+          return result;
         },
         captureOverride: async ({ provider, nativeId, response }) => {
           if (provider !== "chatgpt") return null;
@@ -1390,6 +1520,39 @@ async function providerPageFetch(url, options = {}) {
       throw new Error(error);
     }
     return pageContextResponse(result.response);
+  });
+}
+
+async function providerAccountHandle(provider) {
+  return withProviderTransportOperation(provider, async () => {
+    const transport = await providerTab(provider);
+    let result;
+    try {
+      const executions = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeProviderPageRequest,
+          args: [{ provider, operation: "identity", params: {} }],
+        }),
+        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+        "backfill_provider_identity",
+      );
+      result = executions?.[0]?.result;
+      if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
+      const accountHandle = result.response?.accountHandle;
+      if (typeof accountHandle !== "string" || !accountHandle.trim()) {
+        throw new Error("backfill_provider_identity_unavailable");
+      }
+      return accountHandle;
+    } catch (error) {
+      if (transport.owned) {
+        await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+        if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+        await forgetProviderTransport(provider, transport.tab.id);
+      }
+      throw error;
+    }
   });
 }
 

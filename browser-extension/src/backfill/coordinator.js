@@ -44,6 +44,7 @@ export class BackfillCoordinator {
     this.instanceId = instanceId;
     this.receiverContractEpoch = receiverContractEpoch;
     this.controlChains = new Map();
+    this.checkpointPromise = null;
   }
 
   async start({ provider, cutoff, policy = {}, provider_options = {} }) {
@@ -103,6 +104,10 @@ export class BackfillCoordinator {
     if (action === "resume" && (await this.store.listQueue(jobId)).some((item) => item.state === "recovery_required")) {
       throw new Error("browser_profile_recovery_required");
     }
+    if (status === "running") {
+      const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
+      if (authorityError) return this.snapshotStatus(jobId, authorityError);
+    }
     // Preflight while the job is still paused.  Marking it running first would
     // let an alarm acquire its next execution generation while an older worker
     // is still deciding whether this receiver is safe to use.
@@ -126,9 +131,13 @@ export class BackfillCoordinator {
   }
 
   async status(jobId) {
+    const checkpointError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
+    return this.snapshotStatus(jobId, checkpointError);
+  }
+
+  async snapshotStatus(jobId, checkpointError = null) {
     const job = await this.requireJob(jobId);
     const queue = await this.store.listQueue(jobId);
-    const checkpointError = await this.persistCheckpoint();
     return {
       ...job,
       progress: progressBuckets(queue),
@@ -151,6 +160,8 @@ export class BackfillCoordinator {
 
   async runJob(jobId) {
     const now = this.clock();
+    const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), jobId);
+    if (authorityError) return this.snapshotStatus(jobId, authorityError);
     const current = await this.requireJob(jobId);
     const job = await this.store.acquireJobExecution(jobId, this.instanceId, now, current.policy.leaseMs);
     if (!job) return this.status(jobId);
@@ -250,6 +261,7 @@ export class BackfillCoordinator {
     const requestCost = adapter.requestCost?.("enumerate") || 1;
     const reserved = await this.reserveProviderRequests(job, now, requestCost);
     if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (reserved.status !== "running") return reserved;
     job = reserved;
     try {
       result = await adapter.enumerate(job.inventory_cursor, job.cutoff);
@@ -297,6 +309,7 @@ export class BackfillCoordinator {
     if (item.resume_state === "captured_waiting_receiver" && item.envelope) return this.submitReceiver(job, item, item.envelope, now);
     const reserved = await this.reserveProviderRequests(job, now, requestCost);
     if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (reserved.status !== "running") return reserved;
     job = reserved;
     let response;
     try {
@@ -487,7 +500,7 @@ export class BackfillCoordinator {
   async reserveProviderRequests(job, now, count) {
     const currentDay = dayKey(now);
     const jitter = Math.floor(this.random() * Math.max(1, job.learned_cadence_ms / 4));
-    return this.store.reserveProviderRequests(
+    const reserved = await this.store.reserveProviderRequests(
       job.id,
       this.instanceId,
       job.execution_generation,
@@ -495,6 +508,9 @@ export class BackfillCoordinator {
       currentDay,
       now + job.learned_cadence_ms + jitter,
     );
+    if (!reserved) return null;
+    const authorityError = this.checkpointErrorForJob(await this.persistCheckpoint(), job.id);
+    return authorityError ? this.requireJob(job.id) : reserved;
   }
 
   async resetDailyBudget(job, now) {
@@ -549,14 +565,62 @@ export class BackfillCoordinator {
 
   async persistCheckpoint() {
     if (!this.checkpoint) return null;
+    if (this.checkpointPromise) return this.checkpointPromise;
+    const pending = this.commitCheckpointUntilStable();
+    this.checkpointPromise = pending;
     try {
-      await this.checkpoint(await this.store.exportRecoveryCheckpoint());
-      return null;
-    } catch (error) {
-      // IndexedDB remains authoritative. A best-effort profile-recovery copy
-      // must never turn an otherwise durable backfill action into a failure.
-      return String(error?.message || error);
+      return await pending;
+    } finally {
+      if (this.checkpointPromise === pending) this.checkpointPromise = null;
     }
+  }
+
+  async commitCheckpointUntilStable() {
+    let checkpoint = await this.store.exportRecoveryCheckpoint();
+    while (true) {
+      const error = await this.commitCheckpoint(checkpoint);
+      const latest = await this.store.exportRecoveryCheckpoint();
+      if (JSON.stringify(latest) === JSON.stringify(checkpoint)) return error;
+      checkpoint = latest;
+    }
+  }
+
+  async commitCheckpoint(checkpoint) {
+    try {
+      const result = await this.checkpoint(checkpoint);
+      const failures = Array.isArray(result?.failures) ? result.failures : [];
+      if (!failures.length) return null;
+      const errors = {};
+      const now = nowIso(this.clock());
+      for (const failure of failures) {
+        if (typeof failure?.job_id !== "string") continue;
+        const detail = String(failure.error || "capture_job_receiver_commit_failed");
+        errors[failure.job_id] = detail;
+        const job = await this.store.getJob(failure.job_id);
+        if (job?.status === "running") {
+          await this.store.controlJob(failure.job_id, "paused", now, {
+            cooldown_reason: "receiver_capture_job_authority_unavailable",
+            last_error: detail,
+          });
+        }
+      }
+      return errors;
+    } catch (error) {
+      const detail = String(error?.message || error);
+      const now = nowIso(this.clock());
+      for (const job of await this.store.listJobs()) {
+        if (job.status !== "running") continue;
+        await this.store.controlJob(job.id, "paused", now, {
+          cooldown_reason: "receiver_capture_job_authority_unavailable",
+          last_error: detail,
+        });
+      }
+      return { "*": detail };
+    }
+  }
+
+  checkpointErrorForJob(errors, jobId) {
+    return errors?.[jobId] || errors?.["*"] || null;
   }
 
   async saveJob(job) {
