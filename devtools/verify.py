@@ -31,6 +31,7 @@ import selectors
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -129,30 +130,6 @@ def _warn_low_memory() -> None:
         sys.stderr.write(f"verify: low memory ({avail_gb:.1f} GB free) — pytest may be slow or OOM\n")
 
 
-def _shm_free_gb() -> float | None:
-    try:
-        stat = os.statvfs("/dev/shm")
-    except OSError:
-        return None
-    return (stat.f_bavail * stat.f_frsize) / 1024 / 1024 / 1024
-
-
-def _enable_tmpfs_for_broad_pytest(label: str, env: dict[str, str]) -> bool:
-    if not (label == "pytest seed-testmon" or label == "pytest testmon (broad)" or label.startswith("pytest full")):
-        return False
-    if env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") or env.get("POLYLOGUE_PYTEST_TMPFS"):
-        return False
-    mem = _check_available_memory()
-    shm_free = _shm_free_gb()
-    if mem is None or shm_free is None:
-        return False
-    available_gb = mem[0] / 1024 / 1024
-    if available_gb < 10.0 or shm_free < 8.0:
-        return False
-    env["POLYLOGUE_PYTEST_TMPFS"] = "1"
-    return True
-
-
 # ── completion notification ────────────────────────────────────────
 
 
@@ -189,6 +166,8 @@ def _format_completion_notification(
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
 TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
+TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
+TESTMON_SEED_PROTOCOL_VERSION = 2
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -1252,7 +1231,12 @@ def _run(
     pytest_tmpfs = False
     basetemp_cleanup: Path | None = None
     if is_pytest:
-        pytest_tmpfs = _enable_tmpfs_for_broad_pytest(label, env)
+        pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
+        if label.startswith("pytest seed-testmon"):
+            # A complete corpus is currently ~16K nodes. Preserve the whole
+            # selection in the attempt receipt so interrupted seeds can prove
+            # eventual coverage instead of relying on a 500-node sample.
+            env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
@@ -1464,6 +1448,7 @@ def build_verify_steps(
     skip_slow: bool,
     commit: bool = False,
     seed_testmon: bool = False,
+    resume_testmon_seed: bool = False,
     full_pytest: bool = False,
     broad_testmon: bool = False,
 ) -> list[tuple[str, list[str]]]:
@@ -1519,8 +1504,15 @@ def build_verify_steps(
         ]
         base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
         if seed_testmon:
-            pytest_cmd.extend(["-m", base_marker, "--testmon", "--testmon-noselect", *_pytest_worker_args(default="4")])
-            steps.append(("pytest seed-testmon", pytest_cmd))
+            pytest_cmd.extend(["-m", base_marker, "--testmon"])
+            if resume_testmon_seed:
+                pytest_cmd.append("--testmon-forceselect")
+                label = "pytest seed-testmon (resume)"
+            else:
+                pytest_cmd.append("--testmon-noselect")
+                label = "pytest seed-testmon"
+            pytest_cmd.extend(_pytest_worker_args(default="4"))
+            steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
             # xdist parallelism but deselects wall-clock-bound tests; the
@@ -1649,8 +1641,7 @@ _BROAD_TESTMON_CHANGED_PATHS = {
 }
 
 
-def _default_testmon_is_broad_change() -> bool:
-    """Return true when affected-test selection should be treated as broad."""
+def _changed_paths() -> set[str]:
     changed: set[str] = set()
     commands = (
         ["git", "diff", "--name-only", "HEAD", "--"],
@@ -1663,7 +1654,19 @@ def _default_testmon_is_broad_change() -> bool:
             continue
         if result.returncode == 0:
             changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
-    return bool(changed & _BROAD_TESTMON_CHANGED_PATHS)
+    return changed
+
+
+def _default_testmon_is_broad_change() -> bool:
+    """Return true when affected-test selection should be treated as broad."""
+    return bool(_changed_paths() & _BROAD_TESTMON_CHANGED_PATHS)
+
+
+def _changed_executable_paths() -> tuple[str, ...]:
+    """Return changed paths whose behavior should select at least one test."""
+    roots = ("polylogue/", "devtools/", "tests/", "packaging/")
+    exact = {"pyproject.toml", "uv.lock"}
+    return tuple(sorted(path for path in _changed_paths() if path in exact or path.startswith(roots)))
 
 
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
@@ -1688,6 +1691,11 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
             "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
             "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
         )
+    if stamp.get("protocol_version") != TESTMON_SEED_PROTOCOL_VERSION or stamp.get("status") != "complete":
+        return (
+            "verify: pytest-testmon has no validated complete seed receipt; run "
+            "`devtools verify --seed-testmon` to resume or rebuild the dependency baseline.\n"
+        )
     current_head = _git_head()
     stamped_head = stamp.get("git_head")
     if current_head is not None and stamped_head != current_head:
@@ -1703,15 +1711,224 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
     return None
 
 
-def _write_testmon_seed_stamp(result: dict[str, Any]) -> None:
-    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "git_head": result.get("git_head"),
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-        "steps": result.get("steps", []),
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _worktree_fingerprint() -> str:
+    """Fingerprint tracked content plus the untracked-path inventory."""
+    digest = hashlib.sha256()
+    for command in (
+        ["git", "status", "--porcelain=v1", "-z"],
+        ["git", "diff", "--binary", "HEAD", "--"],
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return "unavailable"
+        if result.returncode != 0:
+            return "unavailable"
+        digest.update(result.stdout)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _testmon_seed_identity(*, git_head: str | None, skip_slow: bool, lab: bool) -> dict[str, Any]:
+    return {
+        "git_head": git_head,
+        "worktree_fingerprint": _worktree_fingerprint(),
+        "python": sys.version,
+        "skip_slow": skip_slow,
+        "lab": lab,
     }
-    TESTMON_SEED_STAMP.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def _read_testmon_seed_attempt() -> dict[str, Any] | None:
+    payload = _read_json_artifact(TESTMON_SEED_ATTEMPT)
+    return payload if isinstance(payload, dict) else None
+
+
+def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None or not TESTMON_DATA.exists():
+        return False
+    expected = attempt.get("expected_nodeids")
+    return (
+        attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
+        and attempt.get("status") in {"running", "incomplete"}
+        and attempt.get("identity") == dict(identity)
+        and isinstance(expected, list)
+        and bool(expected)
+        and all(isinstance(nodeid, str) for nodeid in expected)
+    )
+
+
+def _prepare_testmon_seed_attempt(
+    *,
+    identity: Mapping[str, Any],
+    run: VerifyRun,
+    resume: bool,
+) -> dict[str, Any]:
+    prior = _read_testmon_seed_attempt() if resume else None
+    expected = prior.get("expected_nodeids", []) if prior is not None else []
+    payload = {
+        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+        "status": "running",
+        "identity": dict(identity),
+        "resume": resume,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run.run_id,
+        "artifact_dir": str(run.relative_run_dir),
+        "testmon_data_before": _file_fingerprint(TESTMON_DATA),
+    }
+    TESTMON_SEED_STAMP.unlink(missing_ok=True)
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    return payload
+
+
+def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
+    if not TESTMON_DATA.exists():
+        return {
+            "recorded_count": 0,
+            "failed_count": 0,
+            "missing_nodeids": list(expected_nodeids),
+            "failed_nodeids": [],
+            "error": "missing",
+        }
+    try:
+        with sqlite3.connect(TESTMON_DATA) as conn:
+            rows = conn.execute(
+                """
+                SELECT current.test_name, current.failed
+                FROM test_execution AS current
+                JOIN (
+                    SELECT test_name, MAX(id) AS latest_id
+                    FROM test_execution
+                    GROUP BY test_name
+                ) AS latest ON latest.latest_id = current.id
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {
+            "recorded_count": 0,
+            "failed_count": 0,
+            "missing_nodeids": list(expected_nodeids),
+            "failed_nodeids": [],
+            "error": str(exc),
+        }
+    recorded = {str(name): bool(failed) for name, failed in rows}
+    expected = set(expected_nodeids)
+    failed = sorted(nodeid for nodeid in expected if recorded.get(nodeid) is True)
+    return {
+        "recorded_count": len(recorded),
+        "failed_count": sum(recorded.values()),
+        "missing_nodeids": sorted(expected - recorded.keys()),
+        "failed_nodeids": failed,
+        "error": None,
+    }
+
+
+def _failed_nodeids_from_events(path: Path) -> list[str]:
+    failed: set[str] = set()
+    if not path.exists():
+        return []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                with contextlib.suppress(json.JSONDecodeError):
+                    event = json.loads(line)
+                    if event.get("event") == "test_report" and event.get("outcome") == "failed":
+                        nodeid = event.get("nodeid")
+                        if isinstance(nodeid, str):
+                            failed.add(nodeid)
+    except OSError:
+        return []
+    return sorted(failed)
+
+
+def _finalize_testmon_seed_attempt(
+    *,
+    prepared: Mapping[str, Any],
+    step_results: Sequence[Mapping[str, Any]],
+    exit_code: int,
+) -> dict[str, Any]:
+    pytest_step = next(
+        (step for step in step_results if str(step.get("name", "")).startswith("pytest seed-testmon")), None
+    )
+    selection: dict[str, Any] = {}
+    failed_events: list[str] = []
+    if pytest_step is not None:
+        artifact_dir_raw = pytest_step.get("artifact_dir")
+        if isinstance(artifact_dir_raw, str):
+            artifact_dir = Path(artifact_dir_raw)
+            selection_payload = _read_json_artifact(artifact_dir / "selection.json")
+            if isinstance(selection_payload, dict):
+                selection = selection_payload
+            failed_events = _failed_nodeids_from_events(artifact_dir / "events.jsonl")
+
+    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selection.get("selected_nodeids")
+    expected = [str(nodeid) for nodeid in expected_raw] if isinstance(expected_raw, list) else []
+    omitted = int(selection.get("selected_nodeids_omitted") or 0)
+    database = _testmon_database_state(expected)
+    complete = (
+        exit_code == 0
+        and bool(expected)
+        and (bool(prepared.get("resume")) or omitted == 0)
+        and database["error"] is None
+        and not database["missing_nodeids"]
+        and not database["failed_nodeids"]
+        and not failed_events
+    )
+    payload = {
+        **dict(prepared),
+        "status": "complete" if complete else "incomplete",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
+        "selection": {
+            key: selection.get(key)
+            for key in (
+                "selected_count",
+                "deselected_count",
+                "selected_nodeids_omitted",
+                "deselected_nodeids_omitted",
+                "collection_duration_s",
+            )
+        },
+        "database": database,
+        "failed_event_nodeids": failed_events,
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "pytest_step": dict(pytest_step) if pytest_step is not None else None,
+    }
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    if complete:
+        stamp = {
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "complete",
+            "timestamp": payload["finished_at"],
+            "git_head": dict(prepared["identity"]).get("git_head"),
+            "identity": prepared["identity"],
+            "expected_count": payload["expected_count"],
+            "expected_digest": payload["expected_digest"],
+            "testmon_data": payload["testmon_data"],
+            "database": {
+                "recorded_count": database["recorded_count"],
+                "failed_count": database["failed_count"],
+            },
+            "run_id": payload["run_id"],
+            "artifact_dir": payload["artifact_dir"],
+        }
+        _atomic_write_json(TESTMON_SEED_STAMP, stamp)
+    return payload
 
 
 # ── main ────────────────────────────────────────────────────────────
@@ -1782,6 +1999,23 @@ def main(argv: list[str] | None = None) -> int:
     head = _git_head()
     t0 = time.monotonic()
     verify_run = VerifyRun(tier=tier, argv=list(sys.argv[1:] if argv is None else argv), git_head=head)
+    seed_identity: dict[str, Any] | None = None
+    resume_testmon_seed = False
+    prepared_seed_attempt: dict[str, Any] | None = None
+    if args.seed_testmon:
+        seed_identity = _testmon_seed_identity(
+            git_head=head,
+            skip_slow=bool(args.skip_slow),
+            lab=bool(args.lab),
+        )
+        resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
+        prepared_seed_attempt = _prepare_testmon_seed_attempt(
+            identity=seed_identity,
+            run=verify_run,
+            resume=resume_testmon_seed,
+        )
+        if resume_testmon_seed:
+            sys.stderr.write("verify: resuming the matching incomplete pytest-testmon seed\n")
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
@@ -1797,6 +2031,7 @@ def main(argv: list[str] | None = None) -> int:
         lab=bool(args.lab),
         skip_slow=bool(args.skip_slow),
         seed_testmon=bool(args.seed_testmon),
+        resume_testmon_seed=resume_testmon_seed,
         full_pytest=full_pytest,
         broad_testmon=_default_testmon_is_broad_change(),
     )
@@ -1807,6 +2042,16 @@ def main(argv: list[str] | None = None) -> int:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
+        if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"} and metadata.get("selected_count") == 0:
+            executable_paths = _changed_executable_paths()
+            if executable_paths:
+                rc = 5
+                metadata["diagnosis"] = "zero_testmon_selection_for_executable_change"
+                metadata["zero_selection_changed_paths"] = list(executable_paths)
+                sys.stderr.write(
+                    "verify: pytest-testmon selected zero tests for executable changes; "
+                    "refresh the seed or repair dependency capture: " + ", ".join(executable_paths) + "\n"
+                )
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
@@ -1815,10 +2060,24 @@ def main(argv: list[str] | None = None) -> int:
             if _stop_after_failed_step(label):
                 break
 
+    seed_receipt: dict[str, Any] | None = None
+    if prepared_seed_attempt is not None:
+        seed_receipt = _finalize_testmon_seed_attempt(
+            prepared=prepared_seed_attempt,
+            step_results=step_results,
+            exit_code=exit_code,
+        )
+        if exit_code == 0 and seed_receipt["status"] != "complete":
+            exit_code = 5
+            sys.stderr.write(
+                "verify: pytest passed but the testmon dependency baseline is incomplete; "
+                f"inspect {TESTMON_SEED_ATTEMPT}.\n"
+            )
+
     total_duration = round(time.monotonic() - t0, 2)
 
     # Build history entry.
-    history_entry = {
+    history_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
         "tier": tier,
@@ -1838,6 +2097,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     if pytest_diagnosis is not None:
         history_entry["diagnosis"] = pytest_diagnosis
+    if seed_receipt is not None:
+        history_entry["testmon_seed"] = {
+            "status": seed_receipt["status"],
+            "resume": seed_receipt["resume"],
+            "expected_count": seed_receipt["expected_count"],
+            "attempt_path": str(TESTMON_SEED_ATTEMPT),
+            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] == "complete" else None,
+        }
 
     if use_json:
         _print_json(history_entry)
@@ -1861,8 +2128,6 @@ def main(argv: list[str] | None = None) -> int:
     verify_run.finish(exit_code=exit_code, duration_s=total_duration, diagnosis=pytest_diagnosis)
     if exit_code == 0:
         _stamp_head()
-        if args.seed_testmon:
-            _write_testmon_seed_stamp(history_entry)
 
     # Notify only on failure. Passing runs stay silent — the terminal
     # already shows the green summary and a desktop popup per run is

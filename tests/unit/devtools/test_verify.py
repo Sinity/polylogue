@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,9 @@ from devtools.verify import (
     PYTEST_REPORT_PATH,
     ROOT,
     TESTMON_DATA,
-    _enable_tmpfs_for_broad_pytest,
+    TESTMON_SEED_ATTEMPT,
+    TESTMON_SEED_PROTOCOL_VERSION,
+    _finalize_testmon_seed_attempt,
     _format_completion_notification,
     _parse_pytest_test_count,
     _pytest_command_metadata,
@@ -29,7 +32,9 @@ from devtools.verify import (
     _read_pytest_report,
     _run,
     _stop_after_failed_step,
+    _testmon_database_state,
     _testmon_preflight,
+    _testmon_seed_can_resume,
     build_verify_steps,
     main,
 )
@@ -40,6 +45,12 @@ from devtools.verify_runs import (
     cleanup_managed_pytest_basetemp,
     pytest_basetemp_path,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep supervisor receipts private when this module runs under xdist."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _pytest_marker_expr(command: list[str]) -> str:
@@ -128,6 +139,22 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert command[command.index("-n") + 1] == "4"
 
 
+def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
+    steps = build_verify_steps(
+        quick=False,
+        lab=False,
+        skip_slow=False,
+        seed_testmon=True,
+        resume_testmon_seed=True,
+    )
+
+    label, command = steps[-1]
+    assert label == "pytest seed-testmon (resume)"
+    assert "--testmon" in command
+    assert "--testmon-forceselect" in command
+    assert "--testmon-noselect" not in command
+
+
 def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
     steps = build_verify_steps(quick=False, lab=False, skip_slow=False, full_pytest=True)
@@ -160,31 +187,20 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     assert command[command.index("-n") + 1] == "4"
 
 
-def test_seed_tmpfs_enabled_when_host_has_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
-    env: dict[str, str] = {}
-    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (12 * 1024 * 1024, 32 * 1024 * 1024))
-    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
+def test_seed_does_not_auto_enable_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
-    assert _enable_tmpfs_for_broad_pytest("pytest seed-testmon", env) is True
-    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed) as run,
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "--testmon-noselect"])
 
-
-def test_broad_testmon_tmpfs_enabled_when_host_has_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
-    env: dict[str, str] = {}
-    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (12 * 1024 * 1024, 32 * 1024 * 1024))
-    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
-
-    assert _enable_tmpfs_for_broad_pytest("pytest testmon (broad)", env) is True
-    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
-
-
-def test_seed_tmpfs_not_enabled_when_host_is_tight(monkeypatch: pytest.MonkeyPatch) -> None:
-    env: dict[str, str] = {}
-    monkeypatch.setattr("devtools.verify._check_available_memory", lambda: (4 * 1024 * 1024, 32 * 1024 * 1024))
-    monkeypatch.setattr("devtools.verify._shm_free_gb", lambda: 12.0)
-
-    assert _enable_tmpfs_for_broad_pytest("pytest seed-testmon", env) is False
-    assert "POLYLOGUE_PYTEST_TMPFS" not in env
+    assert rc == 0
+    assert metadata["pytest_tmpfs"] is False
+    assert "POLYLOGUE_PYTEST_TMPFS" not in run.call_args.kwargs["env"]
+    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] == "50000"
 
 
 def test_default_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,6 +325,8 @@ def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: 
     seed_stamp.write_text(
         json.dumps(
             {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "complete",
                 "git_head": "current-head",
                 "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
             }
@@ -330,6 +348,8 @@ def test_testmon_preflight_warns_on_stale_git_head(
     seed_stamp.write_text(
         json.dumps(
             {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "complete",
                 "git_head": "old-head",
                 "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
             }
@@ -354,6 +374,8 @@ def test_testmon_preflight_warns_on_database_fingerprint_drift(
     seed_stamp.write_text(
         json.dumps(
             {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "complete",
                 "git_head": "current-head",
                 "testmon_data": hashlib.sha256(b"seeded").hexdigest(),
             }
@@ -365,6 +387,118 @@ def test_testmon_preflight_warns_on_database_fingerprint_drift(
 
     assert message is None
     assert "database changed" in capsys.readouterr().err
+
+
+def test_testmon_preflight_rejects_incomplete_seed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
+    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
+    seed_stamp.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "incomplete",
+                "git_head": "current-head",
+                "testmon_data": hashlib.sha256(b"partial").hexdigest(),
+            }
+        )
+    )
+
+    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
+
+    assert message is not None
+    assert "no validated complete seed receipt" in message
+
+
+def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_text("partial")
+    identity = {"git_head": "head", "worktree_fingerprint": "tree"}
+    TESTMON_SEED_ATTEMPT.write_text(
+        json.dumps(
+            {
+                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+                "status": "incomplete",
+                "identity": identity,
+                "expected_nodeids": ["tests/unit/test_example.py::test_one"],
+            }
+        )
+    )
+
+    assert _testmon_seed_can_resume(identity) is True
+    assert _testmon_seed_can_resume({**identity, "git_head": "other"}) is False
+
+
+def test_testmon_database_state_reports_missing_and_failed_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute(
+            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
+            [("tests/test_a.py::test_ok", 0), ("tests/test_b.py::test_failed", 1)],
+        )
+
+    state = _testmon_database_state(
+        ["tests/test_a.py::test_ok", "tests/test_b.py::test_failed", "tests/test_c.py::test_missing"]
+    )
+
+    assert state["recorded_count"] == 2
+    assert state["failed_nodeids"] == ["tests/test_b.py::test_failed"]
+    assert state["missing_nodeids"] == ["tests/test_c.py::test_missing"]
+
+
+def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
+    (artifact_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_count": 2,
+                "deselected_count": 0,
+                "selected_nodeids": expected,
+                "selected_nodeids_omitted": 0,
+            }
+        )
+    )
+    (artifact_dir / "events.jsonl").write_text("")
+    TESTMON_DATA.parent.mkdir(parents=True)
+    with sqlite3.connect(TESTMON_DATA) as conn:
+        conn.execute(
+            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO test_execution(test_name, failed) VALUES (?, 0)",
+            [(nodeid,) for nodeid in expected],
+        )
+
+    receipt = _finalize_testmon_seed_attempt(
+        prepared={
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "running",
+            "identity": {"git_head": "head"},
+            "resume": False,
+            "expected_nodeids": [],
+            "run_id": "run-1",
+            "artifact_dir": str(tmp_path / "run-1"),
+        },
+        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
+        exit_code=0,
+    )
+
+    assert receipt["status"] == "complete"
+    assert receipt["expected_count"] == 2
+    stamp = json.loads((tmp_path / ".cache" / "testmon" / "seed.json").read_text())
+    assert stamp["status"] == "complete"
+    assert stamp["expected_count"] == 2
 
 
 def test_classify_late_sigterm_after_pytest_success_summary() -> None:
@@ -930,6 +1064,31 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
     assert calls[-1].startswith("pytest")
     payload = capsys.readouterr().out
     assert '"exit_code": 1' in payload
+
+
+def test_verify_rejects_zero_testmon_selection_for_executable_change(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
+        del command, kwargs
+        return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
+
+    with (
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+    ):
+        rc = main(["--json"])
+
+    assert rc == 5
+    payload = json.loads(capsys.readouterr().out)
+    pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
+    assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
+    assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
 
 
 def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:

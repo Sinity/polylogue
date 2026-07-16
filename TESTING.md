@@ -57,7 +57,11 @@ browser install step is normally unnecessary after `npm ci`.
 seed command records `.cache/testmon/testmondata` plus
 `.cache/testmon/seed.json`; those files are local generated state and are not
 committed. If the seed is missing, the default command fails with setup
-guidance instead of silently running the whole suite.
+guidance instead of silently running the whole suite. Every seed writes
+`.cache/testmon/seed-attempt.json` before work begins. A matching interrupted
+attempt resumes only its unseen, failed, or changed tests; `.cache/testmon/seed.json`
+is published only after every originally selected node has a failure-free row
+in the dependency database.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
@@ -71,7 +75,7 @@ run. Full diagnostic and seed runs use the same worker override and also
 default to `-n 4` so database-heavy workers do not multiply memory and I/O
 pressure beyond the explicit broad-run lane.
 
-Every collected test has a 300-second `pytest-timeout` budget. A test that
+Every collected test has a 120-second `pytest-timeout` budget. A test that
 genuinely needs longer must declare the exception at the test site with
 `@pytest.mark.timeout(<seconds>)`; a missing marker can never silently turn into
 an unbounded wait. The signal method is the repository default so timeout
@@ -89,13 +93,15 @@ pytest startup sweeps stale per-run dirs from both the configured root and
 legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept because
 they are small and reused.
 
-`devtools verify --seed-testmon` and the parallel full diagnostic may set
-`POLYLOGUE_PYTEST_TMPFS=1` automatically when the host has at least 10 GiB
-available memory and `/dev/shm` has at least 8 GiB free. This is deliberately
-limited to broad lanes: seed/full runs and default affected runs caused by
-harness/config changes are write-heavy enough that disk-backed basetemps can
-dominate runtime, while focused and ordinary affected runs stay on the normal
-scratch root unless the operator opts in.
+No verification lane enables tmpfs automatically. Broad xdist runs can retain
+many SQLite basetemps concurrently, so an apparently roomy `/dev/shm` can turn
+the suite into host-wide memory and swap pressure. Set
+`POLYLOGUE_PYTEST_TMPFS=1` explicitly for a measured one-shot performance lane;
+normal seed, full, focused, and affected runs stay on the managed scratch root.
+
+An affected run that selects zero tests is accepted only when no executable,
+test, dependency, or harness path changed. A zero selection after such a change
+fails loudly with the changed paths instead of granting an empty green check.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon for affected-test selection.

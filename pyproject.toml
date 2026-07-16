@@ -131,7 +131,7 @@ xfail_strict = true
 cache_dir = ".cache/pytest"
 # Every test is bounded by default. Tests that genuinely need longer must carry
 # an explicit @pytest.mark.timeout(...) override at the test site.
-timeout = 300
+timeout = 120
 timeout_method = "signal"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
