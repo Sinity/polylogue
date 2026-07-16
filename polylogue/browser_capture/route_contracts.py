@@ -24,6 +24,10 @@ BrowserCaptureRouteKind = Literal[
     "browser_action_attachment",
     "browser_action_update",
     "browser_action_reconcile",
+    "capture_job_create",
+    "capture_job_discover",
+    "capture_job_adopt",
+    "capture_job_checkpoint",
     "backfill_checkpoint_store",
     "backfill_checkpoint_read",
 ]
