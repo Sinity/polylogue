@@ -13,6 +13,13 @@ process restart, retries address the intended session/stage without replaying
 unrelated acquisition, and repeated convergence reaches the same terminal
 facts without duplication.
 
+Read `architecture/03-concurrent-writes-publication-and-resume.md` and
+`architecture/09-capture-delivery-and-deployed-status.md` in the attached Test
+Suite Diet corpus. Apply their current decisions where convergence shares
+reservation, lease, receipt, generation, service-lifecycle, or cleanup
+semantics. Do not replace the domain-specific convergence ledger with a
+universal lifecycle table.
+
 Prefer deterministic barriers/failpoints or existing injected clock/executor
 seams over sleeps. If one minimal production trace seam is genuinely needed,
 make it report the real stage/debt lifecycle rather than mirror the algorithm

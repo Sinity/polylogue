@@ -19,6 +19,16 @@ For test selection/xdist, consume the existing real mutation and repeated
 isolation receipts; do not recreate a wrapper-mock proof or another hang
 harness.
 
+Use the architecture corpus's concrete authorities when classifying catalogs:
+`OperationSpec` and its executable gateway from
+`04-destructive-and-authentication-boundaries.md`, domain fact declarations
+from `07-evidence-provenance-and-public-algebra.md`, and the production
+`DaemonServiceSpec` graph from `09-capture-delivery-and-deployed-status.md`.
+These are intended real consumers/registries, not permission to create a
+universal catalog. If a recommended authority has not landed in the attached
+snapshot, record the dependency rather than treating its planned absence as
+proof that the corresponding behavior is unused.
+
 Name a missing registration/consumer, stale generated inventory, real-mutation
 selection, or cross-worker artifact-attribution mutation. Preserve useful
 diagnostics and publication surfaces. Clearly separate changes safe to apply

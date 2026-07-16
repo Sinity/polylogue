@@ -12,11 +12,16 @@ silently reducing supported information; aggregations conserve totals across
 disjoint sources; unknown/absent/unsupported never becomes numeric zero; and
 every public value retains the evidence/provenance needed to explain it.
 
-Use the smallest current source vocabulary and ObjectRef/EvidenceRef mechanisms
-already present. Do not create a second evidence lattice or a test-only
-registry. Build independent planted facts that include missing, contradictory,
-duplicate, and differently authoritative observations and vary ordering and
-grouping.
+Use `architecture/07-evidence-provenance-and-public-algebra.md` as the
+recommended contract. Realize its `EvidenceValue` axes and fact-family
+declaration only for the smallest canaries needed by this lane, using current
+ObjectRef/EvidenceRef and domain-owned storage. Prove value state, authority,
+definition, temporal provenance, enumeration/coverage, and
+freshness/degradation independently where the selected family declares them.
+Do not create a generic fact store, second evidence lattice, or test-only
+registry. Build independent planted facts that include missing,
+contradictory, duplicate, and differently authoritative observations and vary
+ordering and grouping.
 
 Name mutations such as dropping one source, double-counting a duplicate,
 strengthening provenance without evidence, or coercing unknown to zero. Cover

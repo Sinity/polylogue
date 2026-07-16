@@ -13,6 +13,13 @@ session/message/block identity and active path, attachments, lineage, search,
 materialized insight outputs, and absence/unknown semantics relevant to the
 chosen canary.
 
+Read `architecture/05-derived-freshness.md`. For every compared derived fact,
+bind equivalence to the exact source identity, recipe identity, output
+contract, and active generation—not row counts, timestamps, or a boolean stale
+flag. Incremental, targeted, restarted, and rebuild routes must reach the same
+canonical facts for the same derivation key while retaining distinct attempt
+receipts.
+
 Keep user-tier overlays outside content/workload identity and prove they are
 preserved or deliberately rejoined rather than folded into raw content hashes.
 The expected fact set must originate from planted input facts and declared

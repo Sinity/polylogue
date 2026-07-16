@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Testsuite diet worker completion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "changed_files",
+    "behavioral_result",
+    "production_dependencies",
+    "checks",
+    "deleted_tests_helpers",
+    "proposed_deletions",
+    "sensitivity",
+    "residual_risks",
+    "recommended_integration_checks",
+    "blocker"
+  ],
+  "properties": {
+    "changed_files": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "behavioral_result": {"type": "string"},
+    "production_dependencies": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code", "output"],
+        "properties": {
+          "command": {"type": "string"},
+          "exit_code": {"type": "integer"},
+          "output": {"type": "string"}
+        }
+      }
+    },
+    "deleted_tests_helpers": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "proposed_deletions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "sensitivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executed", "witness", "mutation", "result", "artifact"],
+      "properties": {
+        "executed": {"type": "boolean"},
+        "witness": {"type": "string"},
+        "mutation": {"type": "string"},
+        "result": {"type": "string"},
+        "artifact": {"type": "string"}
+      }
+    },
+    "residual_risks": {"type": "array", "items": {"type": "string"}},
+    "recommended_integration_checks": {"type": "array", "items": {"type": "string"}},
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocked", "reason", "decision_needed"],
+      "properties": {
+        "blocked": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "decision_needed": {"type": "string"}
+      }
+    }
+  }
+}

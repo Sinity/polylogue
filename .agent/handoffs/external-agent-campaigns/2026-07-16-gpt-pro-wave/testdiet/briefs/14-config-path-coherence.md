@@ -12,6 +12,14 @@ inventory; ensure independently configured tier roots either compose as an
 authorized archive or fail closed with actionable diagnostics; and verify that
 CLI/API/daemon/browser receiver observe the same effective authority.
 
+Use `architecture/08-configuration-and-path-coherence.md` as the recommended
+contract: resolve the existing five layers once at each composition root into
+an immutable `ResolvedRuntimeConfig`/`ResolvedArchivePaths`, inject it, and
+make legacy helpers projections rather than independent environment readers.
+Validate exact names against current source and Beads, but do not reopen the
+global-singleton, ambient re-read, or inferred-root alternatives without new
+contradictory evidence.
+
 Use temporary real files/environment and the actual config/service factories.
 Vary missing, empty, conflicting, relative, symlinked, and split-root values,
 including cloud-lane overrides. Expected effective configuration must be

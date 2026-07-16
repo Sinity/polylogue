@@ -1,0 +1,2197 @@
+{
+  "cluster": {
+    "authoritative_routes": [
+      {
+        "path": "polylogue/daemon/convergence.py",
+        "symbols": [
+          "ConvergenceStage",
+          "DaemonConverger"
+        ]
+      },
+      {
+        "path": "polylogue/daemon/convergence_stages.py",
+        "symbols": []
+      },
+      {
+        "path": "polylogue/sources/live/convergence_debt.py",
+        "symbols": [
+          "convergence_debt_from_states",
+          "convergence_debt_from_state"
+        ]
+      },
+      {
+        "path": "polylogue/sources/live/convergence_debt_retry.py",
+        "symbols": [
+          "convergence_debt_retry_at",
+          "same_pending_convergence_debt"
+        ]
+      },
+      {
+        "path": "polylogue/daemon/convergence_debt_status.py",
+        "symbols": []
+      }
+    ],
+    "avoid_files": [
+      "tests/unit/daemon/test_http_server.py",
+      "tests/unit/daemon/test_maintenance_endpoints.py",
+      "polylogue/daemon/http.py"
+    ],
+    "deletion_candidates": [
+      "internal repository/converger call-order tests whose only obligation is covered by the restart law",
+      "sleep/polling tests replaced by frozen barriers",
+      "duplicate status projections after durable/public agreement is proved"
+    ],
+    "focused_tests": [
+      "devtools test tests/unit/daemon/test_convergence_restart_law.py"
+    ],
+    "helper_files": [
+      "tests/infra/frozen_clock.py"
+    ],
+    "id": "convergence-restart-retry",
+    "incoming_prerequisites": [
+      {
+        "cluster": "seeded-artifact-integrity",
+        "reason": "Use independent facts attached to the realized named workload artifact for final comparison."
+      },
+      {
+        "bead": "polylogue-1xc.14.1",
+        "reason": "Reuse realized active-growing and partial-convergence variants and the shared workload receipt."
+      }
+    ],
+    "obligations": [
+      "false_means_pending records remaining work without reporting failure",
+      "debt survives process restart",
+      "session-scoped retry does not widen to irrelevant backlog",
+      "retries are idempotent and do not duplicate material",
+      "final durable/public facts equal uninterrupted execution",
+      "status and alert projections agree with debt and quiescence"
+    ],
+    "planned_files": [
+      "tests/infra/convergence_harness.py",
+      "tests/unit/daemon/test_convergence_restart_law.py"
+    ],
+    "proposed_survivors": [
+      "tests/unit/daemon/test_convergence_restart_law.py::test_pending_debt_survives_restart_and_reaches_quiescence",
+      "tests/unit/daemon/test_convergence_restart_law.py::test_retry_is_scoped_idempotent_and_matches_uninterrupted"
+    ],
+    "responsibility": "Bounded convergence work that remains pending is durably recorded, survives restart, retries without duplication, and reaches the same final facts as uninterrupted execution.",
+    "sensitivity_witnesses": [
+      {
+        "description": "Remove debt persistence, false_means_pending handling, session scoping, or retry execution; durable/public final-state law must fail.",
+        "evidence_globs": [
+          ".local/testsuite-diet/sensitivity/convergence-restart-retry*.json"
+        ],
+        "kind": "temporary-production-mutation"
+      }
+    ],
+    "test_files": [
+      "tests/unit/daemon/test_daemon_convergence.py",
+      "tests/unit/daemon/test_convergence_stages.py",
+      "tests/unit/daemon/test_convergence_final_state.py",
+      "tests/unit/daemon/test_convergence_debt_alert.py"
+    ],
+    "title": "Convergence debt across restart, retry, and quiescence"
+  },
+  "coupling_census": {
+    "available": true,
+    "findings": [
+      {
+        "body_lines": 33,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "assert_called_once",
+          "assert_not_called",
+          "mock.patch.object"
+        ],
+        "line": 330,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_session_debt_uses_targeted_repair_not_full_rebuild",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_convergence_stages.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      },
+      {
+        "body_lines": 21,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "assert_not_called",
+          "mock.patch.object"
+        ],
+        "line": 442,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_inserts_missing_rows_without_reset",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_convergence_stages.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      },
+      {
+        "body_lines": 30,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "assert_not_called",
+          "mock.patch.object"
+        ],
+        "line": 494,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_deletes_excess_rows_without_reset",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_convergence_stages.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      },
+      {
+        "body_lines": 20,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "assert_not_called",
+          "mock.patch.object"
+        ],
+        "line": 526,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_repair_sessions_fts_skips_unknown_scope",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_convergence_stages.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      },
+      {
+        "body_lines": 19,
+        "coarse_weak_assertions_only": true,
+        "evidence": [
+          "assert_not_called",
+          "monkeypatch.setattr"
+        ],
+        "line": 257,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_skips_process_pool_for_io_only_stages",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_daemon_convergence.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      },
+      {
+        "body_lines": 36,
+        "coarse_weak_assertions_only": false,
+        "evidence": [
+          "assert_called_once_with",
+          "monkeypatch.setattr"
+        ],
+        "line": 279,
+        "mock_interaction": true,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_creates_process_pool_for_cpu_bound_stages",
+        "patches_collaborator": true,
+        "path": "tests/unit/daemon/test_daemon_convergence.py",
+        "source_literal_membership": false,
+        "source_or_ast": false
+      }
+    ],
+    "path": ".agent/scratch/testsuite_diet/census/test-coupling-census.json",
+    "sha256": "4226e083400ecd4883c0ec1b272880d67a8465f5b961a97858f54811303d5fac"
+  },
+  "coverage_contexts": {
+    "available": false,
+    "path": ".cache/coverage/coverage.json",
+    "routes": []
+  },
+  "fixture_inventory": {
+    "available": true,
+    "path": ".agent/scratch/testsuite_diet/census/test-infra-consumers.tsv",
+    "rows": [
+      {
+        "consumer_count": "18",
+        "consumers": "tests/conftest.py,tests/unit/browser_capture/test_launch_jobs.py,tests/unit/cli/test_status.py,tests/unit/core/test_dates.py,tests/unit/core/test_readiness_capability.py,tests/unit/daemon/test_convergence_stages.py,tests/unit/daemon/test_cursor_lag_integration.py,tests/unit/daemon/test_daemon_cli.py,tests/unit/daemon/test_daemon_status.py,tests/unit/infra/test_frozen_clock.py,tests/unit/insights/test_topology_cycle_rejection.py,tests/unit/mcp/test_per_tool_contracts.py,tests/unit/mcp/test_tool_contracts.py,tests/unit/pipeline/test_acquisition_blob_gc_age_gate.py,tests/unit/sources/test_live_catchup_planning.py,tests/unit/sources/test_live_watcher.py,tests/unit/storage/test_blob_gc_generation_gate.py,tests/unit/storage/test_repair_blobs.py",
+        "module": "tests.infra.frozen_clock",
+        "nonblank_loc": "167",
+        "physical_loc": "218"
+      }
+    ],
+    "sha256": "bd1c066bb8ec0976abc768c8cc95f133fd3268cbade37bffce694c1ae18cfe70"
+  },
+  "history": {
+    "commits": [
+      "f0c1b489b84cd04aac840315e7e55fa23eb97e39\t2026-07-16\tfix: restore archive contract verification (#2932) (#2932)",
+      "36001d023b2cfe793cb19fdd7c42a87597356f48\t2026-07-16\tfeat(sinex): wire durable publication convergence (#2925)",
+      "b6c78adfcd666358307daf64ac97e8d695a8b854\t2026-07-16\tfeat(archive): expose exact-source freshness (#2924)",
+      "d6501ac4615efa30cb0e2413c97614a4bf44b253\t2026-07-16\tfix(storage): make raw replay batches component-aware (#2915)",
+      "41cb11f8739afd303b77eafacdc92d3e88183469\t2026-07-15\trefactor(storage): consolidate _table_exists, fix drift found while verifying (#2912)",
+      "5d99611f4aaca2eabbc8621a173692140ed165d3\t2026-07-15\trefactor(polylogue-dab): stop materializing run-projection cache rows (#2898)",
+      "d068d64821c6dc440013a28134e2f245fe7074b2\t2026-07-14\trefactor(architecture): sqlite leak sweep, staleness unify, control-center decomposition (#2900)",
+      "89166362b9aee8c304b27a69f68ec1b74606f634\t2026-07-14\tfeat(query-dsl,daemon,api): real production query evaluator + finding provenance (rxdo cluster) (#2899)",
+      "beff1130b31f40eaa1c9e3581325326a5af9c6c5\t2026-07-14\trefactor(paths): extract sibling_index_db helper, sweep 17 sites (#2894)",
+      "a952221cdcc4813ffcc4c9c18c4fd8981d5bbb2a\t2026-07-13\tfeat(query): materialize watched query relations (#2826)",
+      "3082c72f0c046d184e6c5088d31cf87faac548e6\t2026-07-13\tfeat(cli): add hot daemon read routing (#2827)",
+      "5ff5b0e0f83d67c900d161444455e1baa3bef492\t2026-07-13\tfix(daemon): record lifecycle heartbeats and termination forensics (#2802)",
+      "c1f7704fa4e6723fb1c3edd8eda0ad72bcc06d6b\t2026-07-13\tfeat(web): add bounded cockpit aggregate routes (#2793)",
+      "041b8a20115611817a2d826ec5e4fe514255b58c\t2026-07-13\tfix(browser-capture): deduplicate concurrent extension posts (#2785)",
+      "19f97e3c5ca177d066a3b7ba9d04f74b46f1ea48\t2026-07-13\ttest: harden CLI and daemon status contracts (#2787)",
+      "81bfedd878461f934aa07f70ee2d66fbfd745f13\t2026-07-13\tperf: improve interactive CLI and coordination latency (#2784)",
+      "6b386d9e1d5ccd10df6eb1039c294a0f5c810311\t2026-07-12\tfeat(readiness): expose raw frontier integrity (#2762)",
+      "7fd5b6bb946fa17c76882ecf817fdaae29f70b87\t2026-07-12\tfix(embeddings): reconcile orphan rows across index rebuilds (#2755) (#2755)",
+      "355aa309ef788aad8e21eda0b83da5f334878cb8\t2026-07-12\tfix(nix): embed full git revision in packaged build identity (#2743)",
+      "8bcee2d285bfe4b4e366588e8589412d61b06537\t2026-07-12\tfix: enforce degrade-loudly on silent daemon/storage/coordination soft-fails (#2731)"
+    ],
+    "dogfood_witnesses": {
+      "convergence debt": [
+        "7120bde619a1ffaaef6a82afcba13de904adf80f\t2026-07-02\tfix(archive): report evidence and convergence honestly (#2502)",
+        "3f48928c2b16e192ed773af4df8bb57cb1738a56\t2026-06-25\tfix: make raw materialization replay auditable (#2387)",
+        "6cef7374015512b8fe3a36d4de191cf9536f0e5d\t2026-06-23\tfix(daemon): report live ingest read amplification (#2323)",
+        "6049c778615a12825eb6fd878652533521a9ef52\t2026-06-23\tfix: stabilize live Polylogue dogfooding loop (#2319)",
+        "0b62abd94577bed806721508f0d30e26f31e4715\t2026-06-20\tfeat(ops): list unified archive debt rows (#2179) (#2202)",
+        "54689dfe4b15eb956e18f16c9643cc055d5c67fb\t2026-06-19\trefactor(cli): move diagnostics under ops (#2126) (#2140)",
+        "78954aaf00cfb6516cebc47692a38a34049ea83e\t2026-06-13\tfix(daemon): harden live-ingest against write thrash and retry storms (#1853)",
+        "921c191082269c86ac5a541668e08aaf36a6edb2\t2026-05-27\tfix(daemon): write fts_freshness_state ready rows after startup readiness pass (#1628) (#1650)"
+      ],
+      "false_means_pending": [
+        "1f629c9d2d923789f0dbf7167ffb021b13b3707d\t2026-07-04\tfix(storage): preserve source evidence during reset (#2537)"
+      ],
+      "quiescence": [],
+      "restart retry": []
+    },
+    "paths": [
+      "polylogue/daemon/convergence.py",
+      "polylogue/daemon/convergence_stages.py",
+      "polylogue/sources/live/convergence_debt.py",
+      "tests/unit/daemon"
+    ]
+  },
+  "mutation_artifacts": [],
+  "prerequisites": [
+    {
+      "cluster": "seeded-artifact-integrity",
+      "reason": "Use independent facts attached to the realized named workload artifact for final comparison."
+    },
+    {
+      "bead": "polylogue-1xc.14.1",
+      "reason": "Reuse realized active-growing and partial-convergence variants and the shared workload receipt."
+    }
+  ],
+  "pytest_receipts": {
+    "available": true,
+    "receipts": [
+      {
+        "matching_nodeids": [
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_aggregate_debt_by_family_buckets_subjects",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_does_not_count_deferred_as_failed",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_ignores_old_single_file_debt_when_ops_empty",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_prefers_populated_archive_ops",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_treats_archive_deferred_as_authoritative",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_uses_archive_retry_metadata",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_dedups_repeated_alerts_within_window",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_error_when_count_crosses_error_threshold",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_no_alerts_when_below_warning",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_resolution_alert_when_debt_clears",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_warning_when_count_crosses_warning_threshold",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_escalation_fires_immediately_through_dedup_window",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_reemits_after_dedup_window_expires",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_applies_family_specific_overrides",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_clamps_error_below_warning_to_warning",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_falls_back_to_global_defaults_when_no_override",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_partial_override_inherits_unset_field",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_load_thresholds_defaults_when_no_config_section",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_load_thresholds_from_config_reads_polylogue_toml",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_source_family_for_path_returns_unknown_for_arbitrary_path",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_source_family_for_subject_returns_unknown_for_session_id",
+          "tests/unit/daemon/test_convergence_debt_alert.py::test_watchsource_name_to_family_known_and_unknown",
+          "tests/unit/daemon/test_convergence_final_state.py::test_convergence_produces_consistent_final_archive_state",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_defers_sqlite_lock",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_deletes_excess_rows_without_reset",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_does_not_run_full_exact_snapshot",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_inserts_missing_rows_without_reset",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_optional_surface_repair_uses_stale_surface_repair",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_session_repair_defers_sqlite_lock",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_deduplicates_session_ids",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_preserves_millisecond_sort_key",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_are_hot",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_sessions_defers_transient_sqlite_lock",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_sessions_uses_write_connection_profile",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_path_batch_does_not_fallback_to_global_missing_profiles",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_missing_profile_selector_limits_after_stale_filter",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_probe_exceptions_log_and_fail_toward_work",
+          "tests/unit/daemon/test_convergence_stages.py::test_archive_repair_sessions_fts_skips_unknown_scope",
+          "tests/unit/daemon/test_convergence_stages.py::test_default_convergence_stages_always_register_embed_stage",
+          "tests/unit/daemon/test_convergence_stages.py::test_default_convergence_stages_retry_bounded_false_results",
+          "tests/unit/daemon/test_convergence_stages.py::test_embed_stage_is_noop_when_disabled",
+          "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_disabled_explicitly",
+          "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_disabled_without_key",
+          "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_enabled_with_key",
+          "tests/unit/daemon/test_convergence_stages.py::test_file_probe_exceptions_log_and_fail_toward_work",
+          "tests/unit/daemon/test_convergence_stages.py::test_fts_repair_needs_ignores_empty_text_messages",
+          "tests/unit/daemon/test_convergence_stages.py::test_fts_repair_needs_probe_uses_docsize_shadow_tables",
+          "tests/unit/daemon/test_convergence_stages.py::test_fts_session_debt_uses_targeted_repair_not_full_rebuild",
+          "tests/unit/daemon/test_convergence_stages.py::test_fts_stage_repairs_only_missing_action_index_when_messages_current",
+          "tests/unit/daemon/test_convergence_stages.py::test_fts_stage_skips_archive_source_path_backlog_repair",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_session_rebuild_returns_false_when_still_stale",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_batches_sync_rebuild_chunks",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_defers_hot_large_session_debt",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_materializes_archive_profiles_from_archive_tiers",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_large_session_after_quiet_window",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_small_active_session",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_sync_against_configured_db",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_scopes_session_debt_to_stale_profiles",
+          "tests/unit/daemon/test_convergence_stages.py::test_insights_staleness_uses_sort_key_not_timestamp_text",
+          "tests/unit/daemon/test_convergence_stages.py::test_session_ids_missing_profiles_includes_stale",
+          "tests/unit/daemon/test_convergence_stages.py::test_session_storage_dedupes_records_by_session_id",
+          "tests/unit/daemon/test_convergence_stages.py::test_targeted_fts_ready_marker_handles_legacy_freshness_table",
+          "tests/unit/daemon/test_convergence_stages.py::test_targeted_fts_ready_marker_preserves_ledger_counts",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_batches_session_execution",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_batches_stage_execution",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_clears_session_false_items_that_recheck_clean",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_keeps_bounded_false_as_pending_debt",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_keeps_bounded_session_false_as_pending_debt",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_propagates_nested_session_stage_timings",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_reports_only_current_run_stage_timings",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_retains_failed_batch_state_for_diagnostics",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_creates_process_pool_for_cpu_bound_stages",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_skips_process_pool_for_io_only_stages",
+          "tests/unit/daemon/test_daemon_convergence.py::test_converger_stop_cancels_pending_work_without_waiting"
+        ],
+        "path": ".cache/verify/last-pytest-isolated.json",
+        "sha256": "ac6f0dc9b5bf42e9ab2002a6009b88a85248dcad8913f33a0acaec07374a24e1"
+      }
+    ]
+  },
+  "readiness": "prepared-not-execution-grade",
+  "readiness_gaps": [
+    "cluster prerequisite requires coordinator receipt: seeded-artifact-integrity",
+    "upstream Bead contract requires merged-source coordinator receipt: polylogue-1xc.14.1",
+    "no realized sensitivity artifact found for the cluster"
+  ],
+  "route_evidence": [
+    {
+      "exists": true,
+      "path": "polylogue/daemon/convergence.py",
+      "sha256": "5393f4050d9f4ddb21300c2eae19da042652173b92b7fe7f497b985ac331f968",
+      "symbols": {
+        "ConvergenceStage": true,
+        "DaemonConverger": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "polylogue/daemon/convergence_stages.py",
+      "sha256": "d4abd07fc0c9010910d5a26d3d3f5a6e08f11bb570ef7965024bc58aa1da9bbd",
+      "symbols": {}
+    },
+    {
+      "exists": true,
+      "path": "polylogue/sources/live/convergence_debt.py",
+      "sha256": "52168b3959545cc2358c3deee9c1dad9ef985c1c27f53f8d9815c38f47eb94f4",
+      "symbols": {
+        "convergence_debt_from_state": true,
+        "convergence_debt_from_states": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "polylogue/sources/live/convergence_debt_retry.py",
+      "sha256": "91500a7ffafd885d04d13ae49cd9772aeb317f2f15fd82d56efeede95a59a642",
+      "symbols": {
+        "convergence_debt_retry_at": true,
+        "same_pending_convergence_debt": true
+      }
+    },
+    {
+      "exists": true,
+      "path": "polylogue/daemon/convergence_debt_status.py",
+      "sha256": "03a5a907056c5f7a172d1ab96e0a852ebb57e38305c142bc92ca88f24e1773c7",
+      "symbols": {}
+    }
+  ],
+  "schema_version": 1,
+  "scope_fingerprints": [
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/daemon/test_daemon_convergence.py",
+      "sha256": "633b12552220a22c38b259a86b27052f0874f3ba757aea1317adbfa90421141f"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/daemon/test_convergence_stages.py",
+      "sha256": "e1ebf871c12afbb5efe0f7fd2b8eaab72dcd474831d388750eb3065e77622265"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/daemon/test_convergence_final_state.py",
+      "sha256": "5973a9eddecb79eaf0b2b46f385b9ca0ab019182a4d4b0d992446fb76c6d5e2a"
+    },
+    {
+      "exists": true,
+      "group": "test_files",
+      "path": "tests/unit/daemon/test_convergence_debt_alert.py",
+      "sha256": "6c0507a16e82741ba349afd43c83d8e8b18d963fb5a808a6942bf331952c0e33"
+    },
+    {
+      "exists": true,
+      "group": "helper_files",
+      "path": "tests/infra/frozen_clock.py",
+      "sha256": "a33fd19f0e130ff8f4f9722322350726847c7acc5d2d21dc95243917497fb209"
+    },
+    {
+      "exists": false,
+      "group": "planned_files",
+      "path": "tests/infra/convergence_harness.py",
+      "sha256": null
+    },
+    {
+      "exists": false,
+      "group": "planned_files",
+      "path": "tests/unit/daemon/test_convergence_restart_law.py",
+      "sha256": null
+    },
+    {
+      "exists": false,
+      "group": "avoid_files",
+      "path": "tests/unit/daemon/test_http_server.py",
+      "sha256": null
+    },
+    {
+      "exists": true,
+      "group": "avoid_files",
+      "path": "tests/unit/daemon/test_maintenance_endpoints.py",
+      "sha256": "7d1fa27bc3f2a2d2959f2309da2f17f2b0f538136826c4be560e23554d23ba2c"
+    },
+    {
+      "exists": true,
+      "group": "avoid_files",
+      "path": "polylogue/daemon/http.py",
+      "sha256": "f8864dab67f825feb26d157bd302c795f827312af35dec075349feae1a259519"
+    }
+  ],
+  "sensitivity_artifacts": [],
+  "source": {
+    "git_head": "21f78b4db2ba62ff44b5f16dfab96067bc249b4c",
+    "selector": ".agent/scratch/testsuite_diet/census/clusters.json",
+    "selector_sha256": "001ab9ed3ab21e2c738f3513bc449b176a5dc06ff344cf19e30ab0633295256b"
+  },
+  "testmon": {
+    "available": true,
+    "path": ".cache/testmon/testmondata",
+    "sha256": "153a9e1f480cfb1cd6ea196c4fa7185ff97ec1643b81e59aa3465574a388d4c1",
+    "tests": [
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0633343970112037,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_large_session_memory[1000]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.709380781991058,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_large_session_memory[200]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 3.2849888149939943,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_large_session_memory[5000]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 3.143695134000154,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[lg-few-large]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 12.06056956401153,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[md-medium-corpus]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 3.1446329149912344,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[sm-small-corpus]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 5.803110338994884,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[xl-single-giant]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7177043549891096,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[xs-tiny-files]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0627718559844652,
+        "nodeid": "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 7.486908056001994,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[claude-code-md-medium]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.007180332991993,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[claude-code-sm-small]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7057929430011427,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[claude-code-xs-tiny]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 10.531152593990555,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[codex-md-medium]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.9374234279821394,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[codex-sm-small]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.8006699929974275,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_per_provider[codex-xs-tiny]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.531694481993327,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_single_file_per_provider[claude-code]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.4404412529984256,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_convergence_single_file_per_provider[codex]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0179912270250497,
+        "nodeid": "tests/benchmarks/test_daemon_convergence_multi_provider.py::test_cross_provider_convergence_correctness"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.5064782389963511,
+        "nodeid": "tests/benchmarks/test_fts_trigger_amplification.py::test_content_blocks_batch_insert_is_linear"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.5215082080248976,
+        "nodeid": "tests/benchmarks/test_fts_trigger_amplification.py::test_messages_fts_trigger_growth_is_subquadratic"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5350927569816122,
+        "nodeid": "tests/unit/daemon/test_browser_capture_instance_attribution.py::test_concurrent_extension_instances_deduplicate_without_corrupting_spool"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.02662538101139944,
+        "nodeid": "tests/unit/daemon/test_catch_up_observability.py::test_catch_up_cycle_emits_runtime_observability_evidence"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0038446769904112443,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_aggregate_debt_by_family_buckets_subjects"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.005338462011422962,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_does_not_count_deferred_as_failed"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.005106971992063336,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_ignores_old_single_file_debt_when_ops_empty"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.00608148799801711,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_prefers_populated_archive_ops"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.005392413993831724,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_treats_archive_deferred_as_authoritative"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.00638473300205078,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_convergence_debt_summary_uses_archive_retry_metadata"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.003828700995654799,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_dedups_repeated_alerts_within_window"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.004327158007072285,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_error_when_count_crosses_error_threshold"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0031561999931000173,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_no_alerts_when_below_warning"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0033980189909925684,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_resolution_alert_when_debt_clears"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.003794535994529724,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_emits_warning_when_count_crosses_warning_threshold"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.005014979018596932,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_escalation_fires_immediately_through_dedup_window"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.003758423001272604,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_evaluate_reemits_after_dedup_window_expires"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0024477580009261146,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_applies_family_specific_overrides"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0025711879861773923,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_clamps_error_below_warning_to_warning"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0024189050018321723,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_falls_back_to_global_defaults_when_no_override"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0023552859929623082,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_for_family_partial_override_inherits_unset_field"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0026997949898941442,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_load_thresholds_defaults_when_no_config_section"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.002920426006312482,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_load_thresholds_from_config_reads_polylogue_toml"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.003138423999189399,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_source_family_for_path_returns_unknown_for_arbitrary_path"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.002336729987291619,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_source_family_for_subject_returns_unknown_for_session_id"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0023847589909564704,
+        "nodeid": "tests/unit/daemon/test_convergence_debt_alert.py::test_watchsource_name_to_family_known_and_unknown"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6809554930223385,
+        "nodeid": "tests/unit/daemon/test_convergence_final_state.py::test_convergence_produces_consistent_final_archive_state"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0032528650044696406,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_defers_sqlite_lock"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04213642499234993,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_deletes_excess_rows_without_reset"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.03799231699667871,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_does_not_run_full_exact_snapshot"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.03857918898575008,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_global_repair_inserts_missing_rows_without_reset"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003504662017803639,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_optional_surface_repair_uses_stale_surface_repair"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003152649980620481,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_fts_session_repair_defers_sqlite_lock"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04471336099959444,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_deduplicates_session_ids"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.049100708987680264,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_preserves_millisecond_sort_key"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04558295001334045,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_are_hot"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.044890599994687364,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_sessions_defers_transient_sqlite_lock"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04631903799599968,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_execute_sessions_uses_write_connection_profile"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003657296998426318,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_insights_path_batch_does_not_fallback_to_global_missing_profiles"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04804391702055,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_missing_profile_selector_limits_after_stale_filter"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.005570677982177585,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_probe_exceptions_log_and_fail_toward_work"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.03294807599741034,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_archive_repair_sessions_fts_skips_unknown_scope"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0031641349924029782,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_default_convergence_stages_always_register_embed_stage"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0032130550098372623,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_default_convergence_stages_retry_bounded_false_results"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003448236020631157,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_embed_stage_is_noop_when_disabled"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003342742013046518,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_disabled_explicitly"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0032227560004685074,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_disabled_without_key"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0033790140005294234,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_embedding_config_enabled_with_key"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.005862233985681087,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_file_probe_exceptions_log_and_fail_toward_work"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04395558199030347,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_repair_needs_ignores_empty_text_messages"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0034270329924765974,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_repair_needs_probe_uses_docsize_shadow_tables"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04048443200008478,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_session_debt_uses_targeted_repair_not_full_rebuild"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003232724004192278,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_stage_repairs_only_missing_action_index_when_messages_current"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.03615049600193743,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_fts_stage_skips_archive_source_path_backlog_repair"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.01884915398841258,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_session_rebuild_returns_false_when_still_stale"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003201693994924426,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_batches_sync_rebuild_chunks"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.031054709004820324,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_defers_hot_large_session_debt"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04685456299921498,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_materializes_archive_profiles_from_archive_tiers"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.056846876002964564,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_large_session_after_quiet_window"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.05465833000198472,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_small_active_session"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0030805950082140043,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_rebuilds_sync_against_configured_db"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.06850714297615923,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_stage_scopes_session_debt_to_stale_profiles"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003351798004587181,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_insights_staleness_uses_sort_key_not_timestamp_text"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0034319069964112714,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_session_ids_missing_profiles_includes_stale"
+      },
+      {
+        "dependencies": [],
+        "duration_s": 0.0029661010194104165,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_session_storage_dedupes_records_by_session_id"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04915895199519582,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_targeted_fts_ready_marker_handles_legacy_freshness_table"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04380658200534526,
+        "nodeid": "tests/unit/daemon/test_convergence_stages.py::test_targeted_fts_ready_marker_preserves_ledger_counts"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.05857449800532777,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::TestBrowserCaptureReceiverTokenAutoMint::test_allow_no_auth_serves_with_no_token"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.07663352899544407,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::TestBrowserCaptureReceiverTokenAutoMint::test_default_run_mints_a_receiver_token"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.06312833102128934,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::TestBrowserCaptureReceiverTokenAutoMint::test_explicit_token_wins_over_auto_mint"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.009716900996863842,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_due_items_without_source_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.009393439002451487,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_global_messages_fts_surface"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.009905558006721549,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_optional_fts_surface"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.009304069011704996,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_drain_convergence_debt_retries_session_subjects_without_source_lookup"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.08889849498518743,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_archive_storage"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01343481699586846,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_daemon_components"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.07308555401687045,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_rebuild_index_not_ready"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.07651542199891992,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_json_reports_schema_mismatch_not_ready"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.0732415829988895,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_plain_reports_archive_storage"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.011543753978912719,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_plain_reports_daemon_components"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.07975154498126358,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_polylogued_status_plain_reports_schema_mismatch"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.056575281007098965,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_run_daemon_services_closes_browser_capture_server_on_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.05046449801011477,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_run_daemon_services_shutdowns_running_server_on_watcher_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.05601587699493393,
+        "nodeid": "tests/unit/daemon/test_daemon_cli.py::test_run_daemon_services_stops_live_watcher_on_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.00227198499487713,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_batches_session_execution"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.002444486992317252,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_batches_stage_execution"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0022251660120673478,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_clears_session_false_items_that_recheck_clean"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0023496639914810658,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_keeps_bounded_false_as_pending_debt"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0022383679897757247,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_keeps_bounded_session_false_as_pending_debt"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.002680067002074793,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_propagates_nested_session_stage_timings"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0024758890067460015,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_reports_only_current_run_stage_timings"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.00239616101316642,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_retains_failed_batch_state_for_diagnostics"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0032473609899170697,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_creates_process_pool_for_cpu_bound_stages"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.003910289990017191,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_start_skips_process_pool_for_io_only_stages"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0029869150166632608,
+        "nodeid": "tests/unit/daemon/test_daemon_convergence.py::test_converger_stop_cancels_pending_work_without_waiting"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.06530755099083763,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_build_daemon_status_detects_broken_append_head_blocks_converged"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01635569700738415,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_build_daemon_status_reports_failed_live_cursor_files"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.007211001997347921,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_build_daemon_status_uses_one_lifecycle_snapshot"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.09941067500039935,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_caps_failed_file_samples"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.008486521983286366,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_check_health_failure_reports_error_not_ok"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.018631906001246534,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_flags_slow_but_progressing_live_ingest_attempt"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.018852820998290554,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_flags_stale_live_ingest_attempts"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.009030909001012333,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_honors_explicit_disabled_browser_capture"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01062925199221354,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_marks_raw_materialization_debt_not_ready"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.018850135995307937,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_and_plain_output_include_failed_files"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.010156816002563573,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_exposes_claim_guard_block"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.00978213299822528,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_links_unified_archive_debt"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.011900612997123972,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_maps_component_readiness"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.011849849004647695,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_payload_reuses_bounded_probe_results"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01668197200342547,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_prefers_archive_ops_live_cursor"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.010395687015261501,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_preserves_lost_source_evidence"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01780964199861046,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_reads_ops_tier_from_archive_tiers"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.05396100399957504,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_reads_ops_tier_when_archive_db_exists"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.010328011005185544,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_redacts_default_browser_capture_spool"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.0183137880085269,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_reports_convergence_debt_separately"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.01839583698892966,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_reports_live_ingest_attempts"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.019735417008632794,
+        "nodeid": "tests/unit/daemon/test_daemon_status.py::test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0033910170022863895,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_archive_convergence_embedding_uses_embeddings_tier"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.004749557003378868,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_archive_convergence_pending_check_reads_embeddings_tier"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.004288806987460703,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_daemon_embedding_backlog_drain_is_noop_when_disabled"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.006114248026278801,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_daemon_embedding_backlog_drain_pauses_when_monthly_cap_spent"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.00988046899146866,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_daemon_embedding_backlog_drain_processes_archive"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.014256441994803026,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_daemon_embedding_backlog_records_skipped_sessions"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.007714193008723669,
+        "nodeid": "tests/unit/daemon/test_embedding_convergence_progress.py::test_daemon_embedding_backlog_uses_bounded_pending_window"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.052890942999511026,
+        "nodeid": "tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_daemon_coordinator_owns_real_orphan_reconcile_mutation"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0740495399950305,
+        "nodeid": "tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_noop_when_config_disabled"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.006427878004615195,
+        "nodeid": "tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_noop_when_index_missing"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.053252302983310074,
+        "nodeid": "tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_refuses_stale_index_schema"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.04644430898770224,
+        "nodeid": "tests/unit/daemon/test_embedding_orphan_reconcile_daemon.py::test_reconcile_embedding_orphans_once_removes_orphan_when_enabled"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.006589657990843989,
+        "nodeid": "tests/unit/daemon/test_embedding_readiness.py::test_reconcile_embedding_dimension_mismatch_marks_reindex_and_drops_vec0"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.006691079004667699,
+        "nodeid": "tests/unit/daemon/test_embedding_readiness.py::test_reconcile_embedding_model_mismatch_marks_reindex_without_dropping_vec0"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.005791060000774451,
+        "nodeid": "tests/unit/daemon/test_embedding_readiness.py::test_reconcile_embedding_no_change_keeps_status_clean"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.03451657800178509,
+        "nodeid": "tests/unit/daemon/test_fts_global_repair.py::test_fts_stage_detects_orphan_docsize_overcount"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.008196788985515013,
+        "nodeid": "tests/unit/daemon/test_health_contract.py::TestHealthAlertEnvelopeContract::test_alert_envelope_fields_present"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.004612843011273071,
+        "nodeid": "tests/unit/daemon/test_health_contract.py::TestTierInventoryContract::test_medium_tier_inventory_pinned"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.010422987004858442,
+        "nodeid": "tests/unit/daemon/test_standing_queries.py::test_promoted_expected_count_divergence_targets_original_finding_without_watch"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.05519163701683283,
+        "nodeid": "tests/unit/daemon/test_standing_queries_default_evaluator.py::test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.24317322399292607,
+        "nodeid": "tests/unit/devtools/test_lab_scenario.py::test_storage_correctness_json_runs_archive_backed_checks"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.22040438799012918,
+        "nodeid": "tests/unit/devtools/test_lab_scenario.py::test_storage_correctness_rejects_production_repair_without_trigger_recreation"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.33533781798905693,
+        "nodeid": "tests/unit/devtools/test_scale_regression_probe.py::test_scale_regression_probe_main_emits_json"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.23811854001542088,
+        "nodeid": "tests/unit/devtools/test_scale_regression_probe.py::test_scale_regression_probe_runs_seeded_bug_class_checks"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.24046925800212193,
+        "nodeid": "tests/unit/mcp/test_tool_discovery.py::test_tool_returns_valid_response_envelope[archive_debt]"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_debt_status.py"
+        ],
+        "duration_s": 0.007368799007963389,
+        "nodeid": "tests/unit/operations/test_archive_debt.py::test_archive_debt_reports_convergence_failures"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.003356950997840613,
+        "nodeid": "tests/unit/sinex/test_convergence.py::test_primary_barrier_blocks_only_affected_path_and_mirror_does_not"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.016670920987962745,
+        "nodeid": "tests/unit/sinex/test_convergence.py::test_real_sinex_stage_blocks_affected_file_and_session_scopes"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.009992611987399869,
+        "nodeid": "tests/unit/sinex/test_convergence.py::test_real_sinex_stage_treats_barrier_probe_failure_as_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py"
+        ],
+        "duration_s": 0.0034268599993083626,
+        "nodeid": "tests/unit/sinex/test_convergence.py::test_stage_status_masks_probe_failure"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.044881485009682365,
+        "nodeid": "tests/unit/sources/test_live_batch_convergence.py::test_live_batch_converges_known_paths_by_source_path"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5439167590084253,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_crash_after_index_commit_repairs_idempotently"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.5159709340077825,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_cursor_redetects_source_rewrite_after_handoff[atomic-replacement]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.4193989990017144,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_cursor_redetects_source_rewrite_after_handoff[in-place-prefix]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5020854880131083,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_cursor_rejects_truncation_after_append_persistence"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.535168624992366,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_index_failure_never_marks_raw_success"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.7178463479940547,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_append_persistence_failure_preserves_frontier_for_next_tick"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4989305310009513,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9482928090001224,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_browser_capture_provider_timestamp_advances_reordered_native_snapshot"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.275147984008072,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_browser_capture_replacement_advances_membership_head_and_acquires_attachment"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.9549602510087425,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4893922419869341,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_captured_incomplete_jsonl_is_rejected_after_source_disappears"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.4508814199944027,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_failed_parser_upgrade_preserves_accepted_parser_identity"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5134038899996085,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_full_drive_capture_retains_acquisition_mode_after_gemini_detection"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.2400252370134695,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0800304250005865,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_full_ingest_does_not_advance_cursor_across_same_size_replacement[atomic]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9866216869995696,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_full_ingest_does_not_advance_cursor_across_same_size_replacement[in-place]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.948728557996219,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_inbox_browser_capture_json_replacement_uses_full_ingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0441924969782121,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_incomplete_full_jsonl_capture_retries_without_losing_split_record"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.0262612870137673,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_live_append_chain_survives_post_ingest_compaction[protected]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 2.226633617989137,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_live_append_chain_survives_post_ingest_compaction[protection-disabled]"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.818485044015688,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_live_append_plans_flush_in_bounded_groups"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0424854760058224,
+        "nodeid": "tests/unit/sources/test_live_batch_support.py::test_rewrite_plus_growth_before_planning_fails_closed_to_full_route"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.007968181002070196,
+        "nodeid": "tests/unit/sources/test_live_catchup_planning.py::test_hot_insight_convergence_debt_advances_after_retry_is_due"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.06466235300467815,
+        "nodeid": "tests/unit/sources/test_live_catchup_planning.py::test_hot_insight_convergence_debt_uses_archive_source_quiet_deadline"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.009120966991758905,
+        "nodeid": "tests/unit/sources/test_live_catchup_planning.py::test_hot_insight_convergence_debt_uses_quiet_window_retry"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.08118245600780938,
+        "nodeid": "tests/unit/sources/test_live_catchup_planning.py::test_hot_insight_convergence_debt_uses_source_quiet_deadline"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.944510909015662,
+        "nodeid": "tests/unit/sources/test_live_cursor_persistence.py::test_append_lock_preserves_prior_cursor_and_retries_tail_through_watcher"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5185305899794912,
+        "nodeid": "tests/unit/sources/test_live_cursor_persistence.py::test_full_ingest_lock_keeps_raw_pending_and_requeues_without_eof_reconciliation"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.556761052008369,
+        "nodeid": "tests/unit/sources/test_live_hot_session_convergence.py::test_legacy_same_size_cursor_without_authority_requires_reauthorization"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.062757899009739,
+        "nodeid": "tests/unit/sources/test_live_hot_session_convergence.py::test_same_size_prefix_rewrite_outside_tail_returns_to_full_route"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.8758925559959607,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_append_after_partial_line_reingests_completed_record"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.557150188004016,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_finds_subagent_files"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.602619806988514,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_ignores_non_jsonl"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5068378160067368,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_processes_pre_existing_files"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7323853079869878,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_recurses_like_live_watch"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.44872499599296134,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_skips_already_processed"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.446134630983579,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_catch_up_uses_source_suffix_contract_for_json_sessions"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9356961419980507,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_codex_append_uses_existing_session_identity_when_tail_lacks_session_meta"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.014281942014349625,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_cursor_records_messages_fts_surface_debt_as_immediately_due"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.012771677007549442,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_cursor_syncs_convergence_debt_to_archive_ops_db"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6575561950012343,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_debounce_coalesces_rapid_changes"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7196052399958717,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_end_to_end_deletion_does_not_ingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7769772540050326,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_end_to_end_hidden_root_file_creation_triggers_ingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.0700016520131612,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_end_to_end_modify_triggers_ingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.7638979359908262,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_end_to_end_new_file_creation_triggers_ingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6893897119880421,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_incomplete_append_event_defers_without_ingest_until_newline"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4717090779886348,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_ingest_files_emits_observable_batch_metrics"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9222801309952047,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_append_merges_tail_visible_through_public_archive_read"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.9989076579950051,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_batch_processor_records_cursor_after_each_converged_group"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6365706600045087,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_batch_processor_records_durable_attempt"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4985888349910965,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_full_ingest_detects_provider_when_source_name_is_not_provider"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5654922030080343,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_storage"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6494487270101672,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6867292969982373,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_full_ingest_expands_inbox_zip_members"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.6704384260083316,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.5344767659844365,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_parse_failure_retries_after_backoff"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.8789573840040248,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_parser_fingerprint_change_triggers_reingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.43162498298624996,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_partial_trailing_line_keeps_cursor_at_last_newline"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 1.3697267529933015,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_reingest_when_file_grows"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4261028890032321,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_size_only_cursor_reingests_to_populate_fingerprint"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.4561674239957938,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_skip_when_file_not_grown"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9285926079901401,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_truncate_rewrite_triggers_reingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/sources/live/convergence_debt.py"
+        ],
+        "duration_s": 0.9612758009898243,
+        "nodeid": "tests/unit/sources/test_live_watcher.py::test_year_old_file_resumed_triggers_reingest"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.35231823498907033,
+        "nodeid": "tests/unit/storage/test_corruption_recovery.py::TestCorruptionRecovery::test_empty_file"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.3459171279973816,
+        "nodeid": "tests/unit/storage/test_corruption_recovery.py::TestCorruptionRecovery::test_missing_file_creates_fresh"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.3696939929795917,
+        "nodeid": "tests/unit/storage/test_corruption_recovery.py::TestCorruptionRecovery::test_read_only_db"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.34777775502880104,
+        "nodeid": "tests/unit/storage/test_corruption_recovery.py::TestCorruptionRecovery::test_truncated_file"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence.py",
+          "polylogue/daemon/convergence_debt_status.py",
+          "polylogue/sources/live/convergence_debt.py",
+          "polylogue/sources/live/convergence_debt_retry.py"
+        ],
+        "duration_s": 0.3478990979929222,
+        "nodeid": "tests/unit/storage/test_corruption_recovery.py::TestCorruptionRecovery::test_zeroed_header"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.13229098200099543,
+        "nodeid": "tests/unit/storage/test_session_insight_refresh.py::test_stale_provider_usage_self_heals_via_session_insight_rebuild"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0034427919890731573,
+        "nodeid": "tests/unit/test_session_profile_staleness_predicate.py::test_null_sort_key_fresh_profile_agrees_between_convergence_and_repair"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.0037135889870114625,
+        "nodeid": "tests/unit/test_session_profile_staleness_predicate.py::test_null_sort_key_stale_profile_agrees_between_convergence_and_repair"
+      },
+      {
+        "dependencies": [
+          "polylogue/daemon/convergence_stages.py"
+        ],
+        "duration_s": 0.003500961000099778,
+        "nodeid": "tests/unit/test_session_profile_staleness_predicate.py::test_repair_selects_zero_rows_immediately_after_convergence_agrees"
+      }
+    ]
+  }
+}
