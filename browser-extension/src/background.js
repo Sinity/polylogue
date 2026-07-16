@@ -1535,8 +1535,7 @@ async function pollLaunchJobsOnce() {
       await chrome.tabs.remove(job.tab_id).catch(() => undefined);
     } else if (
       job.status === "submitted" &&
-      job.lease_owner === ownerInstanceId &&
-      (!job.next_attempt_at || Date.parse(job.next_attempt_at) <= Date.now())
+      job.lease_owner === ownerInstanceId
     ) {
       await monitorSubmittedLaunch(job, ownerInstanceId);
     } else if (job.status === "submitting" && job.lease_owner === ownerInstanceId) {

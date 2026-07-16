@@ -1491,6 +1491,7 @@ describe("Sol Pro launch worker", () => {
       status: "submitted",
       phase: "submitted",
       lease_owner: "launch-executor-test",
+      next_attempt_at: "2099-01-01T00:00:00Z",
       tab_id: 42,
       conversation_id: "conversation-1",
       conversation_url: "https://chatgpt.com/c/conversation-1",
