@@ -120,7 +120,11 @@ def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevi
     if older_time is None or newer_time is None:
         return False
     if older.browser_snapshot_fidelity == "dom" and newer.browser_snapshot_fidelity == "native":
-        return _frontier(newer.projection) >= _frontier(older.projection)
+        older_frontier = _frontier(older.projection)
+        newer_frontier = _frontier(newer.projection)
+        return all(
+            newer_count >= older_count for older_count, newer_count in zip(older_frontier, newer_frontier, strict=True)
+        )
     if older.browser_snapshot_fidelity != newer.browser_snapshot_fidelity:
         return False
     identities_preserved = (
