@@ -990,7 +990,7 @@ async function cleanupBackfillTransportTab(alarmName) {
   }
 }
 
-async function captureTab(tab, reason = "background", expectedConversation = null, captureContext = null) {
+async function captureTab(tab, reason = "background", expectedConversation = null) {
   if (expectedConversation && tab?.id && chrome.tabs?.get) {
     const currentTab = await chrome.tabs.get(tab.id);
     const currentUrl = currentTab?.url || currentTab?.pendingUrl || "";
@@ -1018,7 +1018,6 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
     const captureMessage = {
       type: "polylogue.capturePage",
       reason,
-      ...(captureContext ? { capture_context: captureContext } : {}),
     };
     const resultWithTimeout = await withTimeout(
       chrome.tabs.sendMessage(tab.id, captureMessage),
@@ -1296,9 +1295,7 @@ async function monitorSubmittedLaunch(job, ownerInstanceId) {
       conversation_url: inspection.conversation_url,
       handoff_attachment_id: inspection.handoff_name,
     });
-    const captured = await captureTab(await chrome.tabs.get(job.tab_id), "launch_job_handoff", null, {
-      launch_job_id: job.job_id,
-    });
+    const captured = await captureTab(await chrome.tabs.get(job.tab_id), "launch_job_handoff");
     const handoff = captured?.envelope?.session?.attachments?.find(
       (attachment) => attachment.name === inspection.handoff_name && attachment.inline_base64,
     );

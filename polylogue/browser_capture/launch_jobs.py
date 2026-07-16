@@ -747,17 +747,20 @@ def reconcile_launch_handoff_capture(
     """Complete a launch job from its ordinary canonical capture artifact.
 
     Assistant files are acquired by the provider-neutral browser capture path
-    for every conversation.  A launch job contributes only a correlation id;
-    it must not create a second file transport or a second copy of the result.
+    for every conversation. The receiver correlates the provider-native
+    conversation identity already recorded at submit time; capture must not
+    carry launch-only metadata or create a second file transport/copy.
     """
 
-    raw_job_id = envelope.provider_meta.get("launch_job_id")
-    if not isinstance(raw_job_id, str) or not raw_job_id:
-        return None
     root = launch_job_root(spool_path)
-    job = _read_job(_job_path(root, raw_job_id))
-    if job is None:
+    matches = [
+        job
+        for job in list_launch_jobs(spool_path=spool_path)
+        if job.conversation_id == envelope.session.provider_session_id
+    ]
+    if len(matches) != 1:
         return None
+    job = matches[0]
     if job.status == "completed":
         return job
     if job.status not in {"submitted", "paused"}:
