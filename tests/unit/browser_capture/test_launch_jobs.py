@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import subprocess
+import tarfile
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.browser_capture.launch_jobs import (
+    LAUNCH_MONITOR_GLOBAL_INTERVAL_SECONDS,
     BrowserLaunchConflictError,
     BrowserLaunchLeaseError,
     claim_due_launch_job,
@@ -128,6 +131,9 @@ def _handoff_capture(
     content: bytes,
     *,
     conversation_id: str = "conversation-1",
+    attachment_name: str = "polylogue-sol-pro-launch-handoff.zip",
+    provider_attachment_id: str = "file-handoff",
+    sandbox_path: str | None = None,
 ) -> BrowserCaptureEnvelope:
     return BrowserCaptureEnvelope.model_validate(
         {
@@ -143,11 +149,12 @@ def _handoff_capture(
                 "turns": [{"provider_turn_id": "turn-1", "role": "assistant", "text": "Done."}],
                 "attachments": [
                     {
-                        "provider_attachment_id": "file-handoff",
+                        "provider_attachment_id": provider_attachment_id,
                         "message_provider_id": "turn-1",
-                        "name": "polylogue-sol-pro-launch-handoff.zip",
+                        "name": attachment_name,
                         "mime_type": "application/zip",
                         "inline_base64": base64.b64encode(content).decode(),
+                        "provider_meta": {"sandbox_path": sandbox_path} if sandbox_path else {},
                     }
                 ],
             },
@@ -167,6 +174,9 @@ def test_enqueue_copies_and_hash_verifies_attachment(tmp_path: Path) -> None:
     assert job.prompt_prefix_sha256 == sol_pro_prompt_sha256()
     assert "Work deeply" in job.prompt
     assert "Implement the receiver queue" in job.prompt
+    assert "one-row output manifest" in job.prompt
+    assert job.handoff_filename in job.prompt
+    assert job.handoff_filename.startswith("polylogue-implement-the-durable-sol-pro-launch-queue-")
     assert job.status == "queued"
     assert job.attachments[0].size_bytes == len(b"project context")
     attachment, content = read_launch_attachment(
@@ -209,6 +219,71 @@ def test_two_instances_cannot_overlap_the_submission_critical_section(tmp_path: 
     assert submitting.status == "submitting"
     recovered = claim_due_launch_job("live-browser", spool_path=tmp_path)
     assert recovered is not None and recovered.job_id == first.job_id
+
+
+def test_expired_submit_intent_is_quarantined_before_replacement_adoption(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("departed-browser", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="departed-browser",
+            outcome="progress",
+            phase="submit_intent",
+            tab_id=42,
+        ),
+        spool_path=tmp_path,
+    )
+
+    frozen_clock.advance(6 * 3600 + 1)
+
+    assert claim_due_launch_job("replacement-browser", spool_path=tmp_path) is None
+    quarantined = list_launch_jobs(spool_path=tmp_path)[0]
+    assert quarantined.status == "submission_unknown"
+    assert quarantined.cooldown_reason == "submission_unknown"
+    assert quarantined.lease_owner is None
+    assert quarantined.lease_expires_at is None
+    assert quarantined.events[-1].kind == "submission_unknown"
+    assert "operator inspection" in (quarantined.last_error or "")
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ("network_error", "rate_limited", "soft_warning", "auth_challenge", "protocol_mismatch"),
+)
+def test_non_success_after_submit_intent_is_never_automatically_requeued(
+    tmp_path: Path,
+    outcome: Literal["network_error", "rate_limited", "soft_warning", "auth_challenge", "protocol_mismatch"],
+) -> None:
+    job = enqueue_launch_job(_request(job_id=f"uncertain-{outcome}"), spool_path=tmp_path)
+    claim_due_launch_job("departed-browser", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="departed-browser",
+            outcome="progress",
+            phase="submit_intent",
+            tab_id=42,
+        ),
+        spool_path=tmp_path,
+    )
+
+    uncertain = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="departed-browser",
+            outcome=outcome,
+            phase="provider_transport_failed",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing uncertain job")
+
+    assert uncertain.status == "submission_unknown"
+    assert uncertain.cooldown_reason == "submission_unknown"
+    assert uncertain.lease_owner is None
+    assert claim_due_launch_job("replacement-browser", spool_path=tmp_path) is None
 
 
 def test_submitted_chats_continue_in_parallel_at_configured_cadence(tmp_path: Path, frozen_clock: FrozenClock) -> None:
@@ -365,6 +440,7 @@ def test_rate_limit_cooldown_and_protocol_pause_are_receiver_authoritative(
     assert claimed.job_id == cooled.job_id
     assert cooled.status == "cooldown"
     assert cooled.cooldown_reason == "rate_limited"
+    assert cooled.next_attempt_at is not None
     assert datetime.fromisoformat(cooled.next_attempt_at) > frozen_clock.now() + timedelta(minutes=14)
     assert claim_due_launch_job("two", spool_path=tmp_path) is None
     with pytest.raises(BrowserLaunchConflictError, match="cannot bypass"):
@@ -465,11 +541,93 @@ def test_post_submit_rate_limit_uses_receiver_exponential_backoff(tmp_path: Path
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
 
+    assert blocked.next_attempt_at is not None
     retry_at = datetime.fromisoformat(blocked.next_attempt_at)
     assert blocked.status == "submitted"
     assert blocked.retry_after_seconds is None
     assert frozen_clock.now() + timedelta(minutes=30) <= retry_at
     assert retry_at < frozen_clock.now() + timedelta(minutes=33)
+
+
+def test_monitor_read_throttle_backs_off_only_that_conversation_read(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    job = enqueue_launch_job(_request(), spool_path=tmp_path)
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    )
+    throttled = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="network_error",
+            phase="monitor_read_throttled",
+            retry_after_seconds=600,
+            detail="authenticated conversation read returned HTTP 429",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing throttled monitor")
+
+    assert throttled.status == "submitted"
+    assert throttled.next_attempt_at is not None
+    assert datetime.fromisoformat(throttled.next_attempt_at) == frozen_clock.now() + timedelta(seconds=600)
+    frozen_clock.advance(121)
+    assert claim_due_launch_job("other", spool_path=tmp_path) is None
+    frozen_clock.advance(480)
+    adopted = claim_due_launch_job("other", spool_path=tmp_path) or pytest.fail("monitor not adopted after backoff")
+    assert adopted.job_id == job.job_id
+
+
+def test_due_submission_precedes_monitors_and_monitor_reads_are_globally_paced(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    first = enqueue_launch_job(_request(job_id="first-running"), spool_path=tmp_path)
+    claim_due_launch_job("first-owner", spool_path=tmp_path)
+    update_launch_job(
+        first.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="first-owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    )
+    second = enqueue_launch_job(_request(job_id="second-queued"), spool_path=tmp_path)
+
+    frozen_clock.advance(121)
+    dispatched = claim_due_launch_job("second-owner", spool_path=tmp_path) or pytest.fail("missing due dispatch")
+    assert dispatched.job_id == second.job_id
+    assert dispatched.status == "leased"
+    update_launch_job(
+        second.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="second-owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-2",
+            conversation_url="https://chatgpt.com/c/conversation-2",
+        ),
+        spool_path=tmp_path,
+    )
+
+    frozen_clock.advance(121)
+    first_monitor = claim_due_launch_job("monitor-one", spool_path=tmp_path) or pytest.fail("missing monitor")
+    assert first_monitor.status == "submitted"
+    assert claim_due_launch_job("monitor-two", spool_path=tmp_path) is None
+
+    frozen_clock.advance(61)
+    second_monitor = claim_due_launch_job("monitor-two", spool_path=tmp_path) or pytest.fail("missing paced monitor")
+    assert second_monitor.status == "submitted"
+    assert second_monitor.job_id != first_monitor.job_id
 
 
 def test_legacy_paused_provider_warning_is_resumed_only_for_exact_conversation(tmp_path: Path) -> None:
@@ -565,10 +723,7 @@ def test_post_submit_warning_without_exact_identity_is_quarantined(tmp_path: Pat
 def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
     tmp_path: Path, frozen_clock: FrozenClock
 ) -> None:
-    jobs = [
-        enqueue_launch_job(_request(job_id=job_id), spool_path=tmp_path)
-        for job_id in ("warning-one", "warning-two", "accepted", "warning-after-acceptance")
-    ]
+    jobs = [enqueue_launch_job(_request(job_id="warning-one"), spool_path=tmp_path)]
 
     def submit(job_id: str, owner: str) -> None:
         claimed = claim_due_launch_job(owner, spool_path=tmp_path) or pytest.fail("not claimed")
@@ -602,6 +757,8 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
                 ),
                 spool_path=tmp_path,
             )
+            if remaining:
+                frozen_clock.advance(LAUNCH_MONITOR_GLOBAL_INTERVAL_SECONDS + 1)
 
     submit(jobs[0].job_id, "one")
     first = update_launch_job(
@@ -623,6 +780,7 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
 
     frozen_clock.advance(1_000)
     renew_due_monitors({jobs[0].job_id})
+    jobs.append(enqueue_launch_job(_request(job_id="warning-two"), spool_path=tmp_path))
     submit(jobs[1].job_id, "two")
     second = update_launch_job(
         jobs[1].job_id,
@@ -639,6 +797,7 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
 
     frozen_clock.advance(2_000)
     renew_due_monitors({jobs[0].job_id, jobs[1].job_id})
+    jobs.append(enqueue_launch_job(_request(job_id="accepted"), spool_path=tmp_path))
     submit(jobs[2].job_id, "accepted")
     accepted = update_launch_job(
         jobs[2].job_id,
@@ -653,6 +812,7 @@ def test_soft_warning_streak_escalates_across_jobs_and_acceptance_resets(
     assert accepted.events[-1].provider_circuit_streak == 0
 
     frozen_clock.advance(61)
+    jobs.append(enqueue_launch_job(_request(job_id="warning-after-acceptance"), spool_path=tmp_path))
     submit(jobs[3].job_id, "after")
     after = update_launch_job(
         jobs[3].job_id,
@@ -837,7 +997,7 @@ def test_non_owner_update_and_invalid_terminal_control_fail_closed(tmp_path: Pat
         spool_path=tmp_path,
     )
     completed = reconcile_launch_handoff_capture(
-        _handoff_capture(_handoff_zip()),
+        _handoff_capture(_handoff_zip(), attachment_name=job.handoff_filename),
         "chatgpt/conversation-1.json",
         spool_path=tmp_path,
     ) or pytest.fail("missing job")
@@ -873,7 +1033,7 @@ def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: 
             spool_path=invalid_spool,
         )
         rejected = reconcile_launch_handoff_capture(
-            _handoff_capture(content),
+            _handoff_capture(content, attachment_name=invalid.handoff_filename),
             "chatgpt/conversation-1.json",
             spool_path=invalid_spool,
         ) or pytest.fail("missing invalid job")
@@ -895,9 +1055,21 @@ def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: 
         ),
         spool_path=valid_spool,
     )
+    throttled = update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="rate_limited",
+            phase="monitor_read_throttled",
+            retry_after_seconds=3600,
+        ),
+        spool_path=valid_spool,
+    ) or pytest.fail("missing throttled job")
+    assert throttled.cooldown_reason == "rate_limited"
+    assert throttled.next_attempt_at is not None
     content = _handoff_zip()
     completed = reconcile_launch_handoff_capture(
-        _handoff_capture(content),
+        _handoff_capture(content, attachment_name=job.handoff_filename),
         "chatgpt/conversation-1.json",
         spool_path=valid_spool,
     ) or pytest.fail("missing job")
@@ -907,6 +1079,54 @@ def test_handoff_completion_reconciles_the_canonical_capture_artifact(tmp_path: 
     assert completed.handoff_file_count == 7
     assert completed.handoff_artifact_ref == "chatgpt/conversation-1.json"
     assert completed.handoff_attachment_id == "file-handoff"
+    assert completed.cooldown_reason is None
+    assert completed.next_attempt_at is None
+    assert completed.retry_after_seconds is None
+
+    next_job = enqueue_launch_job(_request(job_id="after-completed-cooldown"), spool_path=valid_spool)
+    control_launch_job(
+        next_job.job_id,
+        BrowserLaunchJobControlRequest(action="launch_now"),
+        spool_path=valid_spool,
+    )
+    claimed = claim_due_launch_job("next-owner", spool_path=valid_spool) or pytest.fail(
+        "completed job retained a stale global launch circuit"
+    )
+    assert claimed.job_id == next_job.job_id
+
+
+def test_handoff_completion_uses_provider_identity_when_download_name_collides(tmp_path: Path) -> None:
+    job = enqueue_launch_job(_request(job_id="collision-renamed-handoff"), spool_path=tmp_path)
+    claim_due_launch_job("owner", spool_path=tmp_path)
+    update_launch_job(
+        job.job_id,
+        BrowserLaunchJobUpdateRequest(
+            owner_instance_id="owner",
+            outcome="submitted",
+            phase="submitted",
+            conversation_id="conversation-1",
+            conversation_url="https://chatgpt.com/c/conversation-1",
+        ),
+        spool_path=tmp_path,
+    )
+    content = _handoff_zip()
+    expected_path = f"/mnt/data/{job.handoff_filename}"
+    provider_attachment_id = f"sandbox:turn-1:{expected_path}"
+    collision_name = job.handoff_filename.removesuffix(".zip") + "(14).zip"
+    completed = reconcile_launch_handoff_capture(
+        _handoff_capture(
+            content,
+            attachment_name=collision_name,
+            provider_attachment_id=provider_attachment_id,
+            sandbox_path=expected_path,
+        ),
+        "chatgpt/conversation-1.json",
+        spool_path=tmp_path,
+    ) or pytest.fail("missing job")
+
+    assert completed.status == "completed"
+    assert completed.handoff_sha256 == hashlib.sha256(content).hexdigest()
+    assert completed.handoff_attachment_id == provider_attachment_id
 
 
 def test_future_job_is_not_claimed_early(tmp_path: Path, frozen_clock: FrozenClock) -> None:
@@ -930,6 +1150,15 @@ def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: P
     prompt.write_text("Build the package and return exactly one ZIP.\n", encoding="utf-8")
     attachment = tmp_path / "context.tar.gz"
     attachment.write_bytes(b"targeted context")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "worker.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "worker.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "seed"], check=True)
     spool = tmp_path / "spool"
 
     result = CliRunner().invoke(
@@ -943,6 +1172,10 @@ def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: P
             "Build a durable launch handoff",
             "--attachment",
             str(attachment),
+            "--project-root",
+            str(repo),
+            "--source",
+            str(source),
             "--cadence",
             "60",
             "--job-id",
@@ -960,9 +1193,16 @@ def test_launch_cli_copies_targeted_files_and_hardcodes_chat_sol_pro(tmp_path: P
     assert job.job_id == "launch-cli-test"
     assert job.job_title == "Build a durable launch handoff"
     assert job.prompt.startswith("# Mission: Build a durable launch handoff\n")
+    assert job.handoff_filename in job.prompt
     assert (job.mode, job.model_label, job.effort_label) == ("chat", "GPT-5.6 Sol", "Pro")
     assert job.cadence_minutes == 60
-    stored_attachment = read_launch_attachment(job.job_id, job.attachments[0].attachment_id, spool_path=spool)
+    package_attachment = read_launch_attachment(job.job_id, job.attachments[0].attachment_id, spool_path=spool)
+    assert package_attachment is not None
+    with tarfile.open(fileobj=BytesIO(package_attachment[1]), mode="r:gz") as archive:
+        packed_prompt = archive.extractfile("PROMPT.md")
+        assert packed_prompt is not None
+        assert packed_prompt.read().decode() == job.prompt
+    stored_attachment = read_launch_attachment(job.job_id, job.attachments[1].attachment_id, spool_path=spool)
     assert stored_attachment is not None and stored_attachment[1] == b"targeted context"
 
 
@@ -999,12 +1239,15 @@ def test_receiver_routes_enqueue_claim_and_serve_hash_pinned_inputs(tmp_path: Pa
         )
         submitted.read()
         handoff_content = _handoff_zip()
+        handoff_filename = created_body["job"]["handoff_filename"]
         capture = _http(
             host,
             port,
             "POST",
             "/v1/browser-captures",
-            _handoff_capture(handoff_content).model_dump(mode="json", exclude_none=True),
+            _handoff_capture(handoff_content, attachment_name=handoff_filename).model_dump(
+                mode="json", exclude_none=True
+            ),
         )
         capture_body = json.loads(capture.read())
         completed_body = json.loads(_http(host, port, "GET", "/v1/launch-jobs").read())

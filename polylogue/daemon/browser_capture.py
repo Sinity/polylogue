@@ -6,6 +6,7 @@ import base64
 import mimetypes
 from pathlib import Path
 from typing import get_args
+from uuid import uuid4
 
 import click
 from pydantic import ValidationError
@@ -16,6 +17,7 @@ from polylogue.browser_capture.launch_jobs import (
     BrowserLaunchConflictError,
     BrowserLaunchQuotaError,
     enqueue_launch_job,
+    launch_handoff_filename,
 )
 from polylogue.browser_capture.models import (
     BrowserLaunchAttachmentInput,
@@ -255,6 +257,8 @@ def launch_command(
     copied and hash-pinned before an extension instance can lease the job.
     """
     try:
+        resolved_job_id = job_id or uuid4().hex
+        resolved_handoff_filename = launch_handoff_filename(resolved_job_id, job_title)
         scope_prompt = prompt_file.read_text(encoding="utf-8")
         attachments = []
         attachment_bytes = 0
@@ -285,6 +289,8 @@ def launch_command(
                 source_paths=source_paths,
                 verification_paths=verification_paths,
                 full_worktree_fallback=full_worktree_fallback,
+                launch_job_id=resolved_job_id,
+                handoff_filename=resolved_handoff_filename,
             )
             attachments.insert(
                 0,
@@ -303,7 +309,7 @@ def launch_command(
                 attachments=attachments,
                 cadence_minutes=int(cadence_minutes),  # type: ignore[arg-type]
                 not_before=not_before,
-                job_id=job_id,
+                job_id=resolved_job_id,
             ),
             spool_path=spool_path,
         )

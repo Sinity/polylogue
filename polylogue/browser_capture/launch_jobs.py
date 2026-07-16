@@ -46,6 +46,10 @@ LAUNCH_JOB_MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024
 LAUNCH_EVENT_LIMIT = 200
 LAUNCH_LEASE_SECONDS = 180
 LAUNCH_MONITOR_LEASE_SECONDS = 120
+LAUNCH_MONITOR_GLOBAL_INTERVAL_SECONDS = 60
+LAUNCH_MONITOR_BACKOFF_PHASES = frozenset(
+    {"monitor_read_throttled", "monitor_read_failed", "completion_capture", "handoff_acquisition"}
+)
 LAUNCH_HANDOFF_MAX_BYTES = 64 * 1024 * 1024
 LAUNCH_HANDOFF_MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 LAUNCH_HANDOFF_MAX_FILES = 2_000
@@ -53,6 +57,14 @@ LAUNCH_HANDOFF_NAME = "polylogue-sol-pro-launch-handoff.zip"
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
 _LAUNCH_LOCK = RLock()
 _T = TypeVar("_T")
+
+
+def launch_handoff_filename(job_id: str, job_title: str) -> str:
+    """Return one readable, collision-resistant output name for a launch job."""
+    title_slug = re.sub(r"[^a-z0-9]+", "-", job_title.lower()).strip("-")[:64] or "project-work"
+    job_ref = _safe_token(job_id).lower().strip("-._")
+    job_ref = job_ref[:12] if re.fullmatch(r"[0-9a-f]{24,}", job_ref) else job_ref[:48]
+    return f"polylogue-{title_slug}-{job_ref}-handoff.zip"
 
 
 def _serialized(function: Callable[..., _T]) -> Callable[..., _T]:
@@ -290,11 +302,17 @@ def enqueue_launch_job(request: BrowserLaunchJobRequest, *, spool_path: Path | N
     not_before = parsed_not_before or now
     job = BrowserLaunchJob(
         job_id=job_id,
+        handoff_filename=launch_handoff_filename(job_id, request.job_title),
         prompt_profile=SOL_PRO_PROMPT_PROFILE,
         prompt_prefix_sha256=sol_pro_prompt_sha256(),
         job_title=request.job_title,
         scope_prompt=request.scope_prompt,
-        prompt=build_sol_pro_prompt(request.job_title, request.scope_prompt),
+        prompt=build_sol_pro_prompt(
+            request.job_title,
+            request.scope_prompt,
+            launch_job_id=job_id,
+            handoff_filename=launch_handoff_filename(job_id, request.job_title),
+        ),
         attachments=attachments,
         cadence_minutes=request.cadence_minutes,
         required_output=request.required_output,
@@ -392,6 +410,19 @@ def claim_due_launch_job(
                 return job
             return None
         if job.status in active and (expiry is None or expiry <= now):
+            if job.status == "submitting" and job.phase == "submit_intent":
+                job.status = "submission_unknown"
+                job.cooldown_reason = "submission_unknown"
+                job.last_error = (
+                    "submit-intent lease expired before an exact conversation receipt; "
+                    "operator inspection is required before any retry"
+                )
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.updated_at = _iso(now)
+                _event(job, "submission_unknown", detail=job.last_error)
+                _write_job(root, job)
+                continue
             job.status = "queued"
             job.phase = "lease_expired"
             job.lease_owner = None
@@ -399,7 +430,85 @@ def claim_due_launch_job(
             _event(job, "lease_expired")
             _write_job(root, job)
 
+    hard_cooldown_until = max(
+        (
+            parsed
+            for job in jobs
+            if job.cooldown_reason in {"rate_limited", "safety_locked"}
+            if (parsed := _parse(job.next_attempt_at)) is not None
+        ),
+        default=None,
+    )
+    soft_cooldown_until = max(
+        (
+            parsed
+            for job in jobs
+            if job.cooldown_reason == "soft_warning"
+            if (parsed := _parse(job.next_attempt_at)) is not None
+        ),
+        default=None,
+    )
+    manual_override_ready = any(
+        job.manual_priority and job.status in {"queued", "cooldown"} and (_parse(job.not_before) or now) <= now
+        for job in jobs
+    )
+    launch_circuit_open = (hard_cooldown_until is not None and hard_cooldown_until > now) or (
+        soft_cooldown_until is not None and soft_cooldown_until > now and not manual_override_ready
+    )
+    if not launch_circuit_open:
+        # A due submission gets the rate-sensitive slot before completion
+        # monitoring. Otherwise a backlog of expired monitor leases can consume
+        # every minute tick and starve the promised burst/steady launch cadence.
+        latest_submitted = _latest_submitted_at(jobs)
+        candidates = sorted(
+            jobs,
+            key=lambda job: (not job.manual_priority, job.queue_position, job.created_at, job.job_id),
+        )
+        for job in candidates:
+            if job.status not in {"queued", "cooldown"}:
+                continue
+            due_inputs = [_parse(job.not_before)]
+            if not job.manual_priority:
+                due_inputs.append(_parse(job.next_attempt_at))
+            due = max(filter(None, due_inputs), default=now)
+            if latest_submitted is not None and not job.manual_priority:
+                due = max(due, latest_submitted + timedelta(minutes=job.cadence_minutes))
+            if due > now:
+                if job.status != "cooldown" or job.next_attempt_at != _iso(due):
+                    job.status = "cooldown"
+                    job.phase = "cadence_wait"
+                    job.cooldown_reason = "cadence"
+                    job.next_attempt_at = _iso(due)
+                    job.updated_at = _iso(now)
+                    _write_job(root, job)
+                continue
+            job.status = "leased"
+            job.phase = "leased"
+            job.lease_owner = owner_instance_id
+            job.executor_instance_id = owner_instance_id
+            job.lease_expires_at = _iso(now + timedelta(seconds=max(30, lease_seconds)))
+            job.cooldown_reason = None
+            job.manual_priority = False
+            job.updated_at = _iso(now)
+            _event(job, "leased", owner=owner_instance_id)
+            _write_job(root, job)
+            return job
+
     epoch = datetime.min.replace(tzinfo=UTC)
+    last_monitor_claim = max(
+        (
+            event_at
+            for job in jobs
+            for event in job.events
+            if event.kind == "monitor_adopted"
+            if (event_at := _parse(event.at)) is not None
+        ),
+        default=None,
+    )
+    if last_monitor_claim is not None and now < last_monitor_claim + timedelta(
+        seconds=LAUNCH_MONITOR_GLOBAL_INTERVAL_SECONDS
+    ):
+        return None
     monitorable_jobs = sorted(
         (job for job in jobs if _monitorable_submitted_job(job)),
         key=lambda job: (_monitor_lease_deadline(job) or epoch, _parse(job.created_at) or epoch, job.job_id),
@@ -407,6 +516,9 @@ def claim_due_launch_job(
     for job in monitorable_jobs:
         expiry = _monitor_lease_deadline(job)
         if expiry is not None and expiry > now:
+            continue
+        retry_at = _parse(job.next_attempt_at)
+        if job.phase in LAUNCH_MONITOR_BACKOFF_PHASES and retry_at is not None and retry_at > now:
             continue
         recovered_warning = job.status == "paused"
         job.status = "submitted"
@@ -424,68 +536,6 @@ def claim_due_launch_job(
             ),
             owner=owner_instance_id,
         )
-        _write_job(root, job)
-        return job
-
-    hard_cooldown_until = max(
-        (
-            parsed
-            for job in jobs
-            if job.cooldown_reason in {"rate_limited", "safety_locked"}
-            if (parsed := _parse(job.next_attempt_at)) is not None
-        ),
-        default=None,
-    )
-    if hard_cooldown_until is not None and hard_cooldown_until > now:
-        return None
-    soft_cooldown_until = max(
-        (
-            parsed
-            for job in jobs
-            if job.cooldown_reason == "soft_warning"
-            if (parsed := _parse(job.next_attempt_at)) is not None
-        ),
-        default=None,
-    )
-    manual_override_ready = any(
-        job.manual_priority and job.status in {"queued", "cooldown"} and (_parse(job.not_before) or now) <= now
-        for job in jobs
-    )
-    if soft_cooldown_until is not None and soft_cooldown_until > now and not manual_override_ready:
-        return None
-
-    latest_submitted = _latest_submitted_at(jobs)
-    candidates = sorted(
-        jobs,
-        key=lambda job: (not job.manual_priority, job.queue_position, job.created_at, job.job_id),
-    )
-    for job in candidates:
-        if job.status not in {"queued", "cooldown"}:
-            continue
-        due_inputs = [_parse(job.not_before)]
-        if not job.manual_priority:
-            due_inputs.append(_parse(job.next_attempt_at))
-        due = max(filter(None, due_inputs), default=now)
-        if latest_submitted is not None and not job.manual_priority:
-            due = max(due, latest_submitted + timedelta(minutes=job.cadence_minutes))
-        if due > now:
-            if job.status != "cooldown" or job.next_attempt_at != _iso(due):
-                job.status = "cooldown"
-                job.phase = "cadence_wait"
-                job.cooldown_reason = "cadence"
-                job.next_attempt_at = _iso(due)
-                job.updated_at = _iso(now)
-                _write_job(root, job)
-            continue
-        job.status = "leased"
-        job.phase = "leased"
-        job.lease_owner = owner_instance_id
-        job.executor_instance_id = owner_instance_id
-        job.lease_expires_at = _iso(now + timedelta(seconds=max(30, lease_seconds)))
-        job.cooldown_reason = None
-        job.manual_priority = False
-        job.updated_at = _iso(now)
-        _event(job, "leased", owner=owner_instance_id)
         _write_job(root, job)
         return job
     return None
@@ -506,6 +556,7 @@ def update_launch_job(
         raise BrowserLaunchLeaseError("launch job lease owner mismatch")
     now = _now()
     was_submitted = job.status == "submitted"
+    was_submit_intent = job.status == "submitting" and job.phase == "submit_intent"
     monitor_heartbeat = was_submitted and update.outcome == "progress" and update.phase == "monitoring_heartbeat"
     if not monitor_heartbeat:
         job.phase = update.phase
@@ -540,6 +591,15 @@ def update_launch_job(
         job.attempts += 1
         job.last_error = None
         job.lease_expires_at = _iso(now + timedelta(seconds=LAUNCH_MONITOR_LEASE_SECONDS))
+    elif was_submit_intent:
+        job.status = "submission_unknown"
+        job.cooldown_reason = "submission_unknown"
+        job.last_error = update.detail or (
+            f"{update.outcome} observed after submit intent without an exact conversation receipt; "
+            "operator inspection is required before any retry"
+        )
+        job.lease_owner = None
+        job.lease_expires_at = None
     elif update.outcome == "submission_unknown":
         job.status = "submission_unknown"
         job.cooldown_reason = "submission_unknown"
@@ -809,8 +869,16 @@ def reconcile_launch_handoff_capture(
         return None
     if job.conversation_id != envelope.session.provider_session_id or envelope.session.provider.value != "chatgpt":
         return None
+    expected_handoff_name = job.handoff_filename
+    expected_sandbox_path = f"/mnt/data/{expected_handoff_name}"
     attachment = next(
-        (item for item in envelope.session.attachments if item.name == LAUNCH_HANDOFF_NAME),
+        (
+            item
+            for item in envelope.session.attachments
+            if item.name == expected_handoff_name
+            or item.provider_meta.get("sandbox_path") == expected_sandbox_path
+            or item.provider_attachment_id.endswith(f":{expected_sandbox_path}")
+        ),
         None,
     )
     if attachment is None:
@@ -866,6 +934,9 @@ def reconcile_launch_handoff_capture(
     job.handoff_validated_at = _iso(now)
     job.lease_owner = None
     job.lease_expires_at = None
+    job.cooldown_reason = None
+    job.next_attempt_at = None
+    job.retry_after_seconds = None
     job.last_error = None
     _event(
         job,
@@ -888,6 +959,7 @@ __all__ = [
     "claim_due_launch_job",
     "control_launch_job",
     "enqueue_launch_job",
+    "launch_handoff_filename",
     "launch_job_root",
     "list_launch_jobs",
     "read_launch_attachment",

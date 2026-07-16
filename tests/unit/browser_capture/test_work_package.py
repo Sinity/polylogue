@@ -73,6 +73,8 @@ def test_targeted_work_package_is_deterministic_and_manifest_checked(tmp_path: P
         prompt = archive.extractfile("PROMPT.md").read().decode()  # type: ignore[union-attr]
         assert prompt.startswith("# Mission: Implement the selected worker safely\n")
         assert "substantive operator-facing work report" in prompt
+        assert "sandbox:/mnt/data/polylogue-sol-pro-launch-handoff.zip" in prompt
+        assert "reopen that exact file" in prompt
         manifest = json.load(archive.extractfile("MANIFEST.json"))  # type: ignore[arg-type]
         records = {item["path"]: item for item in manifest["files"]}
         for name in names - {"MANIFEST.json"}:

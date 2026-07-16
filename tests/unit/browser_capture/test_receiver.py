@@ -17,6 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_API_SCHEMA,
     BrowserCaptureAcceptedPayload,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureCapabilitiesPayload,
@@ -25,9 +26,12 @@ from polylogue.browser_capture.models import (
     BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.browser_capture.receiver import (
+    BrowserCaptureReceiverConfig,
     capture_artifact_path,
     capture_artifact_ref,
     existing_capture_state,
+    receiver_identity,
+    receiver_status_payload,
     write_capture_envelope,
 )
 from polylogue.browser_capture.route_contracts import (
@@ -286,6 +290,60 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     assert typed.provider == "chatgpt"
     assert typed.artifact_ref == capture_artifact_ref(envelope, tmp_path)
     assert Path(typed.artifact_ref).is_absolute() is False
+
+
+def test_receiver_identity_is_stable_across_restarts_and_hides_pairing_secret(tmp_path: Path) -> None:
+    token = "pairing-secret-that-must-never-leak"
+    first = BrowserCaptureReceiverConfig(spool_path=tmp_path / "spool", auth_token=token)
+    restarted = BrowserCaptureReceiverConfig(spool_path=tmp_path / "moved-spool", auth_token=token)
+
+    first_id = receiver_identity(first)
+    restarted_id = receiver_identity(restarted)
+
+    assert first_id == restarted_id
+    assert first_id.startswith("rx-")
+    assert len(first_id) == 23
+    assert token not in first_id
+    assert str(first.spool_path) not in first_id
+
+
+def test_receiver_identity_changes_on_token_rotation(tmp_path: Path) -> None:
+    before = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-before-rotation")
+    after = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-after-rotation")
+
+    assert receiver_identity(before) != receiver_identity(after)
+
+
+def test_no_auth_receiver_identity_is_stable_per_resolved_spool(tmp_path: Path) -> None:
+    first = BrowserCaptureReceiverConfig(spool_path=tmp_path / "same" / ".." / "spool")
+    same_resolved_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "spool")
+    different_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "other")
+
+    assert receiver_identity(first) == receiver_identity(same_resolved_spool)
+    assert receiver_identity(first) != receiver_identity(different_spool)
+
+
+def test_receiver_status_payload_advertises_versioned_stable_identity(tmp_path: Path) -> None:
+    config = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="stable-pairing-token")
+
+    payload = receiver_status_payload(config)
+    typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
+
+    assert typed.api_schema == BROWSER_CAPTURE_API_SCHEMA
+    assert typed.receiver_id == receiver_identity(config)
+    assert typed.auth_required is True
+    assert "stable-pairing-token" not in json.dumps(payload)
+
+
+def test_receiver_status_route_exposes_pairing_contract(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "GET", "/v1/status", origin=_EXTENSION_ORIGIN)
+        payload = json.loads(response.read())
+
+    typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
+    assert response.status == HTTPStatus.OK
+    assert typed.api_schema == BROWSER_CAPTURE_API_SCHEMA
+    assert typed.receiver_id.startswith("rx-")
 
 
 def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
 BROWSER_CAPTURE_SCHEMA_VERSION: Literal[1] = 1
 BROWSER_CAPTURE_TRANSPORT_SOURCE: Literal["browser-extension"] = "browser-extension"
 BROWSER_CAPTURE_RECEIVER: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
+BROWSER_CAPTURE_API_SCHEMA: Literal["polylogue-browser-capture/v1"] = "polylogue-browser-capture/v1"
 BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
 BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "stale", "failed"]
 BrowserCaptureSessionKind = Literal["standard", "temporary"]
@@ -194,6 +196,8 @@ class BrowserCaptureReceiverStatusPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    api_schema: Literal["polylogue-browser-capture/v1"] = BROWSER_CAPTURE_API_SCHEMA
+    receiver_id: str = Field(min_length=8, max_length=80)
     spool_path: str
     spool_ready: bool
     allowed_origins: list[str]
@@ -572,9 +576,12 @@ class BrowserLaunchJob(BaseModel):
     polylogue_launch_job_kind: Literal["browser_launch_job"] = "browser_launch_job"
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     job_id: str
-    prompt_profile: Literal["polylogue-sol-pro-worker-v1", "polylogue-sol-pro-worker-v2"] = (
-        "polylogue-sol-pro-worker-v1"
-    )
+    handoff_filename: str = Field(default="polylogue-sol-pro-launch-handoff.zip", min_length=5, max_length=180)
+    prompt_profile: Literal[
+        "polylogue-sol-pro-worker-v1",
+        "polylogue-sol-pro-worker-v2",
+        "polylogue-sol-pro-worker-v3",
+    ] = "polylogue-sol-pro-worker-v1"
     prompt_prefix_sha256: str
     job_title: str = "Polylogue project work"
     scope_prompt: str
@@ -593,7 +600,7 @@ class BrowserLaunchJob(BaseModel):
     created_at: str
     updated_at: str
     not_before: str
-    next_attempt_at: str
+    next_attempt_at: str | None = None
     attempts: int = 0
     lease_owner: str | None = None
     executor_instance_id: str | None = None
@@ -611,6 +618,14 @@ class BrowserLaunchJob(BaseModel):
     handoff_size_bytes: int | None = None
     handoff_file_count: int | None = None
     handoff_validated_at: str | None = None
+
+    @field_validator("handoff_filename")
+    @classmethod
+    def require_safe_handoff_filename(cls, value: str) -> str:
+        if value != Path(value).name or not value.lower().endswith(".zip"):
+            raise ValueError("launch handoff filename must be a safe ZIP basename")
+        return value
+
     events: list[BrowserLaunchEvent] = Field(default_factory=list)
 
 
@@ -679,6 +694,7 @@ def looks_like_browser_capture(payload: object) -> bool:
 
 
 __all__ = [
+    "BROWSER_CAPTURE_API_SCHEMA",
     "BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD",
     "BROWSER_CAPTURE_KIND",
     "BROWSER_CAPTURE_RECEIVER",

@@ -185,6 +185,8 @@ def build_sol_pro_work_package(
     source_paths: Sequence[Path] = (),
     verification_paths: Sequence[Path] = (),
     full_worktree_fallback: bool = False,
+    launch_job_id: str = "unassigned",
+    handoff_filename: str = "polylogue-sol-pro-launch-handoff.zip",
 ) -> SolProWorkPackage:
     """Build a deterministic, manifest-checked project snapshot.
 
@@ -196,7 +198,12 @@ def build_sol_pro_work_package(
         # Linked worktrees use a .git file, so existence rather than is_dir is intentional.
         raise ValueError(f"not a git repository root: {root}")
     entries: dict[str, tuple[bytes, str]] = {}
-    full_prompt = build_sol_pro_prompt(job_title, scope_prompt)
+    full_prompt = build_sol_pro_prompt(
+        job_title,
+        scope_prompt,
+        launch_job_id=launch_job_id,
+        handoff_filename=handoff_filename,
+    )
     _add_entry(entries, "PROMPT.md", full_prompt.encode(), "Exact submitted worker prompt")
     _add_entry(entries, "MISSION.txt", job_title.strip().encode() + b"\n", "Human-readable job title")
     _add_entry(entries, "SCOPE.md", scope_prompt.strip().encode() + b"\n", "Job-specific scope")
