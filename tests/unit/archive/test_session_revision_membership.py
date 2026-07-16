@@ -100,3 +100,125 @@ def test_metadata_revisions_with_equal_provider_time_are_ambiguous() -> None:
 
     assert result.accepted_raw_ids == ()
     assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+
+
+def test_browser_native_snapshot_accepts_later_provider_revision_when_messages_reorder() -> None:
+    older = _revision("raw-old", "prompt", "attachment context")
+    newer = _revision("raw-new", "prompt", "tool result", "attachment context")
+    older = MembershipRevision(
+        older.raw_id,
+        older.projection,
+        "2026-01-01T00:00:00Z",
+        observed_at_ms=1,
+        browser_snapshot_fidelity="native",
+        provider_message_ids=frozenset({"prompt", "attachment"}),
+    )
+    newer = MembershipRevision(
+        newer.raw_id,
+        newer.projection,
+        "2026-01-01T00:01:00Z",
+        observed_at_ms=2,
+        browser_snapshot_fidelity="native",
+        provider_message_ids=frozenset({"prompt", "tool", "attachment"}),
+    )
+
+    result = classify_membership_revisions([newer, older])
+
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_browser_native_snapshot_refuses_later_revision_that_loses_message_identity() -> None:
+    older = _revision("raw-old", "prompt", "left")
+    newer = _revision("raw-new", "prompt", "right")
+    revisions = [
+        MembershipRevision(
+            older.raw_id,
+            older.projection,
+            "2026-01-01T00:00:00Z",
+            observed_at_ms=1,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=frozenset({"prompt", "left"}),
+        ),
+        MembershipRevision(
+            newer.raw_id,
+            newer.projection,
+            "2026-01-01T00:01:00Z",
+            observed_at_ms=2,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=frozenset({"prompt", "right"}),
+        ),
+    ]
+
+    result = classify_membership_revisions(revisions)
+
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> None:
+    older = _revision("raw-old", "prompt")
+    older_projection = older.projection.__class__(
+        session_hash=b"o" * 32,
+        message_hashes=older.projection.message_hashes,
+        event_hashes=older.projection.event_hashes,
+        attachment_hashes=frozenset({b"attachment"}),
+    )
+    newer = _revision("raw-new", "prompt", "answer")
+    revisions = [
+        MembershipRevision(
+            older.raw_id,
+            older_projection,
+            "2026-01-01T00:00:00Z",
+            observed_at_ms=1,
+            browser_snapshot_fidelity="dom",
+        ),
+        MembershipRevision(
+            newer.raw_id,
+            newer.projection,
+            "2026-01-01T00:01:00Z",
+            observed_at_ms=2,
+            browser_snapshot_fidelity="native",
+        ),
+    ]
+
+    result = classify_membership_revisions(revisions)
+
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_update() -> None:
+    older = _revision("raw-old", "prompt", "answer")
+    newer = _revision("raw-new", "prompt", "answer")
+    newer_projection = newer.projection.__class__(
+        session_hash=b"n" * 32,
+        message_hashes=newer.projection.message_hashes,
+        event_hashes=newer.projection.event_hashes,
+        attachment_hashes=frozenset({b"attachment-v2"}),
+    )
+    revisions = [
+        MembershipRevision(
+            older.raw_id,
+            older.projection,
+            "2026-01-01T00:01:00Z",
+            observed_at_ms=1,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=frozenset({"prompt", "answer"}),
+            provider_attachment_ids=frozenset({"asset"}),
+        ),
+        MembershipRevision(
+            newer.raw_id,
+            newer_projection,
+            "2026-01-01T00:01:00Z",
+            observed_at_ms=2,
+            browser_snapshot_fidelity="native",
+            provider_message_ids=frozenset({"prompt", "answer"}),
+            provider_attachment_ids=frozenset({"asset"}),
+        ),
+    ]
+
+    result = classify_membership_revisions(revisions)
+
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.ambiguous_raw_ids == ()
