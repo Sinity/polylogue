@@ -3099,52 +3099,70 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         assert all("excised.jsonl" not in str(row[0]) for row in rows)
 
 
-def test_live_multi_session_divergence_reopens_raw_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "sessions"
+def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> None:
+    root = tmp_path / "inbox"
     root.mkdir()
-    first = root / "first.jsonl"
-    second = root / "second.jsonl"
-    first.write_bytes(b'{"first":true}\n')
-    second.write_bytes(b'{"second":true}\n')
+    first = root / "first.json"
+    second = root / "second.json"
+
+    def conversation(native_id: str, *texts: str) -> dict[str, object]:
+        mapping: dict[str, object] = {
+            "root": {
+                "id": "root",
+                "message": None,
+                "parent": None,
+                "children": [f"{native_id}-node-0"],
+            }
+        }
+        for index, text in enumerate(texts):
+            node_id = f"{native_id}-node-{index}"
+            next_node = f"{native_id}-node-{index + 1}" if index + 1 < len(texts) else None
+            mapping[node_id] = {
+                "id": node_id,
+                "parent": "root" if index == 0 else f"{native_id}-node-{index - 1}",
+                "children": [] if next_node is None else [next_node],
+                "message": {
+                    "id": f"{native_id}-message-{index}",
+                    "author": {"role": "user"},
+                    "create_time": 1_780_000_000.0 + index,
+                    "content": {"content_type": "text", "parts": [text]},
+                    "metadata": {},
+                },
+            }
+        return {
+            "id": native_id,
+            "title": native_id,
+            "current_node": f"{native_id}-node-{len(texts) - 1}",
+            "mapping": mapping,
+        }
+
+    first.write_text(
+        json.dumps([conversation("shared", "base", "left"), conversation("safe-1", "one")]),
+        encoding="utf-8",
+    )
+    second.write_text(
+        json.dumps([conversation("shared", "base", "right"), conversation("safe-2", "two")]),
+        encoding="utf-8",
+    )
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
+        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
 
-    def session(native_id: str, *texts: str) -> ParsedSession:
-        return ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id=native_id,
-            messages=[
-                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
-                for index, text in enumerate(texts)
-            ],
-        )
+    # This is a real ChatGPT export bundle, not a JSONL shape authorized by a
+    # monkeypatch. Keep the taxonomy assertion next to the route assertion so
+    # the test cannot pass after accidentally becoming a non-session fixture.
+    assert _parse_path_as_session_artifact(first, provider=Provider.CHATGPT) is True
+    first_result = processor._ingest_full_paths_sync([first], source_name="inbox")
+    assert first_result.succeeded == [first]
+    assert first_result.failed == []
+    assert first_result.raw_source_names[first] == Provider.CHATGPT.value
+    accepted_raw_id = first_result.raw_fingerprints[first]
 
-    parsed_batches = iter(
-        [
-            [session("shared", "base", "left"), session("safe-1", "one")],
-            [session("shared", "base", "right"), session("safe-2", "two")],
-            [session("shared", "base", "left"), session("safe-1", "one")],
-        ]
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-
-    assert processor._ingest_full_paths_sync([first], source_name="codex").failed == []
-    second_result = processor._ingest_full_paths_sync([second], source_name="codex")
+    second_result = processor._ingest_full_paths_sync([second], source_name="inbox")
     assert second_result.failed == [second]
     assert second_result.succeeded == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -3152,6 +3170,19 @@ def test_live_multi_session_divergence_reopens_raw_authority(
             2,
         )
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NULL").fetchone() == (2,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL").fetchone() == (0,)
+        assert conn.execute(
+            """
+            SELECT r.source_path, m.decision, m.revision_authority
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            WHERE m.logical_source_key = 'chatgpt:shared'
+            ORDER BY r.source_path
+            """
+        ).fetchall() == [
+            (str(first), "ambiguous", "quarantined"),
+            (str(second), "ambiguous", "quarantined"),
+        ]
     with sqlite3.connect(index_db) as conn:
         # The first accepted branch remains queryable; the later divergence is
         # nonterminal debt and has no deletion authority.
@@ -3160,6 +3191,42 @@ def test_live_multi_session_divergence_reopens_raw_authority(
             ("safe-2",),
             ("shared",),
         }
+        assert conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
+        ).fetchone() == (accepted_raw_id,)
+        assert conn.execute(
+            """
+            SELECT b.search_text
+            FROM sessions AS s
+            JOIN messages AS m USING (session_id)
+            JOIN blocks AS b USING (message_id)
+            WHERE s.native_id = 'shared'
+            ORDER BY m.position, b.position
+            """
+        ).fetchall() == [("base",), ("left",)]
+
+    retry_result = processor._ingest_full_paths_sync([first], source_name="inbox")
+
+    assert retry_result.succeeded == [first]
+    assert retry_result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT r.source_path, m.decision, m.revision_authority,
+                   r.parsed_at_ms IS NOT NULL, r.parse_error
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            WHERE m.logical_source_key = 'chatgpt:shared'
+            ORDER BY r.source_path
+            """
+        ).fetchall() == [
+            (str(first), "applied", "byte_proven", 1, None),
+            (str(second), "ambiguous", "quarantined", 0, None),
+        ]
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
+        ).fetchone() == (accepted_raw_id,)
 
 
 def test_single_session_full_terminally_supersedes_older_membership_prefix(

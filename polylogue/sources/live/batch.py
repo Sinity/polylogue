@@ -1755,6 +1755,9 @@ class LiveBatchProcessor:
                             source_raw_id,
                             sessions,
                             acquired_at_ms=acquired_at_ms,
+                            # This raw passed artifact taxonomy and produced a complete
+                            # multi-session census; admit only this caller-owned candidate.
+                            allow_current_complete_raw=True,
                         )
                     if raw_authority_complete:
                         result.raw_ids[record.raw_id] = record_raw_id
