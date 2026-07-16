@@ -26,6 +26,7 @@ def _record_field(record: SyntheticRecord, field_name: str) -> SyntheticRecord:
 
 class _WireFormatContext(Protocol):
     provider: str
+    _active_record_bucket: tuple[str, str] | None
 
     def _ensure_wire_chatgpt(
         self,
@@ -172,11 +173,12 @@ def _ensure_wire_claude_code(
     index: int,
     theme: SessionTheme | None,
 ) -> None:
-    data.setdefault("type", role)
-    msg = _record_field(data, "message")
-    msg.setdefault("role", role)
-    if "content" not in msg:
-        msg["content"] = _claude_code_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
+    record_type = data.setdefault("type", role)
+    if self._active_record_bucket is None or record_type in {"assistant", "user", "system"}:
+        msg = _record_field(data, "message")
+        msg.setdefault("role", role)
+        if "content" not in msg:
+            msg["content"] = _claude_code_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
     if "timestamp" not in data:
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
@@ -221,6 +223,29 @@ def _ensure_wire_codex(
     index: int,
     theme: SessionTheme | None,
 ) -> None:
+    if self._active_record_bucket is not None:
+        record_type = data.get("type")
+        payload = _record_field(data, "payload")
+        if record_type == "response_item":
+            payload.clear()
+            payload["type"] = "message"
+            payload["role"] = role
+            payload["content"] = _codex_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
+            payload["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+        elif record_type == "event_msg":
+            payload.clear()
+            payload["type"] = "user_message" if role == "user" else "agent_message"
+            payload["message"] = _text_for_role(rng, role, turn_index=index, theme=theme)
+        elif record_type == "turn_context":
+            payload.clear()
+            payload["cwd"] = "/workspace/project"
+            payload["model"] = "synthetic-model"
+        elif record_type == "session_meta":
+            payload.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
+            payload.setdefault("timestamp", datetime.fromtimestamp(ts, tz=timezone.utc).isoformat())
+        data.setdefault("timestamp", datetime.fromtimestamp(ts, tz=timezone.utc).isoformat())
+        return
+
     data["type"] = "message"
     data.setdefault("role", role)
     if "content" not in data:

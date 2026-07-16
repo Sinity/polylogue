@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import random
+from collections import Counter
 from typing import Protocol
 
 from polylogue.core.json import JSONValue, is_json_value
@@ -26,6 +27,9 @@ class _SyntheticBatchContext(Protocol):
     provider: str
     package_version: str
     element_kind: str | None
+    workload_profile: SchemaRecord | None
+    _active_profile_tokens: tuple[str, ...]
+    _active_record_bucket: tuple[str, str] | None
     _relation_solver: RelationConstraintSolver
     _semantic_gen: SemanticValueGenerator | None
 
@@ -58,6 +62,8 @@ class _SyntheticBatchContext(Protocol):
     def _role_cycle(self) -> list[str]: ...
 
     def _serialize(self, data: JSONValue) -> bytes: ...
+
+    def _select_structural_variant(self, rng: random.Random) -> str | None: ...
 
 
 def _resolve_style(style: str) -> SyntheticStyle:
@@ -93,10 +99,20 @@ def generate_batch(
         raise ValueError("session_native_ids must contain exactly one id per generated session")
 
     rng = random.Random(seed)
+    profile_id = (
+        str(self.workload_profile.get("profile_id"))
+        if isinstance(self.workload_profile, dict) and self.workload_profile.get("profile_id") is not None
+        else "no-profile"
+    )
+    profile_rng = random.Random(f"{seed!r}\x1f{self.provider}\x1f{self.package_version}\x1f{profile_id}")
     artifacts: list[SyntheticArtifact] = []
+    selected_variants: Counter[str] = Counter()
     for index in range(count):
         self._relation_solver = RelationConstraintSolver(self.schema)
         self._semantic_gen = None
+        selected_variant = self._select_structural_variant(profile_rng)
+        if selected_variant is not None:
+            selected_variants[selected_variant] += 1
         n_messages = rng.choice(messages_per_session)
         theme = rng.choice(_DEMO_THEMES) if resolved_style == "demo" else None
         data = _generate_session(self, n_messages, rng, theme=theme)
@@ -127,6 +143,8 @@ def generate_batch(
         generated_count=len(artifacts),
         style=resolved_style,
         seed=seed,
+        workload_profile_id=None if profile_id == "no-profile" else profile_id,
+        structural_variant_counts=dict(sorted(selected_variants.items())),
     )
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
 
@@ -157,6 +175,15 @@ def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JS
                 record["sessionId"] = native_id
         return data
     if provider == "codex" and isinstance(data, list):
+        for record in data:
+            if not isinstance(record, dict) or record.get("type") != "session_meta":
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+                record["payload"] = payload
+            payload["id"] = native_id
+            return data
         data.insert(0, {"type": "session_meta", "payload": {"id": native_id}})
         return data
     raise ValueError(f"Provider {provider!r} does not support pinned synthetic session identities")

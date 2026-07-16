@@ -115,9 +115,20 @@ class _ToolScope:
     def observe(self, record: Mapping[str, object], position: int) -> None:
         kind = _text_token(record.get("type")) or _text_token(record.get("kind"))
         name = _first_text(record, ("name", "recipient_name", "tool_name"))
-        is_exec = name == "functions.exec"
-        is_result = kind in {"tool_result", "function_call_output", "tool_call_output", "function_result"}
-        is_call = is_exec or kind in {"tool_use", "function_call", "tool_call", "function"}
+        namespace = _first_text(record, ("namespace",))
+        is_exec = (
+            name == "functions.exec"
+            or (namespace == "functions" and name == "exec")
+            or (kind == "custom_tool_call" and name == "exec")
+        )
+        is_result = kind in {
+            "tool_result",
+            "function_call_output",
+            "tool_call_output",
+            "function_result",
+            "custom_tool_call_output",
+        }
+        is_call = is_exec or kind in {"tool_use", "function_call", "tool_call", "function", "custom_tool_call"}
         if not (is_call or is_result):
             return
         if is_exec:

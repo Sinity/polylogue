@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from collections import Counter
 from pathlib import Path
@@ -41,12 +42,16 @@ class SyntheticCorpus:
         *,
         package_version: str = "default",
         element_kind: str | None = None,
+        workload_profile: SchemaRecord | None = None,
     ) -> None:
         self.schema = schema
         self.wire_format = wire_format
         self.provider = provider
         self.package_version = package_version
         self.element_kind = element_kind
+        self.workload_profile = workload_profile
+        self._active_profile_tokens: tuple[str, ...] = ()
+        self._active_record_bucket: tuple[str, str] | None = None
         self._generation_state = SyntheticGenerationState(
             relation_solver=RelationConstraintSolver(schema),
             semantic_generator=None,
@@ -77,7 +82,69 @@ class SyntheticCorpus:
             selection.provider,
             package_version=selection.package_version,
             element_kind=selection.element_kind,
+            workload_profile=selection.workload_profile,
         )
+
+    def _select_structural_variant(self, rng: random.Random) -> str | None:
+        """Choose one observed co-occurrence variant for the next artifact."""
+        profile = self.workload_profile
+        if not isinstance(profile, dict):
+            self._active_profile_tokens = ()
+            return None
+        elements = profile.get("elements")
+        if not isinstance(elements, dict) or not elements:
+            self._active_profile_tokens = ()
+            return None
+        element_key = self.element_kind if self.element_kind in elements else next(iter(sorted(elements)))
+        element = elements.get(element_key)
+        if not isinstance(element, dict):
+            self._active_profile_tokens = ()
+            return None
+        raw_variants = element.get("structural_variants")
+        if not isinstance(raw_variants, list):
+            self._active_profile_tokens = ()
+            return None
+        variants: list[tuple[tuple[str, ...], int]] = []
+        for raw_variant in raw_variants:
+            if not isinstance(raw_variant, dict):
+                continue
+            raw_tokens = raw_variant.get("tokens")
+            count = raw_variant.get("count")
+            if not isinstance(raw_tokens, list) or not isinstance(count, int) or count <= 0:
+                continue
+            token_list: list[str] = []
+            for token in raw_tokens:
+                if not isinstance(token, str):
+                    token_list = []
+                    break
+                token_list.append(token)
+            if token_list:
+                variants.append((tuple(token_list), count))
+        if not variants:
+            self._active_profile_tokens = ()
+            return None
+        chosen_tokens = rng.choices(
+            [variant[0] for variant in variants],
+            weights=[variant[1] for variant in variants],
+            k=1,
+        )[0]
+        self._active_profile_tokens = chosen_tokens
+        digest = hashlib.sha256("\x1f".join(chosen_tokens).encode("utf-8")).hexdigest()[:16]
+        return f"structural-variant:sha256:{digest}"
+
+    def _profile_record_buckets(self) -> tuple[tuple[str, str], ...]:
+        """Return the record discriminator/value pairs in the active variant."""
+        buckets: list[tuple[str, str]] = []
+        for token in self._active_profile_tokens:
+            if not token.startswith("bucket:"):
+                continue
+            parts = token.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                continue
+            bucket = (parts[1], parts[2])
+            if bucket not in buckets:
+                buckets.append(bucket)
+        return tuple(buckets)
 
     @classmethod
     def from_spec(cls, spec: CorpusSpec) -> SyntheticCorpus:

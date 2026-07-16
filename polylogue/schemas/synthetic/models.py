@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
@@ -25,6 +25,7 @@ class SyntheticSchemaSelection:
     element_kind: str | None
     schema: SchemaRecord
     wire_format: WireFormat
+    workload_profile: SchemaRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class SyntheticGenerationReport:
     generated_count: int
     style: SyntheticStyle
     seed: int | None
+    workload_profile_id: str | None = None
+    structural_variant_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -28,6 +28,8 @@ class _SchemaRegistryLike(Protocol):
 
     def get_schema(self, provider: str, version: str = "default") -> SchemaRecord | None: ...
 
+    def get_workload_profile(self, provider: str, version: str = "default") -> SchemaRecord | None: ...
+
     def list_providers(self) -> list[str]: ...
 
 
@@ -88,12 +90,15 @@ def select_synthetic_schema(
     if not wire_format:
         raise ValueError(f"No wire format config for provider: {canonical_provider}")
 
+    profile_loader = getattr(registry, "get_workload_profile", None)
+    workload_profile = profile_loader(canonical_provider, canonical_version) if callable(profile_loader) else None
     return SyntheticSchemaSelection(
         provider=canonical_provider,
         package_version=canonical_version,
         element_kind=resolved_element_kind,
         schema=schema,
         wire_format=wire_format,
+        workload_profile=workload_profile,
     )
 
 

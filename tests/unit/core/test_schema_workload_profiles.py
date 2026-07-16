@@ -25,6 +25,7 @@ from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
+from polylogue.sources.dispatch import parse_payload
 
 
 def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
@@ -230,12 +231,132 @@ def test_registry_roundtrips_separate_workload_profile_artifact(tmp_path: Path) 
     assert registry.get_element_schema("chatgpt", version="v1") is not None
 
 
+def test_synthetic_generation_selects_joint_structural_variants() -> None:
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "alpha": {"type": "integer", "x-polylogue-frequency": 0.0},
+            "beta": {"type": "integer", "x-polylogue-frequency": 0.0},
+            "unrelated": {"type": "integer"},
+        },
+    }
+    workload_profile: JSONDocument = {
+        "profile_id": "workload-profile:joint-test",
+        "elements": {
+            "session_document": {
+                "structural_variants": [
+                    {
+                        "count": 10,
+                        "tokens": ["field:alpha", "field:beta", "type:alpha:number"],
+                    }
+                ]
+            }
+        },
+    }
+    corpus = SyntheticCorpus(
+        schema,
+        WireFormat(encoding="json"),
+        "test",
+        element_kind="session_document",
+        workload_profile=workload_profile,
+    )
+
+    batch = corpus.generate_batch(count=5, seed=7)
+    decoded = [json.loads(item) for item in batch.raw_items]
+
+    assert all(set(item) == {"alpha", "beta"} for item in decoded)
+    assert batch.report.workload_profile_id == "workload-profile:joint-test"
+    assert sum(batch.report.structural_variant_counts.values()) == 5
+
+
+def test_joint_variant_selection_does_not_perturb_content_rng() -> None:
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "alpha": {"type": "integer"},
+            "beta": {"type": "integer"},
+        },
+        "required": ["alpha", "beta"],
+    }
+    baseline = SyntheticCorpus(schema, WireFormat(encoding="json"), "test")
+    profiled = SyntheticCorpus(
+        schema,
+        WireFormat(encoding="json"),
+        "test",
+        element_kind="session_document",
+        workload_profile={
+            "profile_id": "workload-profile:all-fields",
+            "elements": {
+                "session_document": {"structural_variants": [{"count": 1, "tokens": ["field:alpha", "field:beta"]}]}
+            },
+        },
+    )
+
+    assert profiled.generate(count=3, seed=9) == baseline.generate(count=3, seed=9)
+
+
+def test_synthetic_codex_realizes_record_stream_variant_through_parser() -> None:
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "payload": {"type": "object"},
+            "timestamp": {"type": "string"},
+            "type": {"type": "string"},
+            "unrelated": {"type": "string"},
+        },
+    }
+    bucket_tokens: list[JSONValue] = [
+        token
+        for bucket in ("session_meta", "response_item", "event_msg", "turn_context")
+        for token in (
+            f"bucket:type:{bucket}",
+            f"field:type:{bucket}:payload",
+            f"type:type:{bucket}:payload:object",
+            f"field:type:{bucket}:timestamp",
+            f"type:type:{bucket}:timestamp:string",
+            f"field:type:{bucket}:type",
+            f"type:type:{bucket}:type:string",
+        )
+    ]
+    corpus = SyntheticCorpus(
+        schema,
+        WireFormat(encoding="jsonl"),
+        "codex",
+        element_kind="session_record_stream",
+        workload_profile={
+            "profile_id": "workload-profile:codex-stream",
+            "elements": {"session_record_stream": {"structural_variants": [{"count": 1, "tokens": bucket_tokens}]}},
+        },
+    )
+
+    batch = corpus.generate_batch(
+        count=1,
+        seed=19,
+        messages_per_session=range(2, 3),
+        session_native_ids=("synthetic-session",),
+    )
+    records = [json.loads(line) for line in batch.raw_items[0].splitlines()]
+
+    assert {record["type"] for record in records} == {
+        "session_meta",
+        "response_item",
+        "event_msg",
+        "turn_context",
+    }
+    assert all("unrelated" not in record for record in records)
+    sessions = parse_payload("codex", records, "fallback")
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "synthetic-session"
+    assert sessions[0].messages
+
+
 def test_workload_profile_models_tool_relationships_without_persisting_ids() -> None:
     call_unit = SchemaUnit(
         cluster_payload={},
         schema_samples=[
             {"type": "function_call", "name": "functions.exec", "call_id": "private-call-1"},
             {"type": "function_call", "name": "other", "call_id": "private-call-2"},
+            {"type": "custom_tool_call", "name": "exec", "call_id": "private-call-3"},
         ],
         artifact_kind="session_record_stream",
         bundle_scope="session-a",
@@ -251,6 +372,7 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
                 "parentUuid": "private-parent",
                 "isSidechain": True,
             },
+            {"type": "custom_tool_call_output", "call_id": "private-call-3"},
             {"type": "function_call_output", "call_id": "private-orphan"},
         ],
         artifact_kind="session_record_stream",
@@ -284,11 +406,11 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
     relationships = cast(dict[str, JSONValue], profile["relationships"])
     tool_results = cast(dict[str, JSONValue], relationships["tool_results"])
     lineage = cast(dict[str, JSONValue], relationships["lineage"])
-    assert tool_results["paired"] == 1
+    assert tool_results["paired"] == 2
     assert tool_results["missing"] == 1
     assert tool_results["orphan"] == 1
     assert tool_results["error_results"] == 1
-    assert tool_results["functions_exec_calls"] == 1
+    assert tool_results["functions_exec_calls"] == 2
     assert lineage["parent_references"] == 1
     assert lineage["sidechain_true"] == 1
     serialized = json.dumps(profile, sort_keys=True)

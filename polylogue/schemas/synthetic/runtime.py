@@ -24,6 +24,8 @@ class _SyntheticRuntimeContext(Protocol):
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
     _relation_solver: RelationConstraintSolver
+    _active_profile_tokens: tuple[str, ...]
+    _active_record_bucket: tuple[str, str] | None
 
     def _generate_from_schema(
         self,
@@ -256,6 +258,24 @@ def _generate_object(
     obj: SyntheticRecord = {}
     properties = _schema_record(schema.get("properties"))
     candidate_keys = set(properties.keys())
+    selected_root_fields: set[str] = set()
+    if path == "$" and self._active_profile_tokens:
+        if self._active_record_bucket is None:
+            selected_root_fields = {
+                token.removeprefix("field:")
+                for token in self._active_profile_tokens
+                if token.startswith("field:") and token.count(":") == 1
+            }
+        else:
+            discriminator, bucket_value = self._active_record_bucket
+            prefix = f"field:{discriminator}:{bucket_value}:"
+            selected_root_fields = {
+                token.removeprefix(prefix)
+                for token in self._active_profile_tokens
+                if token.startswith(prefix) and token.count(":") == 3
+            }
+        if selected_root_fields:
+            candidate_keys &= selected_root_fields
     if skip_keys:
         candidate_keys -= skip_keys
 
@@ -271,8 +291,10 @@ def _generate_object(
 
         freq_value = prop_schema.get("x-polylogue-frequency")
         freq = float(freq_value) if isinstance(freq_value, (int, float)) else 1.0
-        if freq < 1.0 and rng.random() > freq:
+        if prop_name not in selected_root_fields and freq < 1.0 and rng.random() > freq:
             continue
+        if prop_name in selected_root_fields and freq < 1.0:
+            prop_schema = {**prop_schema, "x-polylogue-frequency": 1.0}
 
         child_path = f"{path}.{prop_name}"
         ref = self._relation_solver.resolve_foreign_key(child_path, rng)
