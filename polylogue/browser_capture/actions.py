@@ -72,7 +72,10 @@ def action_root(spool_path: Path | None = None) -> Path:
 
 
 def _action_dir(root: Path, action_id: str) -> Path:
-    return root / _safe_token(action_id)
+    canonical = _safe_token(action_id)
+    if action_id != canonical:
+        raise ValueError("browser action id must use its canonical spelling")
+    return root / canonical
 
 
 def _action_path(root: Path, action_id: str) -> Path:
@@ -411,6 +414,11 @@ def _validate_receipt(
         (receipt.provider_conversation_id, receipt.provider_conversation_url, receipt.provider_turn_id)
     ):
         raise BrowserActionConflictError("submitted browser action receipt is incomplete")
+    if submitted and action.operation == "conversation.reply":
+        expected_conversation = action.target.conversation_id
+        receipt_url_path = urlparse(receipt.provider_conversation_url or "").path.split("/")
+        if receipt.provider_conversation_id != expected_conversation or expected_conversation not in receipt_url_path:
+            raise BrowserActionConflictError("browser action receipt conversation mismatch")
     if submitted and not receipt.provider_evidence:
         raise BrowserActionConflictError("submitted browser action receipt lacks provider evidence")
     return receipt
@@ -440,6 +448,7 @@ def update_action(
     if action.lease_owner != update.owner_instance_id:
         raise BrowserActionLeaseError("browser action update requires the current lease owner")
     now = _now()
+    prior_status = action.status
     action.phase = update.phase
     action.updated_at = _iso(now)
     action.retry_after_seconds = update.retry_after_seconds
@@ -452,7 +461,11 @@ def update_action(
             extension_owner=update.owner_instance_id,
         )
     if update.outcome == "progress":
-        action.status = "submit_intent" if update.phase == "submit_intent" else "preparing"
+        action.status = (
+            "submit_intent" if prior_status == "submit_intent" or update.phase == "submit_intent" else "preparing"
+        )
+        if action.status == "submit_intent":
+            action.phase = "submit_intent"
         if update.phase == "submit_intent" and action.submit_intent_at is None:
             action.submit_intent_at = _iso(now)
         action.lease_expires_at = _iso(now + timedelta(seconds=ACTION_LEASE_SECONDS))

@@ -366,7 +366,9 @@
       id: entry.key || `freshness-${index}`,
       kind: "freshness",
       title: `${providerLabel(entry.provider)} conversation ${entry.native_id}`,
-      status: receiverOnline === false ? { ...OPERATOR_STATUS.receiver_offline } : { ...WORK_STATUS.queued },
+      status: receiverOnline === false
+        ? { ...OPERATOR_STATUS.receiver_offline }
+        : { ...(entry.lease_owner ? WORK_STATUS.running : WORK_STATUS.queued) },
       phase: entry.lease_owner ? "Checking latest provider turn" : "Waiting for freshness check",
       cadence: nextAttemptLabel(new Date(entry.next_attempt_at_ms || 0).toISOString()),
       owner: entry.lease_owner || "This extension",

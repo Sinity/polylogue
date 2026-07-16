@@ -143,6 +143,21 @@ describe("shared operator status vocabulary", () => {
       cadence: "Due in 2m",
       receipt: "provider_push_new_message",
     });
+
+    const leased = api.normalizeWorkItems({
+      receiverOnline: true,
+      freshnessQueue: {
+        entries: {
+          "chatgpt:leased": {
+            provider: "chatgpt",
+            native_id: "leased",
+            lease_owner: "extension-two",
+            next_attempt_at_ms: Date.parse("2026-07-16T12:02:00Z"),
+          },
+        },
+      },
+    }).find((item) => item.kind === "freshness");
+    expect(leased).toMatchObject({ status: { code: "running", label: "Running" } });
     vi.useRealTimers();
   });
 

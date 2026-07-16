@@ -160,6 +160,14 @@ def token_show(rotate: bool, output_format: str | None) -> None:
     help="Submit once or only stage a verified provider draft.",
 )
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
+@click.option("--auth-token", "auth_token", default=None, help="Bearer token used by the active receiver.")
+@click.option(
+    "--allow-no-auth",
+    is_flag=True,
+    default=False,
+    envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
+    help="Target a receiver explicitly running without bearer authentication.",
+)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def action_command(
     provider: str,
@@ -177,6 +185,8 @@ def action_command(
     idempotency_key: str | None,
     submit: bool,
     spool_path: Path | None,
+    auth_token: str | None,
+    allow_no_auth: bool,
     output_format: str | None,
 ) -> None:
     """Enqueue one provider-neutral action for a replaceable extension."""
@@ -226,7 +236,7 @@ def action_command(
         )
         receiver_config = BrowserCaptureReceiverConfig(
             spool_path=spool_path or BrowserCaptureReceiverConfig.default().spool_path,
-            auth_token=resolve_receiver_auth_token(None, allow_no_auth=False),
+            auth_token=resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth),
         )
         action = enqueue_action(
             request,

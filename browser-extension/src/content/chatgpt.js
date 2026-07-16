@@ -18,7 +18,7 @@
   const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
-  let freshnessHintTimer = null;
+  const freshnessHintTimers = new Map();
   let domFreshnessScanTimer = null;
   let lastDomFreshnessSignature = null;
 
@@ -41,9 +41,10 @@
 
   function queueFreshnessHint(reason, nativeId = conversationIdFromUrl(), delayMs = 5000, providerUpdatedAt = null) {
     if (!nativeId || !/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return;
-    if (freshnessHintTimer) clearTimeout(freshnessHintTimer);
-    freshnessHintTimer = setTimeout(() => {
-      freshnessHintTimer = null;
+    const existingTimer = freshnessHintTimers.get(nativeId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      freshnessHintTimers.delete(nativeId);
       chrome.runtime.sendMessage({
         type: "polylogue.captureFreshnessHint",
         provider: "chatgpt",
@@ -53,6 +54,7 @@
         delay_ms: delayMs,
       }).catch(() => undefined);
     }, 750);
+    freshnessHintTimers.set(nativeId, timer);
   }
 
   function nativeCaptureIdentity(capture) {

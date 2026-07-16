@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -63,6 +64,7 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+_SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -168,12 +170,18 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     def _send_bytes(self, payload: bytes, *, content_type: str, filename: str) -> None:
         if any(ord(character) < 32 or ord(character) == 127 for character in filename):
             raise ValueError("download filename contains control characters")
+        safe_content_type = content_type if _SAFE_MEDIA_TYPE.fullmatch(content_type) else "application/octet-stream"
+        ascii_filename = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").replace("\\", "")
+        ascii_filename = ascii_filename or "download"
         origin = self.headers.get("Origin")
         self.send_response(HTTPStatus.OK.value)
         self.send_header("X-Request-ID", self._request_id())
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", safe_content_type)
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Content-Disposition", f'attachment; filename="{filename.replace(chr(34), "")}"')
+        self.send_header(
+            "Content-Disposition",
+            f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename, safe='')}",
+        )
         if _origin_allowed(origin, self.server.config):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
@@ -275,6 +283,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     and (claimed := claim_action(claim_by, spool_path=self.server.config.spool_path)) is not None
                     else ([] if claim_by else list_actions(spool_path=self.server.config.spool_path))
                 )
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
             except (OSError, BrowserActionStateError) as exc:
                 logger.warning("browser_capture.action_list_failed", request_id=self._request_id(), error=repr(exc))
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
@@ -288,6 +299,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 result = read_action_attachment(action_id, attachment_id, spool_path=self.server.config.spool_path)
             except BrowserActionConflictError:
                 self._safe_error(HTTPStatus.CONFLICT, "browser_action_attachment_integrity_mismatch")
+                return
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
                 return
             except (OSError, BrowserActionStateError) as exc:
                 logger.warning(
@@ -305,6 +319,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             action_id = parsed.path[len("/v1/browser-actions/") :]
             try:
                 action = get_action(action_id, spool_path=self.server.config.spool_path)
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
             except (OSError, BrowserActionStateError) as exc:
                 logger.warning("browser_capture.action_read_failed", request_id=self._request_id(), error=repr(exc))
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
@@ -474,6 +491,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except BrowserActionConflictError:
             self._safe_error(HTTPStatus.CONFLICT, "browser_action_receipt_conflict")
             return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
         except (OSError, BrowserActionStateError) as exc:
             logger.warning("browser_capture.action_update_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
@@ -495,6 +515,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         except BrowserActionConflictError:
             self._safe_error(HTTPStatus.CONFLICT, "browser_action_reconciliation_conflict")
+            return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
             return
         except (OSError, BrowserActionStateError) as exc:
             logger.warning("browser_capture.action_reconcile_failed", request_id=self._request_id(), error=repr(exc))

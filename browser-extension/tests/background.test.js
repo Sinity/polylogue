@@ -975,6 +975,47 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
+  it("does not hand a throttled archive-state refresh to automatic capture", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-throttle", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-throttle",
+      state: "archived",
+      captured: true,
+    }));
+
+    activatedListener({ tabId: 42 });
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
+    activatedListener({ tabId: 42 });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    expect((stored.polylogueConversationTimeline?.["chatgpt:conv-throttle"] || [])
+      .some((event) => event.detail === "background_capture_throttled")).toBe(false);
+  });
+
+  it("keeps the earliest freshness deadline when a later hint is queued", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "earliest",
+      reason: "first",
+      delay_ms: 1_000,
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "later",
+      reason: "second",
+      delay_ms: 60_000,
+    });
+
+    const freshnessAlarms = globalThis.chrome.alarms.create.mock.calls
+      .filter(([name]) => name === "polylogueCaptureFreshnessWake");
+    expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 101_000 });
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;
@@ -1450,6 +1491,99 @@ describe("provider-neutral browser action worker", () => {
     finishExecution();
     await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("submitted"));
     expect(clearIntervalSpy).toHaveBeenCalledWith(123);
+  });
+
+  it("honors structured provider Retry-After after the submit boundary fails closed", async () => {
+    const action = {
+      action_id: "action-rate",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless rate-limit fixture.",
+      attachments: [],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "submit_once",
+      status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-rate/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => [{ result: {
+      ok: false,
+      detail: "provider response http_429",
+      retry_after_seconds: 75,
+      submission_may_have_occurred: false,
+    } }]);
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
+    expect(updates.at(-1)).toMatchObject({ retry_after_seconds: 75, phase: "provider_action_failed" });
+  });
+
+  it("stops reading an attachment response at the extension transport limit", async () => {
+    const action = {
+      action_id: "action-oversized",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless bounded-read fixture.",
+      attachments: [{
+        attachment_id: "attachment-1",
+        name: "context.bin",
+        mime_type: "application/octet-stream",
+        size_bytes: 1,
+        sha256: "00".repeat(32),
+      }],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "stage_only",
+      status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    let cancelled = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).includes("/attachments/attachment-1")) {
+        const body = new globalThis.ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+            controller.enqueue(new Uint8Array(9 * 1024 * 1024));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        });
+        return new globalThis.Response(body, { status: 200 });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-oversized/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("provider_drift"));
+    expect(updates.at(-1).detail).toContain("protocol_attachment_transport_limit");
+    expect(cancelled).toBe(true);
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 });
 

@@ -1608,9 +1608,7 @@ async function scheduleCaptureFreshness({
     }));
   });
   const entry = queue.entries[`${provider}:${nativeId}`];
-  await chrome.alarms?.create?.(CAPTURE_FRESHNESS_ALARM, {
-    when: Math.max(Date.now() + 1_000, entry.next_attempt_at_ms),
-  });
+  await scheduleNextCaptureFreshnessWake(queue);
   return { scheduled: true, entry };
 }
 
@@ -1828,7 +1826,31 @@ async function browserActionAttachmentBytes(action) {
       error.retryAfterSeconds = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
       throw error;
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const remaining = BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES - (total - Number(item.size_bytes || 0));
+    const declaredLength = Number.parseInt(response.headers.get("Content-Length") || "", 10);
+    if (Number.isFinite(declaredLength) && declaredLength > remaining) {
+      throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + declaredLength}`);
+    }
+    if (!response.body?.getReader) throw new Error("protocol_attachment_stream_unavailable");
+    const reader = response.body.getReader();
+    const chunks = [];
+    let downloaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      downloaded += value.byteLength;
+      if (downloaded > remaining) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + downloaded}`);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(downloaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
     if (bytes.length !== item.size_bytes) throw new Error(`protocol_attachment_size_mismatch:${item.attachment_id}`);
     const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
       .map((value) => value.toString(16).padStart(2, "0"))
@@ -1934,6 +1956,7 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
     if (!result?.ok) {
       const error = new Error(result?.detail || "protocol_browser_action_result_missing");
       error.submissionMayHaveOccurred = Boolean(result?.submission_may_have_occurred);
+      error.retryAfterSeconds = result?.retry_after_seconds || null;
       throw error;
     }
     const receipt = {
@@ -2422,7 +2445,7 @@ chrome.tabs?.onActivated?.addListener((activeInfo) => {
   void (async () => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     const archiveState = await refreshActiveTabArchiveState(tab, "tab_activated");
-    if (!["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
+    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
       await captureTab(tab, "tab_activated");
     }
   })();
@@ -2433,7 +2456,7 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   void (async () => {
     const resolvedTab = tab?.id ? tab : await chrome.tabs.get(tabId);
     const archiveState = await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
-    if (!["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
+    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
       await captureTab(resolvedTab, "tab_updated");
     }
   })();

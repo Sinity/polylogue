@@ -89,7 +89,9 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     }
     if (!response.ok) {
       const retryAfter = response.headers.get("Retry-After");
-      throw new Error(`provider response http_${response.status}${retryAfter ? ` retry_after_${retryAfter}` : ""}`);
+      const error = new Error(`provider response http_${response.status}${retryAfter ? ` retry_after_${retryAfter}` : ""}`);
+      error.retryAfterSeconds = Number.parseInt(retryAfter || "", 10) || null;
+      throw error;
     }
     return { conversation: await response.json(), status: response.status };
   };
@@ -126,9 +128,11 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     }
 
     let baselineUserIds = new Set();
+    let providerBaselineComplete = action.operation !== "conversation.reply";
     if (action.operation === "conversation.reply") {
       const baselineRead = await providerConversation(action.target.conversation_id, true);
       const baseline = baselineRead.conversation;
+      providerBaselineComplete = Boolean(baseline);
       baselineUserIds = baseline
         ? new Set(userMessages(baseline).map((message) => message.id))
         : new Set(domUserMessages().map((message) => message.id));
@@ -256,7 +260,7 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     const receipt = await waitFor(async () => {
       const providerRead = await providerConversation(conversationId, true);
       const conversation = providerRead.conversation;
-      if (conversation) {
+      if (conversation && providerBaselineComplete) {
         const submitted = userMessages(conversation)
           .find((message) => !baselineUserIds.has(message.id) && messageText(message) === expectedText);
         if (!submitted) return null;
@@ -294,6 +298,7 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
       ok: false,
       detail: String(error?.message || error),
       submission_may_have_occurred: submissionMayHaveOccurred,
+      retry_after_seconds: error?.retryAfterSeconds || null,
     };
   }
 }

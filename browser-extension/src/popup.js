@@ -138,6 +138,7 @@ function activeConversationState(tab, globalState, ledger) {
   const context = tabState(tab, ledger);
   const onlineState = {
     online: globalState?.online ?? true,
+    error: globalState?.error || null,
     receiver_pairing: globalState?.receiver_pairing || null,
     receiver_health: globalState?.receiver_health || null,
   };

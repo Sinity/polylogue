@@ -441,6 +441,26 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(textReads).toBe(baselineReads + turns.length);
   });
 
+  it("debounces native freshness hints independently per conversation", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter());
+    for (const conversationId of ["conversation-a", "conversation-b"]) {
+      harness.dom.window.postMessage({
+        type: "polylogue.chatgpt.nativeCapture",
+        capture: {
+          ok: true,
+          body: JSON.stringify({ conversation_id: conversationId, update_time: 1781366460 }),
+        },
+      });
+    }
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 800));
+    const hints = harness.runtimeMessages.filter((message) => message.type === "polylogue.captureFreshnessHint");
+    expect(hints.map((message) => message.provider_session_id).sort()).toEqual([
+      "conversation-a",
+      "conversation-b",
+    ]);
+  });
+
   it("reuses supplied native detail without a second conversation read", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });

@@ -248,6 +248,18 @@ def test_pre_submit_lease_is_replaceable_but_submit_intent_is_quarantined(
     ) or pytest.fail("missing renewed submit intent")
     assert renewed.submit_intent_at == original_intent_at
     assert renewed.lease_expires_at != original_expiry
+    preserved = update_action(
+        replacement.action_id,
+        BrowserActionUpdateRequest(
+            owner_instance_id="extension-two",
+            outcome="progress",
+            phase="preparing",
+            detail="late pre-submit heartbeat",
+        ),
+        spool_path=tmp_path,
+    ) or pytest.fail("missing preserved submit intent")
+    assert preserved.status == "submit_intent"
+    assert preserved.phase == "submit_intent"
     frozen_clock.advance(181)
     assert claim_action("extension-three", spool_path=tmp_path) is None
     quarantined = get_action(replacement.action_id, spool_path=tmp_path) or pytest.fail("missing action")
@@ -298,6 +310,32 @@ def test_lease_owner_receipt_and_explicit_uncertainty_reconciliation(tmp_path: P
         spool_path=tmp_path,
     )
     assert retried == reconciled
+
+
+def test_reply_receipt_must_match_the_requested_conversation(tmp_path: Path) -> None:
+    action = enqueue_action(
+        _request(operation="conversation.reply", conversation_id="conversation-target"),
+        receiver_id=_RECEIVER_ID,
+        spool_path=tmp_path,
+    )
+    claimed = claim_action("extension-one", spool_path=tmp_path) or pytest.fail("action was not claimed")
+    wrong_receipt = _receipt(action.action_id).model_copy(
+        update={
+            "provider_conversation_id": "conversation-other",
+            "provider_conversation_url": "https://chatgpt.com/c/conversation-other",
+        }
+    )
+    with pytest.raises(BrowserActionConflictError, match="conversation mismatch"):
+        update_action(
+            action.action_id,
+            BrowserActionUpdateRequest(
+                owner_instance_id=claimed.lease_owner or "",
+                outcome="submitted",
+                phase="submitted",
+                receipt=wrong_receipt,
+            ),
+            spool_path=tmp_path,
+        )
 
 
 @contextmanager
@@ -387,6 +425,57 @@ def test_http_contract_create_claim_attachment_update_and_read(tmp_path: Path) -
         status, content, _ = _http(host, port, "GET", f"/v1/browser-actions/{created['action_id']}")
         assert status == HTTPStatus.OK
         assert json.loads(content)["action"]["receipt"]["provider_turn_id"] == "turn-user-1"
+
+
+def test_http_contract_rejects_noncanonical_action_ids(tmp_path: Path) -> None:
+    with _receiver(tmp_path) as (host, port):
+        for method, path, body in (
+            ("GET", "/v1/browser-actions/foo@bar", None),
+            ("GET", "/v1/browser-actions/foo@bar/attachments/attachment-1", None),
+            (
+                "POST",
+                "/v1/browser-actions/foo@bar/events",
+                {"owner_instance_id": "extension-one", "outcome": "progress", "phase": "preparing"},
+            ),
+        ):
+            status, content, _ = _http(host, port, method, path, body=body)
+            assert status == HTTPStatus.BAD_REQUEST
+            assert json.loads(content)["error"] == "invalid_browser_action_id"
+
+
+def test_attachment_download_headers_are_safe_for_unicode_metadata(tmp_path: Path) -> None:
+    request = _request().model_copy(
+        update={
+            "attachments": [
+                BrowserActionAttachmentInput(
+                    name="résumé.zip",
+                    mime_type="text/plain; charset=utf-8",
+                    content_base64=base64.b64encode(b"safe bytes").decode(),
+                )
+            ]
+        }
+    )
+    with _receiver(tmp_path) as (host, port):
+        status, content, _ = _http(
+            host,
+            port,
+            "POST",
+            "/v1/browser-actions",
+            body=request.model_dump(mode="json"),
+        )
+        assert status == HTTPStatus.ACCEPTED
+        created = json.loads(content)["action"]
+        attachment_id = created["attachments"][0]["attachment_id"]
+        status, content, headers = _http(
+            host,
+            port,
+            "GET",
+            f"/v1/browser-actions/{created['action_id']}/attachments/{attachment_id}",
+        )
+        assert status == HTTPStatus.OK
+        assert content == b"safe bytes"
+        assert headers["content-type"] == "application/octet-stream"
+        assert "filename*=UTF-8''r%C3%A9sum%C3%A9.zip" in headers["content-disposition"]
 
 
 def test_route_contracts_cover_every_browser_action_route() -> None:

@@ -212,6 +212,66 @@ describe("ChatGPT browser action adapter", () => {
     });
   });
 
+  it("stays on DOM receipt matching when the reply baseline was incomplete", async () => {
+    installPage("https://chatgpt.com/c/conversation-1");
+    let reads = 0;
+    globalThis.fetch = vi.fn(async () => {
+      reads += 1;
+      if (reads === 1) return responseJson({ detail: "temporarily unavailable" }, 404);
+      return responseJson({
+        mapping: {
+          olderHiddenDuplicate: {
+            message: {
+              id: "older-hidden-duplicate",
+              author: { role: "user" },
+              content: { parts: ["Implement the targeted change and report substantive output."] },
+            },
+          },
+        },
+      });
+    });
+    document.querySelector("button.composer-submit-button-color").addEventListener("click", () => {
+      const message = document.createElement("div");
+      message.dataset.messageAuthorRole = "user";
+      message.dataset.messageId = "new-visible-user-turn";
+      message.textContent = "Implement the targeted change and report substantive output.";
+      document.body.appendChild(message);
+    });
+
+    const result = await executeChatGptBrowserActionInPage(action({
+      operation: "conversation.reply",
+      target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
+      submit_policy: "submit_once",
+    }), []);
+
+    expect(result).toMatchObject({
+      ok: true,
+      provider_turn_id: "new-visible-user-turn",
+      provider_evidence: { receipt_source: "provider_dom" },
+    });
+  });
+
+  it("preserves provider Retry-After metadata in a structured failure", async () => {
+    installPage("https://chatgpt.com/c/conversation-1");
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: vi.fn((name) => (name === "Retry-After" ? "75" : null)) },
+    }));
+
+    const result = await executeChatGptBrowserActionInPage(action({
+      operation: "conversation.reply",
+      target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
+      submit_policy: "submit_once",
+    }), []);
+
+    expect(result).toMatchObject({
+      ok: false,
+      submission_may_have_occurred: false,
+      retry_after_seconds: 75,
+    });
+  });
+
   it("fails closed before submit when the requested project does not match", async () => {
     installPage("https://chatgpt.com/c/conversation-1");
     const result = await executeChatGptBrowserActionInPage(action({
