@@ -50,6 +50,7 @@ from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     LineageTruncationReason,
 )
+from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
@@ -3171,7 +3172,11 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 
 _SIG_FIELD_SEP = "\x1f"
 _SIG_BLOCK_SEP = "\x1e"
+# The synchronous envelope reader below is recursive, so retain its conservative
+# Python-stack guard. Writer-side signature composition is iterative and shares
+# the async reader's much larger runaway backstop.
 _MAX_LINEAGE_DEPTH = 64
+_MAX_WRITER_LINEAGE_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
 
 
 def _canonical_json(value: object) -> str:
@@ -3271,8 +3276,9 @@ def _composed_db_signatures(
     _depth: int = 0,
 ) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
-    transcript (its inherited prefix + own tail), recursively resolving any
-    prefix-sharing lineage edge. Mirrors the read-side composition.
+    transcript (its inherited prefix + own tail). Walk the lineage iteratively
+    and compose root-to-leaf, mirroring the async read path without inheriting
+    the synchronous envelope reader's Python-stack limit.
 
     When ``cache`` is supplied, each session's OWN signatures are memoized by
     ``session_id`` for the life of one ingest batch. When ``composed_cache`` is
@@ -3291,59 +3297,77 @@ def _composed_db_signatures(
             return _composed_db_signatures(conn, session_id, cache=cache, composed_cache=composed_cache, _depth=_depth)
         finally:
             conn.execute("ROLLBACK")
-    if composed_cache is not None:
-        composed = composed_cache.get(session_id)
-        if composed is not None:
-            return composed
-    own = cache.get(session_id) if cache is not None else None
-    if own is None:
-        own = _own_db_signatures(conn, session_id)
-        if cache is not None:
-            cache[session_id] = own
 
-    if _depth >= _MAX_LINEAGE_DEPTH:
-        if composed_cache is not None:
-            composed_cache[session_id] = own
+    def own_signatures(target_session_id: str) -> list[tuple[str, str]]:
+        own = cache.get(target_session_id) if cache is not None else None
+        if own is None:
+            own = _own_db_signatures(conn, target_session_id)
+            if cache is not None:
+                cache[target_session_id] = own
         return own
-    edge = conn.execute(
-        """
-        SELECT resolved_dst_session_id, branch_point_message_id
-        FROM session_links
-        WHERE src_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND resolved_dst_session_id IS NOT NULL
-          AND branch_point_message_id IS NOT NULL
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
-    if edge is None:
+
+    # Collect (child, branch point, child-owned rows) leaf-first, then compose
+    # from the oldest reached ancestor down. A visited set is the real cycle
+    # guard; the shared depth limit only bounds malformed acyclic chains.
+    chain: list[tuple[str, str, list[tuple[str, str]]]] = []
+    visited = {session_id}
+    cursor_session_id = session_id
+    composed: list[tuple[str, str]] | None = None
+    remaining_depth = max(0, _MAX_WRITER_LINEAGE_DEPTH - _depth)
+    for _ in range(remaining_depth):
         if composed_cache is not None:
-            composed_cache[session_id] = own
-        return own
-    parent_id, branch_point_message_id = edge
-    parent_composed = _composed_db_signatures(
-        conn,
-        str(parent_id),
-        cache=cache,
-        composed_cache=composed_cache,
-        _depth=_depth + 1,
-    )
-    prefix: list[tuple[str, str]] = []
-    found = False
-    for entry in parent_composed:
-        prefix.append(entry)
-        if entry[0] == branch_point_message_id:
-            found = True
+            cached_composed = composed_cache.get(cursor_session_id)
+            if cached_composed is not None:
+                composed = cached_composed
+                break
+        own = own_signatures(cursor_session_id)
+        edge = conn.execute(
+            """
+            SELECT resolved_dst_session_id, branch_point_message_id
+            FROM session_links
+            WHERE src_session_id = ?
+              AND inheritance = 'prefix-sharing'
+              AND resolved_dst_session_id IS NOT NULL
+              AND branch_point_message_id IS NOT NULL
+            LIMIT 1
+            """,
+            (cursor_session_id,),
+        ).fetchone()
+        if edge is None:
+            composed = own
+            if composed_cache is not None:
+                composed_cache[cursor_session_id] = composed
             break
-    # A branch point that no longer exists in the composed parent is not a
-    # license to inherit a nearby or entire prefix.  The synchronous and async
-    # read paths both expose only the child's owned tail in this state; keep the
-    # writer-side alignment stream identical so a later re-ingest cannot turn a
-    # dangling edge into a fabricated complete lineage.
-    composed = (prefix if found else []) + own
-    if composed_cache is not None:
-        composed_cache[session_id] = composed
+        parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
+        if parent_id in visited:
+            composed = own
+            if composed_cache is not None:
+                composed_cache[cursor_session_id] = composed
+            break
+        chain.append((cursor_session_id, branch_point_message_id, own))
+        visited.add(parent_id)
+        cursor_session_id = parent_id
+    if composed is None:
+        # The runaway guard was exhausted. Match the async reader: start with
+        # the oldest reached session's own rows, then compose the retained
+        # descendant chain. Ancestors beyond the common cutoff are omitted.
+        composed = own_signatures(cursor_session_id)
+        if composed_cache is not None:
+            composed_cache[cursor_session_id] = composed
+
+    for child_session_id, branch_point_message_id, own in reversed(chain):
+        prefix: list[tuple[str, str]] = []
+        found = False
+        for entry in composed:
+            prefix.append(entry)
+            if entry[0] == branch_point_message_id:
+                found = True
+                break
+        # A genuinely missing branch point is not a license to inherit a nearby
+        # or entire prefix. This matches the async reader's dangling-edge rule.
+        composed = (prefix if found else []) + own
+        if composed_cache is not None:
+            composed_cache[child_session_id] = composed
     return composed
 
 

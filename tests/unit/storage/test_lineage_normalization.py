@@ -1664,6 +1664,72 @@ def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
+    """A valid branch point beyond the sync reader's stack guard stays valid.
+
+    The writer and async reader are iterative and share a larger runaway limit.
+    If writer composition accidentally reuses the sync reader's 64-level guard,
+    the later descendants cannot see the root branch point and become
+    spawned-fresh with a duplicated root message.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    provider_session_id = "deep-root"
+    root_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=provider_session_id,
+            title="deep root",
+            messages=[_msg("root-0", Role.USER, "root message", 0)],
+        ),
+    )
+
+    leaf: ParsedSession | None = None
+    leaf_id: str | None = None
+    for level in range(_MAX_LINEAGE_DEPTH + 2):
+        child_provider_id = f"deep-level-{level}"
+        leaf = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=child_provider_id,
+            title=child_provider_id,
+            parent_session_provider_id=provider_session_id,
+            branch_type=BranchType.FORK,
+            updated_at=f"2027-01-01T00:{level // 60:02d}:{level % 60:02d}Z",
+            messages=[
+                _msg("root-0", Role.USER, "root message", 0),
+                _msg(f"tail-{level}", Role.ASSISTANT, f"level {level} tail", 1),
+            ],
+        )
+        leaf_id = write_parsed_session_to_archive(conn, leaf)
+        provider_session_id = child_provider_id
+
+    assert leaf is not None
+    assert leaf_id is not None
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (leaf_id,),
+    ).fetchone()
+    assert tuple(link) == ("prefix-sharing", f"{root_id}:root-0")
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
+
+    # Full replacement/re-ingest exercises writer alignment again rather than
+    # merely preserving the link produced on the first write.
+    write_parsed_session_to_archive(
+        conn,
+        leaf.model_copy(update={"updated_at": "2027-01-01T00:59:59Z"}),
+    )
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (leaf_id,),
+    ).fetchone()
+    assert tuple(link) == ("prefix-sharing", f"{root_id}:root-0")
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
+    conn.close()
+
+    assert asyncio.run(_read_texts(db, leaf_id)) == ["root message", f"level {_MAX_LINEAGE_DEPTH + 1} tail"]
+
+
 def test_async_reports_incomplete_at_its_own_depth_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """4ts.6, async twin: get_messages_with_lineage_completeness is ITERATIVE
     (not recursive), so it has its own, much larger _MAX_LINEAGE_DEPTH (1024)
