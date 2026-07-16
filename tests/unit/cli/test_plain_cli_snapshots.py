@@ -15,9 +15,8 @@ comparison. A snapshot diff caused by a change in those fields is the test
 asserting against the wrong thing — the fix is to extend ``_redact`` below,
 not to update the baseline.
 
-The sessions are seeded via the ``corpus_seeded_db`` fixture (real
-synthetic pipeline output), so any user-visible drift in rendering of real
-session rows triggers a snapshot diff.
+The sessions are seeded from named real-pipeline archive artifacts, so any
+user-visible drift in rendering of real session rows triggers a snapshot diff.
 """
 
 from __future__ import annotations
@@ -58,24 +57,22 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def seeded_db_env(
-    corpus_seeded_db: Callable[..., Path],
+    named_seeded_archive: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
     """Seed a deterministic corpus DB through the archive pipeline.
 
-    ``corpus_seeded_db`` ingests synthetic sessions into the archive
-    archive and points ``POLYLOGUE_ARCHIVE_ROOT`` at the root that
-    holds the seeded ``index.db`` — exactly the store the CLI query verbs
-    read — so no XDG/symlink staging is required. Returns the index db path.
+    The named artifact is generated through the production pipeline then
+    cloned into the archive root the CLI query verbs read.
     """
-    db_path = corpus_seeded_db(providers=("chatgpt",), count=2, seed=42)
+    db_path = named_seeded_archive("cli-chatgpt")
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     return db_path
 
 
 @pytest.fixture
 def postmortem_seeded_env(
-    corpus_seeded_db: Callable[..., Path],
+    named_seeded_archive: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
     """Seed a corpus DB and materialize the session-profile insights.
@@ -88,7 +85,7 @@ def postmortem_seeded_env(
 
     from polylogue.api import Polylogue
 
-    db_path = corpus_seeded_db(providers=("chatgpt", "claude-code"), count=2, seed=42)
+    db_path = named_seeded_archive("cli-mixed")
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
     async def _rebuild() -> None:

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import tracemalloc
 from pathlib import Path
 
 
@@ -45,6 +46,29 @@ def _codex_payload(record_count: int) -> bytes:
     ).encode("utf-8")
 
 
+def _resource_snapshot(*, phase: str, journal_root: Path) -> dict[str, int | str | None]:
+    smaps: dict[str, int] = {}
+    try:
+        for line in Path("/proc/self/smaps_rollup").read_text().splitlines():
+            key, separator, raw = line.partition(":")
+            if separator and key in {"Pss", "Pss_Anon", "Pss_File", "SwapPss"}:
+                smaps[key] = int(raw.split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    current, peak = tracemalloc.get_traced_memory()
+    journal_bytes = sum(path.stat().st_size for path in journal_root.glob("run-*.sqlite3*") if path.is_file())
+    return {
+        "phase": phase,
+        "pss_kb": smaps.get("Pss"),
+        "anon_pss_kb": smaps.get("Pss_Anon"),
+        "file_pss_kb": smaps.get("Pss_File"),
+        "swap_pss_kb": smaps.get("SwapPss"),
+        "tracemalloc_current_bytes": current,
+        "tracemalloc_peak_bytes": peak,
+        "journal_bytes": journal_bytes,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive-root", type=Path, required=True)
@@ -61,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["XDG_STATE_HOME"] = str(archive_root.parent / "state")
 
     from polylogue.core.enums import Provider
+    from polylogue.schemas.generation import provider_bundle
     from polylogue.schemas.generation.workflow import generate_provider_schema
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -79,12 +104,31 @@ def main(argv: list[str] | None = None) -> int:
     if not sys.stdin.readline():
         return 2
 
-    result = generate_provider_schema(
-        args.provider,
-        db_path=archive_root / "index.db",
-        full_corpus=True,
-    )
     journal_root = Path(os.environ["XDG_CACHE_HOME"]) / "polylogue" / "schema-observation-journals"
+    snapshots: list[dict[str, int | str | None]] = []
+    tracemalloc.start()
+    snapshots.append(_resource_snapshot(phase="before-provider-bundle", journal_root=journal_root))
+    for name in ("_collect_cluster_accumulators", "_build_package_candidates", "build_provider_catalog_artifacts"):
+        original = getattr(provider_bundle, name)
+
+        def wrapped(
+            *call_args: object, __name: str = name, __original: object = original, **call_kwargs: object
+        ) -> object:
+            snapshots.append(_resource_snapshot(phase=f"before-{__name}", journal_root=journal_root))
+            result = __original(*call_args, **call_kwargs)  # type: ignore[operator]
+            snapshots.append(_resource_snapshot(phase=f"after-{__name}", journal_root=journal_root))
+            return result
+
+        setattr(provider_bundle, name, wrapped)
+    try:
+        result = generate_provider_schema(
+            args.provider,
+            db_path=archive_root / "index.db",
+            full_corpus=True,
+        )
+        snapshots.append(_resource_snapshot(phase="after-provider-bundle", journal_root=journal_root))
+    finally:
+        tracemalloc.stop()
     print(
         json.dumps(
             {
@@ -93,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 "sample_count": result.sample_count,
                 "cluster_count": result.cluster_count,
                 "journal_remaining": sorted(path.name for path in journal_root.glob("run-*.sqlite3*")),
+                "phases": snapshots,
             },
             sort_keys=True,
         ),

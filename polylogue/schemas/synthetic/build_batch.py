@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import random
 from collections import Counter
+from collections.abc import Mapping
 from typing import Protocol
 
 from polylogue.core.json import JSONValue, is_json_value
@@ -13,6 +15,7 @@ from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES, SessionTheme
 from polylogue.schemas.synthetic.models import (
     SchemaRecord,
     SyntheticArtifact,
+    SyntheticArtifactFacts,
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
     SyntheticStyle,
@@ -85,6 +88,65 @@ def _as_json_value(value: object) -> JSONValue:
     if is_json_value(value):
         return value
     raise TypeError(f"Generated payload is not JSON-compatible: {type(value).__name__}")
+
+
+def _expected_session_id(provider: str, native_session_id: str | None) -> str | None:
+    if native_session_id is None:
+        return None
+    prefixes = {
+        "chatgpt": "chatgpt-export",
+        "claude-ai": "claude-ai-export",
+        "claude-code": "claude-code-session",
+        "codex": "codex-session",
+        "gemini": "aistudio-drive",
+        "gemini-cli": "gemini-cli-session",
+        "hermes": "hermes-session",
+        "antigravity": "antigravity-session",
+    }
+    prefix = prefixes.get(provider)
+    return f"{prefix}:{native_session_id}" if prefix is not None else None
+
+
+def _planted_artifact_facts(
+    provider: str,
+    data: JSONValue,
+    *,
+    raw_bytes: bytes,
+    native_session_id: str | None,
+    message_count: int,
+) -> SyntheticArtifactFacts:
+    """Record wire-level facts without consulting production normalization."""
+    tool_uses: list[str] = []
+    tool_results: list[str] = []
+
+    def visit(value: JSONValue) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, Mapping):
+            return
+        block_type = value.get("type")
+        tool_use_id = value.get("id")
+        tool_result_id = value.get("tool_use_id")
+        if block_type == "tool_use" and isinstance(tool_use_id, str):
+            tool_uses.append(tool_use_id)
+        if block_type == "tool_result" and isinstance(tool_result_id, str):
+            tool_results.append(tool_result_id)
+        for child in value.values():
+            if is_json_value(child):
+                visit(child)
+
+    visit(data)
+    return SyntheticArtifactFacts(
+        provider=provider,
+        native_session_id=native_session_id,
+        expected_session_id=_expected_session_id(provider, native_session_id),
+        message_count=message_count,
+        tool_use_ids=tuple(tool_uses),
+        tool_result_ids=tuple(tool_results),
+        raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+    )
 
 
 def _profile_mapping(profile: SchemaRecord | None, *path: str) -> dict[str, JSONValue]:
@@ -461,14 +523,23 @@ def generate_batch(
                 selected_relationships["late_result"] += 1
 
     lineage_edge_count = _apply_profile_lineage(self.provider, generated_data, self.workload_profile)
-    artifacts = [
-        SyntheticArtifact(
-            raw_bytes=self._serialize(data),
-            message_count=message_count,
-            style=resolved_style,
+    artifacts: list[SyntheticArtifact] = []
+    for index, (data, message_count) in enumerate(zip(generated_data, generated_message_counts, strict=True)):
+        raw_bytes = self._serialize(data)
+        artifacts.append(
+            SyntheticArtifact(
+                raw_bytes=raw_bytes,
+                message_count=message_count,
+                style=resolved_style,
+                facts=_planted_artifact_facts(
+                    self.provider,
+                    data,
+                    raw_bytes=raw_bytes,
+                    native_session_id=session_native_ids[index] if session_native_ids else None,
+                    message_count=message_count,
+                ),
+            )
         )
-        for data, message_count in zip(generated_data, generated_message_counts, strict=True)
-    ]
 
     report = SyntheticGenerationReport(
         provider=self.provider,

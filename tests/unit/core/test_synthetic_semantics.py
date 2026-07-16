@@ -237,6 +237,29 @@ class TestSyntheticSessionEnvelope:
         assert batch.report.provider == "chatgpt"
         assert batch.report.generated_count == 2
 
+    def test_generation_plants_independent_wire_facts_before_ingest(self) -> None:
+        native_id = "c03-planted-target"
+        spec = CorpusSpec.for_provider(
+            "codex",
+            count=1,
+            messages_min=4,
+            messages_max=4,
+            seed=71,
+            style="tool-heavy",
+            session_native_ids=(native_id,),
+        )
+
+        batch = SyntheticCorpus.generate_batch_for_spec(spec)
+        facts = batch.artifacts[0].facts
+
+        assert facts.provider == "codex"
+        assert facts.native_session_id == native_id
+        assert facts.expected_session_id == f"codex-session:{native_id}"
+        assert facts.message_count == 4
+        assert facts.tool_use_ids
+        assert set(facts.paired_tool_ids) <= set(facts.tool_result_ids)
+        assert facts.raw_sha256
+
     def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Path) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",

@@ -74,3 +74,31 @@ def test_promotion_audit_redacts_credential_material_and_rejects_invalid_artifac
     rendered = json.dumps(report.to_payload())
     assert secret not in rendered
     assert "sha256:" in rendered
+
+
+def test_promotion_audit_groups_repeated_review_values_without_dropping_inventory(tmp_path: Path) -> None:
+    for version in ("v1", "v2"):
+        _write_gzip_json(
+            tmp_path / "provider" / "versions" / version / "elements" / "session.schema.json.gz",
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "x-polylogue-values": ["gpt-5.6-terra", "gpt-5.6-terra", "Europe/Warsaw"],
+            },
+        )
+
+    report = audit_schema_artifacts(tmp_path)
+    payload = report.to_payload()
+    review_summary = payload["review_summary"]
+    assert isinstance(review_summary, list)
+    grouped = {(str(item["category"]), str(item["value"])): item for item in review_summary if isinstance(item, dict)}
+
+    model = grouped[("approved_readable_value", "gpt-5.6-terra")]
+    assert model["occurrence_count"] == 2
+    assert model["artifact_count"] == 2
+    sample_locations = model["sample_locations"]
+    assert isinstance(sample_locations, list)
+    assert len(sample_locations) == 2
+    findings = payload["findings"]
+    assert isinstance(findings, list)
+    assert len(findings) == 4

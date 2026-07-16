@@ -32,6 +32,7 @@ import shlex
 import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -184,7 +185,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 2
+TESTMON_SEED_PROTOCOL_VERSION = 3
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -347,6 +348,20 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     return metadata
 
 
+def _nonnegative_int_delta(
+    first: Mapping[str, object] | None,
+    last: Mapping[str, object] | None,
+    key: str,
+) -> int | None:
+    if first is None or last is None:
+        return None
+    first_value = first.get(key)
+    last_value = last.get(key)
+    if not isinstance(first_value, int) or not isinstance(last_value, int):
+        return None
+    return max(0, last_value - first_value)
+
+
 def _pytest_workload_receipt(
     *,
     label: str,
@@ -396,6 +411,11 @@ def _pytest_workload_receipt(
     )
     peak_rss_kb = resource_summary.get("peak_tree_rss_kb")
     peak_pss_kb = resource_summary.get("peak_tree_pss_kb")
+    peak_anon_pss_kb = resource_summary.get("peak_tree_anon_pss_kb")
+    peak_file_pss_kb = resource_summary.get("peak_tree_file_pss_kb")
+    peak_swap_pss_kb = resource_summary.get("peak_tree_swap_pss_kb")
+    read_bytes = resource_summary.get("tree_read_bytes_delta")
+    write_bytes = resource_summary.get("tree_write_bytes_delta")
     peak_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
     final_rss_kb = last_resource_sample.get("tree_rss_kb") if last_resource_sample is not None else None
     final_pss_kb = last_resource_sample.get("tree_pss_kb") if last_resource_sample is not None else None
@@ -403,12 +423,7 @@ def _pytest_workload_receipt(
     execute_unavailable = [
         "current_rss_bytes",
         "current_pss_bytes",
-        "anon_bytes",
-        "file_cache_bytes",
-        "swap_bytes",
         "storage_bytes",
-        "read_io_bytes",
-        "write_io_bytes",
         "response_bytes",
         "cancellation_latency_ms",
         "progress_completed",
@@ -423,6 +438,16 @@ def _pytest_workload_receipt(
         execute_unavailable.append("peak_pss_bytes")
     if not isinstance(peak_basetemp_kb, int):
         execute_unavailable.append("temp_storage_bytes")
+    if not isinstance(peak_anon_pss_kb, int):
+        execute_unavailable.append("anon_bytes")
+    if not isinstance(peak_file_pss_kb, int):
+        execute_unavailable.append("file_cache_bytes")
+    if not isinstance(peak_swap_pss_kb, int):
+        execute_unavailable.append("swap_bytes")
+    if not isinstance(read_bytes, int):
+        execute_unavailable.append("read_io_bytes")
+    if not isinstance(write_bytes, int):
+        execute_unavailable.append("write_io_bytes")
     if not isinstance(total_cpu_s, int | float):
         execute_unavailable.append("cpu_ms")
     quiescent_unavailable = [
@@ -470,7 +495,12 @@ def _pytest_workload_receipt(
                 cpu_ms=float(total_cpu_s) * 1000 if isinstance(total_cpu_s, int | float) else None,
                 peak_rss_bytes=peak_rss_kb * 1024 if isinstance(peak_rss_kb, int) else None,
                 peak_pss_bytes=peak_pss_kb * 1024 if isinstance(peak_pss_kb, int) else None,
+                anon_bytes=peak_anon_pss_kb * 1024 if isinstance(peak_anon_pss_kb, int) else None,
+                file_cache_bytes=peak_file_pss_kb * 1024 if isinstance(peak_file_pss_kb, int) else None,
+                swap_bytes=peak_swap_pss_kb * 1024 if isinstance(peak_swap_pss_kb, int) else None,
                 temp_storage_bytes=peak_basetemp_kb * 1024 if isinstance(peak_basetemp_kb, int) else None,
+                read_io_bytes=read_bytes if isinstance(read_bytes, int) else None,
+                write_io_bytes=write_bytes if isinstance(write_bytes, int) else None,
                 unavailable=tuple(execute_unavailable),
             ),
             WorkloadPhaseObservation(
@@ -1538,8 +1568,12 @@ def _run(
         last_resource_row: dict[str, Any] | None = None
         if artifacts is not None and artifacts.resources_path.exists():
             sample_count = 0
+            first_resource_row: dict[str, Any] | None = None
             peak_rss = 0
             peak_pss: int | None = None
+            peak_anon_pss: int | None = None
+            peak_file_pss: int | None = None
+            peak_swap_pss: int | None = None
             peak_process_count = 0
             peak_basetemp_size_kb: int | None = None
             with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
@@ -1552,11 +1586,19 @@ def _run(
                         continue
                     if not isinstance(row, dict):
                         continue
+                    if first_resource_row is None:
+                        first_resource_row = row
                     last_resource_row = row
                     sample_count += 1
                     peak_rss = max(peak_rss, int(row.get("tree_rss_kb") or 0))
                     if row.get("tree_pss_kb") is not None:
                         peak_pss = max(peak_pss or 0, int(row["tree_pss_kb"]))
+                    if row.get("tree_anon_pss_kb") is not None:
+                        peak_anon_pss = max(peak_anon_pss or 0, int(row["tree_anon_pss_kb"]))
+                    if row.get("tree_file_pss_kb") is not None:
+                        peak_file_pss = max(peak_file_pss or 0, int(row["tree_file_pss_kb"]))
+                    if row.get("tree_swap_pss_kb") is not None:
+                        peak_swap_pss = max(peak_swap_pss or 0, int(row["tree_swap_pss_kb"]))
                     peak_process_count = max(peak_process_count, int(row.get("process_count") or 0))
                     if row.get("basetemp_size_kb") is not None:
                         peak_basetemp_size_kb = max(
@@ -1570,6 +1612,32 @@ def _run(
                     "peak_tree_rss_mb": round(peak_rss / 1024, 1),
                     "peak_tree_pss_kb": peak_pss,
                     "peak_tree_pss_mb": round(peak_pss / 1024, 1) if peak_pss is not None else None,
+                    "peak_tree_anon_pss_kb": peak_anon_pss,
+                    "peak_tree_file_pss_kb": peak_file_pss,
+                    "peak_tree_swap_pss_kb": peak_swap_pss,
+                    "start_tree_swap_pss_kb": (
+                        first_resource_row.get("tree_swap_pss_kb") if first_resource_row is not None else None
+                    ),
+                    "final_tree_swap_pss_kb": (
+                        last_resource_row.get("tree_swap_pss_kb") if last_resource_row is not None else None
+                    ),
+                    "tree_swap_pss_delta_kb": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_swap_pss_kb"
+                    ),
+                    "tree_read_bytes": last_resource_row.get("tree_read_bytes") if last_resource_row else None,
+                    "tree_write_bytes": last_resource_row.get("tree_write_bytes") if last_resource_row else None,
+                    "tree_cancelled_write_bytes": (
+                        last_resource_row.get("tree_cancelled_write_bytes") if last_resource_row else None
+                    ),
+                    "tree_read_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_read_bytes"
+                    ),
+                    "tree_write_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_write_bytes"
+                    ),
+                    "tree_cancelled_write_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_cancelled_write_bytes"
+                    ),
                     "peak_process_count": peak_process_count,
                     "peak_basetemp_size_kb": peak_basetemp_size_kb,
                     "peak_basetemp_size_mb": (
@@ -1988,10 +2056,10 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _worktree_fingerprint() -> str:
-    """Fingerprint tracked content plus the untracked-path inventory."""
+    """Fingerprint tracked changes plus exact non-ignored untracked content."""
     digest = hashlib.sha256()
     for command in (
-        ["git", "status", "--porcelain=v1", "-z"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         ["git", "diff", "--binary", "HEAD", "--"],
     ):
         try:
@@ -2002,6 +2070,36 @@ def _worktree_fingerprint() -> str:
             return "unavailable"
         digest.update(result.stdout)
         digest.update(b"\0")
+    try:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if untracked.returncode != 0:
+        return "unavailable"
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        try:
+            path_text = os.fsdecode(raw_path)
+            path = Path(path_text)
+            mode = path.lstat().st_mode
+            digest.update(raw_path)
+            digest.update(b"\0")
+            if stat.S_ISLNK(mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(mode):
+                digest.update(b"file\0")
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
+            digest.update(b"\0")
+        except OSError:
+            return "unavailable"
     return digest.hexdigest()
 
 
@@ -2091,6 +2189,7 @@ def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
             "failed_count": 0,
             "missing_nodeids": list(expected_nodeids),
             "failed_nodeids": [],
+            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
             "error": "missing",
         }
     try:
@@ -2112,6 +2211,7 @@ def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
             "failed_count": 0,
             "missing_nodeids": list(expected_nodeids),
             "failed_nodeids": [],
+            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
             "error": str(exc),
         }
     recorded = {str(name): bool(failed) for name, failed in rows}
@@ -2122,14 +2222,25 @@ def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
         "failed_count": sum(recorded.values()),
         "missing_nodeids": sorted(expected - recorded.keys()),
         "failed_nodeids": failed,
+        "node_outcomes": {
+            nodeid: ("failed" if recorded.get(nodeid) is True else "passed" if nodeid in recorded else "missing")
+            for nodeid in sorted(expected)
+        },
         "error": None,
     }
 
 
-def _failed_nodeids_from_events(path: Path) -> list[str]:
-    failed: set[str] = set()
-    if not path.exists():
-        return []
+def _seed_node_outcomes_from_events(
+    path: Path,
+    *,
+    expected_nodeids: Sequence[str],
+    database: Mapping[str, Any],
+    pytest_step: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Classify every promised seed node into one explicit terminal state."""
+    reports: dict[str, list[dict[str, Any]]] = {}
+    started: set[str] = set()
+    finished: set[str] = set()
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -2137,13 +2248,73 @@ def _failed_nodeids_from_events(path: Path) -> list[str]:
                     continue
                 with contextlib.suppress(json.JSONDecodeError):
                     event = json.loads(line)
-                    if event.get("event") == "test_report" and event.get("outcome") == "failed":
-                        nodeid = event.get("nodeid")
-                        if isinstance(nodeid, str):
-                            failed.add(nodeid)
+                    nodeid = event.get("nodeid")
+                    if not isinstance(nodeid, str) or not nodeid:
+                        continue
+                    if event.get("event") == "test_started":
+                        started.add(nodeid)
+                    elif event.get("event") == "test_finished":
+                        finished.add(nodeid)
+                    elif event.get("event") == "test_report":
+                        reports.setdefault(nodeid, []).append(event)
     except OSError:
-        return []
-    return sorted(failed)
+        pass
+
+    database_outcomes = database.get("node_outcomes")
+    recorded = database_outcomes if isinstance(database_outcomes, dict) else {}
+    diagnosis = str((pytest_step or {}).get("diagnosis") or "").lower()
+    results: list[dict[str, Any]] = []
+    for nodeid in expected_nodeids:
+        node_reports = reports.get(nodeid, [])
+        failed_reports = [report for report in node_reports if report.get("outcome") == "failed"]
+        call_reports = [report for report in node_reports if report.get("when") == "call"]
+        longrepr = "\n".join(str(report.get("longrepr") or "") for report in failed_reports).lower()
+        outcome: str
+        reason: str
+        if "timeout" in longrepr:
+            outcome, reason = "timeout", "pytest-timeout report"
+        elif any(report.get("when") in {"setup", "teardown"} for report in failed_reports):
+            outcome, reason = "error", "fixture setup/teardown failed"
+        elif any(report.get("outcome") == "failed" for report in call_reports):
+            outcome, reason = "failed", "test call failed"
+        elif any(report.get("outcome") == "passed" for report in call_reports):
+            outcome, reason = "passed", "test call passed"
+        elif any(report.get("outcome") == "skipped" for report in call_reports):
+            outcome, reason = "skipped", "test call skipped"
+        elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
+            outcome, reason = "timeout", "supervisor timed out while node was active"
+        elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
+            outcome, reason = "worker_crash", "worker exited while node was active"
+        elif (
+            nodeid in started
+            and nodeid not in finished
+            and any(marker in diagnosis for marker in ("interrupt", "signal", "terminated"))
+        ):
+            outcome, reason = "interrupted", "run ended while node was active"
+        elif recorded.get(nodeid) == "passed":
+            outcome, reason = "passed", "testmon database recorded success"
+        elif recorded.get(nodeid) == "failed":
+            outcome, reason = "failed", "testmon database recorded failure"
+        else:
+            outcome, reason = "missing", "no terminal report or testmon execution row"
+        results.append(
+            {
+                "nodeid": nodeid,
+                "outcome": outcome,
+                "reason": reason,
+                "started": nodeid in started,
+                "finished": nodeid in finished,
+                "phases": [
+                    {
+                        "when": report.get("when"),
+                        "outcome": report.get("outcome"),
+                        "duration_s": report.get("duration_s"),
+                    }
+                    for report in node_reports
+                ],
+            }
+        )
+    return results
 
 
 def _finalize_testmon_seed_attempt(
@@ -2156,7 +2327,7 @@ def _finalize_testmon_seed_attempt(
         (step for step in step_results if str(step.get("name", "")).startswith("pytest seed-testmon")), None
     )
     selection: dict[str, Any] = {}
-    failed_events: list[str] = []
+    events_path: Path | None = None
     if pytest_step is not None:
         artifact_dir_raw = pytest_step.get("artifact_dir")
         if isinstance(artifact_dir_raw, str):
@@ -2164,12 +2335,21 @@ def _finalize_testmon_seed_attempt(
             selection_payload = _read_json_artifact(artifact_dir / "selection.json")
             if isinstance(selection_payload, dict):
                 selection = selection_payload
-            failed_events = _failed_nodeids_from_events(artifact_dir / "events.jsonl")
+            events_path = artifact_dir / "events.jsonl"
 
     expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selection.get("selected_nodeids")
     expected = [str(nodeid) for nodeid in expected_raw] if isinstance(expected_raw, list) else []
     omitted = int(selection.get("selected_nodeids_omitted") or 0)
     database = _testmon_database_state(expected)
+    node_outcomes = _seed_node_outcomes_from_events(
+        events_path or Path(".missing-testmon-events"),
+        expected_nodeids=expected,
+        database=database,
+        pytest_step=pytest_step,
+    )
+    unsuccessful_nodeids = [
+        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+    ]
     complete = (
         exit_code == 0
         and bool(expected)
@@ -2177,7 +2357,7 @@ def _finalize_testmon_seed_attempt(
         and database["error"] is None
         and not database["missing_nodeids"]
         and not database["failed_nodeids"]
-        and not failed_events
+        and not unsuccessful_nodeids
     )
     payload = {
         **dict(prepared),
@@ -2198,7 +2378,16 @@ def _finalize_testmon_seed_attempt(
             )
         },
         "database": database,
-        "failed_event_nodeids": failed_events,
+        "node_outcomes": node_outcomes,
+        "node_outcome_counts": dict(
+            sorted(
+                {
+                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
+                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
+                }.items()
+            )
+        ),
+        "unsuccessful_nodeids": unsuccessful_nodeids,
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "pytest_step": dict(pytest_step) if pytest_step is not None else None,
     }

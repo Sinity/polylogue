@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_tag,
     read_assertion_envelope,
 )
+from tests.infra.workload_artifacts import build_seeded_archive
 
 
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
@@ -286,6 +287,54 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     assert bounded_receipt.budget_results[0].verdict is BudgetVerdict.PASS
     assert mutant_receipt.budget_results[0].verdict is BudgetVerdict.EXCEEDED
     assert mutant_receipt.spec.semantic_result == "complete"
+
+
+def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts(tmp_path: Path) -> None:
+    """C-03 executes generated Codex bytes through acquire→parse→index→query."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-artifacts")
+    target = next(fact for fact in artifact.facts if fact.expected_session_id == "codex-session:c03-target")
+    assert target.expected_session_id is not None
+    source = parse_unit_source_expression(f"actions where session.id:{target.expected_session_id}")
+    assert source is not None
+
+    with ArchiveStore.open_existing(artifact.root) as facade:
+        progress_calls = 0
+
+        def count_vm_steps() -> int:
+            nonlocal progress_calls
+            progress_calls += 1
+            return 0
+
+        facade._conn.set_progress_handler(count_vm_steps, 100)
+        try:
+            rows = list(facade.query_unit_counts("action", source.predicate))
+        finally:
+            facade._conn.set_progress_handler(None, 0)
+
+    vm_steps = progress_calls * 100
+    spec = exact_session_actions_canary_spec(
+        profile_id=artifact.manifest.profile_id,
+        archive_id=artifact.manifest.archive_id,
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id=artifact.manifest.build_id,
+        runtime_id="sqlite:real-pipeline",
+        archive_id=artifact.manifest.archive_id,
+        generation_id=artifact.manifest.key,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="seed"),
+            WorkloadPhaseObservation(name="query", sqlite_vm_steps=vm_steps),
+            WorkloadPhaseObservation(name="quiescent", cleanup_complete=True, quiescent=True),
+        ),
+        cleanup_complete=True,
+    )
+
+    assert [(row.group_key, row.count) for row in rows] == [("all", len(target.tool_use_ids))]
+    assert target.paired_tool_ids
+    assert receipt.budget_results[0].verdict is BudgetVerdict.PASS
 
 
 def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:

@@ -353,17 +353,44 @@ def _status_values(pid: int) -> dict[str, int | str | None]:
     return result
 
 
-def _pss_kb(pid: int) -> int | None:
+def _smaps_rollup_kb(pid: int) -> dict[str, int]:
     path = Path(f"/proc/{pid}/smaps_rollup")
     try:
         lines = path.read_text().splitlines()
     except OSError:
-        return None
+        return {}
+    values: dict[str, int] = {}
     for line in lines:
-        if line.startswith("Pss:"):
-            with contextlib.suppress(ValueError, IndexError):
-                return int(line.split()[1])
-    return None
+        key, separator, raw = line.partition(":")
+        if not separator or key not in {"Pss", "Pss_Anon", "Pss_File", "SwapPss"}:
+            continue
+        with contextlib.suppress(ValueError, IndexError):
+            values[key] = int(raw.split()[0])
+    return values
+
+
+def _process_io_bytes(pid: int) -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        lines = Path(f"/proc/{pid}/io").read_text().splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        key, separator, raw = line.partition(":")
+        if not separator or key not in {"read_bytes", "write_bytes", "cancelled_write_bytes"}:
+            continue
+        with contextlib.suppress(ValueError):
+            values[key] = int(raw.strip())
+    return values
+
+
+def _process_identity(pid: int) -> str:
+    """Return a PID-reuse-safe identity for one sampled process."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        return f"{pid}:{fields[19]}"
+    except (OSError, IndexError):
+        return f"{pid}:unknown"
 
 
 def _cpu_seconds(pid: int) -> float | None:
@@ -585,8 +612,13 @@ class ResourceSampler:
         self.sample_count = 0
         self.peak_rss_kb = 0
         self.peak_pss_kb: int | None = None
+        self.peak_anon_pss_kb: int | None = None
+        self.peak_file_pss_kb: int | None = None
+        self.peak_swap_pss_kb: int | None = None
         self.peak_process_count = 0
         self.last_sample: dict[str, Any] | None = None
+        self.first_sample: dict[str, Any] | None = None
+        self._process_io_high_water: dict[str, dict[str, int]] = {}
         self._basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
         self._basetemp_size_interval_s = _basetemp_size_sample_interval_s(env)
         self._last_basetemp_size_sample_at: float | None = None
@@ -614,27 +646,60 @@ class ResourceSampler:
         total_rss = 0
         total_pss = 0
         pss_available = False
+        total_anon_pss = 0
+        anon_pss_available = False
+        total_file_pss = 0
+        file_pss_available = False
+        total_swap_pss = 0
+        swap_pss_available = False
         total_cpu = 0.0
         for pid in pids:
             status = _status_values(pid)
             rss = int(status.get("rss_kb") or 0)
-            pss = _pss_kb(pid)
+            smaps = _smaps_rollup_kb(pid)
+            pss = smaps.get("Pss")
+            anon_pss = smaps.get("Pss_Anon")
+            file_pss = smaps.get("Pss_File")
+            swap_pss = smaps.get("SwapPss")
             cpu = _cpu_seconds(pid)
+            process_identity = _process_identity(pid)
+            process_io = _process_io_bytes(pid)
+            io_high_water = self._process_io_high_water.setdefault(process_identity, {})
+            for key, value in process_io.items():
+                io_high_water[key] = max(io_high_water.get(key, 0), value)
             total_rss += rss
             if pss is not None:
                 pss_available = True
                 total_pss += pss
+            if anon_pss is not None:
+                anon_pss_available = True
+                total_anon_pss += anon_pss
+            if file_pss is not None:
+                file_pss_available = True
+                total_file_pss += file_pss
+            if swap_pss is not None:
+                swap_pss_available = True
+                total_swap_pss += swap_pss
             if cpu is not None:
                 total_cpu += cpu
             processes.append(
                 {
                     "pid": pid,
+                    "process_identity": process_identity,
                     "state": status.get("state"),
                     "rss_kb": rss,
                     "pss_kb": pss,
+                    "anon_pss_kb": anon_pss,
+                    "file_pss_kb": file_pss,
+                    "swap_pss_kb": swap_pss,
+                    **process_io,
                     "cpu_s": cpu,
                 }
             )
+        cumulative_io = {
+            key: sum(values.get(key, 0) for values in self._process_io_high_water.values())
+            for key in ("read_bytes", "write_bytes", "cancelled_write_bytes")
+        }
         meminfo = _meminfo()
         sample: dict[str, Any] = {
             "updated_at": utc_now(),
@@ -643,6 +708,12 @@ class ResourceSampler:
             "process_count": len(pids),
             "tree_rss_kb": total_rss,
             "tree_pss_kb": total_pss if pss_available else None,
+            "tree_anon_pss_kb": total_anon_pss if anon_pss_available else None,
+            "tree_file_pss_kb": total_file_pss if file_pss_available else None,
+            "tree_swap_pss_kb": total_swap_pss if swap_pss_available else None,
+            "tree_read_bytes": cumulative_io["read_bytes"],
+            "tree_write_bytes": cumulative_io["write_bytes"],
+            "tree_cancelled_write_bytes": cumulative_io["cancelled_write_bytes"],
             "tree_cpu_s": round(total_cpu, 4),
             "host_mem_available_kb": meminfo.get("MemAvailable"),
             "host_mem_total_kb": meminfo.get("MemTotal"),
@@ -660,19 +731,50 @@ class ResourceSampler:
         self.peak_rss_kb = max(self.peak_rss_kb, total_rss)
         if pss_available:
             self.peak_pss_kb = max(self.peak_pss_kb or 0, total_pss)
+        if anon_pss_available:
+            self.peak_anon_pss_kb = max(self.peak_anon_pss_kb or 0, total_anon_pss)
+        if file_pss_available:
+            self.peak_file_pss_kb = max(self.peak_file_pss_kb or 0, total_file_pss)
+        if swap_pss_available:
+            self.peak_swap_pss_kb = max(self.peak_swap_pss_kb or 0, total_swap_pss)
         self.peak_process_count = max(self.peak_process_count, len(pids))
+        if self.first_sample is None:
+            self.first_sample = sample
         self.last_sample = sample
         _append_jsonl(self.output_path, sample)
         return sample
 
     def summary(self) -> dict[str, Any]:
+        first = self.first_sample or {}
+        last = self.last_sample or {}
+
+        def delta(key: str) -> int | None:
+            first_value = first.get(key)
+            last_value = last.get(key)
+            if not isinstance(first_value, int) or not isinstance(last_value, int):
+                return None
+            return max(0, last_value - first_value)
+
         return {
             "resource_sample_count": self.sample_count,
             "peak_tree_rss_kb": self.peak_rss_kb,
             "peak_tree_rss_mb": round(self.peak_rss_kb / 1024, 1),
             "peak_tree_pss_kb": self.peak_pss_kb,
             "peak_tree_pss_mb": round(self.peak_pss_kb / 1024, 1) if self.peak_pss_kb is not None else None,
+            "peak_tree_anon_pss_kb": self.peak_anon_pss_kb,
+            "peak_tree_file_pss_kb": self.peak_file_pss_kb,
+            "peak_tree_swap_pss_kb": self.peak_swap_pss_kb,
+            "start_tree_swap_pss_kb": first.get("tree_swap_pss_kb"),
+            "final_tree_swap_pss_kb": last.get("tree_swap_pss_kb"),
+            "tree_swap_pss_delta_kb": delta("tree_swap_pss_kb"),
+            "tree_read_bytes": last.get("tree_read_bytes"),
+            "tree_write_bytes": last.get("tree_write_bytes"),
+            "tree_cancelled_write_bytes": last.get("tree_cancelled_write_bytes"),
+            "tree_read_bytes_delta": delta("tree_read_bytes"),
+            "tree_write_bytes_delta": delta("tree_write_bytes"),
+            "tree_cancelled_write_bytes_delta": delta("tree_cancelled_write_bytes"),
             "peak_process_count": self.peak_process_count,
+            "first_resource_sample": self.first_sample,
             "last_resource_sample": self.last_sample,
         }
 

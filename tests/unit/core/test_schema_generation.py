@@ -31,6 +31,7 @@ from polylogue.schemas.operator.schema_inference import (
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from tests.infra.schema_access import schema_properties, schema_property, schema_values
+from tests.infra.workload_artifacts import SeededArchiveClone
 
 
 class TestProviderSchemaGeneration:
@@ -43,8 +44,8 @@ class TestProviderSchemaGeneration:
 
     @pytest.mark.slow
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_generate_schema_from_db(self, seeded_db: Path, provider: str) -> None:
-        result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)
+    def test_generate_schema_from_db(self, seeded_archive_writable: SeededArchiveClone, provider: str) -> None:
+        result = generate_provider_schema(provider, db_path=seeded_archive_writable.root / "index.db", max_samples=100)
         if result.sample_count > 0:
             assert result.success, f"Failed: {result.error}"
             assert result.schema is not None
@@ -98,12 +99,12 @@ def test_catalog_selection_preserves_latest_without_defaulting_to_rare_family() 
 class TestLoadSamples:
     """Database-backed sample loading behavior."""
 
-    def test_load_limited_samples(self, seeded_db: Path) -> None:
-        samples = load_samples_from_db("chatgpt", db_path=seeded_db, max_samples=10)
+    def test_load_limited_samples(self, seeded_archive_writable: SeededArchiveClone) -> None:
+        samples = load_samples_from_db("chatgpt", db_path=seeded_archive_writable.root / "index.db", max_samples=10)
         assert len(samples) <= 10
 
-    def test_load_nonexistent_provider(self, seeded_db: Path) -> None:
-        assert load_samples_from_db("nonexistent-provider", db_path=seeded_db) == []
+    def test_load_nonexistent_provider(self, seeded_archive_writable: SeededArchiveClone) -> None:
+        assert load_samples_from_db("nonexistent-provider", db_path=seeded_archive_writable.root / "index.db") == []
 
     def test_load_limited_document_samples_stops_without_full_materialization(
         self,

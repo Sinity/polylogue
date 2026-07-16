@@ -29,10 +29,34 @@ class SyntheticSchemaSelection:
 
 
 @dataclass(frozen=True)
+class SyntheticArtifactFacts:
+    """Independent facts planted by the generator before archive ingestion.
+
+    These are intentionally a narrow provider-wire blueprint.  Consumers may
+    compare normalized archive outcomes with it, but fact construction never
+    calls a provider parser, query evaluator, or storage reader.
+    """
+
+    provider: str
+    native_session_id: str | None
+    expected_session_id: str | None
+    message_count: int
+    tool_use_ids: tuple[str, ...]
+    tool_result_ids: tuple[str, ...]
+    raw_sha256: str
+
+    @property
+    def paired_tool_ids(self) -> tuple[str, ...]:
+        results = set(self.tool_result_ids)
+        return tuple(tool_id for tool_id in self.tool_use_ids if tool_id in results)
+
+
+@dataclass(frozen=True)
 class SyntheticArtifact:
     raw_bytes: bytes
     message_count: int
     style: str
+    facts: SyntheticArtifactFacts
 
 
 @dataclass(frozen=True)
@@ -78,6 +102,7 @@ __all__ = [
     "SchemaScalar",
     "SchemaValue",
     "SyntheticArtifact",
+    "SyntheticArtifactFacts",
     "SyntheticGenerationBatch",
     "SyntheticGenerationState",
     "SyntheticGenerationReport",

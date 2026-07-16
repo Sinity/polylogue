@@ -70,6 +70,32 @@ class PromotionAuditReport:
     def review_items(self) -> tuple[PromotionAuditFinding, ...]:
         return tuple(item for item in self.findings if item.severity == "review")
 
+    def grouped_review_items(self, *, sample_limit: int = 3) -> tuple[JSONDocument, ...]:
+        """Return a lossless, operator-sized view over repeated review values.
+
+        The full finding inventory remains in ``to_payload``.  This projection
+        merely prevents a repeated structural token from hiding the few values
+        an operator must actually inspect.
+        """
+        grouped: dict[tuple[str, str], list[PromotionAuditFinding]] = {}
+        for item in self.review_items:
+            grouped.setdefault((item.category, item.value), []).append(item)
+        rows: list[JSONDocument] = []
+        for (category, value), items in sorted(grouped.items()):
+            artifacts = sorted({item.artifact for item in items})
+            locations = sorted({f"{item.artifact}:{item.json_path}" for item in items})
+            sample_locations: list[JSONValue] = list(locations[:sample_limit])
+            rows.append(
+                {
+                    "category": category,
+                    "value": value,
+                    "occurrence_count": len(items),
+                    "artifact_count": len(artifacts),
+                    "sample_locations": sample_locations,
+                }
+            )
+        return tuple(rows)
+
     def to_payload(self) -> JSONDocument:
         category_counts = Counter(f"{item.severity}:{item.category}" for item in self.findings)
         return json_document(
@@ -81,6 +107,7 @@ class PromotionAuditReport:
                 "blocker_count": len(self.blockers),
                 "review_count": len(self.review_items),
                 "category_counts": dict(sorted(category_counts.items())),
+                "review_summary": list(self.grouped_review_items()),
                 "findings": [asdict(item) for item in self.findings],
             }
         )

@@ -37,6 +37,7 @@ class _InferenceProbeResult:
     sample_count: int
     peak_rss_bytes: int
     peak_journal_bytes: int
+    phase_snapshots: tuple[dict[str, object], ...]
     receipt: WorkloadReceipt
 
 
@@ -101,6 +102,8 @@ def _run_inference_probe(
         payload = json.loads(stdout)
         assert payload["success"] is True
         assert payload["journal_remaining"] == []
+        phase_snapshots = tuple(item for item in payload["phases"] if isinstance(item, dict))
+        assert phase_snapshots
         wall_ms = (time.perf_counter() - started) * 1_000
         spec = WorkloadEnvelopeSpec(
             workload_id="canary:schema-inference-memory-scaling",
@@ -151,6 +154,7 @@ def _run_inference_probe(
             sample_count=int(payload["sample_count"]),
             peak_rss_bytes=peak_rss_bytes,
             peak_journal_bytes=peak_journal_bytes,
+            phase_snapshots=phase_snapshots,
             receipt=receipt,
         )
     finally:
@@ -435,6 +439,16 @@ def test_full_generation_10x_scales_counts_without_10x_python_memory(tmp_path: P
     assert ten_x.sample_count == one_x.sample_count * 10
     assert one_x.peak_journal_bytes > 0
     assert ten_x.peak_journal_bytes > 0
+    assert {snapshot["phase"] for snapshot in one_x.phase_snapshots} >= {
+        "before-provider-bundle",
+        "before-_collect_cluster_accumulators",
+        "after-_collect_cluster_accumulators",
+        "before-_build_package_candidates",
+        "after-_build_package_candidates",
+        "before-build_provider_catalog_artifacts",
+        "after-build_provider_catalog_artifacts",
+        "after-provider-bundle",
+    }
     assert ten_x.peak_rss_bytes <= one_x.peak_rss_bytes + 96 * 1024 * 1024
     assert one_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_1X.value
     assert ten_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_10X.value
