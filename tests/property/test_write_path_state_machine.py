@@ -11,6 +11,7 @@ import asyncio
 import sqlite3
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -357,7 +358,7 @@ class WritePathStateMachine(RuleBasedStateMachine):
         return text
 
     def _fresh_timestamp(self) -> str:
-        timestamp = f"2027-01-01T00:00:{self._next_fresh_version:02d}Z"
+        timestamp = (datetime(2027, 1, 1, tzinfo=UTC) + timedelta(seconds=self._next_fresh_version)).isoformat()
         self._next_fresh_version += 1
         return timestamp
 
