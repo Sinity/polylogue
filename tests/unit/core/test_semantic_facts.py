@@ -705,16 +705,74 @@ def test_build_session_profile_terminal_state_ignores_recovered_tool_error() -> 
                 role="assistant",
                 origin=Provider.CLAUDE_CODE,
                 text="Recovered with the fallback path and finished cleanly.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "tool-2",
+                        "tool_name": "Read",
+                        "tool_input": {"file_path": "/tmp/fallback"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-2",
+                        "text": "fallback contents",
+                        "is_error": False,
+                    },
+                ],
             ),
         ],
     )
 
     profile = build_session_profile(session)
 
-    # A recovered mid-session structural error must not become error_left;
-    # with clean_finish deleted (polylogue-ve9z) the honest state is unknown.
+    # Recovery is demonstrated structurally: a successful action after the
+    # failure clears the terminal-failure flag (polylogue-ve9z: prose claims
+    # of recovery no longer count, in either direction). With clean_finish
+    # deleted the honest state is unknown.
     assert profile.terminal_state == "unknown"
     assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "raw_evidence"}
+
+
+def test_build_session_profile_terminal_state_flags_unrecovered_final_action_failure() -> None:
+    """A session whose FINAL tool outcome is a structural failure (e.g. a
+    Codex nonzero exit lowered into tool_result_is_error) is error_left even
+    when trailing assistant prose claims success — prose cannot clear a
+    structural terminal failure (polylogue-ve9z; PR #2960 review)."""
+    session = make_conv(
+        id="conv-unrecovered-final-error",
+        origin=Provider.CLAUDE_CODE,
+        title="Unrecovered final error",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Run the build."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="Running.",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "tool-1",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "./build.sh"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "tool-1",
+                        "text": "exit 2",
+                        "is_error": True,
+                    },
+                ],
+            ),
+            make_msg(id="a2", role="assistant", origin=Provider.CLAUDE_CODE, text="All done."),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "error_left"
+    assert profile.terminal_state_evidence["evidence_class"] == "raw_evidence"
+    assert "action_id" in profile.terminal_state_evidence
 
 
 def test_build_session_profile_terminal_state_detects_structural_error_with_silent_prose() -> None:

@@ -303,16 +303,22 @@ def _terminal_state(
     tool_results = _session_tool_results(session)
     latest_error_action_id: str | None = None
     latest_error_action_evidence_class: str | None = None
+    final_action_outcome_is_error = False
     for action in analysis.facts.actions:
         result = tool_results.get(action.tool_id) if action.tool_id else None
         outcome = result.outcome if result is not None else None
         if outcome == "failed":
             latest_error_action_id = action.action_id
             latest_error_action_evidence_class = "raw_evidence"
-        # outcome in (None, "unknown") stays unknown: the prose _ERROR_MARKERS
-        # fallback was deleted per the polylogue-ve9z ladder decision (its
-        # sibling scored 50.5% against structural truth). No structural
-        # evidence means no error claim, not a keyword guess.
+            final_action_outcome_is_error = True
+        elif outcome == "ok":
+            # A later structural success clears the terminal-failure flag:
+            # recovery is demonstrated by a successful action, never by prose.
+            final_action_outcome_is_error = False
+        # outcome in (None, "unknown") stays unknown and leaves the flag: the
+        # prose _ERROR_MARKERS fallback was deleted per the polylogue-ve9z
+        # ladder decision (its sibling scored 50.5% against structural truth).
+        # No structural evidence means no claim in either direction.
 
     pending: set[str] = set()
     pending_without_id = 0
@@ -371,6 +377,16 @@ def _terminal_state(
             # The runtime's own event stream ENDED on a typed error output:
             # structurally terminal, regardless of what the assistant said.
             return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
+        if final_action_outcome_is_error and latest_error_action_id is not None:
+            # The session's final tool outcome (e.g. a Codex nonzero
+            # exit_code lowered into tool_result_is_error) is a structural
+            # failure with no later structural success: terminal, regardless
+            # of trailing assistant prose claiming recovery.
+            return (
+                "error_left",
+                0.78,
+                {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
+            )
         # The prose _ERROR_MARKERS scan and its clean_finish complement were
         # deleted per the polylogue-ve9z ladder decision (measured at 50.5%
         # agreement with structural truth, a coin flip). A structural error
