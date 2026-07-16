@@ -44,12 +44,12 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
     report = audit_schema_artifacts(tmp_path)
 
     assert {(item.category, item.value) for item in report.blockers} == {
+        ("raw_local_provenance", "field=bundle_scopes;value_count=1"),
+        ("raw_local_provenance", "field=representative_paths;value_count=1"),
         ("unsafe_property_name", "What should happen after approval?"),
         ("unsafe_structural_identifier", "child:mapping:2f5a7f5d-a809-469a-a79a-8f032618fa92"),
     }
     review = {(item.category, item.value) for item in report.review_items}
-    assert ("filesystem_path", "/home/operator/.claude/session.jsonl") in review
-    assert ("identifier", "session-123") in review
     assert ("email_or_account", "person@example.com") in review
     assert ("approved_readable_value", "gpt-5.6-terra") in review
     assert ("approved_readable_value", "Europe/Warsaw") in review

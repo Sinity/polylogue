@@ -21,14 +21,13 @@ AuditSeverity: TypeAlias = Literal["blocker", "review"]
 
 _REVIEW_FIELDS = frozenset(
     {
-        "bundle_scopes",
         "dominant_keys",
         "privacy_approved_values",
         "profile_tokens",
-        "representative_paths",
         "x-polylogue-values",
     }
 )
+_FORBIDDEN_PROVENANCE_FIELDS = frozenset({"bundle_scopes", "representative_paths"})
 _SECRET_PATTERNS = {
     "anthropic_api_key": re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
     "github_token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
@@ -170,6 +169,16 @@ def _walk_artifact(
                     )
         for key, child in value.items():
             child_path = f"{json_path}.{key}"
+            if key in _FORBIDDEN_PROVENANCE_FIELDS:
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="raw_local_provenance",
+                        artifact=artifact,
+                        json_path=child_path,
+                        value=f"field={key};value_count={len(_strings(child))}",
+                    )
+                )
             if key in _REVIEW_FIELDS:
                 for text in _strings(child):
                     secret_findings = _secret_findings(artifact=artifact, json_path=child_path, value=text)
