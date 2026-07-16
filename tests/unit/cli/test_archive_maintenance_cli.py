@@ -144,7 +144,14 @@ def test_raw_authority_blocker_resolution_cli_requires_confirmation(
 ) -> None:
     calls: list[tuple[str, str]] = []
 
-    def resolve(_root: Path, blocker_id: str, *, resolution: str) -> dict[str, object]:
+    def resolve(
+        _root: Path,
+        blocker_id: str,
+        *,
+        resolution: str,
+        assertion_id: str | None = None,
+    ) -> dict[str, object]:
+        assert assertion_id is None
         calls.append((blocker_id, resolution))
         return {"blocker_id": blocker_id, "current_plan": {"plan_id": "current-plan"}}
 

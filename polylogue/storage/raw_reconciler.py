@@ -451,6 +451,8 @@ def _strategy_overrides(
                 )
         conflicts = inspect_browser_canonical_authority_conflicts(config, browser_chunk)
         for conflict_item in conflicts.items:
+            if conflict_item.raw_id in overrides:
+                continue
             overrides[conflict_item.raw_id] = (
                 RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
                 RawAuthorityActuator.REQUEST_JUDGMENT,

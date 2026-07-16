@@ -1262,7 +1262,7 @@ def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_m
 
 
 def test_browser_capture_origin_repair_restores_equivalent_canonical_head(tmp_path: Path) -> None:
-    mismatched_raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
     with sqlite3.connect(tmp_path / "source.db") as source:
         source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
