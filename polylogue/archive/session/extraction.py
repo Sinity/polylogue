@@ -117,9 +117,6 @@ class MessageRange:
 @dataclass(frozen=True)
 class WorkEventSignalBundle:
     action_category_counts: dict[str, int]
-    normalized_user_text: str
-    text_signal: WorkEventHeuristicLabel | None
-    text_signal_name: str | None
 
 
 @dataclass(frozen=True)
@@ -203,124 +200,29 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session
 
 
-_DEBUGGING_PATTERNS = (
-    "error",
-    "traceback",
-    "failed",
-    "bug",
-    "fix",
-    "broken",
-    "crash",
-    "exception",
-    "stack trace",
-    "panic",
-)
-_PLANNING_PATTERNS = (
-    "plan",
-    "design",
-    "approach",
-    "architecture",
-    "strategy",
-    "should we",
-    "how should",
-    "let's think",
-)
-_TESTING_PATTERNS = ("test", "pytest", "cargo test", "npm test", "assert", "spec")
-_REVIEW_PATTERNS = ("review", "looks good", "lgtm", "nit", "suggestion", "feedback")
-_REFACTORING_PATTERNS = ("refactor", "rename", "extract", "move", "restructure", "clean up")
-_DOCUMENTATION_PATTERNS = ("document", "readme", "docstring", "comment", "explain")
-_CONFIGURATION_PATTERNS = ("config", "toml", "yaml", "nix", "flake", "settings", "env")
-_DATA_ANALYSIS_PATTERNS = ("data", "analysis", "query", "sql", "duckdb", "pandas", "plot", "chart", "csv")
-
-# Text signals as weighted inputs (not short-circuit overrides).
-# Order matters — first match wins. These are checked only after action
-# evidence, or as a fallback when no action evidence is available.
-TextSignalTable: TypeAlias = list[tuple["re.Pattern[str]", WorkEventHeuristicLabel, str]]
-
-
-def _word_boundary_pattern(patterns: tuple[str, ...]) -> re.Pattern[str]:
-    """Compile patterns to a single word-boundary-anchored alternation.
-
-    A naive `pattern in text` substring check false-positives on unrelated
-    words that happen to contain a pattern (#b0b.1: "fix" inside "prefix",
-    "test" inside "latest", "plan" inside "explanation", "data" inside
-    "metadata", "spec" inside "respect", "move" inside "remove", "config"
-    inside "reconfigured"). `\b` anchors work correctly for both single
-    words and multi-word phrases ("stack trace", "should we") since it only
-    requires a word/non-word transition at the pattern's own start and end,
-    not internally.
-    """
-    return re.compile(r"\b(?:" + "|".join(re.escape(pattern) for pattern in patterns) + r")\b")
-
-
-_TEXT_SIGNAL_TABLE: TextSignalTable = [
-    (_word_boundary_pattern(_DEBUGGING_PATTERNS), WorkEventHeuristicLabel.DEBUGGING, "user_text_debugging"),
-    (_word_boundary_pattern(_PLANNING_PATTERNS), WorkEventHeuristicLabel.PLANNING, "user_text_planning"),
-    (_word_boundary_pattern(_TESTING_PATTERNS), WorkEventHeuristicLabel.TESTING, "user_text_testing"),
-    (_word_boundary_pattern(_REVIEW_PATTERNS), WorkEventHeuristicLabel.REVIEW, "user_text_review"),
-    (_word_boundary_pattern(_REFACTORING_PATTERNS), WorkEventHeuristicLabel.REFACTORING, "user_text_refactoring"),
-    (_word_boundary_pattern(_DOCUMENTATION_PATTERNS), WorkEventHeuristicLabel.DOCUMENTATION, "user_text_documentation"),
-    (_word_boundary_pattern(_CONFIGURATION_PATTERNS), WorkEventHeuristicLabel.CONFIGURATION, "user_text_configuration"),
-    (_word_boundary_pattern(_DATA_ANALYSIS_PATTERNS), WorkEventHeuristicLabel.DATA_ANALYSIS, "user_text_data_analysis"),
-]
-
-
-def _text_signal_from_lowered_text(
-    lowered_text: str,
-    *,
-    before_index: int | None = None,
-) -> tuple[int, WorkEventHeuristicLabel, str] | None:
-    signal_table = _TEXT_SIGNAL_TABLE if before_index is None else _TEXT_SIGNAL_TABLE[:before_index]
-    for index, (pattern, kind, name) in enumerate(signal_table):
-        if pattern.search(lowered_text):
-            return index, kind, name
-    return None
-
-
 def _collect_range_signals(
     messages: Sequence[MessageSemanticFacts],
     message_range: MessageRange,
 ) -> WorkEventSignalBundle:
     action_category_counts: dict[str, int] = {}
-    normalized_user_text_parts: list[str] = []
-    normalized_user_text_len = 0
-    best_text_signal_index: int | None = None
-    text_signal: WorkEventHeuristicLabel | None = None
-    text_signal_name: str | None = None
 
     for message in message_range.iter_messages(messages):
-        if message.is_candidate_human_authored and message.text and not message.is_noise:
-            lowered_text: str | None = None
-            if normalized_user_text_len < _SIGNAL_TEXT_PREVIEW_MAX_LEN:
-                lowered_text = message.text.lower()
-                remaining = _SIGNAL_TEXT_PREVIEW_MAX_LEN - normalized_user_text_len
-                normalized_user_text_parts.append(lowered_text[:remaining])
-                normalized_user_text_len += min(len(lowered_text), remaining)
-            if best_text_signal_index != 0:
-                if lowered_text is None:
-                    lowered_text = message.text.lower()
-                matched = _text_signal_from_lowered_text(
-                    lowered_text,
-                    before_index=best_text_signal_index,
-                )
-                if matched is not None:
-                    best_text_signal_index, text_signal, text_signal_name = matched
         for action in message.actions:
             category = action.kind.value
             action_category_counts[category] = action_category_counts.get(category, 0) + 1
 
-    return WorkEventSignalBundle(
-        action_category_counts=action_category_counts,
-        normalized_user_text=" ".join(normalized_user_text_parts).strip(),
-        text_signal=text_signal,
-        text_signal_name=text_signal_name,
-    )
+    return WorkEventSignalBundle(action_category_counts=action_category_counts)
 
 
 def _classify_range(signals: WorkEventSignalBundle) -> WorkEventClassifiedRange:
-    """Classify a message range from action evidence plus weighted text signals."""
+    """Classify a message range from structural action evidence only.
 
-    evidence: list[str] = []
+    Prose-keyword text signals were deleted per the polylogue-ve9z decision
+    (evidence-authority ladder): the never-measured keyword table may not
+    refine labels. Where action evidence does not determine a finer label,
+    the honest coarse label wins over a keyword guess.
+    """
+
     edit_count = signals.action_category_counts.get("file_edit", 0) + signals.action_category_counts.get(
         "file_write",
         0,
@@ -332,20 +234,7 @@ def _classify_range(signals: WorkEventSignalBundle) -> WorkEventClassifiedRange:
     agent_count = signals.action_category_counts.get("agent", 0) + signals.action_category_counts.get("subagent", 0)
 
     if edit_count >= 2:
-        evidence.append("file_edits")
-        if shell_count and signals.text_signal == WorkEventHeuristicLabel.TESTING:
-            return WorkEventClassifiedRange(
-                WorkEventHeuristicLabel.TESTING,
-                0.7,
-                tuple(evidence + ["shell_test", signals.text_signal_name or ""]),
-            )
-        if signals.text_signal == WorkEventHeuristicLabel.REFACTORING:
-            return WorkEventClassifiedRange(
-                WorkEventHeuristicLabel.REFACTORING,
-                0.7,
-                tuple(evidence + [signals.text_signal_name or ""]),
-            )
-        return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.75, tuple(evidence))
+        return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.75, ("file_edits",))
     if agent_count >= 2 and edit_count == 0:
         return WorkEventClassifiedRange(WorkEventHeuristicLabel.PLANNING, 0.7, ("agent_orchestration",))
     if search_count >= 2 or (read_count >= 3 and edit_count == 0):
@@ -353,22 +242,7 @@ def _classify_range(signals: WorkEventSignalBundle) -> WorkEventClassifiedRange:
     if git_count >= 1:
         return WorkEventClassifiedRange(WorkEventHeuristicLabel.REVIEW, 0.6, ("git_operations",))
     if shell_count >= 2:
-        if signals.text_signal == WorkEventHeuristicLabel.TESTING:
-            return WorkEventClassifiedRange(
-                WorkEventHeuristicLabel.TESTING,
-                0.65,
-                ("shell_testing", signals.text_signal_name or ""),
-            )
-        if signals.text_signal == WorkEventHeuristicLabel.DEBUGGING:
-            return WorkEventClassifiedRange(
-                WorkEventHeuristicLabel.DEBUGGING,
-                0.65,
-                ("shell_debugging", signals.text_signal_name or ""),
-            )
         return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.5, ("shell_default",))
-
-    if signals.text_signal is not None and signals.text_signal_name:
-        return WorkEventClassifiedRange(signals.text_signal, 0.5, (signals.text_signal_name,))
     if not signals.action_category_counts:
         return WorkEventClassifiedRange(WorkEventHeuristicLabel.SESSION, 0.6, ("no_tools",))
     return WorkEventClassifiedRange(WorkEventHeuristicLabel.IMPLEMENTATION, 0.4, ("weak_signal",))

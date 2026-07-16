@@ -595,8 +595,10 @@ def test_build_session_profile_terminal_state_ignores_paired_tool_blocks() -> No
 
     profile = build_session_profile(session)
 
-    assert profile.terminal_state == "clean_finish"
-    assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "text_derived"}
+    # Paired tool blocks must not report tool_left; with the prose scan
+    # deleted (polylogue-ve9z) the terminal state is honest unknown.
+    assert profile.terminal_state == "unknown"
+    assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "raw_evidence"}
 
 
 def test_build_session_profile_terminal_state_detects_unpaired_tool_block() -> None:
@@ -709,8 +711,10 @@ def test_build_session_profile_terminal_state_ignores_recovered_tool_error() -> 
 
     profile = build_session_profile(session)
 
-    assert profile.terminal_state == "clean_finish"
-    assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "text_derived"}
+    # A recovered mid-session structural error must not become error_left;
+    # with clean_finish deleted (polylogue-ve9z) the honest state is unknown.
+    assert profile.terminal_state == "unknown"
+    assert profile.terminal_state_evidence == {"message_id": "a2", "evidence_class": "raw_evidence"}
 
 
 def test_build_session_profile_terminal_state_detects_structural_error_with_silent_prose() -> None:
@@ -811,10 +815,11 @@ def test_build_session_profile_terminal_state_structural_success_suppresses_misl
     assert profile.terminal_state_evidence == {}
 
 
-def test_build_session_profile_terminal_state_falls_back_to_text_derived_when_structure_absent() -> None:
-    """polylogue-b0b: an origin/result with no keystone columns at all (e.g.
-    chatgpt-export, which never populates ``tool_result_is_error``) still
-    gets the tagged prose fallback rather than a silent, unlabeled gap."""
+def test_build_session_profile_terminal_state_stays_unknown_without_structural_evidence() -> None:
+    """polylogue-ve9z: an origin/result with no keystone columns at all (e.g.
+    chatgpt-export, which never populates ``tool_result_is_error``) reports
+    unknown -- the prose fallback that used to keyword-guess error_left here
+    was deleted (measured at coin-flip accuracy by polylogue-9e5.9)."""
     session = make_conv(
         id="conv-no-structural-coverage",
         origin=Provider.CHATGPT,
@@ -847,9 +852,8 @@ def test_build_session_profile_terminal_state_falls_back_to_text_derived_when_st
 
     profile = build_session_profile(session)
 
-    assert profile.terminal_state == "error_left"
-    assert profile.terminal_state_evidence["evidence_class"] == "text_derived"
-    assert "action_id" in profile.terminal_state_evidence
+    assert profile.terminal_state == "unknown"
+    assert profile.terminal_state_evidence.get("evidence_class") != "text_derived"
 
 
 def test_build_session_profile_ignores_unpaired_tool_windows() -> None:
@@ -1049,7 +1053,10 @@ def test_extract_work_events_ignores_provider_user_runtime_protocol_text() -> No
     events = work_event_extraction.extract_work_events(session)
 
     assert events
-    assert events[0].heuristic_label == work_event_extraction.WorkEventHeuristicLabel.PLANNING
+    # Text keywords no longer drive labels (polylogue-ve9z); a no-tools
+    # session labels as SESSION. The real obligation stands: protocol text
+    # must not leak into the summary.
+    assert events[0].heuristic_label == work_event_extraction.WorkEventHeuristicLabel.SESSION
     assert events[0].summary == "Plan the release evidence package."
     assert "pytest failed" not in events[0].summary
 
@@ -1637,7 +1644,10 @@ def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_inte
     profile = build_session_profile(session)
 
     assert profile.work_events
-    assert profile.work_events[0].heuristic_label.value == "planning"
+    # Keyword intent is gone (polylogue-ve9z); the surviving obligation is
+    # that context-dump wrapper text never drives the event summary.
+    assert profile.work_events[0].heuristic_label.value == "session"
+    assert "cached tool output" not in (profile.work_events[0].summary or "")
 
 
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:
