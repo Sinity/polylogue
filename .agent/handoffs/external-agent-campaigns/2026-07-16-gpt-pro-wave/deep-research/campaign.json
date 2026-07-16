@@ -1,0 +1,16 @@
+{
+  "schema_version":1,
+  "campaign_id":"gpt-pro-wave-2026-07-16",
+  "workload_id":"deep-research",
+  "prompt_profile":"polylogue-chatgpt-deep-research-v3",
+  "prompt_contract":"../../contracts/chatgpt-deep-research.md",
+  "jobs":[
+    {"id":"deep-research-01","slug":"mv3-provider-automation","title":"MV3 lifecycle and provider automation policy","brief":"briefs/01-mv3-provider-automation.md","prompt":"prompts/01-mv3-provider-automation.md","result_prefix":"deep-research-01-mv3-provider-automation","depends_on":[]},
+    {"id":"deep-research-02","slug":"sqlite-cancellation","title":"Cancellable resumable SQLite reads","brief":"briefs/02-sqlite-cancellation.md","prompt":"prompts/02-sqlite-cancellation.md","result_prefix":"deep-research-02-sqlite-cancellation","depends_on":[]},
+    {"id":"deep-research-03","slug":"test-selection-mutation","title":"Regression selection and incremental mutation certification","brief":"briefs/03-test-selection-mutation.md","prompt":"prompts/03-test-selection-mutation.md","result_prefix":"deep-research-03-test-selection-mutation","depends_on":[]},
+    {"id":"deep-research-04","slug":"agent-observability-provenance","title":"MCP, GenAI telemetry, and provenance interoperability","brief":"briefs/04-agent-observability-provenance.md","prompt":"prompts/04-agent-observability-provenance.md","result_prefix":"deep-research-04-agent-observability-provenance","depends_on":[]},
+    {"id":"deep-research-05","slug":"attachment-provenance","title":"Attachment acquisition and archival provenance","brief":"briefs/05-attachment-provenance.md","prompt":"prompts/05-attachment-provenance.md","result_prefix":"deep-research-05-attachment-provenance","depends_on":[]},
+    {"id":"deep-research-06","slug":"browser-capture-lifecycle","title":"Browser-native AI generation lifecycle evidence","brief":"briefs/06-browser-capture-lifecycle.md","prompt":"prompts/06-browser-capture-lifecycle.md","result_prefix":"deep-research-06-browser-capture-lifecycle","depends_on":[]},
+    {"id":"deep-research-07","slug":"ai-artifact-supply-chain","title":"AI-generated artifact supply-chain receipts","brief":"briefs/07-ai-artifact-supply-chain.md","prompt":"prompts/07-ai-artifact-supply-chain.md","result_prefix":"deep-research-07-ai-artifact-supply-chain","depends_on":[]}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version":1,
+  "campaign_id":"gpt-pro-wave-2026-07-16",
+  "workload_id":"beads",
+  "prompt_profile":"polylogue-chatgpt-pro-implementation-v3",
+  "prompt_contract":"../../contracts/chatgpt-pro-implementation.md",
+  "jobs":[
+    {"id":"beads-01","slug":"config-closure","title":"Configuration precedence closure","brief":"briefs/01-config-closure.md","prompt":"prompts/01-config-closure.md","result_prefix":"beads-01-config-closure","depends_on":[]},
+    {"id":"beads-02","slug":"mcp-algebra-contract","title":"MCP algebra contract and equivalence map","brief":"briefs/02-mcp-algebra-contract.md","prompt":"prompts/02-mcp-algebra-contract.md","result_prefix":"beads-02-mcp-algebra-contract","depends_on":[]},
+    {"id":"beads-03","slug":"mcp-read-migration","title":"MCP read-surface algebra migration","brief":"briefs/03-mcp-read-migration.md","prompt":"prompts/03-mcp-read-migration.md","result_prefix":"beads-03-mcp-read-migration","depends_on":["beads-02"]},
+    {"id":"beads-04","slug":"mcp-context-migration","title":"MCP context and assertion algebra migration","brief":"briefs/04-mcp-context-migration.md","prompt":"prompts/04-mcp-context-migration.md","result_prefix":"beads-04-mcp-context-migration","depends_on":["beads-02"]},
+    {"id":"beads-05","slug":"semantic-transcript","title":"Semantic transcript rendering","brief":"briefs/05-semantic-transcript.md","prompt":"prompts/05-semantic-transcript.md","result_prefix":"beads-05-semantic-transcript","depends_on":[]},
+    {"id":"beads-06","slug":"agent-manual-install","title":"Executable agent manual and install kit","brief":"briefs/06-agent-manual-install.md","prompt":"prompts/06-agent-manual-install.md","result_prefix":"beads-06-agent-manual-install","depends_on":[]},
+    {"id":"beads-07","slug":"provider-negative-space","title":"Provider contradiction and negative-space fixtures","brief":"briefs/07-provider-negative-space.md","prompt":"prompts/07-provider-negative-space.md","result_prefix":"beads-07-provider-negative-space","depends_on":[]},
+    {"id":"beads-08","slug":"origin-spec-migration","title":"OriginSpec source-family migration","brief":"briefs/08-origin-spec-migration.md","prompt":"prompts/08-origin-spec-migration.md","result_prefix":"beads-08-origin-spec-migration","depends_on":["OriginSpec kernel landed"]},
+    {"id":"beads-09","slug":"declaration-spec-migration","title":"DeclarationSpec family migration","brief":"briefs/09-declaration-spec-migration.md","prompt":"prompts/09-declaration-spec-migration.md","result_prefix":"beads-09-declaration-spec-migration","depends_on":["DeclarationSpec kernel landed"]},
+    {"id":"beads-10","slug":"campaign-orchestrator","title":"External-agent campaign orchestrator","brief":"briefs/10-campaign-orchestrator.md","prompt":"prompts/10-campaign-orchestrator.md","result_prefix":"beads-10-campaign-orchestrator","depends_on":["generic browser action and canonical capture contracts stable"]}
+  ]
+}

@@ -20,5 +20,6 @@ references and were retired instead.
 | `polylogue-readme-positioning-2026-07-14/` | 2026-07-14 | README/positioning draft work — see `START-HERE-polylogue.md` |
 | `polylogue-session-snapshot-2026-07-08/` | 2026-07-08 | A single captured ChatGPT session (html/md/messages.json/router-stream.js) used as an analysis fixture |
 | `polylogue-sol-pro-2026-07-15/` | 2026-07-15/16 | 28 Sol/Pro launch-dispatch deliverables (design+patches), currently the only surviving copy of that output — see its own `README.md` and `polylogue-3v1` for the capture-gap status |
+| `external-agent-campaigns/` | 2026-07-16 onward | Reusable, provider-independent campaign input/result layout plus paste-ready ChatGPT Pro portfolios. This is repository-side orchestration material, not extension/product state. |
 
 For the Gemini/AI Studio equivalent, see `/realm/inbox/handoffs/polylogue-gemini-2026-07-16/` (outside this repo — not yet unified here, tracked separately).
