@@ -72,16 +72,18 @@ def _canonical_schema_objects() -> dict[str, str]:
         return _schema_objects(conn)
 
 
-def _table_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def _schema_rootpages(conn: sqlite3.Connection) -> dict[str, int]:
     rows = conn.execute(
         """
-        SELECT name
+        SELECT type, name, rootpage
         FROM sqlite_master
-        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-        ORDER BY name
+        WHERE type IN ('table', 'index')
+          AND name NOT LIKE 'sqlite_%'
+          AND rootpage > 0
+        ORDER BY type, name
         """
     ).fetchall()
-    return {str(row[0]): int(conn.execute(f'SELECT COUNT(*) FROM "{row[0]}"').fetchone()[0]) for row in rows}
+    return {f"{row[0]}:{row[1]}": int(row[2]) for row in rows}
 
 
 def _checks(conn: sqlite3.Connection) -> dict[str, object]:
@@ -178,19 +180,16 @@ def _checkpoint_stopped_database(path: Path, *, label: str = "active index") -> 
             sidecar.unlink()
 
 
-def _require_clean_database(path: Path, *, expected_version: int) -> tuple[dict[str, str], dict[str, int]]:
+def _inspect_clean_database(path: Path, *, expected_version: int) -> tuple[dict[str, str], dict[str, int]]:
     for suffix in ("-wal", "-shm", "-journal"):
         sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
         if sidecar.exists() and sidecar.stat().st_size:
             raise IndexV37FastForwardError(f"non-empty SQLite sidecar blocks fast-forward: {sidecar}")
-    with closing(sqlite3.connect(f"file:{path.resolve(strict=True)}?mode=ro", uri=True)) as conn:
+    with closing(sqlite3.connect(f"file:{path.resolve(strict=True)}?mode=ro&immutable=1", uri=True)) as conn:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version != expected_version:
             raise IndexV37FastForwardError(f"expected index v{expected_version}, found v{version}")
-        checks = _checks(conn)
-        if checks["quick_check"] != ["ok"] or checks["foreign_key_check"]:
-            raise IndexV37FastForwardError(f"index preflight failed: {checks}")
-        return _schema_objects(conn), _table_counts(conn)
+        return _schema_objects(conn), _schema_rootpages(conn)
 
 
 def _prove_v36_delta(schema: dict[str, str]) -> dict[str, str]:
@@ -215,11 +214,12 @@ def _prove_v36_delta(schema: dict[str, str]) -> dict[str, str]:
     return canonical
 
 
-def _transform_clone(path: Path, *, before_counts: dict[str, int], canonical: dict[str, str]) -> dict[str, object]:
+def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical: dict[str, str]) -> dict[str, object]:
     with closing(sqlite3.connect(path, timeout=120.0)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) != FROM_VERSION:
             raise IndexV37FastForwardError("clone version changed before transformation")
+        changes_before = conn.total_changes
         conn.execute("BEGIN IMMEDIATE")
         try:
             for table in RETIRED_TABLES:
@@ -229,26 +229,35 @@ def _transform_clone(path: Path, *, before_counts: dict[str, int], canonical: di
         except Exception:
             conn.rollback()
             raise
+        if conn.total_changes != changes_before:
+            raise IndexV37FastForwardError("v37 clone transformation unexpectedly changed table rows")
     _checkpoint_stopped_database(path, label="prepared clone")
-    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
         checks = _checks(conn)
         after_schema = _schema_objects(conn)
-        after_counts = _table_counts(conn)
+        after_rootpages = _schema_rootpages(conn)
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    expected_counts = {name: count for name, count in before_counts.items() if name not in RETIRED_TABLES}
+    expected_rootpages = {
+        key: rootpage
+        for key, rootpage in before_rootpages.items()
+        if key.split(":", 1)[1] not in RETIRED_TABLES
+        and not any(key.split(":", 1)[1].startswith(f"idx_{table}") for table in RETIRED_TABLES)
+    }
     if version != INDEX_SCHEMA_VERSION or version != TO_VERSION:
         raise IndexV37FastForwardError(f"clone ended at unexpected index version {version}")
     if checks["quick_check"] != ["ok"] or checks["foreign_key_check"]:
         raise IndexV37FastForwardError(f"clone postflight failed: {checks}")
     if after_schema != canonical:
         raise IndexV37FastForwardError("clone schema does not exactly match canonical v37 DDL")
-    if after_counts != expected_counts:
-        raise IndexV37FastForwardError("one or more surviving table counts changed in the clone")
-    return {"checks": checks, "table_counts": after_counts, "schema_object_count": len(after_schema)}
+    if after_rootpages != expected_rootpages:
+        raise IndexV37FastForwardError("one or more surviving schema root pages changed in the clone")
+    return {"checks": checks, "schema_rootpages": after_rootpages, "schema_object_count": len(after_schema)}
 
 
 def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, object]:
     """Create and prove an owned inactive v37 generation."""
+    prepare_started_ns = time.monotonic_ns()
+    phase_timings_ms: dict[str, int] = {}
     archive_root = archive_root.resolve(strict=True)
     _require_daemon_stopped(archive_root)
     store = IndexGenerationStore(archive_root)
@@ -256,21 +265,30 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
         _checkpoint_stopped_database(active_pointer)
+        phase_started_ns = time.monotonic_ns()
         source_snapshot = source_revision_snapshot(archive_root)
         active_identity = _file_identity(active_pointer)
-        before_schema, before_counts = _require_clean_database(active_pointer, expected_version=FROM_VERSION)
+        before_schema, before_rootpages = _inspect_clean_database(active_pointer, expected_version=FROM_VERSION)
         canonical = _prove_v36_delta(before_schema)
+        phase_timings_ms["active_evidence"] = (time.monotonic_ns() - phase_started_ns) // 1_000_000
         generation = store.create(source_snapshot=source_snapshot)
         clone = Path(generation.index_path)
         try:
+            phase_started_ns = time.monotonic_ns()
             clone.unlink()
             reflink_clone(active_pointer, clone)
             if _file_identity(active_pointer) != active_identity:
                 raise IndexV37FastForwardError("active index changed while its clone was created")
-            postflight = _transform_clone(clone, before_counts=before_counts, canonical=canonical)
+            phase_timings_ms["reflink_clone"] = (time.monotonic_ns() - phase_started_ns) // 1_000_000
+            phase_started_ns = time.monotonic_ns()
+            postflight = _transform_clone(clone, before_rootpages=before_rootpages, canonical=canonical)
+            phase_timings_ms["transform_and_postflight"] = (time.monotonic_ns() - phase_started_ns) // 1_000_000
             if source_revision_snapshot(archive_root) != source_snapshot:
                 raise IndexV37FastForwardError("source evidence changed while preparing v37 clone")
+            phase_started_ns = time.monotonic_ns()
             clone_identity = _proven_clone_identity(clone)
+            phase_timings_ms["clone_sha256"] = (time.monotonic_ns() - phase_started_ns) // 1_000_000
+            phase_timings_ms["total"] = (time.monotonic_ns() - prepare_started_ns) // 1_000_000
             receipt: dict[str, object] = {
                 "schema": RECEIPT_SCHEMA,
                 "status": "prepared",
@@ -281,9 +299,10 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
                 "active_identity": active_identity,
                 "clone_identity": clone_identity,
                 "canonical_schema_sha256": _canonical_schema_sha256(canonical),
-                "before_table_counts": before_counts,
+                "before_schema_rootpages": before_rootpages,
                 "retired_tables": list(RETIRED_TABLES),
                 "postflight": postflight,
+                "phase_timings_ms": phase_timings_ms,
                 "raw_reparse": False,
             }
             _write_receipt(receipt_path, receipt)
