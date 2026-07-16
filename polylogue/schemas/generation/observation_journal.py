@@ -9,13 +9,15 @@ import stat
 import tempfile
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
-from typing import Literal, Self, TypeAlias
+from typing import Literal, Self, TypeAlias, overload
 
 from polylogue.core.json import JSONValue
 from polylogue.paths import cache_home
+from polylogue.schemas.generation.models import _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
 
 ObservationTerminalStatus: TypeAlias = Literal[
@@ -203,7 +205,9 @@ class ObservationJournal:
                     bundle_scope TEXT,
                     observed_at TEXT,
                     exact_structure_id TEXT NOT NULL,
-                    profile_tokens_json BLOB NOT NULL
+                    profile_tokens_json BLOB NOT NULL,
+                    profile_family_id TEXT,
+                    package_family_id TEXT
                 ) STRICT;
 
                 CREATE TABLE samples (
@@ -225,6 +229,8 @@ class ObservationJournal:
 
                 CREATE INDEX units_artifact_kind_idx ON units(artifact_kind, unit_id);
                 CREATE INDEX units_bundle_scope_idx ON units(bundle_scope, unit_id);
+                CREATE INDEX units_profile_family_idx ON units(profile_family_id, unit_id);
+                CREATE INDEX units_package_family_idx ON units(package_family_id, artifact_kind, unit_id);
                 """
             )
             connection.execute(
@@ -237,7 +243,7 @@ class ObservationJournal:
             raise
         return cls(path=path, connection=connection)
 
-    def append_unit(self, unit: SchemaUnit) -> int:
+    def append_unit(self, unit: SchemaUnit, *, retain_cluster_payload: bool = True) -> int:
         """Append one canonical unit and its independently replayable samples."""
         cursor = self._connection.execute(
             """
@@ -247,7 +253,7 @@ class ObservationJournal:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                _canonical_json(unit.cluster_payload),
+                _canonical_json(unit.cluster_payload if retain_cluster_payload else {}),
                 unit.artifact_kind,
                 unit.session_id,
                 unit.raw_id,
@@ -287,32 +293,154 @@ class ObservationJournal:
 
     def iter_units(self) -> Iterator[SchemaUnit]:
         """Replay units in stable ingestion order without retaining the corpus."""
+        for _unit_id, unit in self.iter_identified_units():
+            yield unit
+
+    def _unit_from_row(self, row: sqlite3.Row, *, include_cluster_payload: bool = True) -> SchemaUnit:
+        sample_values = []
+        for sample_row in self._connection.execute(
+            "SELECT sample_json FROM samples WHERE unit_id = ? ORDER BY position",
+            (row["unit_id"],),
+        ):
+            sample = _decode_json(sample_row["sample_json"])
+            if not isinstance(sample, dict):
+                raise TypeError("Observation journal schema sample is not an object")
+            sample_values.append(sample)
+        profile_tokens = _decode_json(row["profile_tokens_json"])
+        if not isinstance(profile_tokens, list) or not all(isinstance(item, str) for item in profile_tokens):
+            raise TypeError("Observation journal profile tokens are not a string list")
+        return SchemaUnit(
+            cluster_payload=_decode_json(row["cluster_payload_json"]) if include_cluster_payload else {},
+            schema_samples=sample_values,
+            artifact_kind=str(row["artifact_kind"]),
+            session_id=row["session_id"],
+            raw_id=row["raw_id"],
+            source_path=row["source_path"],
+            bundle_scope=row["bundle_scope"],
+            observed_at=row["observed_at"],
+            exact_structure_id=str(row["exact_structure_id"]),
+            profile_tokens=tuple(str(item) for item in profile_tokens),
+        )
+
+    def iter_identified_units(self) -> Iterator[tuple[int, SchemaUnit]]:
+        """Replay journal identities and units without retaining prior rows."""
         for row in self._connection.execute("SELECT * FROM units ORDER BY unit_id"):
-            sample_values = []
-            for sample_row in self._connection.execute(
-                "SELECT sample_json FROM samples WHERE unit_id = ? ORDER BY position",
-                (row["unit_id"],),
-            ):
-                sample = _decode_json(sample_row["sample_json"])
-                if not isinstance(sample, dict):
-                    raise TypeError("Observation journal schema sample is not an object")
-                sample_values.append(sample)
-            profile_tokens = _decode_json(row["profile_tokens_json"])
-            if not isinstance(profile_tokens, list) or not all(isinstance(item, str) for item in profile_tokens):
-                raise TypeError("Observation journal profile tokens are not a string list")
-            normalized_profile_tokens = tuple(str(item) for item in profile_tokens)
-            yield SchemaUnit(
-                cluster_payload=_decode_json(row["cluster_payload_json"]),
-                schema_samples=sample_values,
-                artifact_kind=str(row["artifact_kind"]),
-                session_id=row["session_id"],
-                raw_id=row["raw_id"],
-                source_path=row["source_path"],
-                bundle_scope=row["bundle_scope"],
-                observed_at=row["observed_at"],
-                exact_structure_id=str(row["exact_structure_id"]),
-                profile_tokens=normalized_profile_tokens,
+            yield int(row["unit_id"]), self._unit_from_row(row)
+
+    def assign_profile_family(self, unit_id: int, profile_family_id: str) -> None:
+        self._connection.execute(
+            "UPDATE units SET profile_family_id = ? WHERE unit_id = ?",
+            (profile_family_id, unit_id),
+        )
+
+    def normalize_profile_families(self, replacements: dict[str, str]) -> None:
+        changed = [(source, target) for source, target in replacements.items() if source != target]
+        if not changed:
+            return
+        self._connection.execute(
+            "CREATE TEMP TABLE profile_family_replacements(source TEXT PRIMARY KEY, target TEXT NOT NULL) STRICT"
+        )
+        try:
+            self._connection.executemany(
+                "INSERT INTO profile_family_replacements(source, target) VALUES (?, ?)",
+                changed,
             )
+            self._connection.execute(
+                """
+                UPDATE units
+                SET profile_family_id = (
+                    SELECT target
+                    FROM profile_family_replacements
+                    WHERE source = units.profile_family_id
+                )
+                WHERE profile_family_id IN (SELECT source FROM profile_family_replacements)
+                """
+            )
+        finally:
+            self._connection.execute("DROP TABLE profile_family_replacements")
+
+    def assign_package_family(self, unit_id: int, package_family_id: str) -> None:
+        self._connection.execute(
+            "UPDATE units SET package_family_id = ? WHERE unit_id = ?",
+            (package_family_id, unit_id),
+        )
+
+    def memberships(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> JournalMemberships:
+        return JournalMemberships(
+            self,
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+
+    def _membership_where(
+        self,
+        *,
+        profile_family_id: str | None,
+        package_family_id: str | None,
+        artifact_kind: str | None,
+    ) -> tuple[str, list[str]]:
+        predicates = ["profile_family_id IS NOT NULL"]
+        parameters: list[str] = []
+        for column, value in (
+            ("profile_family_id", profile_family_id),
+            ("package_family_id", package_family_id),
+            ("artifact_kind", artifact_kind),
+        ):
+            if value is not None:
+                predicates.append(f"{column} = ?")
+                parameters.append(value)
+        return " AND ".join(predicates), parameters
+
+    def iter_identified_memberships(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+        scope_order: bool = False,
+    ) -> Iterator[tuple[int, _UnitMembership]]:
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        order = (
+            "COALESCE(bundle_scope, raw_id, source_path, profile_family_id || ':' || artifact_kind || ':' || exact_structure_id), "
+            "COALESCE(observed_at, ''), COALESCE(source_path, ''), profile_family_id, unit_id"
+            if scope_order
+            else "unit_id"
+        )
+        query = f"SELECT * FROM units WHERE {where} ORDER BY {order}"
+        for row in self._connection.execute(query, parameters):
+            yield (
+                int(row["unit_id"]),
+                _UnitMembership(
+                    unit=self._unit_from_row(row, include_cluster_payload=False),
+                    profile_family_id=str(row["profile_family_id"]),
+                ),
+            )
+
+    def membership_count(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> int:
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = f"SELECT COUNT(*) FROM units WHERE {where}"
+        return int(self._connection.execute(query, parameters).fetchone()[0])
 
     def iter_terminals(self) -> Iterator[ObservationTerminal]:
         """Replay terminal artifact outcomes in stable raw identity order."""
@@ -366,8 +494,58 @@ class ObservationJournal:
         self.close()
 
 
+class JournalMemberships(Sequence[_UnitMembership]):
+    """Replayable membership view backed by one observation journal."""
+
+    def __init__(
+        self,
+        journal: ObservationJournal,
+        *,
+        profile_family_id: str | None,
+        package_family_id: str | None,
+        artifact_kind: str | None,
+    ) -> None:
+        self._journal = journal
+        self._profile_family_id = profile_family_id
+        self._package_family_id = package_family_id
+        self._artifact_kind = artifact_kind
+
+    def __len__(self) -> int:
+        return self._journal.membership_count(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def __iter__(self) -> Iterator[_UnitMembership]:
+        for _unit_id, membership in self._journal.iter_identified_memberships(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        ):
+            yield membership
+
+    @overload
+    def __getitem__(self, index: int) -> _UnitMembership: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[_UnitMembership]: ...
+
+    def __getitem__(self, index: int | slice) -> _UnitMembership | Sequence[_UnitMembership]:
+        if isinstance(index, slice):
+            return list(self)[index]
+        normalized = index if index >= 0 else len(self) + index
+        if normalized < 0:
+            raise IndexError(index)
+        try:
+            return next(islice(iter(self), normalized, normalized + 1))
+        except StopIteration as error:
+            raise IndexError(index) from error
+
+
 __all__ = [
     "ObservationJournal",
+    "JournalMemberships",
     "ObservationTerminal",
     "ObservationTerminalStatus",
     "recover_stale_journals",

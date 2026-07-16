@@ -15,6 +15,7 @@ from polylogue.schemas.generation.cluster_support import (
     _cluster_sort_key,
 )
 from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
+from polylogue.schemas.generation.observation_journal import ObservationJournal, recover_stale_journals
 from polylogue.schemas.generation.packages import (
     _build_package_candidates,
 )
@@ -77,71 +78,75 @@ def _build_provider_bundle(
     config: ProviderConfig = resolve_provider_config(provider_token)
 
     try:
-        clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
-            provider,
-            db_path=db_path,
-            max_samples=max_samples,
-            reservoir_size=_cluster_reservoir_size(config, max_samples),
-            full_corpus=full_corpus,
-        )
-        if not clusters:
-            return build_provider_error_bundle(
-                str(provider_token),
-                error="No samples found",
+        recover_stale_journals(minimum_age_s=0)
+        with ObservationJournal.create(forbidden_roots=(db_path.parent,)) as journal:
+            clusters, memberships, sample_count, artifact_counts = _collect_cluster_accumulators(
+                provider,
+                db_path=db_path,
+                max_samples=max_samples,
+                reservoir_size=_cluster_reservoir_size(config, max_samples),
+                full_corpus=full_corpus,
+                journal=journal,
             )
-        packages, orphan_adjunct_counts = _build_package_candidates(
-            str(provider_token),
-            memberships=memberships,
-            clusters=clusters,
-        )
-        if not packages:
-            return build_provider_error_bundle(
+            if not clusters:
+                return build_provider_error_bundle(
+                    str(provider_token),
+                    error="No samples found",
+                )
+            packages, orphan_adjunct_counts = _build_package_candidates(
                 str(provider_token),
-                error="No anchor-backed schema packages found",
-                sample_count=sample_count,
-                cluster_count=len(clusters),
-                artifact_counts=artifact_counts,
-                manifest=ClusterManifest(
-                    provider=provider_token,
-                    clusters=[
-                        SchemaCluster(
-                            cluster_id=cluster_id,
-                            provider=provider_token,
-                            sample_count=acc.sample_count,
-                            first_seen=acc.first_seen or "",
-                            last_seen=acc.last_seen or "",
-                            representative_paths=acc.representative_paths,
-                            dominant_keys=acc.dominant_keys,
-                            confidence=1.0,
-                            artifact_kind=acc.artifact_kind,
-                            profile_tokens=list(_cluster_profile_tokens(acc)),
-                            exact_structure_ids=sorted(acc.exact_structure_ids),
-                            bundle_scope_count=len(acc.bundle_scopes),
-                        )
-                        for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True)
-                    ],
+                memberships=memberships,
+                clusters=clusters,
+                journal=journal,
+            )
+            if not packages:
+                return build_provider_error_bundle(
+                    str(provider_token),
+                    error="No anchor-backed schema packages found",
+                    sample_count=sample_count,
+                    cluster_count=len(clusters),
                     artifact_counts=artifact_counts,
-                ),
+                    manifest=ClusterManifest(
+                        provider=provider_token,
+                        clusters=[
+                            SchemaCluster(
+                                cluster_id=cluster_id,
+                                provider=provider_token,
+                                sample_count=acc.sample_count,
+                                first_seen=acc.first_seen or "",
+                                last_seen=acc.last_seen or "",
+                                representative_paths=acc.representative_paths,
+                                dominant_keys=acc.dominant_keys,
+                                confidence=1.0,
+                                artifact_kind=acc.artifact_kind,
+                                profile_tokens=list(_cluster_profile_tokens(acc)),
+                                exact_structure_ids=sorted(acc.exact_structure_ids),
+                                bundle_scope_count=len(acc.bundle_scopes),
+                            )
+                            for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True)
+                        ],
+                        artifact_counts=artifact_counts,
+                    ),
+                )
+            catalog_artifacts = build_provider_catalog_artifacts(
+                provider_token=provider_token,
+                config=config,
+                provider=provider,
+                clusters=clusters,
+                memberships=memberships,
+                packages=packages,
+                sample_count=sample_count,
+                artifact_counts=artifact_counts,
+                orphan_adjunct_counts=orphan_adjunct_counts,
+                privacy_config=privacy_config,
             )
-        catalog_artifacts = build_provider_catalog_artifacts(
-            provider_token=provider_token,
-            config=config,
-            provider=provider,
-            clusters=clusters,
-            memberships=memberships,
-            packages=packages,
-            sample_count=sample_count,
-            artifact_counts=artifact_counts,
-            orphan_adjunct_counts=orphan_adjunct_counts,
-            privacy_config=privacy_config,
-        )
-        return build_success_provider_bundle(
-            provider_token=provider_token,
-            sample_count=sample_count,
-            clusters=clusters,
-            artifact_counts=artifact_counts,
-            catalog_artifacts=catalog_artifacts,
-        )
+            return build_success_provider_bundle(
+                provider_token=provider_token,
+                sample_count=sample_count,
+                clusters=clusters,
+                artifact_counts=artifact_counts,
+                catalog_artifacts=catalog_artifacts,
+            )
     except Exception as e:
         return build_provider_error_bundle(
             str(provider_token),

@@ -6,12 +6,13 @@ import hashlib
 import json
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
+from polylogue.schemas.generation.replay import ArtifactMemberships
 
 WORKLOAD_PROFILE_VERSION = 1
 _STRUCTURAL_VARIANT_CAP = 256
@@ -227,7 +228,7 @@ def _scope_key(membership: _UnitMembership) -> str:
     return unit.bundle_scope or unit.raw_id or unit.source_path or membership.profile_family_id
 
 
-def _relationship_profile(memberships: list[_UnitMembership]) -> JSONDocument:
+def _relationship_profile(memberships: Sequence[_UnitMembership]) -> JSONDocument:
     aggregate = _RelationshipAccumulator()
     current_scope: str | None = None
     tool_scope = _ToolScope()
@@ -303,7 +304,7 @@ def _misra_gries_candidates(
 
 
 def _structural_variants(
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     *,
     element_kind: str,
 ) -> tuple[list[JSONDocument], JSONDocument]:
@@ -352,9 +353,7 @@ def build_package_workload_profile(
     elements: JSONDocument = {}
     for element_kind, schema in sorted(element_schemas.items()):
         variants, variant_loss = _structural_variants(package.memberships, element_kind=element_kind)
-        element_memberships = [
-            membership for membership in package.memberships if membership.unit.artifact_kind == element_kind
-        ]
+        element_memberships = ArtifactMemberships(package.memberships, element_kind)
         sample_count = sum(len(membership.unit.schema_samples) for membership in element_memberships)
         elements[element_kind] = json_document(
             {

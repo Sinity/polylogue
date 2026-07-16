@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -85,7 +85,7 @@ class _PackageAccumulator:
     provider: str
     anchor_family_id: str
     anchor_kind: str
-    memberships: list[_UnitMembership] = field(default_factory=list)
+    memberships: Sequence[_UnitMembership] = field(default_factory=list)
     bundle_scopes: set[str] = field(default_factory=set)
     representative_paths: list[str] = field(default_factory=list)
     profile_family_ids: set[str] = field(default_factory=set)
@@ -96,7 +96,7 @@ class _PackageAccumulator:
 @dataclass(frozen=True)
 class ClusterCollectionResult:
     clusters: dict[str, _ClusterAccumulator]
-    memberships: list[_UnitMembership]
+    memberships: Sequence[_UnitMembership]
     sample_count: int
     artifact_counts: dict[str, int]
 

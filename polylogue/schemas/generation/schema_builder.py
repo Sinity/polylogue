@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TypeAlias
 
@@ -48,8 +48,8 @@ _STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
 def _generate_cluster_schema(
     provider: str,
     config: ProviderConfig,
-    samples: Sequence[SchemaInput],
-    conv_ids: Sequence[str | None],
+    samples: Collection[SchemaInput],
+    conv_ids: Collection[str | None],
     *,
     privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
@@ -73,7 +73,7 @@ def _generate_cluster_schema(
     if config.sample_granularity == "record":
         schema.pop("required", None)
 
-    conv_ids_for_stats: Sequence[str | None] | None = (
+    conv_ids_for_stats: Collection[str | None] | None = (
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
     field_stats = _collect_field_stats(samples, session_ids=conv_ids_for_stats)

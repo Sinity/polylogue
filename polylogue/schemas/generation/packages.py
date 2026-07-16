@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from itertools import groupby
 
 from polylogue.schemas.generation.models import (
     PackageAssemblyResult,
@@ -11,6 +13,7 @@ from polylogue.schemas.generation.models import (
     _PackageAccumulator,
     _UnitMembership,
 )
+from polylogue.schemas.generation.observation_journal import ObservationJournal
 
 _ANCHOR_ELEMENT_KINDS = {
     "session_document",
@@ -48,7 +51,7 @@ def _update_observed_window(acc: _ClusterAccumulator | _PackageAccumulator, obse
         acc.last_seen = iso
 
 
-def _membership_observed_window(memberships: list[_UnitMembership]) -> tuple[str | None, str | None]:
+def _membership_observed_window(memberships: Sequence[_UnitMembership]) -> tuple[str | None, str | None]:
     first_seen: str | None = None
     last_seen: str | None = None
     for membership in memberships:
@@ -75,7 +78,7 @@ def _membership_scope_key(membership: _UnitMembership) -> str:
     )
 
 
-def _dedupe_bundle_memberships(memberships: list[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
+def _dedupe_bundle_memberships(memberships: Sequence[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
     scoped: dict[str, list[_UnitMembership]] = {}
     for membership in memberships:
         scoped.setdefault(_membership_scope_key(membership), []).append(membership)
@@ -102,8 +105,7 @@ def _dedupe_bundle_memberships(memberships: list[_UnitMembership]) -> dict[str, 
     return deduped
 
 
-def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
-    package.memberships.append(membership)
+def _observe_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
     package.bundle_scopes.add(scope)
     package.profile_family_ids.add(membership.profile_family_id)
     if membership.unit.source_path:
@@ -111,12 +113,23 @@ def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMe
     _update_observed_window(package, membership.unit.observed_at)
 
 
+def _attach_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
+    if not isinstance(package.memberships, list):
+        raise TypeError("Cannot mutate replay-backed package memberships")
+    package.memberships.append(membership)
+    _observe_package_membership(package, membership, scope=scope)
+
+
 def _build_package_candidates(
     provider: str,
     *,
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     clusters: dict[str, _ClusterAccumulator],
+    journal: ObservationJournal | None = None,
 ) -> tuple[list[_PackageAccumulator], dict[str, int]]:
+    if journal is not None:
+        result = _assemble_journal_package_candidates(provider, journal=journal, clusters=clusters)
+        return result.packages, result.orphan_adjunct_counts
     result = assemble_package_candidates(
         provider,
         memberships=memberships,
@@ -128,7 +141,7 @@ def _build_package_candidates(
 def assemble_package_candidates(
     provider: str,
     *,
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     clusters: dict[str, _ClusterAccumulator],
 ) -> PackageAssemblyResult:
     scoped = _dedupe_bundle_memberships(memberships)
@@ -187,7 +200,84 @@ def assemble_package_candidates(
     )
 
 
-def _element_profile_tokens(memberships: list[_UnitMembership]) -> list[str]:
+def _assemble_journal_package_candidates(
+    provider: str,
+    *,
+    journal: ObservationJournal,
+    clusters: dict[str, _ClusterAccumulator],
+) -> PackageAssemblyResult:
+    """Assemble packages one bundle scope at a time and persist assignments."""
+    packages: dict[str, _PackageAccumulator] = {}
+    orphan_adjunct_counts: Counter[str] = Counter()
+    identified = journal.iter_identified_memberships(scope_order=True)
+
+    for scope, group in groupby(identified, key=lambda item: _membership_scope_key(item[1])):
+        seen: set[tuple[str, str]] = set()
+        items: list[tuple[int, _UnitMembership]] = []
+        for unit_id, membership in group:
+            dedupe_key = (membership.unit.artifact_kind, membership.unit.exact_structure_id)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            items.append((unit_id, membership))
+
+        anchor_families = sorted(
+            {
+                membership.profile_family_id
+                for _unit_id, membership in items
+                if membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS
+            }
+        )
+        if not anchor_families:
+            for _unit_id, membership in items:
+                orphan_adjunct_counts[membership.unit.artifact_kind] += 1
+            continue
+
+        for family_id in anchor_families:
+            acc = packages.get(family_id)
+            if acc is None:
+                cluster = clusters[family_id]
+                acc = _PackageAccumulator(
+                    provider=provider,
+                    anchor_family_id=family_id,
+                    anchor_kind=cluster.artifact_kind,
+                )
+                packages[family_id] = acc
+            for unit_id, membership in items:
+                if membership.profile_family_id == family_id and membership.unit.artifact_kind in _ANCHOR_ELEMENT_KINDS:
+                    _observe_package_membership(acc, membership, scope=scope)
+                    journal.assign_package_family(unit_id, family_id)
+
+        if len(anchor_families) == 1:
+            family_id = anchor_families[0]
+            target = packages[family_id]
+            for unit_id, membership in items:
+                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
+                    _observe_package_membership(target, membership, scope=scope)
+                    journal.assign_package_family(unit_id, family_id)
+        else:
+            for _unit_id, membership in items:
+                if membership.unit.artifact_kind not in _ANCHOR_ELEMENT_KINDS:
+                    orphan_adjunct_counts[membership.unit.artifact_kind] += 1
+
+    for family_id, package in packages.items():
+        package.memberships = journal.memberships(package_family_id=family_id)
+
+    ordered = sorted(
+        packages.values(),
+        key=lambda item: (
+            _parse_observed_at(item.first_seen) or datetime.max.replace(tzinfo=timezone.utc),
+            -len(item.bundle_scopes),
+            item.anchor_family_id,
+        ),
+    )
+    return PackageAssemblyResult(
+        packages=ordered,
+        orphan_adjunct_counts=dict(orphan_adjunct_counts),
+    )
+
+
+def _element_profile_tokens(memberships: Sequence[_UnitMembership]) -> list[str]:
     token_counts: Counter[str] = Counter()
     for membership in memberships:
         token_counts.update(membership.unit.profile_tokens)

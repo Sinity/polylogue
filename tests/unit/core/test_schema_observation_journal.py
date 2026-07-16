@@ -84,6 +84,37 @@ def test_journal_cleanup_runs_for_exceptions(tmp_path: Path) -> None:
     assert not journal_path.exists()
 
 
+def test_journal_replays_assignments_without_retaining_cluster_payloads(tmp_path: Path) -> None:
+    first = _unit()
+    second = SchemaUnit(
+        cluster_payload={"large": ["private clustering content"] * 10},
+        schema_samples=[{"type": "assistant"}],
+        artifact_kind="session_record_stream",
+        session_id="session-2",
+        exact_structure_id="structure-2",
+        profile_tokens=("field:type", "record:assistant"),
+    )
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        first_id = journal.append_unit(first, retain_cluster_payload=False)
+        second_id = journal.append_unit(second, retain_cluster_payload=False)
+        journal.assign_profile_family(first_id, "family-a")
+        journal.assign_profile_family(second_id, "family-b")
+
+        # Simultaneous normalization must not cascade family-a through family-b.
+        journal.normalize_profile_families({"family-a": "family-b", "family-b": "family-c"})
+        journal.assign_package_family(first_id, "package-1")
+
+        identified = list(journal.iter_identified_memberships())
+        assert [membership.profile_family_id for _unit_id, membership in identified] == [
+            "family-b",
+            "family-c",
+        ]
+        assert all(membership.unit.cluster_payload == {} for _unit_id, membership in identified)
+        package = journal.memberships(package_family_id="package-1")
+        assert len(package) == 1
+        assert package[0].unit.schema_samples == first.schema_samples
+
+
 def test_journal_rejects_archive_or_broad_permission_roots(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()

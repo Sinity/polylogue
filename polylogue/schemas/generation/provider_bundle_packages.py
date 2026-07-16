@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -25,6 +25,7 @@ from polylogue.schemas.generation.packages import (
     _membership_observed_window,
     _merge_representative_paths,
 )
+from polylogue.schemas.generation.replay import ArtifactMemberships, MembershipSamples, MembershipSessionIds
 from polylogue.schemas.generation.schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
@@ -62,7 +63,7 @@ def build_provider_catalog_artifacts(
     config: ProviderConfig,
     provider: str,
     clusters: dict[str, _ClusterAccumulator],
-    memberships: list[_UnitMembership],
+    memberships: Sequence[_UnitMembership],
     packages: list[_PackageAccumulator],
     sample_count: int,
     artifact_counts: dict[str, int],
@@ -82,19 +83,18 @@ def build_provider_catalog_artifacts(
         package_schemas[version] = {}
         package_reports[version] = {}
 
-        element_memberships: dict[str, list[_UnitMembership]] = {}
-        for membership in package_acc.memberships:
-            element_memberships.setdefault(membership.unit.artifact_kind, []).append(membership)
+        element_kinds = {membership.unit.artifact_kind for membership in package_acc.memberships}
 
         elements: list[SchemaElementManifest] = []
         total_package_samples = 0
-        for element_kind, kind_memberships in sorted(
-            element_memberships.items(),
-            key=lambda item: (_artifact_priority(item[0]), item[0]),
+        for element_kind in sorted(
+            element_kinds,
+            key=lambda item: (_artifact_priority(item), item),
             reverse=True,
         ):
-            schema_samples: list[JSONDocument] = []
-            conv_ids: list[str | None] = []
+            kind_memberships = ArtifactMemberships(package_acc.memberships, element_kind)
+            schema_samples = MembershipSamples(kind_memberships)
+            conv_ids = MembershipSessionIds(kind_memberships)
             representative_paths: list[str] = []
             exact_structure_ids = sorted({membership.unit.exact_structure_id for membership in kind_memberships})
             profile_family_ids = sorted({membership.profile_family_id for membership in kind_memberships})
@@ -103,8 +103,6 @@ def build_provider_catalog_artifacts(
             )
             element_first_seen, element_last_seen = _membership_observed_window(kind_memberships)
             for membership in kind_memberships:
-                schema_samples.extend(membership.unit.schema_samples)
-                conv_ids.extend([membership.unit.session_id] * len(membership.unit.schema_samples))
                 if membership.unit.source_path:
                     _merge_representative_paths(representative_paths, [membership.unit.source_path])
 

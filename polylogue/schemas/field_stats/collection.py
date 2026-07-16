@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping
 from typing import TypeAlias
 
 from polylogue.schemas.field_stats.detection import (
@@ -67,9 +67,9 @@ def _increment_bounded(counter: dict[str, int], key: str, stats: FieldStats, evi
 
 
 def _collect_field_stats(
-    samples: Sequence[SampleMapping],
+    samples: Collection[SampleMapping],
     *,
-    session_ids: Sequence[str | None] | None = None,
+    session_ids: Collection[str | None] | None = None,
     max_depth: int = 15,
 ) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics."""
@@ -83,6 +83,8 @@ def _collect_field_stats(
 
     numeric_sample_cap = 500
     string_length_cap = 2000
+
+    current_session_id: str | None = None
 
     def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
         if depth > max_depth:
@@ -172,7 +174,7 @@ def _collect_field_stats(
                     stats.distinct_value_count += 1
                 stats.observed_values[value] += 1
                 if session_ids is not None:
-                    conv_id = session_ids[sample_idx] if sample_idx < len(session_ids) else None
+                    conv_id = current_session_id
                     if conv_id is not None:
                         sessions = stats.value_session_ids.setdefault(value, set())
                         if conv_id in sessions or len(sessions) < SESSION_EVIDENCE_CAP:
@@ -221,7 +223,9 @@ def _collect_field_stats(
                 if fmt:
                     stats.detected_formats[fmt] += 1
 
+    session_id_iterator = iter(session_ids) if session_ids is not None else None
     for idx, sample in enumerate(samples):
+        current_session_id = next(session_id_iterator, None) if session_id_iterator is not None else None
         _walk(sample, "$", 0, idx)
 
     total_samples = len(samples)

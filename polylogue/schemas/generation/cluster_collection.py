@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 from polylogue.schemas.generation.cluster_support import (
@@ -25,7 +26,8 @@ from polylogue.schemas.generation.models import (
     _ProfileSummary,
     _UnitMembership,
 )
-from polylogue.schemas.observation import profile_cluster_id
+from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.schemas.observation import SchemaUnit, profile_cluster_id
 
 
 def _collect_cluster_accumulators(
@@ -35,13 +37,15 @@ def _collect_cluster_accumulators(
     max_samples: int | None,
     reservoir_size: int,
     full_corpus: bool = False,
-) -> tuple[dict[str, _ClusterAccumulator], list[_UnitMembership], int, dict[str, int]]:
+    journal: ObservationJournal | None = None,
+) -> tuple[dict[str, _ClusterAccumulator], Sequence[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
         db_path=db_path,
         max_samples=max_samples,
         reservoir_size=reservoir_size,
         full_corpus=full_corpus,
+        journal=journal,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
 
@@ -53,15 +57,16 @@ def collect_cluster_analysis(
     max_samples: int | None,
     reservoir_size: int,
     full_corpus: bool = False,
+    journal: ObservationJournal | None = None,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
-    units = list(iter_schema_units(provider, db_path=db_path, max_samples=max_samples, full_corpus=full_corpus))
     profile_summaries: dict[tuple[str, tuple[str, ...]], _ProfileSummary] = {}
     total_schema_samples = 0
     artifact_counts: dict[str, int] = {}
 
-    for unit in units:
+    def observe_summary(unit: SchemaUnit) -> None:
+        nonlocal total_schema_samples
         summary_key = (unit.artifact_kind, unit.profile_tokens)
         summary = profile_summaries.get(summary_key)
         if summary is None:
@@ -71,20 +76,32 @@ def collect_cluster_analysis(
                 dominant_keys=_dominant_keys_for_payload(unit.cluster_payload)[:20],
             )
             profile_summaries[summary_key] = summary
-
         summary.sample_count += 1
         summary.schema_sample_count += len(unit.schema_samples)
         artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
-
         if (
             unit.source_path
             and unit.source_path not in summary.representative_paths
             and len(summary.representative_paths) < 5
         ):
             summary.representative_paths.append(unit.source_path)
-
         total_schema_samples += len(unit.schema_samples)
 
+    observed_units = iter_schema_units(provider, db_path=db_path, max_samples=max_samples, full_corpus=full_corpus)
+    if journal is None:
+        retained_units = list(observed_units)
+        for unit in retained_units:
+            observe_summary(unit)
+
+        def iter_identified_units() -> Iterator[tuple[int, SchemaUnit]]:
+            return enumerate(retained_units, start=1)
+
+    else:
+        for unit in observed_units:
+            observe_summary(unit)
+            journal.append_unit(unit, retain_cluster_payload=False)
+
+        iter_identified_units = journal.iter_identified_units
     coarse_clusters: list[_ClusterAccumulator] = []
     ordered_summaries = sorted(
         profile_summaries.items(),
@@ -143,7 +160,7 @@ def collect_cluster_analysis(
             summary_cluster_ids[(acc.artifact_kind, profile_tokens)] = cluster_id
 
     memberships: list[_UnitMembership] = []
-    for unit in units:
+    for unit_id, unit in iter_identified_units():
         cluster_id = summary_cluster_ids[(unit.artifact_kind, unit.profile_tokens)]
         acc = clusters[cluster_id]
         acc.sample_count += 1
@@ -156,12 +173,16 @@ def collect_cluster_analysis(
         _update_observed_window(acc, unit.observed_at)
         if unit.source_path and unit.source_path not in acc.representative_paths and len(acc.representative_paths) < 5:
             acc.representative_paths.append(unit.source_path)
-        memberships.append(_UnitMembership(unit=unit, profile_family_id=cluster_id))
+        if journal is None:
+            memberships.append(_UnitMembership(unit=unit, profile_family_id=cluster_id))
+        else:
+            journal.assign_profile_family(unit_id, cluster_id)
 
     refined_clusters = _refine_coarse_clusters(
         list(clusters.values()),
         reservoir_size=reservoir_size,
     )
+    initial_cluster_profiles = {cluster_id: frozenset(acc.member_profiles) for cluster_id, acc in clusters.items()}
     final_clusters: dict[str, _ClusterAccumulator] = {}
     for acc in refined_clusters:
         cluster_id = profile_cluster_id(acc.artifact_kind, _cluster_profile_tokens(acc))
@@ -175,11 +196,33 @@ def collect_cluster_analysis(
     for cluster_id, acc in final_clusters.items():
         for profile_tokens in acc.member_profiles:
             membership_cluster_map[profile_cluster_id(acc.artifact_kind, profile_tokens)] = cluster_id
+    for initial_cluster_id, member_profiles in initial_cluster_profiles.items():
+        matches = [
+            final_cluster_id
+            for final_cluster_id, acc in final_clusters.items()
+            if member_profiles.issubset(acc.member_profiles)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Initial profile family {initial_cluster_id} maps to {len(matches)} final families")
+        membership_cluster_map[initial_cluster_id] = matches[0]
 
-    normalized_memberships: list[_UnitMembership] = []
-    for membership in memberships:
-        normalized_cluster_id = membership_cluster_map.get(membership.profile_family_id, membership.profile_family_id)
-        normalized_memberships.append(_UnitMembership(unit=membership.unit, profile_family_id=normalized_cluster_id))
+    if journal is None:
+        normalized_memberships: Sequence[_UnitMembership] = [
+            _UnitMembership(
+                unit=membership.unit,
+                profile_family_id=membership_cluster_map.get(
+                    membership.profile_family_id,
+                    membership.profile_family_id,
+                ),
+            )
+            for membership in memberships
+        ]
+    else:
+        journal.normalize_profile_families(membership_cluster_map)
+        normalized_memberships = journal.memberships()
+
+    for membership in normalized_memberships:
+        normalized_cluster_id = membership.profile_family_id
         final_acc = final_clusters[normalized_cluster_id]
         for sample in membership.unit.schema_samples:
             _update_cluster_reservoir(
