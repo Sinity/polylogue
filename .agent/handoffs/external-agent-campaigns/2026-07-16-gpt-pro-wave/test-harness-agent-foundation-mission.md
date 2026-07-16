@@ -10,13 +10,13 @@ browser-hosted GPT Pro workers can independently draft subsystem survivor laws
 without inventing shared fixtures, identities, receipts, or architecture.
 
 The former unresolved-architecture pass has now produced the recommended
-decision set in `testsuite_diet/architecture/00-index.md` through
-`09-capture-delivery-and-deployed-status.md`. Treat those decisions as the
-default product contract and implementation input. Validate them against live
-source and complete Bead notes, which remain authoritative if they contain
-newer contradictory evidence. Do not reopen rejected alternatives merely
-because the implementation seam is difficult; report only concrete source
-conflicts or missing dependencies.
+decision set in `.agent/scratch/testsuite_diet/architecture/00-index.md`
+through `09-capture-delivery-and-deployed-status.md` in your active worktree.
+Treat those decisions as the default product contract and implementation
+input. Validate them against live source and complete Bead notes, which remain
+authoritative if they contain newer contradictory evidence. Do not reopen
+rejected alternatives merely because the implementation seam is difficult;
+report only concrete source conflicts or missing dependencies.
 
 ## Scope
 
