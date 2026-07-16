@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import uuid
 from datetime import datetime, timezone
@@ -107,6 +108,45 @@ def _coerce_int(value: SchemaValue, default: int = 0) -> int:
     if isinstance(value, str):
         return int(value)
     return default
+
+
+def _observed_distribution(schema: SchemaRecord, name: str) -> SchemaRecord:
+    observed = _schema_record(schema.get("x-polylogue-observed-distribution"))
+    return _schema_record(observed.get(name))
+
+
+def _sample_observed_distribution(
+    schema: SchemaRecord,
+    name: str,
+    rng: random.Random,
+) -> float | None:
+    distribution = _observed_distribution(schema, name)
+    histogram = distribution.get("histogram")
+    log_base = distribution.get("log_base")
+    if not isinstance(histogram, list) or not isinstance(log_base, (int, float)) or log_base <= 1:
+        return None
+    buckets: list[tuple[int, int]] = []
+    for item in histogram:
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        index, count = item
+        if isinstance(index, int) and isinstance(count, int) and count > 0:
+            buckets.append((index, count))
+    if not buckets:
+        return None
+    index = rng.choices([item[0] for item in buckets], weights=[item[1] for item in buckets], k=1)[0]
+    if index == 0:
+        value = 0.0
+    else:
+        magnitude = math.expm1((abs(index) - 0.5) * math.log(float(log_base)))
+        value = magnitude if index > 0 else -magnitude
+    minimum = distribution.get("min")
+    maximum = distribution.get("max")
+    if isinstance(minimum, (int, float)) and not isinstance(minimum, bool):
+        value = max(float(minimum), value)
+    if isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
+        value = min(float(maximum), value)
+    return value
 
 
 def _generate_from_schema(
@@ -290,8 +330,11 @@ def _generate_number(
     *,
     is_int: bool = False,
 ) -> float | int:
+    observed = _sample_observed_distribution(schema, "numeric", rng)
     range_value = schema.get("x-polylogue-range")
-    if isinstance(range_value, list) and len(range_value) >= 2:
+    if observed is not None:
+        value = observed
+    elif isinstance(range_value, list) and len(range_value) >= 2:
         lo = _coerce_float(range_value[0])
         hi = _coerce_float(range_value[1])
         value = rng.uniform(lo, hi)
@@ -312,13 +355,16 @@ def _generate_array(
     path: str = "$",
 ) -> list[JSONValue]:
     item_schema = _schema_record(schema.get("items"))
+    observed_length = _sample_observed_distribution(schema, "array_length", rng)
     lengths = schema.get("x-polylogue-array-lengths")
-    if isinstance(lengths, list) and len(lengths) >= 2:
+    if observed_length is not None:
+        n_items = max(0, int(round(observed_length)))
+    elif isinstance(lengths, list) and len(lengths) >= 2:
         lo = _coerce_int(lengths[0])
         hi = _coerce_int(lengths[1])
-        clamped_lo = min(max(0, lo), 5)
-        clamped_hi = min(max(hi, clamped_lo), 5)
-        n_items = rng.randint(clamped_lo, clamped_hi)
+        bounded_lo = max(0, lo)
+        bounded_hi = max(hi, bounded_lo)
+        n_items = rng.randint(bounded_lo, bounded_hi)
     else:
         n_items = rng.randint(1, 3)
 

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
+from polylogue.schemas.generation.archive_workload_profile import (
+    build_archive_workload_profile,
+    write_archive_workload_profile,
+)
 from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
@@ -21,6 +26,11 @@ def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
     }
 
 
+def _package_workload_profiles(bundle: _ProviderBundle) -> dict[str, JSONDocument]:
+    profiles = getattr(bundle, "package_workload_profiles", {})
+    return {version: dict(profile) for version, profile in profiles.items()}
+
+
 def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _ProviderBundle) -> None:
     """Persist a generated provider bundle into the registry storage."""
     result = bundle.result
@@ -32,6 +42,7 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
         provider,
         bundle.catalog,
         _package_schemas(bundle),
+        package_workload_profiles=_package_workload_profiles(bundle),
     )
     registry.save_cluster_manifest(bundle.manifest)
 
@@ -64,6 +75,7 @@ def generate_all_schemas(
     providers: list[str] | None = None,
     max_samples: int | None = None,
     privacy_config: SchemaPrivacyConfig | None = None,
+    include_archive_workload_profile: bool = False,
 ) -> list[GenerationResult]:
     """Generate versioned schemas for all providers."""
     if db_path is None:
@@ -72,6 +84,7 @@ def generate_all_schemas(
 
     provider_list = providers or list(PROVIDERS.keys())
     results = []
+    package_mix: dict[str, dict[str, int]] = {}
     for provider in provider_list:
         bundle = _build_provider_bundle(
             provider,
@@ -81,6 +94,17 @@ def generate_all_schemas(
         )
         results.append(bundle.result)
         persist_generated_provider_bundle(output_dir, provider, bundle)
+        if bundle.catalog is not None:
+            package_mix[provider] = {package.version: package.bundle_scope_count for package in bundle.catalog.packages}
+
+    if include_archive_workload_profile:
+        archive_profile = build_archive_workload_profile(
+            db_path,
+            package_mix=package_mix,
+            privacy_policy=privacy_config.level if privacy_config is not None else "standard",
+        )
+        if archive_profile is not None:
+            write_archive_workload_profile(output_dir, archive_profile)
 
     return results
 

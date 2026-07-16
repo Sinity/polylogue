@@ -99,6 +99,7 @@ class SchemaVersionPackage:
     representative_paths: list[str] = field(default_factory=list)
     elements: list[SchemaElementManifest] = field(default_factory=list)
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
+    workload_profile_file: str | None = None
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -117,6 +118,7 @@ class SchemaVersionPackage:
                 "representative_paths": self.representative_paths,
                 "elements": [element.to_dict() for element in self.elements],
                 "orphan_adjunct_counts": self.orphan_adjunct_counts,
+                "workload_profile_file": self.workload_profile_file,
             }
         )
 
@@ -137,6 +139,7 @@ class SchemaVersionPackage:
             representative_paths=_string_list(data.get("representative_paths")),
             elements=[SchemaElementManifest.from_dict(item) for item in json_document_list(data.get("elements"))],
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
+            workload_profile_file=_string_or_none(data.get("workload_profile_file")),
         )
 
     def element(self, element_kind: str | None = None) -> SchemaElementManifest | None:

@@ -391,6 +391,20 @@ class TestProfileClustering:
         assert package.first_seen == "2026-01-01T00:00:00+00:00"
         assert package.last_seen == "2026-01-03T00:00:00+00:00"
         assert package.bundle_scope_count == 2
+        assert package.workload_profile_file == "workload-profile.json.gz"
+        workload_profile = bundle.package_workload_profiles[package.version]
+        assert workload_profile["profile_kind"] == "provider-package"
+        assert workload_profile["profile_id"]
+        assert workload_profile["provenance"] == {
+            "first_seen": "2026-01-01T00:00:00+00:00",
+            "last_seen": "2026-01-03T00:00:00+00:00",
+            "bundle_scope_count": 2,
+            "sample_count": 2,
+            "observation_window": {
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-03T00:00:00+00:00",
+            },
+        }
 
         element = package.elements[0]
         assert element.first_seen == "2026-01-01T00:00:00+00:00"

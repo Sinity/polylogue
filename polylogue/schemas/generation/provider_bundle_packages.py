@@ -29,6 +29,7 @@ from polylogue.schemas.generation.schema_builder import (
     _apply_schema_metadata,
     _generate_cluster_schema,
 )
+from polylogue.schemas.generation.workload_profiles import build_package_workload_profile
 from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.packages import (
     SchemaElementManifest,
@@ -47,6 +48,7 @@ class ProviderCatalogArtifacts:
     catalog: SchemaPackageCatalog
     package_schemas: dict[str, dict[str, JSONDocument]]
     package_reports: dict[str, dict[str, SchemaReport | None]]
+    package_workload_profiles: dict[str, JSONDocument]
     manifest: ClusterManifest
 
 
@@ -71,6 +73,7 @@ def build_provider_catalog_artifacts(
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
     package_schemas: dict[str, dict[str, JSONDocument]] = {}
     package_reports: dict[str, dict[str, SchemaReport | None]] = {}
+    package_workload_profiles: dict[str, JSONDocument] = {}
     catalog_packages: list[SchemaVersionPackage] = []
     cluster_to_package_version: dict[str, str] = {}
 
@@ -170,6 +173,14 @@ def build_provider_catalog_artifacts(
             profile_family_ids=sorted(package_acc.profile_family_ids),
             representative_paths=package_acc.representative_paths,
             elements=elements,
+            workload_profile_file="workload-profile.json.gz",
+        )
+        package_workload_profiles[version] = build_package_workload_profile(
+            provider=str(provider_token),
+            version=version,
+            package=package_acc,
+            element_schemas=package_schemas[version],
+            privacy_policy=privacy_config.level if privacy_config is not None else "standard",
         )
         catalog_packages.append(package)
         for cluster_id in package.profile_family_ids:
@@ -213,6 +224,7 @@ def build_provider_catalog_artifacts(
         catalog=catalog,
         package_schemas=package_schemas,
         package_reports=package_reports,
+        package_workload_profiles=package_workload_profiles,
         manifest=manifest,
     )
 
@@ -255,6 +267,7 @@ def build_success_provider_bundle(
         ),
         catalog=catalog_artifacts.catalog,
         package_schemas=catalog_artifacts.package_schemas,
+        package_workload_profiles=catalog_artifacts.package_workload_profiles,
         manifest=catalog_artifacts.manifest,
     )
 

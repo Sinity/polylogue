@@ -33,6 +33,7 @@ from polylogue.schemas.packages import (
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
 SchemaCacheKey = tuple[str, str, str | None]
+WorkloadProfileCacheKey = tuple[str, str]
 SchemaInputDocument = Mapping[str, object]
 PublicSchemaDocument = JSONRecord
 ElementSchemaMap = dict[str, PublicSchemaDocument]
@@ -242,11 +243,13 @@ class SchemaRegistry:
         self._storage_root = storage_root
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
+        self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
         self._catalog_cache.clear()
         self._schema_cache.clear()
+        self._workload_profile_cache.clear()
 
     @property
     def storage_root(self) -> Path:
@@ -358,6 +361,32 @@ class SchemaRegistry:
     def get_schema(self, provider: str, version: str = "default") -> PublicSchemaDocument | None:
         return self.get_element_schema(provider, version=version)
 
+    def get_workload_profile(
+        self,
+        provider: str,
+        version: str = "default",
+    ) -> PublicSchemaDocument | None:
+        """Load the privacy-safe workload profile carried by a package."""
+        provider_token = _provider_token(provider)
+        cache_key = (provider_token, version)
+        if cache_key in self._workload_profile_cache:
+            return self._workload_profile_cache[cache_key]
+        package = self.get_package(provider_token, version=version)
+        if package is None or package.workload_profile_file is None:
+            self._workload_profile_cache[cache_key] = None
+            return None
+        provider_dir = self._provider_dir_for_package(provider_token, package.version)
+        if provider_dir is None:
+            self._workload_profile_cache[cache_key] = None
+            return None
+        path = provider_dir / "versions" / package.version / package.workload_profile_file
+        if not path.exists():
+            self._workload_profile_cache[cache_key] = None
+            return None
+        profile = _read_gzip_json_dict(path)
+        self._workload_profile_cache[cache_key] = profile
+        return profile
+
     def list_versions(self, provider: str) -> list[str]:
         provider_token = _provider_token(provider)
         catalog = self.load_package_catalog(provider_token)
@@ -392,6 +421,7 @@ class SchemaRegistry:
         package: SchemaVersionPackage,
         *,
         element_schemas: ElementSchemaMap,
+        workload_profile: Mapping[str, object] | None = None,
     ) -> Path:
         provider_token = _provider_token(package.provider)
         package_dir = self._package_dir(provider_token, package.version)
@@ -412,6 +442,17 @@ class SchemaRegistry:
             schema_path = elements_dir / element.schema_file
             schema_path.write_bytes(gzip.compress(json.dumps(schema, indent=2).encode("utf-8")))
 
+        if package.workload_profile_file is not None:
+            if workload_profile is None:
+                raise ValueError(
+                    f"Package {provider_token}/{package.version} declares "
+                    f"{package.workload_profile_file} but no workload profile was supplied"
+                )
+            profile_path = package_dir / package.workload_profile_file
+            profile_path.write_bytes(
+                gzip.compress(json.dumps(dict(workload_profile), indent=2).encode("utf-8"), mtime=0)
+            )
+
         manifest_path = self._package_manifest_path(provider_token, package.version)
         manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
         self.clear_cache()
@@ -422,6 +463,8 @@ class SchemaRegistry:
         provider: str,
         catalog: SchemaPackageCatalog,
         package_schemas: Mapping[str, ElementSchemaMap],
+        *,
+        package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         provider_token = _provider_token(provider)
         provider_dir = self._provider_dir(provider_token)
@@ -437,7 +480,14 @@ class SchemaRegistry:
         versions_dir.mkdir(parents=True, exist_ok=True)
 
         for package in catalog.packages:
-            self.write_package(package, element_schemas=package_schemas[package.version])
+            workload_profile = (
+                package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
+            )
+            self.write_package(
+                package,
+                element_schemas=package_schemas[package.version],
+                workload_profile=workload_profile,
+            )
         self.save_package_catalog(catalog)
 
     def _single_element_package(
