@@ -64,6 +64,20 @@ def test_v36_origin_check_is_a_clone_safe_constraint_copy_forward() -> None:
     assert declaration.operations[0].objects == (("table", "sessions"), ("table", "session_links"))
 
 
+def test_v37_cache_removal_is_a_clone_safe_declared_delta() -> None:
+    plan = index_fast_forward_plan(36, 37)
+
+    assert plan is not None
+    declaration = plan.declarations[0]
+    assert declaration.classes == (DerivedDeltaClass.CACHE_REMOVAL,)
+    assert declaration.operations[0].kind is FastForwardOperationKind.DROP_TABLE
+    assert declaration.operations[0].objects == (
+        ("table", "session_runs"),
+        ("table", "session_observed_events"),
+        ("table", "session_context_snapshots"),
+    )
+
+
 def test_current_index_schema_has_a_complete_delta_declaration() -> None:
     """Exercise the exact declaration report consumed by the schema policy lint."""
     report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)

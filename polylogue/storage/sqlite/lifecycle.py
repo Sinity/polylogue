@@ -21,6 +21,7 @@ class DerivedDeltaClass(StrEnum):
     VIEW_ONLY = "view-only"
     INDEX_ONLY = "index-only"
     FTS_REINDEX = "fts-reindex"
+    CACHE_REMOVAL = "cache-removal"
     SEMANTIC_REPARSE = "semantic-reparse"
 
 
@@ -31,6 +32,7 @@ class FastForwardOperationKind(StrEnum):
     REPLACE_VIEW = "replace-view"
     CREATE_INDEX = "create-index"
     REBUILD_FTS = "rebuild-fts"
+    DROP_TABLE = "drop-table"
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +186,24 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
                 objects=(
                     ("table", "sessions"),
                     ("table", "session_links"),
+                ),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=37,
+        # Run projection, observed-event, and context-snapshot rows are now
+        # derived on read from normalized source evidence. Removing their
+        # rebuildable caches is a clone-safe deletion with no raw reparse.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v37-drop-run-projection-caches",
+                kind=FastForwardOperationKind.DROP_TABLE,
+                objects=(
+                    ("table", "session_runs"),
+                    ("table", "session_observed_events"),
+                    ("table", "session_context_snapshots"),
                 ),
             ),
         ),

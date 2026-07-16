@@ -37,6 +37,7 @@ RECEIPT_SCHEMA: Final = "polylogue.archive-schema-fast-forward.v1"
 INDEX_CLONE_CHECKPOINT_SCHEMA: Final = "polylogue.archive-schema-fast-forward.index-clone-checkpoint.v1"
 _BEADS_ORIGIN: Final = "beads-issue"
 _INDEX_COPY_FORWARD_TABLES: Final = ("sessions", "session_links")
+_INDEX_DROP_TABLES: Final = ("session_runs", "session_observed_events", "session_context_snapshots")
 _SQLITE_SIDECARS: Final = ("-wal", "-shm", "-journal")
 
 
@@ -218,7 +219,7 @@ def _canonical_index_objects() -> tuple[dict[str, str], dict[str, tuple[str, ...
             for name in _INDEX_COPY_FORWARD_TABLES
         }
     if set(tables) != set(_INDEX_COPY_FORWARD_TABLES):
-        raise SchemaFastForwardError("canonical index DDL is missing a v36 copy-forward table")
+        raise SchemaFastForwardError("canonical index DDL is missing a declared copy-forward table")
     return tables, indexes
 
 
@@ -360,8 +361,12 @@ def _finalize_clone_database(path: Path) -> None:
     _require_no_sidecars(path)
 
 
+def _expected_index_clone_table_counts(source_counts: dict[str, int]) -> dict[str, int]:
+    return {name: count for name, count in source_counts.items() if name not in _INDEX_DROP_TABLES}
+
+
 def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardResult:
-    """Copy-forward index v35→v36 while preserving rows and all FK declarations."""
+    """Copy-forward index v35 to the packaged schema without raw replay."""
     source_before = _database_evidence(source)
     if source_before.user_version != 35:
         raise SchemaFastForwardError(f"index clone requires v35, found v{source_before.user_version}")
@@ -372,6 +377,7 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
     try:
         with sqlite3.connect(destination) as conn:
             before_fk = _foreign_key_declarations(conn)
+            expected_fk = {name: rows for name, rows in before_fk.items() if name not in _INDEX_DROP_TABLES}
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("PRAGMA legacy_alter_table = ON")
             conn.execute("BEGIN IMMEDIATE")
@@ -382,11 +388,13 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
                     canonical_tables=canonical_tables,
                     canonical_indexes=canonical_indexes,
                 )
+            for table in _INDEX_DROP_TABLES:
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
             conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
             conn.commit()
             after_fk = _foreign_key_declarations(conn)
             foreign_key_check = tuple(str(row) for row in conn.execute("PRAGMA foreign_key_check"))
-            if before_fk != after_fk or foreign_key_check:
+            if expected_fk != after_fk or foreign_key_check:
                 raise SchemaFastForwardError(
                     f"index copy-forward changed FK declarations or failed FK check: {foreign_key_check!r}"
                 )
@@ -398,7 +406,7 @@ def fast_forward_index_clone(source: Path, destination: Path) -> CloneForwardRes
         destination.unlink(missing_ok=True)
         raise
     clone_after = _database_evidence(destination)
-    if clone_after.table_counts != source_before.table_counts:
+    if clone_after.table_counts != _expected_index_clone_table_counts(source_before.table_counts):
         destination.unlink(missing_ok=True)
         raise SchemaFastForwardError("index copy-forward changed structural row counts")
     return CloneForwardResult(source_before, clone_after, True, (), quick_check)
@@ -549,7 +557,7 @@ def _load_valid_index_clone_checkpoint(
 
 
 def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> CloneForwardResult:
-    """Prove one completed v36 index clone against a stable v35 active index.
+    """Prove one completed current-schema clone against a stable v35 index.
 
     This deliberately accepts only a single already-completed staging clone.
     It does not resume arbitrary phases: the active source must still be the
@@ -610,7 +618,7 @@ def reuse_index_clone(source: Path, staged_clone: Path, destination: Path) -> Cl
         raise SchemaFastForwardError(
             f"reused index clone integrity contract failed: fk={foreign_key_check!r}, quick={quick_check!r}"
         )
-    if clone_after.table_counts != source_before.table_counts:
+    if clone_after.table_counts != _expected_index_clone_table_counts(source_before.table_counts):
         raise SchemaFastForwardError("reused index clone changed structural row counts")
     destination.parent.mkdir(parents=True, exist_ok=True)
     local_clone = destination.with_name(f".{destination.name}.schema-forward-{uuid.uuid4().hex}.tmp")
