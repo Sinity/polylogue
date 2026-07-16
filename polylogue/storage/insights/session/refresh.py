@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import aiosqlite
 
 from polylogue.core.memory import release_process_memory
+from polylogue.storage.insights.session import rebuild as _rebuild
 from polylogue.storage.insights.session.aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
@@ -244,6 +245,47 @@ async def _apply_session_insight_session_update_async(
             (session_id,),
         )
     ).fetchone()
+    if str(session_id) in await _rebuild._heavy_session_ids_async(conn, [session_id]):
+        # Heavy sessions must never be hydrated on the incremental path: use
+        # the same bounded/degraded bundle as rebuild, with the same
+        # logical_session_id=session_id argument, so the stored profile is
+        # byte-identical whichever materializer last touched the session
+        # (polylogue-61zb: refresh/rebuild profile flip-flop).
+        thread_root_id = await thread_root_id_async(conn, session_id)
+        record_bundle = await _rebuild.build_large_session_insight_record_bundle_async(
+            conn,
+            session_id,
+            logical_session_id=session_id,
+        )
+        await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
+        await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
+        await replace_session_work_events(
+            conn,
+            session_id,
+            record_bundle.work_event_records,
+            transaction_depth,
+        )
+        await replace_session_phases(
+            conn,
+            session_id,
+            record_bundle.phase_records,
+            transaction_depth,
+        )
+        affected_groups = {
+            group
+            for group in (
+                profile_provider_day(_row_to_session_profile_record(old_profile_record))
+                if old_profile_record
+                else None,
+                profile_provider_day(record_bundle.profile_record),
+            )
+            if group is not None
+        }
+        return _SessionInsightRefreshUpdate(
+            counts=SessionInsightCounts(profiles=1, work_events=0, phases=0),
+            thread_root_id=thread_root_id,
+            affected_groups=affected_groups,
+        )
     batch = await load_async_batch(conn, [session_id])
     hydrated = hydrate_sessions(batch)
     if not hydrated:
@@ -461,6 +503,7 @@ async def _apply_session_insight_session_updates_async(
     chunk_observations: list[SessionInsightRefreshChunkObservation] = []
     session_id_list = list(session_ids)
     message_counts = await _load_message_counts_async(conn, session_id_list)
+    heavy_session_ids = await _rebuild._heavy_session_ids_async(conn, session_id_list)
     session_chunks = _chunk_session_ids_by_message_budget(
         session_id_list,
         message_counts=message_counts,
@@ -470,18 +513,45 @@ async def _apply_session_insight_session_updates_async(
 
     for chunk in session_chunks:
         chunk_started = time.perf_counter()
+        # Same split as rebuild: heavy sessions get the bounded/degraded
+        # bundle and are never hydrated, so the stored profile is identical
+        # whichever materializer last touched the session (polylogue-61zb).
+        chunk_degraded_ids = tuple(session_id for session_id in chunk.session_ids if session_id in heavy_session_ids)
+        chunk_full_ids = tuple(session_id for session_id in chunk.session_ids if session_id not in heavy_session_ids)
+        if chunk.max_estimated_session_messages >= _rebuild._SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
+            chunk_degraded_ids = chunk.session_ids
+            chunk_full_ids = ()
         load_started = time.perf_counter()
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk.session_ids)
-        batch = await load_async_batch(conn, chunk.session_ids)
+        batch = await load_async_batch(conn, chunk_full_ids) if chunk_full_ids else None
         root_ids_by_session = await thread_root_ids_async(conn, chunk.session_ids)
         load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
         hydrate_started = time.perf_counter()
-        hydrated_by_id = {str(session.id): session for session in hydrate_sessions(batch)}
+        hydrated_by_id = {str(session.id): session for session in hydrate_sessions(batch)} if batch is not None else {}
         hydrate_elapsed_ms = round((time.perf_counter() - hydrate_started) * 1000.0, 1)
 
         build_started = time.perf_counter()
         record_bundles: list[SessionInsightRecordBundle] = []
-        for session_id in chunk.session_ids:
+        for session_id in chunk_degraded_ids:
+            record_bundle = await _rebuild.build_large_session_insight_record_bundle_async(
+                conn,
+                session_id,
+                logical_session_id=session_id,
+            )
+            record_bundles.append(record_bundle)
+            counts.add(profiles=1)
+            affected_groups.update(
+                group
+                for group in (
+                    profile_provider_day(old_profile_records.get(session_id)),
+                    profile_provider_day(record_bundle.profile_record),
+                )
+                if group is not None
+            )
+            root_id = root_ids_by_session.get(session_id)
+            if root_id is not None:
+                thread_root_ids.add(root_id)
+        for session_id in chunk_full_ids:
             old_profile_record = old_profile_records.get(session_id)
             hydrated_session = hydrated_by_id.get(session_id)
             if hydrated_session is None:
@@ -492,7 +562,7 @@ async def _apply_session_insight_session_updates_async(
 
             record_bundle = build_session_insight_records(
                 hydrated_session,
-                compaction_count=batch.compaction_counts_by_session.get(session_id),
+                compaction_count=batch.compaction_counts_by_session.get(session_id) if batch is not None else None,
                 logical_session_id=root_ids_by_session.get(session_id),
             )
             record_bundles.append(record_bundle)
@@ -552,9 +622,14 @@ async def _apply_session_insight_session_updates_async(
         )
 
         hydrated_ids: set[str] = set()
+        degraded_id_set = set(chunk_degraded_ids)
         for bundle in record_bundles:
             bundle_conv_id = str(bundle.profile_record.session_id)
             hydrated_ids.add(bundle_conv_id)
+            if bundle_conv_id in degraded_id_set:
+                # Rebuild leaves session_repos untouched for degraded
+                # sessions (observations need hydration); mirror it.
+                continue
             bundle_observations = tuple(obs for obs in bundle.repo_observations if isinstance(obs, RepoObservation))
             await refresh_session_repos(conn, bundle_conv_id, bundle_observations)
         # Sessions dropped from this chunk still need observation cleanup.
