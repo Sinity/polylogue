@@ -761,3 +761,28 @@ def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidenc
     counts = _category_counts(snapshot)
     assert counts["lost-source-evidence-alias"] == 1
     assert counts["raw_id_join_gap"] == 0
+
+
+def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
+    """A readiness dict carrying debt_classifier_error must not read as ready.
+
+    paths._merge_raw_materialization_debt records classifier failures under
+    this key; the composed readiness contract requires the classifier, so a
+    recorded failure blocks the ready claim even when every structural count
+    is clean (removing the predicate's debt_classifier_error check fails this).
+    """
+    clean = {
+        "available": True,
+        "critical": 0,
+        "warning": 0,
+        "actionable": 0,
+        "blocked": 0,
+        "affected_actionable": 0,
+        "affected_blocked": 0,
+        "affected_open": 0,
+        "lost_source_evidence_count": 0,
+        "unchecked": 0,
+        "affected_unchecked": 0,
+    }
+    assert raw_materialization_ready(clean) is True
+    assert raw_materialization_ready({**clean, "debt_classifier_error": "RuntimeError: ops.db locked"}) is False
