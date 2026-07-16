@@ -17,6 +17,72 @@ from polylogue.config import Config
 from polylogue.paths import archive_root, render_root
 
 
+@click.command("raw-authority-frontier")
+@click.option("--apply-plan", "plan_ids", multiple=True, help="Exact immutable plan id; repeatable.")
+@click.option("--preview-census", default=None, help="Completed dry-run census authorizing --apply-plan.")
+@click.option("--receipt-dir", type=click.Path(path_type=Path), default=None)
+@click.option("--yes", "confirmed", is_flag=True, help="Confirm the selected break-glass application.")
+@click.option(
+    "--output-format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def raw_authority_frontier_command(
+    env: AppEnv,
+    plan_ids: tuple[str, ...],
+    preview_census: str | None,
+    receipt_dir: Path | None,
+    confirmed: bool,
+    output_format: str,
+) -> None:
+    """Inspect the complete frontier or apply exact plans as break-glass work."""
+    del env
+    from polylogue.storage.raw_reconciler import (
+        apply_raw_authority_frontier,
+        inspect_raw_authority_frontier,
+    )
+
+    root = archive_root()
+    config = Config(archive_root=root, render_root=render_root(), sources=[])
+    try:
+        if plan_ids:
+            if not confirmed:
+                raise click.ClickException("refusing raw-authority application without --yes")
+            if preview_census is None:
+                raise click.ClickException("--apply-plan requires --preview-census")
+            payload = apply_raw_authority_frontier(
+                config,
+                preview_census_id=preview_census,
+                selected_plan_ids=plan_ids,
+                receipt_dir=receipt_dir or root / "recovery" / "raw-authority",
+            ).to_dict()
+        else:
+            if preview_census is not None or receipt_dir is not None or confirmed:
+                raise click.ClickException("apply options require at least one --apply-plan")
+            payload = inspect_raw_authority_frontier(config).to_dict()
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, click.ClickException):
+            raise
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if plan_ids:
+        click.echo(
+            f"Applied {payload['executed_plan_count']}/{payload['selected_plan_count']} plan(s); "
+            f"retryable={payload['retryable_plan_count']} census={payload['census_id']}"
+        )
+        return
+    click.echo(
+        f"Frontier {payload['census_id']}: accepted={payload['accepted_head_count']} "
+        f"plans={payload['plan_count']} executable={payload['executable_plan_count']}"
+    )
+    click.echo(f"States: {json.dumps(payload['state_counts'], sort_keys=True)}")
+    click.echo(f"Details: {payload['query_handle']}")
+
+
 @click.command("raw-authority-census")
 @click.argument("query_handle")
 @click.option("--limit", type=click.IntRange(1, 500), default=100, show_default=True)
@@ -109,6 +175,11 @@ def raw_authority_detail_command(
 @click.command("raw-authority-blocker-resolve")
 @click.option("--blocker-id", required=True, help="Exact unresolved durable blocker identifier.")
 @click.option("--reason", required=True, help="Operator rationale recorded in the immutable resolution receipt.")
+@click.option(
+    "--assertion-id",
+    default=None,
+    help="Accepted judgment assertion required by a conflicting-authority blocker.",
+)
 @click.option("--yes", "confirmed", is_flag=True, help="Confirm resolving this blocker against current evidence.")
 @click.option(
     "--output-format",
@@ -122,6 +193,7 @@ def raw_authority_blocker_resolve_command(
     env: AppEnv,
     blocker_id: str,
     reason: str,
+    assertion_id: str | None,
     confirmed: bool,
     output_format: str,
 ) -> None:
@@ -132,7 +204,12 @@ def raw_authority_blocker_resolve_command(
     from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 
     try:
-        receipt = resolve_raw_authority_blocker(archive_root(), blocker_id, resolution=reason)
+        receipt = resolve_raw_authority_blocker(
+            archive_root(),
+            blocker_id,
+            resolution=reason,
+            assertion_id=assertion_id,
+        )
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":

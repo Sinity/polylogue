@@ -15,12 +15,18 @@ import pytest
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.config import Config
-from polylogue.core.enums import Provider
+from polylogue.core.enums import AssertionStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.raw_authority import resolve_raw_authority_blocker
+from polylogue.storage.raw_reconciler import (
+    RawAuthorityActuator,
+    RawAuthorityFrontierState,
+    inspect_raw_authority_frontier,
+)
 from polylogue.storage.repair import (
     inspect_browser_canonical_authority_conflicts,
     record_browser_canonical_authority_conflict_blockers,
@@ -35,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     RevisionApplicationReceipt,
     record_revision_application_sync,
 )
+from polylogue.storage.sqlite.archive_tiers.user_write import mark_assertion_status
 
 
 def _config(root: Path) -> Config:
@@ -595,6 +602,12 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
         "head": _rows(tmp_path, "index", "raw_revision_heads", "accepted_raw_id = ?", (raw_id,)),
         "application": _rows(tmp_path, "index", "raw_revision_applications", "raw_id = ?", (raw_id,)),
     }
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    planned = next(item for item in census.items if item.raw_id == raw_id)
+    assert planned.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert planned.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN
+    assert planned.evidence_ref is not None
 
     dry_run = repair_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])
 
@@ -1249,7 +1262,7 @@ def test_browser_capture_origin_copy_forward_accepts_source_v7_without_capture_m
 
 
 def test_browser_capture_origin_repair_restores_equivalent_canonical_head(tmp_path: Path) -> None:
-    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    mismatched_raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
     canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
     with sqlite3.connect(tmp_path / "source.db") as source:
         source_count = source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
@@ -2246,6 +2259,53 @@ def test_inspect_conflicts_semantic_hash_divergence_evidence(tmp_path: Path) -> 
     assert item.divergent_message_index is None
     assert item.divergence_note is not None and "semantic frontier" in item.divergence_note
     assert item.evidence_digest is not None
+
+
+def test_unified_frontier_conflict_requires_accepted_judgment_and_stays_visible(tmp_path: Path) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    conflict = next(item for item in census.items if item.raw_id == mismatched_raw_id)
+    assert conflict.state is RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT
+    assert conflict.actuator is RawAuthorityActuator.REQUEST_JUDGMENT
+    assert conflict.executable is False
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        blocker_id, observed_json = source.execute(
+            "SELECT blocker_id, observed_json FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            (conflict.plan_id,),
+        ).fetchone()
+    assertion_id = json.loads(observed_json)["judgment_assertion_id"]
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        assert user.execute("SELECT status FROM assertions WHERE assertion_id = ?", (assertion_id,)).fetchone() == (
+            AssertionStatus.CANDIDATE.value,
+        )
+    with pytest.raises(RuntimeError, match="explicitly accepted"):
+        resolve_raw_authority_blocker(
+            tmp_path,
+            blocker_id,
+            resolution="retain both authorities pending a future evidence change",
+            assertion_id=assertion_id,
+        )
+    with sqlite3.connect(tmp_path / "user.db") as user, user:
+        assert mark_assertion_status(user, assertion_id, AssertionStatus.ACCEPTED)
+    resolved = resolve_raw_authority_blocker(
+        tmp_path,
+        blocker_id,
+        resolution="retain both authorities pending a future evidence change",
+        assertion_id=assertion_id,
+    )
+    assert resolved["operator_assertion_id"] == assertion_id
+
+    repeated = inspect_raw_authority_frontier(_config(tmp_path))
+    repeated_conflict = next(item for item in repeated.items if item.raw_id == mismatched_raw_id)
+    assert repeated_conflict.plan_id == conflict.plan_id
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",
+            (conflict.plan_id,),
+        ).fetchone() == (0,)
 
 
 def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> None:

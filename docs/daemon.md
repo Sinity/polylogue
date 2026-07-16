@@ -21,6 +21,13 @@ Check status:
 polylogued status
 ```
 
+Raw-evidence authority is an ordinary daemon invariant. After bounded raw
+materialization, the daemon records one complete accepted-frontier census,
+applies only byte/provenance-safe plans, and leaves conflicts or missing bytes
+as durable remediation references in status. Operators can inspect the same
+ledger with `polylogue ops maintenance raw-authority-frontier`; its apply
+options are break-glass controls for exact plan IDs, not routine maintenance.
+
 ## Auto-Discovery
 
 The daemon watches these directories by default:

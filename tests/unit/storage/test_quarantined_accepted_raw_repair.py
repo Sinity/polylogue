@@ -16,6 +16,11 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import RebuildLease
+from polylogue.storage.raw_reconciler import (
+    RawAuthorityActuator,
+    RawAuthorityFrontierState,
+    inspect_raw_authority_frontier,
+)
 from polylogue.storage.repair import repair_quarantined_accepted_raws
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -207,6 +212,12 @@ def test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(
             """,
             (raw_id,),
         )
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    planned = next(item for item in census.items if item.raw_id == raw_id)
+    assert planned.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert planned.actuator is RawAuthorityActuator.REFINE_QUARANTINE
+    assert planned.evidence_ref is not None
     before = _logical_state(tmp_path, raw_id)
     before_raw = _raw_session_row(tmp_path, raw_id)
 

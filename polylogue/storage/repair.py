@@ -70,7 +70,6 @@ from polylogue.storage.raw_authority import (
     recover_interrupted_raw_authority_censuses,
     reject_invalid_raw_replay_application,
     reject_stale_raw_replay_plan,
-    unresolved_raw_authority_blockers,
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
@@ -6526,7 +6525,9 @@ def repair_raw_materialization(
             interrupted=True,
         )
     recovered_census_count = len(recovered_censuses)
-    blocker_count = unresolved_raw_authority_blockers(archive_root)
+    from polylogue.storage.raw_authority import unresolved_raw_replay_blockers
+
+    blocker_count = unresolved_raw_replay_blockers(archive_root)
     if blocker_count:
         return _internal_derived_repair_result(
             "raw_materialization",

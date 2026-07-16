@@ -161,6 +161,13 @@ class RawMaterializationReadiness(BaseModel):
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
+    raw_authority_census: dict[str, object] | None = None
+    raw_authority_frontier: dict[str, object] | None = None
+    raw_authority_frontier_blocking_count: int = 0
+    raw_authority_frontier_remediation_refs: list[dict[str, object]] = Field(default_factory=list)
+    raw_authority_blocker_count: int = 0
+    raw_authority_pending_census_count: int = 0
+    raw_authority_ledger_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class RawFrontierIntegrity(BaseModel):

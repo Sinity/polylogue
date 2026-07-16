@@ -23,6 +23,12 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
+from polylogue.storage.raw_reconciler import (
+    RawAuthorityActuator,
+    RawAuthorityFrontierState,
+    apply_raw_authority_frontier,
+    inspect_raw_authority_frontier,
+)
 from polylogue.storage.repair import repair_duplicate_raw_identity
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -137,7 +143,104 @@ def _seed_duplicate_raw_pair(root: Path, *, legacy_native_id: str = "legacy-nati
             decided_at_ms=1,
         )
         archive.commit()
-    return stale_raw_id, canonical_raw_id, session_id, logical_source_key
+        return stale_raw_id, canonical_raw_id, session_id, logical_source_key
+
+
+def test_unified_frontier_census_plans_duplicate_alias_with_stable_evidence(tmp_path: Path) -> None:
+    stale_raw_id, canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+
+    first = inspect_raw_authority_frontier(_config(tmp_path))
+    second = inspect_raw_authority_frontier(_config(tmp_path))
+
+    duplicate = next(item for item in first.items if item.raw_id == stale_raw_id)
+    duplicate_again = next(item for item in second.items if item.raw_id == stale_raw_id)
+    assert duplicate.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    assert duplicate.actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS
+    assert duplicate.input_raw_ids == tuple(sorted((stale_raw_id, canonical_raw_id)))
+    assert duplicate.plan_id == duplicate_again.plan_id
+    assert duplicate.evidence_digest == duplicate_again.evidence_digest
+    assert duplicate.evidence_ref is not None
+    assert first.state_counts[RawAuthorityFrontierState.DUPLICATE_ALIAS.value] == 1
+    assert first.executable_plan_count == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        persisted = conn.execute(
+            """
+            SELECT p.input_raw_ids_json, p.authority_witness_json,
+                   p.source_preconditions_json, p.index_preconditions_json
+            FROM raw_authority_census_plans AS cp
+            JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+            WHERE cp.census_id = ? AND p.plan_id = ?
+            """,
+            (first.census_id, duplicate.plan_id),
+        ).fetchone()
+    assert persisted is not None
+    assert json.loads(persisted[0]) == sorted((stale_raw_id, canonical_raw_id))
+    assert json.loads(persisted[1])["actuator"] == RawAuthorityActuator.FOLD_DUPLICATE_ALIAS.value
+    assert json.loads(persisted[2])["blob_hash"]
+    assert json.loads(persisted[3])["accepted_content_hash"]
+
+
+def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(tmp_path: Path) -> None:
+    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        blob_hash = bytes(
+            conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (stale_raw_id,)).fetchone()[0]
+        )
+    blob_path = tmp_path / "blob" / blob_hash.hex()[:2] / blob_hash.hex()[2:]
+    blob_path.unlink()
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    missing = next(item for item in census.items if item.raw_id == stale_raw_id)
+    assert missing.state is RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE
+    assert missing.actuator is RawAuthorityActuator.REACQUIRE
+    assert missing.executable is False
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        obligation = conn.execute(
+            """
+            SELECT b.reason, b.resolved_at_ms, p.authority_witness_json
+            FROM raw_authority_blockers AS b
+            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+            WHERE b.plan_id = ?
+            """,
+            (missing.plan_id,),
+        ).fetchone()
+    assert obligation is not None
+    assert obligation[1] is None
+    assert json.loads(obligation[2])["state"] == RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE.value
+
+
+def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_path: Path) -> None:
+    stale_raw_id, canonical_raw_id, session_id, logical_key = _seed_duplicate_raw_pair(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
+
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(selected.plan_id,),
+        receipt_dir=tmp_path / "unified-receipts",
+    )
+
+    assert report.success is True
+    assert report.selected_plan_count == report.executed_plan_count == 1
+    assert report.retryable_plan_count == 0
+    assert len(report.outcome_refs) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            (logical_key,),
+        ).fetchone() == (canonical_raw_id,)
+        assert conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (
+            canonical_raw_id,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        row = conn.execute(
+            "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?",
+            (report.census_id,),
+        ).fetchone()
+        assert row == ("completed",)
 
 
 def _rows(root: Path, tier: str, table: str, where: str, params: tuple[object, ...]) -> list[tuple[object, ...]]:

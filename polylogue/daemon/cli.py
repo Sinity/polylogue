@@ -626,14 +626,50 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
+    from polylogue.storage.raw_reconciler import recover_interrupted_raw_authority_frontier
+
+    recover_interrupted_raw_authority_frontier(config)
     try:
         result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")
     _emit_raw_materialization_pass(result)
+    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-    return result.repaired_count
+    return result.repaired_count + frontier_repaired
+
+
+def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
+    """Census the entire accepted frontier and execute a bounded safe slice.
+
+    This runs only beneath ``DaemonWriteCoordinator``. Conflicts, missing
+    bytes, unresolved provenance, and corruption are persisted as obligations;
+    only strategies carrying an exact deterministic proof become selectable.
+    """
+    from polylogue.storage.raw_reconciler import (
+        apply_raw_authority_frontier,
+        inspect_raw_authority_frontier,
+    )
+
+    census = inspect_raw_authority_frontier(config)
+    executable = tuple(item.plan_id for item in census.items if item.executable)[:limit]
+    if not executable:
+        return 0
+    report = apply_raw_authority_frontier(
+        config,
+        preview_census_id=census.census_id,
+        selected_plan_ids=executable,
+        receipt_dir=config.archive_root / "recovery" / "raw-authority",
+    )
+    if report.retryable_plan_count:
+        logger.warning(
+            "raw authority: %d/%d selected frontier plans remain retryable; census=%s",
+            report.retryable_plan_count,
+            report.selected_plan_count,
+            report.census_id,
+        )
+    return report.executed_plan_count
 
 
 def _emit_raw_materialization_pass(result: Any) -> None:

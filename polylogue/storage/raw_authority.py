@@ -692,6 +692,36 @@ def unresolved_raw_authority_blockers(archive_root: Path) -> int:
         )
 
 
+def unresolved_raw_replay_blockers(archive_root: Path) -> int:
+    """Count stale/application blockers that must stop ordinary raw replay.
+
+    Frontier obligations are durable and readiness-blocking, but one missing or
+    conflicting authority must not starve unrelated, independently proven raw
+    components.
+    """
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return 0
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_blockers'"
+        ).fetchone()
+        if exists is None:
+            return 0
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM raw_authority_blockers AS b
+                JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+                WHERE b.resolved_at_ms IS NULL
+                  AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                      'polylogue.raw-authority-frontier-plan.v1'
+                """
+            ).fetchone()[0]
+        )
+
+
 def record_raw_authority_census(
     archive_root: Path,
     plans: Sequence[RawReplayPlan],
@@ -1265,6 +1295,8 @@ def recover_interrupted_raw_authority_censuses(
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE c.lifecycle_status = 'planned'
               AND cp.selected = 1 AND cp.outcome_recorded = 0
+              AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                  'polylogue.raw-authority-frontier-plan.v1'
             ORDER BY c.sequence_no, cp.ordinal
             """
         ).fetchall()
@@ -1275,6 +1307,15 @@ def recover_interrupted_raw_authority_censuses(
                 SELECT census_id, scope_json
                 FROM raw_authority_censuses
                 WHERE lifecycle_status = 'planned'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM raw_authority_census_plans AS cp
+                      JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+                      WHERE cp.census_id = raw_authority_censuses.census_id
+                        AND cp.selected = 1 AND cp.outcome_recorded = 0
+                        AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
+                            'polylogue.raw-authority-frontier-plan.v1'
+                  )
                 ORDER BY sequence_no
                 """
             )
@@ -1311,7 +1352,13 @@ def recover_interrupted_raw_authority_censuses(
     return census_scopes
 
 
-def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolution: str) -> JSONDocument:
+def resolve_raw_authority_blocker(
+    archive_root: Path,
+    blocker_id: str,
+    *,
+    resolution: str,
+    assertion_id: str | None = None,
+) -> JSONDocument:
     """Explicitly acknowledge current evidence and reopen replanning."""
     if not resolution.strip():
         raise ValueError("raw authority blocker resolution must be non-empty")
@@ -1322,7 +1369,10 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
-            SELECT b.blocker_id, b.plan_id, b.census_id, b.expected_json, p.input_raw_ids_json
+            SELECT b.blocker_id, b.plan_id, b.census_id, b.expected_json,
+                   b.observed_json, p.input_raw_ids_json, p.input_digest,
+                   p.logical_keys_json, p.authority_witness_json,
+                   p.source_preconditions_json, p.index_preconditions_json
             FROM raw_authority_blockers AS b
             JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
@@ -1332,8 +1382,28 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
         if row is None:
             conn.rollback()
             raise KeyError(blocker_id)
-        input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
-        observed = build_raw_replay_plan(conn, input_raw_ids)
+        stored_plan = _raw_replay_plan_from_row(row)
+        witness_schema = stored_plan.authority_witness.get("schema")
+        frontier_observed = json.loads(str(row["observed_json"]))
+        if witness_schema == "polylogue.raw-authority-frontier-plan.v1":
+            expected_assertion_id = frontier_observed.get("judgment_assertion_id")
+            if expected_assertion_id is not None:
+                if assertion_id != expected_assertion_id:
+                    conn.rollback()
+                    raise RuntimeError("frontier judgment blocker requires its exact accepted assertion id")
+                user_db = archive_root / "user.db"
+                with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as user_conn:
+                    assertion = user_conn.execute(
+                        "SELECT status FROM assertions WHERE assertion_id = ?",
+                        (assertion_id,),
+                    ).fetchone()
+                if assertion is None or str(assertion[0]) != "accepted":
+                    conn.rollback()
+                    raise RuntimeError("frontier judgment assertion must be explicitly accepted before replanning")
+            observed = stored_plan
+        else:
+            input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
+            observed = build_raw_replay_plan(conn, input_raw_ids)
         now = int(time.time() * 1000)
         full_receipt = json_document(
             {
@@ -1342,6 +1412,7 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
                 "superseded_plan_id": str(row["plan_id"]),
                 "current_plan": observed.to_dict(),
                 "operator_resolution": resolution.strip(),
+                "operator_assertion_id": assertion_id,
                 "resolved_at_ms": now,
             }
         )
@@ -1369,6 +1440,7 @@ def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolu
                 "logical_key_count": len(observed.logical_keys),
             },
             "operator_resolution": resolution.strip(),
+            "operator_assertion_id": assertion_id,
             "resolved_at_ms": now,
             "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
         }
@@ -1532,6 +1604,7 @@ __all__ = [
     "reject_stale_raw_replay_plan",
     "resolve_raw_authority_blocker",
     "unresolved_raw_authority_blockers",
+    "unresolved_raw_replay_blockers",
     "validate_raw_replay_plan",
     "validate_raw_replay_application_receipt",
 ]
