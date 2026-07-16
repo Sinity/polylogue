@@ -74,7 +74,6 @@ function installDom() {
       <span id="receiver-pairing-status"></span>
       <span id="receiver-pairing-detail"></span>
       <button id="reset-pairing"><span class="button-status"></span></button>
-      <button id="retry-captures"><span class="button-status"></span></button>
       <span id="work-count"></span>
       <div id="work-queue"></div>
       <span id="queue-count"></span>
@@ -158,7 +157,7 @@ describe("popup capture", () => {
 
   it("keeps automatic maintenance out of the operator control surface", () => {
     const markup = readFileSync(join(TEST_DIR, "../src/popup.html"), "utf8");
-    for (const id of ["capture", "check", "sync-open-tabs", "check-receiver"]) {
+    for (const id of ["capture", "check", "sync-open-tabs", "check-receiver", "retry-captures"]) {
       expect(markup).not.toContain(`id="${id}"`);
     }
     expect(markup).toContain("Capture, freshness checks, open-tab convergence, and receiver health run automatically.");

@@ -700,13 +700,6 @@ document.getElementById("reset-pairing")?.addEventListener("click", async () => 
   }, { busy: "Resetting", ok: "Pairing reset" });
 });
 
-document.getElementById("retry-captures")?.addEventListener("click", async () => {
-  await withAction("retry-captures", async () => {
-    await chrome.runtime.sendMessage({ type: "polylogue.retryCaptureQueue" });
-    await render();
-  }, { busy: "Retrying", ok: "Queue checked" });
-});
-
 document.getElementById("ambient-enabled")?.addEventListener("change", async (event) => {
   await chrome.runtime.sendMessage({
     type: "polylogue.ambient.configure",
