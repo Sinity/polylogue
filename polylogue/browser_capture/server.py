@@ -350,7 +350,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     self.server.config.spool_path,
                     receiver_identity(self.server.config),
                 )
-                if job_id == "orphans":
+                if job_id == "capabilities":
+                    capture_job_payload = registry.capabilities()
+                elif job_id == "orphans":
                     capture_job_payload = registry.list_orphans(protocol)
                 else:
                     capture_job_payload = registry.get(

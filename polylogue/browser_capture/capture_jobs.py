@@ -56,6 +56,13 @@ def capture_job_database_path(spool_path: Path | None = None) -> Path:
     return (spool_path or browser_capture_spool_root()) / "capture-jobs" / "registry.sqlite3"
 
 
+def capture_job_scope_namespace(spool_path: Path | None = None) -> str:
+    """Return a stable pseudonym namespace independent of bearer rotation."""
+    root = (spool_path or browser_capture_spool_root()).expanduser().resolve()
+    digest = hashlib.sha256(f"polylogue:capture-job-scope:v1\0{root}".encode()).hexdigest()
+    return f"cjs1:{digest}"
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -71,6 +78,14 @@ class CaptureJobRegistry:
 
     protocol_min: int = 1
     protocol_max: int = 1
+
+    def capabilities(self) -> dict[str, object]:
+        return {
+            "schema": "polylogue.capture-jobs.capabilities.v1",
+            "protocol_min": self.protocol_min,
+            "protocol_max": self.protocol_max,
+            "scope_namespace": capture_job_scope_namespace(self.spool_path),
+        }
 
     def _connect(self) -> sqlite3.Connection:
         path = capture_job_database_path(self.spool_path)

@@ -26,13 +26,13 @@ async function hmac(token, message) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export async function deriveAccountScope(token, provider, accountHandle) {
+export async function deriveAccountScope(scopeNamespace, provider, accountHandle) {
   if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(provider) || !String(accountHandle).trim()) throw new Error("capture_job_invalid_scope_input");
-  return `h1:${await hmac(token, `polylogue:account-scope:v1\0${provider}\0${String(accountHandle).normalize("NFKC").trim()}`)}`;
+  return `h1:${await hmac(scopeNamespace, `polylogue:account-scope:v1\0${provider}\0${String(accountHandle).normalize("NFKC").trim()}`)}`;
 }
 
-async function intentKey(token, provider, accountScope, locator) {
-  return `i1:${await hmac(token, `polylogue:capture-intent:v1\0${provider}\0${accountScope}\0${canonicalJson(locator)}`)}`;
+async function intentKey(scopeNamespace, provider, accountScope, locator) {
+  return `i1:${await hmac(scopeNamespace, `polylogue:capture-intent:v1\0${provider}\0${accountScope}\0${canonicalJson(locator)}`)}`;
 }
 
 export class CaptureJobClient {
@@ -41,13 +41,14 @@ export class CaptureJobClient {
     this.token = token;
     this.cache = cache;
     this.fetchImpl = fetchImpl;
+    this.scopeNamespacePromise = null;
   }
 
   async request(method, path, body) {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}`, "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL) },
-      body: JSON.stringify(body),
+      ...(method === "GET" ? {} : { body: JSON.stringify(body) }),
       cache: "no-store",
     });
     const payload = await response.json();
@@ -60,9 +61,24 @@ export class CaptureJobClient {
     return payload;
   }
 
+  async scopeNamespace() {
+    if (!this.scopeNamespacePromise) {
+      this.scopeNamespacePromise = this.request("GET", "/v1/capture-jobs/capabilities").then((payload) => {
+        if (payload?.schema !== "polylogue.capture-jobs.capabilities.v1"
+          || typeof payload.scope_namespace !== "string"
+          || !payload.scope_namespace.startsWith("cjs1:")) {
+          throw new Error("capture_job_capabilities_invalid");
+        }
+        return payload.scope_namespace;
+      });
+    }
+    return this.scopeNamespacePromise;
+  }
+
   async recoverOrCreate({ provider, accountHandle, locator, intentPayload, sessionId }) {
-    const account_scope = await deriveAccountScope(this.token, provider, accountHandle);
-    const intent_key = await intentKey(this.token, provider, account_scope, locator);
+    const scopeNamespace = await this.scopeNamespace();
+    const account_scope = await deriveAccountScope(scopeNamespace, provider, accountHandle);
+    const intent_key = await intentKey(scopeNamespace, provider, account_scope, locator);
     const found = await this.request("POST", "/v1/capture-jobs/discover", { provider, account_scope, intent_key });
     const intent = { schema_version: 1, version: 1, intent_key, kind: "backfill-ledger", payload: intentPayload, digest: await digest(intentPayload) };
     const job = found.jobs.length ? found.jobs[0] : (await this.request("POST", "/v1/capture-jobs", { request_id: crypto.randomUUID(), provider, account_scope, intent })).job;
@@ -83,7 +99,7 @@ export class CaptureJobClient {
   }
 
   async discoverRecovery(provider, accountHandle, sessionId) {
-    const account_scope = await deriveAccountScope(this.token, provider, accountHandle);
+    const account_scope = await deriveAccountScope(await this.scopeNamespace(), provider, accountHandle);
     const result = await this.request("POST", "/v1/capture-jobs/discover", { provider, account_scope });
     const jobs = result.jobs
       .filter((job) => job.checkpoint?.payload)

@@ -8,6 +8,7 @@ describe("CaptureJob extension recovery", () => {
     expect(scope).toMatch(/^h1:/);
     expect(scope).not.toContain("account");
     const responses = [
+      { schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1, scope_namespace: "cjs1:receiver-namespace" },
       { jobs: [] },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 1, lease_generation: 1 }, lease: { lease_id: "lease", generation: 1, proof: "proof" } },
@@ -30,6 +31,7 @@ describe("CaptureJob extension recovery", () => {
       set: vi.fn(async (patch) => Object.assign(cache.values, patch)),
     };
     const responses = [
+      { schema: "polylogue.capture-jobs.capabilities.v1", protocol_min: 1, protocol_max: 1, scope_namespace: "cjs1:receiver-namespace" },
       { jobs: [] },
       { job: { job_id: "receiver-job", provider: "chatgpt", intent_key: "intent", revision: 0, lease_generation: 0 } },
       {
@@ -59,8 +61,8 @@ describe("CaptureJob extension recovery", () => {
     });
     await client.checkpoint(renewed, { version: 1, jobs: [], queue: [], revisions: [] });
 
-    const updateBody = JSON.parse(fetchImpl.mock.calls[3][1].body);
-    const checkpointBody = JSON.parse(fetchImpl.mock.calls[4][1].body);
+    const updateBody = JSON.parse(fetchImpl.mock.calls[4][1].body);
+    const checkpointBody = JSON.parse(fetchImpl.mock.calls[5][1].body);
     expect(updateBody).toMatchObject({ expected_revision: 1, lease_id: "lease", proof: "proof" });
     expect(checkpointBody).toMatchObject({ expected_revision: 2, lease_id: "lease", proof: "proof" });
     expect(checkpointBody.checkpoint.sequence).toBe(0);

@@ -224,6 +224,14 @@ describe("build.mjs full archive emission", () => {
         return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({ ok: false, error: "checkpoint_not_found" }) };
       }
       const receiverPath = new URL(url).pathname;
+      if (receiverPath === "/v1/capture-jobs/capabilities") {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:packaged-namespace",
+        }) };
+      }
       if (receiverPath === "/v1/capture-jobs/discover") {
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ jobs: [] }) };
       }

@@ -44,7 +44,10 @@ describe("first-party provider page transport", () => {
 
   it("uses the exact selected Claude organization as its stable identity", async () => {
     const selected = "22222222-2222-4222-8222-222222222222";
-    const fetchImpl = vi.fn();
+    const fetchImpl = vi.fn(async (input) => {
+      expect(new URL(input).pathname).toBe("/api/organizations");
+      return new Response(JSON.stringify([{ uuid: selected }]));
+    });
     installWindow("https://claude.ai/new", fetchImpl, {
       "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
     });
@@ -56,7 +59,23 @@ describe("first-party provider page transport", () => {
     });
 
     expect(result).toEqual({ ok: true, response: { accountHandle: selected } });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a stale cached Claude organization as an identity", async () => {
+    const selected = "22222222-2222-4222-8222-222222222222";
+    const current = "33333333-3333-4333-8333-333333333333";
+    installWindow("https://claude.ai/new", vi.fn(async () => new Response(JSON.stringify([{ uuid: current }]))), {
+      "omelette-org-settings-cache": JSON.stringify({ orgUuid: selected, settings: {} }),
+    });
+
+    const result = await executeProviderPageRequest({
+      provider: "claude-ai",
+      operation: "identity",
+      params: {},
+    });
+
+    expect(result).toEqual({ ok: false, error: "backfill_bridge_selected_organization_stale" });
   });
 
   it("keeps ChatGPT bearer and selected account inside MAIN-world execution", async () => {

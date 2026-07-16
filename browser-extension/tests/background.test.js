@@ -157,6 +157,14 @@ function captureJobFixtureResponse(url, options = {}) {
   const path = new URL(url).pathname;
   if (!path.startsWith("/v1/capture-jobs")) return null;
   const body = options.body ? JSON.parse(options.body) : {};
+  if (path === "/v1/capture-jobs/capabilities") {
+    return responseJson({
+      schema: "polylogue.capture-jobs.capabilities.v1",
+      protocol_min: 1,
+      protocol_max: 1,
+      scope_namespace: "cjs1:fixture-stable-namespace",
+    });
+  }
   if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
   if (path === "/v1/capture-jobs") {
     return responseJson({ job: {
@@ -794,6 +802,14 @@ describe("background receiver diagnostics", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = new URL(url).pathname;
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:identity-test-namespace",
+        });
+      }
       if (path === "/v1/browser-captures/capabilities") {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
       }
@@ -839,9 +855,11 @@ describe("background receiver diagnostics", () => {
     const captureJobCalls = fetchCalls.filter((call) => new URL(call.url).pathname.startsWith("/v1/capture-jobs"));
     expect(captureJobCalls.length).toBeGreaterThanOrEqual(5);
     for (const call of captureJobCalls) {
+      if (!call.options.body) continue;
       expect(call.options.body).not.toContain(accountHandle);
       expect(call.options.body).not.toContain("paired:");
-      expect(JSON.parse(call.options.body).account_scope).toMatch(/^h1:/);
+      const body = JSON.parse(call.options.body);
+      if ("account_scope" in body) expect(body.account_scope).toMatch(/^h1:/);
     }
     expect(JSON.stringify(stored)).not.toContain(accountHandle);
   });
@@ -862,6 +880,14 @@ describe("background receiver diagnostics", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = new URL(url).pathname;
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:profile-recovery-namespace",
+        });
+      }
       if (path === "/v1/browser-captures/capabilities") {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
       }
@@ -972,6 +998,14 @@ describe("background receiver diagnostics", () => {
       if (path === "/v1/backfill-checkpoint") {
         return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
       }
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:new-profile-recovery-namespace",
+        });
+      }
       if (path === "/v1/capture-jobs/discover") {
         const body = JSON.parse(options.body);
         if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
@@ -1047,6 +1081,14 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url, options });
       const path = new URL(url).pathname;
       const body = options.body ? JSON.parse(options.body) : {};
+      if (path === "/v1/capture-jobs/capabilities") {
+        return responseJson({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:multi-provider-namespace",
+        });
+      }
       if (path === "/v1/backfill-checkpoint") {
         return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
       }

@@ -12,7 +12,7 @@ from threading import Thread
 from typing import Any, cast
 
 import polylogue.browser_capture.capture_jobs as capture_jobs
-from polylogue.browser_capture.capture_jobs import canonical_digest
+from polylogue.browser_capture.capture_jobs import canonical_digest, capture_job_scope_namespace
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
 
@@ -414,6 +414,7 @@ def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: P
         assert "legacy-instance" not in json.dumps(orphan_census["orphans"])
 
     routes = {
+        ("GET", "/v1/capture-jobs/capabilities"),
         ("POST", "/v1/capture-jobs"),
         ("POST", "/v1/capture-jobs/discover"),
         ("GET", "/v1/capture-jobs/job-id"),
@@ -423,3 +424,27 @@ def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: P
         ("PUT", "/v1/capture-jobs/job-id/checkpoint"),
     }
     assert all(browser_capture_route_contract_for(method, path) is not None for method, path in routes)
+    assert capture_job_scope_namespace(tmp_path) == capture_job_scope_namespace(tmp_path)
+    assert capture_job_scope_namespace(tmp_path) != capture_job_scope_namespace(tmp_path / "other")
+
+
+def test_scope_namespace_survives_receiver_bearer_rotation(tmp_path: Path) -> None:
+    namespaces = []
+    for token in ("old-pairing-token", "rotated-pairing-token"):
+        server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_port)
+            connection.request(
+                "GET",
+                "/v1/capture-jobs/capabilities",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response = connection.getresponse()
+            assert response.status == 200
+            namespaces.append(json.loads(response.read())["scope_namespace"])
+        finally:
+            server.shutdown()
+            thread.join()
+    assert namespaces[0] == namespaces[1]

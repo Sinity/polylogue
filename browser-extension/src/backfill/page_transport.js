@@ -216,15 +216,18 @@ export async function executeProviderPageRequest(request) {
 
   async function claudeRequest() {
     const selected = selectedClaudeOrganizationId();
-    if (request.operation === "identity") return { accountHandle: selected };
-    if (request.operation === "organizations") {
+    if (request.operation === "identity" || request.operation === "organizations") {
       const result = await fetchBounded(new URL("/api/organizations", currentOrigin).href, { credentials: "include", cache: "no-store" });
+      if (request.operation === "identity" && !result.ok) {
+        throw new Error("backfill_bridge_auth_context_unavailable");
+      }
       if (!result.ok) return result;
       let organizations;
       try { organizations = JSON.parse(result.body); } catch { throw new Error("backfill_bridge_organizations_contract_drift"); }
       if (!Array.isArray(organizations)) throw new Error("backfill_bridge_organizations_contract_drift");
       const selectedIndex = organizations.findIndex((organization) => organization?.uuid === selected);
       if (selectedIndex < 0) throw new Error("backfill_bridge_selected_organization_stale");
+      if (request.operation === "identity") return { accountHandle: selected };
       result.body = JSON.stringify([organizations[selectedIndex], ...organizations.filter((_entry, index) => index !== selectedIndex)]);
       return result;
     }

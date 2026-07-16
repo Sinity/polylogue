@@ -24,6 +24,7 @@ BrowserCaptureRouteKind = Literal[
     "browser_action_attachment",
     "browser_action_update",
     "browser_action_reconcile",
+    "capture_job_capabilities",
     "capture_job_create",
     "capture_job_discover",
     "capture_job_read",
@@ -148,6 +149,15 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserActionReconcileRequest",
         "BrowserActionPayload | BrowserCaptureErrorPayload",
         "Explicitly binds provider evidence to an outcome_unknown action; never retries it implicitly.",
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/capture-jobs/capabilities",
+        "capture_job_capabilities",
+        "bearer_if_configured",
+        None,
+        "CaptureJob capabilities v1 | BrowserCaptureErrorPayload",
+        "Publishes protocol bounds and the bearer-rotation-stable scope namespace.",
     ),
     BrowserCaptureRouteContract(
         "POST",
