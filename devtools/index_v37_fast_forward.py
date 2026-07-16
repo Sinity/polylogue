@@ -147,6 +147,18 @@ def _require_daemon_stopped(archive_root: Path) -> None:
         raise IndexV37FastForwardError(f"polylogued PID {pid} is still running")
 
 
+def _checkpoint_stopped_database(path: Path) -> None:
+    """Consolidate a stopped writer's committed WAL before clone evidence."""
+    with closing(sqlite3.connect(path, timeout=120.0)) as conn:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    if checkpoint is None or int(checkpoint[0]) != 0:
+        raise IndexV37FastForwardError(f"active index WAL checkpoint failed: {checkpoint}")
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
+        if sidecar.exists() and sidecar.stat().st_size == 0:
+            sidecar.unlink()
+
+
 def _require_clean_database(path: Path, *, expected_version: int) -> tuple[dict[str, str], dict[str, int]]:
     for suffix in ("-wal", "-shm", "-journal"):
         sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
@@ -230,6 +242,7 @@ def prepare_forward(*, archive_root: Path, receipt_path: Path) -> dict[str, obje
     active_pointer = store.active_pointer
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
+        _checkpoint_stopped_database(active_pointer)
         source_snapshot = source_revision_snapshot(archive_root)
         active_identity = _file_identity(active_pointer)
         before_schema, before_counts = _require_clean_database(active_pointer, expected_version=FROM_VERSION)

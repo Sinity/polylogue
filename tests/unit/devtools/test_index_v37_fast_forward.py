@@ -110,6 +110,25 @@ def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch
     assert list(generations.iterdir()) == [generations / "v36"]
 
 
+def test_prepare_checkpoints_stopped_active_index_before_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    observed: list[Path] = []
+    original = forward._checkpoint_stopped_database
+
+    def checkpoint(path: Path) -> None:
+        observed.append(path)
+        original(path)
+
+    monkeypatch.setattr(forward, "_checkpoint_stopped_database", checkpoint)
+
+    prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
+
+    assert observed == [IndexGenerationStore(root).active_pointer]
+
+
 def test_activate_refuses_changed_source_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
