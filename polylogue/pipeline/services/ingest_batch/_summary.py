@@ -19,14 +19,20 @@ def apply_ingest_batch_summary(result: ParseResult, batch_summary: _IngestBatchS
 
 
 def progressed_raw_count(batch_summary: _IngestBatchSummary) -> int:
-    return sum(1 for outcome in batch_summary.outcomes.values() if outcome.had_sessions and outcome.error is None)
+    return sum(
+        1
+        for raw_id, outcome in batch_summary.outcomes.items()
+        if outcome.had_sessions and outcome.error is None and raw_id not in batch_summary.publication_deferred_raw_ids
+    )
 
 
 def successful_raw_ids(batch_summary: _IngestBatchSummary) -> set[str]:
     return {
         raw_id
         for raw_id, outcome in batch_summary.outcomes.items()
-        if outcome.had_sessions and raw_id not in batch_summary.failed_raw_ids
+        if outcome.had_sessions
+        and raw_id not in batch_summary.failed_raw_ids
+        and raw_id not in batch_summary.publication_deferred_raw_ids
     }
 
 

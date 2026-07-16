@@ -1,9 +1,4 @@
-"""Durable CRUD contract for sinex_publication_obligations.
-
-Uses a real source.db bootstrapped by ArchiveStore (via ``workspace_env``),
-not a synthetic in-memory schema -- these tests fail if the migration/DDL
-drifts from what ``obligations.py`` actually reads/writes.
-"""
+"""Real-source.db exact outbox, transaction, and migration contracts."""
 
 from __future__ import annotations
 
@@ -12,231 +7,141 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.sinex.models import ObligationStatus, PublicationMode, ReceiptState
-from polylogue.sinex.obligations import (
-    get_obligation,
-    list_obligations,
-    mark_attempt,
-    mark_publishing,
-    record_obligation,
+from polylogue.sinex.models import (
+    ObligationStatus,
+    PublicationMode,
+    PublicationReceipt,
+    ReceiptState,
 )
+from polylogue.sinex.obligations import (
+    PublicationPayloadConflictError,
+    PublicationPayloadInvalidError,
+    list_obligations,
+    load_payload,
+    mark_attempt,
+    stage_payload,
+)
+from tests.unit.sinex._fixtures import publication_payload
 
 
-def _conn(source_db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(source_db_path)
+def _conn(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def test_record_obligation_is_idempotent_by_the_four_part_key(workspace_env: dict[str, Path]) -> None:
-    source_db = workspace_env["archive_root"] / "source.db"
-    conn = _conn(source_db)
-    try:
-        first = record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.MIRROR,
-            now_ms=1000,
-        )
-        second = record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.MIRROR,
-            now_ms=9999,  # a later retry must NOT overwrite created_at_ms
-        )
-        conn.commit()
-        assert first == second
-        assert first.created_at_ms == 1000
-        assert first.status is ObligationStatus.PENDING
-        assert first.attempt_count == 0
-        rows = conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone()[0]
-        assert rows == 1
-
-        # A different revision_id is a genuinely new obligation, not merged
-        # with the first -- proves the idempotency key is the full 4-tuple,
-        # not just object_id.
-        record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-2",
-            manifest_digest="digest-2",
-            mode=PublicationMode.MIRROR,
-            now_ms=2000,
-        )
-        conn.commit()
-        rows = conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone()[0]
-        assert rows == 2
-    finally:
-        conn.close()
-
-
-def test_record_obligation_rejects_off_mode(workspace_env: dict[str, Path]) -> None:
-    source_db = workspace_env["archive_root"] / "source.db"
-    conn = _conn(source_db)
-    try:
-        with pytest.raises(ValueError, match="off mode"):
-            record_obligation(
-                conn,
-                object_id="claude-code-session:s1",
-                protocol_version="polylogue.material-protocol/v1",
-                revision_id="rev-1",
-                manifest_digest="digest-1",
-                mode=PublicationMode.OFF,
-                now_ms=1000,
-            )
-    finally:
-        conn.close()
-
-
-def test_mark_attempt_increments_count_and_sets_retired_only_on_terminal_status(
+def test_acceptance_marker_and_exact_payload_share_commit_or_rollback(
     workspace_env: dict[str, Path],
 ) -> None:
-    source_db = workspace_env["archive_root"] / "source.db"
-    conn = _conn(source_db)
+    conn = _conn(workspace_env["archive_root"] / "source.db")
+    conn.execute("CREATE TABLE IF NOT EXISTS test_raw_acceptance(raw_id TEXT PRIMARY KEY)")
+    payload = publication_payload()
     try:
-        obligation = record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.PRIMARY,
-            now_ms=1000,
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO test_raw_acceptance VALUES ('rollback')")
+        stage_payload(conn, payload=payload, mode=PublicationMode.MIRROR, now_ms=1_000)
+        conn.rollback()
+        assert conn.execute("SELECT COUNT(*) FROM test_raw_acceptance").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone()[0] == 0
+
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO test_raw_acceptance VALUES ('commit')")
+        stage_payload(conn, payload=payload, mode=PublicationMode.MIRROR, now_ms=1_001)
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM test_raw_acceptance").fetchone()[0] == 1
+        assert load_payload(conn, list_obligations(conn)[0]) == payload
+    finally:
+        conn.close()
+
+
+def test_duplicate_is_idempotent_mode_only_elevates_and_changed_revision_is_history(
+    workspace_env: dict[str, Path],
+) -> None:
+    conn = _conn(workspace_env["archive_root"] / "source.db")
+    first = publication_payload()
+    second = publication_payload(revision_id="rev-2", marker="two")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        stage_payload(conn, payload=first, mode=PublicationMode.MIRROR, now_ms=1_000)
+        stage_payload(conn, payload=first, mode=PublicationMode.PRIMARY, now_ms=2_000)
+        stage_payload(conn, payload=first, mode=PublicationMode.MIRROR, now_ms=3_000)
+        stage_payload(conn, payload=second, mode=PublicationMode.PRIMARY, now_ms=4_000)
+        conn.commit()
+        rows = list_obligations(conn)
+        assert len(rows) == 2
+        assert rows[0].mode is PublicationMode.PRIMARY
+        assert conn.execute("SELECT COUNT(*) FROM sinex_publication_payloads").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM sinex_publication_segments").fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
+def test_exact_byte_corruption_and_same_key_collision_are_detected(
+    workspace_env: dict[str, Path],
+) -> None:
+    conn = _conn(workspace_env["archive_root"] / "source.db")
+    payload = publication_payload()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        obligation = stage_payload(conn, payload=payload, mode=PublicationMode.MIRROR, now_ms=1_000)
+        conn.commit()
+        conn.execute(
+            "UPDATE sinex_publication_segments SET segment_bytes=X'00' WHERE object_id=? AND position=0",
+            (payload.object_id,),
         )
         conn.commit()
+        with pytest.raises(PublicationPayloadInvalidError):
+            load_payload(conn, obligation)
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(PublicationPayloadConflictError):
+            stage_payload(conn, payload=payload, mode=PublicationMode.MIRROR, now_ms=2_000)
+        conn.rollback()
+    finally:
+        conn.close()
 
-        after_pending = mark_attempt(
+
+def test_attempt_receipt_history_and_retry_schedule_are_durable(
+    workspace_env: dict[str, Path],
+) -> None:
+    conn = _conn(workspace_env["archive_root"] / "source.db")
+    payload = publication_payload()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        obligation = stage_payload(conn, payload=payload, mode=PublicationMode.PRIMARY, now_ms=1_000)
+        updated = mark_attempt(
             conn,
             obligation,
-            status=ObligationStatus.PENDING,
-            receipt_state=ReceiptState.RAW_ACCEPTED,
-            error=None,
-            now_ms=2000,
+            status=ObligationStatus.DURABLE_DEBT,
+            receipt=PublicationReceipt(obligation.request_id, ReceiptState.DURABLE_DEBT, "spooled"),
+            error_code=None,
+            now_ms=2_000,
+            next_attempt_at_ms=5_000,
         )
         conn.commit()
-        assert after_pending.attempt_count == 1
-        assert after_pending.retired_at_ms is None
-        assert after_pending.status is ObligationStatus.PENDING
-
-        after_confirmed = mark_attempt(
-            conn,
-            after_pending,
-            status=ObligationStatus.CONFIRMED,
-            receipt_state=ReceiptState.PERSISTED_CONFIRMED,
-            error=None,
-            now_ms=3000,
-        )
-        conn.commit()
-        assert after_confirmed.attempt_count == 2
-        assert after_confirmed.retired_at_ms == 3000
-        assert after_confirmed.status is ObligationStatus.CONFIRMED
-        assert after_confirmed.last_receipt_state is ReceiptState.PERSISTED_CONFIRMED
+        assert updated.attempt_count == 1
+        assert updated.next_attempt_at_ms == 5_000
+        receipt = conn.execute(
+            "SELECT request_id, receipt_state, receipt_detail FROM sinex_publication_receipts"
+        ).fetchone()
+        assert tuple(receipt) == (obligation.request_id, "durable_debt", "spooled")
     finally:
         conn.close()
 
 
-def test_mark_publishing_transitions_status_without_incrementing_attempt_count(
+def test_source_schema_v12_contains_outbox_payload_receipt_tables(
     workspace_env: dict[str, Path],
 ) -> None:
-    """The pre-attempt marker (polylogue-ihwv) is distinct from mark_attempt.
-
-    It durably records "a transport call is in flight" so a crash between
-    this write and the attempt's resolution leaves the row at ``publishing``
-    -- observably different from a still-untried ``pending`` row -- but it
-    must not touch attempt_count/receipt/error, which describe an outcome
-    this call precedes and does not yet know.
-    """
-    source_db = workspace_env["archive_root"] / "source.db"
-    conn = _conn(source_db)
+    conn = _conn(workspace_env["archive_root"] / "source.db")
     try:
-        obligation = record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.PRIMARY,
-            now_ms=1000,
-        )
-        conn.commit()
-
-        publishing = mark_publishing(conn, obligation, now_ms=1500)
-        conn.commit()
-        assert publishing.status is ObligationStatus.PUBLISHING
-        assert publishing.attempt_count == 0
-        assert publishing.retired_at_ms is None
-        assert publishing.updated_at_ms == 1500
-
-        after_confirmed = mark_attempt(
-            conn,
-            publishing,
-            status=ObligationStatus.CONFIRMED,
-            receipt_state=ReceiptState.PERSISTED_CONFIRMED,
-            error=None,
-            now_ms=2000,
-        )
-        conn.commit()
-        assert after_confirmed.attempt_count == 1
-        assert after_confirmed.status is ObligationStatus.CONFIRMED
-    finally:
-        conn.close()
-
-
-def test_list_obligations_filters_by_status_and_object(workspace_env: dict[str, Path]) -> None:
-    source_db = workspace_env["archive_root"] / "source.db"
-    conn = _conn(source_db)
-    try:
-        pending = record_obligation(
-            conn,
-            object_id="claude-code-session:s1",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.MIRROR,
-            now_ms=1000,
-        )
-        confirmed = record_obligation(
-            conn,
-            object_id="claude-code-session:s2",
-            protocol_version="polylogue.material-protocol/v1",
-            revision_id="rev-1",
-            manifest_digest="digest-1",
-            mode=PublicationMode.MIRROR,
-            now_ms=1000,
-        )
-        mark_attempt(
-            conn,
-            confirmed,
-            status=ObligationStatus.CONFIRMED,
-            receipt_state=ReceiptState.PERSISTED_CONFIRMED,
-            error=None,
-            now_ms=2000,
-        )
-        conn.commit()
-
-        only_pending = list_obligations(conn, statuses=(ObligationStatus.PENDING,))
-        assert [o.object_id for o in only_pending] == [pending.object_id]
-
-        only_s2 = list_obligations(conn, object_id="claude-code-session:s2")
-        assert len(only_s2) == 1
-        assert only_s2[0].status is ObligationStatus.CONFIRMED
-
-        assert (
-            get_obligation(
-                conn,
-                object_id="claude-code-session:does-not-exist",
-                protocol_version="polylogue.material-protocol/v1",
-                revision_id="rev-1",
-                manifest_digest="digest-1",
-            )
-            is None
-        )
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {
+            "sinex_publication_obligations",
+            "sinex_publication_payloads",
+            "sinex_publication_segments",
+            "sinex_publication_receipts",
+        } <= names
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sinex_publication_obligations)")}
+        assert "next_attempt_at_ms" in columns
     finally:
         conn.close()

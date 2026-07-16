@@ -15,7 +15,7 @@ so we skip unchanged files entirely.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -81,6 +81,14 @@ class ConvergenceStage:
     # Some stages intentionally return False after doing bounded successful
     # work so the remaining backlog is retried as convergence debt.
     false_means_pending: bool = False
+    # A primary-authority stage may block every later projection stage for the
+    # affected subjects until its durable receipt predicate is satisfied.
+    blocks_following_stages: bool = False
+    barrier_check: Callable[[Path], bool] | None = None
+    barrier_check_many: Callable[[Sequence[Path]], set[Path]] | None = None
+    barrier_check_sessions: Callable[[Sequence[str]], set[str]] | None = None
+    # Optional bounded, secret-safe operator status payload.
+    status: Callable[[], Mapping[str, object]] | None = None
 
 
 @dataclass(slots=True)
@@ -182,6 +190,94 @@ class DaemonConverger:
     def _has_cpu_bound_stage(self) -> bool:
         return any(stage.cpu_bound for stage in self._stages.values())
 
+    def stage_status(self) -> dict[str, dict[str, object]]:
+        """Return bounded stage-owned status without propagating secret detail."""
+        result: dict[str, dict[str, object]] = {}
+        for stage_name, stage in self._stages.items():
+            if stage.status is None:
+                continue
+            try:
+                result[stage_name] = dict(stage.status())
+            except Exception:
+                logger.warning("converger: status probe failed stage=%s", stage_name, exc_info=True)
+                result[stage_name] = {"state": "unavailable"}
+        return result
+
+    @staticmethod
+    def _mark_barrier_failure(
+        state: FileState | SessionState,
+        *,
+        stage_name: str,
+    ) -> None:
+        state.stages[stage_name] = StageState.FAILED
+        state.error_count += 1
+        state.last_error = f"stage {stage_name} barrier check failed"
+
+    def _path_barrier_blocked(
+        self,
+        stage_name: str,
+        stage: ConvergenceStage,
+        path: Path,
+    ) -> bool:
+        if not stage.blocks_following_stages:
+            return False
+        state = self._file_states[path]
+        if stage.barrier_check is None:
+            return state.stages.get(stage_name) is not StageState.DONE
+        try:
+            return bool(stage.barrier_check(path))
+        except Exception:
+            logger.warning(
+                "converger: barrier check failed for %s stage=%s",
+                path,
+                stage_name,
+                exc_info=True,
+            )
+            self._mark_barrier_failure(state, stage_name=stage_name)
+            return True
+
+    def _path_barriers_blocked(
+        self,
+        stage_name: str,
+        stage: ConvergenceStage,
+        paths: Sequence[Path],
+    ) -> set[Path]:
+        if not stage.blocks_following_stages or not paths:
+            return set()
+        if stage.barrier_check_many is None:
+            return {path for path in paths if self._path_barrier_blocked(stage_name, stage, path)}
+        try:
+            blocked = set(stage.barrier_check_many(paths))
+        except Exception:
+            logger.warning("converger: batch barrier check failed stage=%s", stage_name, exc_info=True)
+            for path in paths:
+                self._mark_barrier_failure(self._file_states[path], stage_name=stage_name)
+            return set(paths)
+        return blocked.intersection(paths)
+
+    def _session_barriers_blocked(
+        self,
+        stage_name: str,
+        stage: ConvergenceStage,
+        session_ids: Sequence[str],
+    ) -> set[str]:
+        if not stage.blocks_following_stages or not session_ids:
+            return set()
+        if stage.barrier_check_sessions is None:
+            return {
+                session_id
+                for session_id in session_ids
+                if self._session_states[session_id].stages.get(stage_name) is not StageState.DONE
+            }
+        try:
+            blocked = set(stage.barrier_check_sessions(session_ids))
+        except Exception:
+            logger.warning("converger: session barrier check failed stage=%s", stage_name, exc_info=True)
+            for session_id in session_ids:
+                self._mark_barrier_failure(self._session_states[session_id], stage_name=stage_name)
+            return set(session_ids)
+        return blocked.intersection(session_ids)
+
     async def start(self) -> None:
         if self._executor is not None:
             return
@@ -206,72 +302,71 @@ class DaemonConverger:
         logger.info("converger: stopped")
 
     def converge_file(self, path: Path) -> FileState:
-        """Converge a single file through all stages.
-
-        Returns the final :class:`FileState`.
-        """
+        """Converge one file while honoring durable stage barriers."""
         if path not in self._file_states:
             self._file_states[path] = FileState(path=path)
         state = self._file_states[path]
         state.last_stage_times.clear()
+        downstream_blocked = False
 
         for stage_name, stage in self._stages.items():
+            if downstream_blocked:
+                state.stages[stage_name] = StageState.PENDING
+                continue
+
             current = state.stages.get(stage_name)
-            if current == StageState.DONE:
-                continue
-
-            try:
-                needs_work = stage.check(path)
-            except Exception:
-                logger.warning(
-                    "converger: check failed for %s stage=%s",
-                    path,
-                    stage_name,
-                    exc_info=True,
-                )
-                state.stages[stage_name] = StageState.FAILED
-                state.error_count += 1
-                continue
-
-            if not needs_work:
-                state.stages[stage_name] = StageState.DONE
-                continue
-
-            state.stages[stage_name] = StageState.IN_PROGRESS
-
-            t_stage = time.perf_counter()
-            try:
-                if stage.cpu_bound and self._executor is not None:
-                    future = self._executor.submit(stage.execute, path)
-                    execute_result = future.result()
+            if current is not StageState.DONE:
+                try:
+                    needs_work = stage.check(path)
+                except Exception:
+                    logger.warning(
+                        "converger: check failed for %s stage=%s",
+                        path,
+                        stage_name,
+                        exc_info=True,
+                    )
+                    state.stages[stage_name] = StageState.FAILED
+                    state.error_count += 1
                 else:
-                    execute_result = stage.execute(path)
-            except Exception as exc:
-                logger.warning(
-                    "converger: execute failed for %s stage=%s: %s",
-                    path,
-                    stage_name,
-                    exc,
-                )
-                state.stages[stage_name] = StageState.FAILED
-                state.error_count += 1
-                state.last_error = str(exc)
-                continue
+                    if not needs_work:
+                        state.stages[stage_name] = StageState.DONE
+                    else:
+                        state.stages[stage_name] = StageState.IN_PROGRESS
+                        t_stage = time.perf_counter()
+                        try:
+                            if stage.cpu_bound and self._executor is not None:
+                                future = self._executor.submit(stage.execute, path)
+                                execute_result = future.result()
+                            else:
+                                execute_result = stage.execute(path)
+                        except Exception as exc:
+                            logger.warning(
+                                "converger: execute failed for %s stage=%s: %s",
+                                path,
+                                stage_name,
+                                exc,
+                            )
+                            state.stages[stage_name] = StageState.FAILED
+                            state.error_count += 1
+                            state.last_error = str(exc)
+                        else:
+                            elapsed = time.perf_counter() - t_stage
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            state.stage_times[stage_name] = elapsed
+                            state.last_stage_times[stage_name] = elapsed
+                            for name, value in extra_stage_timings_s.items():
+                                state.stage_times[name] = value
+                                state.last_stage_times[name] = value
+                            _record_execute_result(
+                                state,
+                                stage_name=stage_name,
+                                stage=stage,
+                                success=success,
+                                scope="stage",
+                            )
 
-            elapsed = time.perf_counter() - t_stage
-            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
-            state.stage_times[stage_name] = elapsed
-            state.last_stage_times[stage_name] = elapsed
-            for name, value in extra_stage_timings_s.items():
-                state.stage_times[name] = value
-                state.last_stage_times[name] = value
-            _record_execute_result(
-                state,
-                stage_name=stage_name,
-                stage=stage,
-                success=success,
-                scope="stage",
-            )
+            if self._path_barrier_blocked(stage_name, stage, path):
+                downstream_blocked = True
 
         return state
 
@@ -296,7 +391,7 @@ class DaemonConverger:
                 del self._session_states[session_id]
 
     def converge_batch(self, files: Iterable[Path]) -> tuple[dict[Path, FileState], dict[str, float]]:
-        """Converge a changed source batch and return per-stage batch timings."""
+        """Converge a changed source batch with per-subject stage barriers."""
         paths = tuple(dict.fromkeys(files))
         if not paths:
             return {}, {}
@@ -309,9 +404,16 @@ class DaemonConverger:
             state.last_stage_times.clear()
 
         batch_stage_times: dict[str, float] = {}
+        blocked_paths: set[Path] = set()
         for stage_name, stage in self._stages.items():
+            for path in blocked_paths:
+                self._file_states[path].stages[stage_name] = StageState.PENDING
+            active_paths = tuple(path for path in paths if path not in blocked_paths)
+            if not active_paths:
+                continue
+
             if stage.check_many is None or stage.execute_many is None or stage.cpu_bound:
-                for path in paths:
+                for path in active_paths:
                     state = self._file_states[path]
                     try:
                         needs_work = stage.check(path)
@@ -361,52 +463,74 @@ class DaemonConverger:
                         success=success,
                         scope="stage",
                     )
-                continue
+            else:
+                try:
+                    batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
+                except Exception:
+                    logger.warning("converger: batch check failed stage=%s", stage_name, exc_info=True)
+                    for path in active_paths:
+                        state = self._file_states[path]
+                        state.stages[stage_name] = StageState.FAILED
+                        state.error_count += 1
+                else:
+                    for path in active_paths:
+                        if path not in batch_needs_work:
+                            self._file_states[path].stages[stage_name] = StageState.DONE
 
-            try:
-                batch_needs_work = stage.check_many(paths)
-            except Exception:
-                logger.warning("converger: batch check failed stage=%s", stage_name, exc_info=True)
-                for path in paths:
-                    state = self._file_states[path]
-                    state.stages[stage_name] = StageState.FAILED
-                    state.error_count += 1
-                continue
+                    if batch_needs_work:
+                        for path in batch_needs_work:
+                            self._file_states[path].stages[stage_name] = StageState.IN_PROGRESS
 
-            for path in paths:
-                if path not in batch_needs_work:
-                    self._file_states[path].stages[stage_name] = StageState.DONE
+                        t_stage = time.perf_counter()
+                        try:
+                            execute_result = stage.execute_many(tuple(batch_needs_work))
+                        except Exception as exc:
+                            logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
+                            for path in batch_needs_work:
+                                state = self._file_states[path]
+                                state.stages[stage_name] = StageState.FAILED
+                                state.error_count += 1
+                                state.last_error = str(exc)
+                        else:
+                            elapsed = time.perf_counter() - t_stage
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            remaining_needs_work: set[Path] | None = None
+                            if not success and stage.false_means_pending:
+                                try:
+                                    remaining_needs_work = set(stage.check_many(tuple(batch_needs_work))).intersection(
+                                        batch_needs_work
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "converger: batch recheck failed stage=%s",
+                                        stage_name,
+                                        exc_info=True,
+                                    )
+                            _record_stage_times(
+                                batch_stage_times,
+                                stage_name,
+                                elapsed,
+                                extra_stage_timings_s,
+                            )
+                            for path in batch_needs_work:
+                                state = self._file_states[path]
+                                state.stage_times[stage_name] = elapsed
+                                state.last_stage_times[stage_name] = elapsed
+                                for name, value in extra_stage_timings_s.items():
+                                    state.stage_times[name] = value
+                                    state.last_stage_times[name] = value
+                                path_success = success
+                                if remaining_needs_work is not None:
+                                    path_success = path not in remaining_needs_work
+                                _record_execute_result(
+                                    state,
+                                    stage_name=stage_name,
+                                    stage=stage,
+                                    success=path_success,
+                                    scope="batch",
+                                )
 
-            if not batch_needs_work:
-                continue
-
-            for path in batch_needs_work:
-                self._file_states[path].stages[stage_name] = StageState.IN_PROGRESS
-
-            t_stage = time.perf_counter()
-            try:
-                execute_result = stage.execute_many(tuple(batch_needs_work))
-            except Exception as exc:
-                logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
-                execute_result = False
-
-            elapsed = time.perf_counter() - t_stage
-            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
-            _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
-            for path in batch_needs_work:
-                state = self._file_states[path]
-                state.stage_times[stage_name] = elapsed
-                state.last_stage_times[stage_name] = elapsed
-                for name, value in extra_stage_timings_s.items():
-                    state.stage_times[name] = value
-                    state.last_stage_times[name] = value
-                _record_execute_result(
-                    state,
-                    stage_name=stage_name,
-                    stage=stage,
-                    success=success,
-                    scope="batch",
-                )
+            blocked_paths.update(self._path_barriers_blocked(stage_name, stage, active_paths))
 
         results = {path: self._file_states[path] for path in paths}
         self._evict_converged_files(paths)
@@ -416,7 +540,7 @@ class DaemonConverger:
         self,
         session_ids: Iterable[str],
     ) -> tuple[dict[str, SessionState], dict[str, float]]:
-        """Converge derived state for known session IDs without source-path lookup."""
+        """Converge known session subjects while honoring primary barriers."""
         ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
         if not ids:
             return {}, {}
@@ -429,70 +553,89 @@ class DaemonConverger:
             state.last_stage_times.clear()
 
         batch_stage_times: dict[str, float] = {}
+        blocked_ids: set[str] = set()
         for stage_name, stage in self._stages.items():
+            for session_id in blocked_ids:
+                self._session_states[session_id].stages[stage_name] = StageState.PENDING
+            active_ids = tuple(session_id for session_id in ids if session_id not in blocked_ids)
+            if not active_ids:
+                continue
+
             if stage.check_sessions is None or stage.execute_sessions is None or stage.cpu_bound:
-                for session_id in ids:
-                    state = self._session_states[session_id]
-                    state.stages[stage_name] = StageState.SKIPPED
-                continue
-
-            try:
-                batch_needs_work = stage.check_sessions(ids)
-            except Exception:
-                logger.warning("converger: session batch check failed stage=%s", stage_name, exc_info=True)
-                for session_id in ids:
-                    state = self._session_states[session_id]
-                    state.stages[stage_name] = StageState.FAILED
-                    state.error_count += 1
-                continue
-
-            for session_id in ids:
-                if session_id not in batch_needs_work:
-                    self._session_states[session_id].stages[stage_name] = StageState.DONE
-
-            if not batch_needs_work:
-                continue
-
-            for session_id in batch_needs_work:
-                self._session_states[session_id].stages[stage_name] = StageState.IN_PROGRESS
-
-            t_stage = time.perf_counter()
-            try:
-                execute_result = stage.execute_sessions(tuple(batch_needs_work))
-            except Exception as exc:
-                logger.warning("converger: session batch execute failed stage=%s: %s", stage_name, exc)
-                execute_result = False
-
-            elapsed = time.perf_counter() - t_stage
-            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
-            remaining_needs_work: set[str] | None = None
-            if not success and stage.false_means_pending:
+                for session_id in active_ids:
+                    self._session_states[session_id].stages[stage_name] = StageState.SKIPPED
+            else:
                 try:
-                    remaining_needs_work = set(stage.check_sessions(tuple(batch_needs_work)))
+                    batch_needs_work = set(stage.check_sessions(active_ids)).intersection(active_ids)
                 except Exception:
-                    logger.warning(
-                        "converger: session batch recheck failed stage=%s",
-                        stage_name,
-                        exc_info=True,
-                    )
-            _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
-            for session_id in batch_needs_work:
-                state = self._session_states[session_id]
-                state.stage_times[stage_name] = elapsed
-                state.last_stage_times[stage_name] = elapsed
-                for name, value in extra_stage_timings_s.items():
-                    state.stage_times[name] = value
-                    state.last_stage_times[name] = value
-                session_success = success
-                if remaining_needs_work is not None:
-                    session_success = session_id not in remaining_needs_work
-                _record_execute_result(
-                    state,
-                    stage_name=stage_name,
-                    stage=stage,
-                    success=session_success,
-                    scope="session",
-                )
+                    logger.warning("converger: session batch check failed stage=%s", stage_name, exc_info=True)
+                    for session_id in active_ids:
+                        state = self._session_states[session_id]
+                        state.stages[stage_name] = StageState.FAILED
+                        state.error_count += 1
+                else:
+                    for session_id in active_ids:
+                        if session_id not in batch_needs_work:
+                            self._session_states[session_id].stages[stage_name] = StageState.DONE
+
+                    if batch_needs_work:
+                        for session_id in batch_needs_work:
+                            self._session_states[session_id].stages[stage_name] = StageState.IN_PROGRESS
+
+                        t_stage = time.perf_counter()
+                        try:
+                            execute_result = stage.execute_sessions(tuple(batch_needs_work))
+                        except Exception as exc:
+                            logger.warning(
+                                "converger: session batch execute failed stage=%s: %s",
+                                stage_name,
+                                exc,
+                            )
+                            for session_id in batch_needs_work:
+                                state = self._session_states[session_id]
+                                state.stages[stage_name] = StageState.FAILED
+                                state.error_count += 1
+                                state.last_error = str(exc)
+                        else:
+                            elapsed = time.perf_counter() - t_stage
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            remaining_needs_work: set[str] | None = None
+                            if not success and stage.false_means_pending:
+                                try:
+                                    remaining_needs_work = set(
+                                        stage.check_sessions(tuple(batch_needs_work))
+                                    ).intersection(batch_needs_work)
+                                except Exception:
+                                    logger.warning(
+                                        "converger: session batch recheck failed stage=%s",
+                                        stage_name,
+                                        exc_info=True,
+                                    )
+                            _record_stage_times(
+                                batch_stage_times,
+                                stage_name,
+                                elapsed,
+                                extra_stage_timings_s,
+                            )
+                            for session_id in batch_needs_work:
+                                state = self._session_states[session_id]
+                                state.stage_times[stage_name] = elapsed
+                                state.last_stage_times[stage_name] = elapsed
+                                for name, value in extra_stage_timings_s.items():
+                                    state.stage_times[name] = value
+                                    state.last_stage_times[name] = value
+                                session_success = success
+                                if remaining_needs_work is not None:
+                                    session_success = session_id not in remaining_needs_work
+                                _record_execute_result(
+                                    state,
+                                    stage_name=stage_name,
+                                    stage=stage,
+                                    success=session_success,
+                                    scope="session",
+                                )
+
+            blocked_ids.update(self._session_barriers_blocked(stage_name, stage, active_ids))
 
         results = {session_id: self._session_states[session_id] for session_id in ids}
         self._evict_converged_sessions(ids)

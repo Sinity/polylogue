@@ -34,7 +34,8 @@ from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.sinex.service import PublicationService
+    from polylogue.sinex.transport import SinexTransport
 
 logger = get_logger(__name__)
 
@@ -556,16 +557,163 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
-    """Build the daemon's default post-ingest convergence stage set."""
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+def _sinex_session_ids_for_paths(
+    db_path: Path,
+    paths: Sequence[Path],
+) -> dict[Path, list[str]]:
+    normalized = tuple(dict.fromkeys(Path(path) for path in paths))
+    if not normalized:
+        return {}
+    lookup_db = _active_archive_index_path(db_path) or db_path
+    if not lookup_db.exists():
+        return {path: [] for path in normalized}
+    conn = sqlite3.connect(f"file:{lookup_db}?mode=ro", uri=True, timeout=5.0)
+    try:
+        return _schema_archive_session_ids_for_source_paths(conn, normalized)
+    finally:
+        conn.close()
 
-    return (
-        make_fts_stage(db_path),
-        make_embed_stage(db_path),
-        make_insights_stage(db_path),
-        make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
+
+def make_sinex_publication_stage(
+    db_path: Path,
+    service: PublicationService,
+) -> ConvergenceStage:
+    """Drain the durable source-tier outbox before primary projections advance."""
+    from polylogue.sinex.models import PublicationMode
+
+    def ids_for_path(path: Path) -> list[str]:
+        return _sinex_session_ids_for_paths(db_path, (path,)).get(path, [])
+
+    def check(path: Path) -> bool:
+        return bool(service.unresolved_object_ids(ids_for_path(path)))
+
+    def execute(path: Path) -> StageExecuteReturn:
+        session_ids = ids_for_path(path)
+        if not session_ids:
+            return True
+        summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: drain attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(session_ids)
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        unresolved = service.unresolved_object_ids(all_ids)
+        return {path for path, values in by_path.items() if unresolved.intersection(values)}
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        if not all_ids:
+            return True
+        summary = service.drain_once(object_ids=all_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: batch drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            len(all_ids),
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(all_ids)
+
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        return service.unresolved_object_ids(session_ids)
+
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
+        if not session_ids:
+            return True
+        summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: session drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            len(tuple(dict.fromkeys(session_ids))),
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(session_ids)
+
+    def barrier(path: Path) -> bool:
+        return bool(service.blocking_object_ids(ids_for_path(path)))
+
+    def barrier_many(paths: Sequence[Path]) -> set[Path]:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        blocked = service.blocking_object_ids(all_ids)
+        return {path for path, values in by_path.items() if blocked.intersection(values)}
+
+    return ConvergenceStage(
+        name="sinex_publication",
+        description="Drain exact accepted revisions through the configured Sinex transport",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        check_sessions=check_sessions,
+        execute_sessions=execute_sessions,
+        cpu_bound=False,
+        false_means_pending=True,
+        blocks_following_stages=service.mode is PublicationMode.PRIMARY,
+        barrier_check=barrier,
+        barrier_check_many=barrier_many,
+        barrier_check_sessions=service.blocking_object_ids,
+        status=lambda: service.status().as_dict(),
     )
+
+
+def make_default_convergence_stages(
+    db_path: Path,
+    *,
+    sinex_transport: SinexTransport | None = None,
+) -> tuple[ConvergenceStage, ...]:
+    """Build daemon stages, failing explicitly when backed mode lacks transport."""
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import PublicationService
+    from polylogue.sinex.transport import resolve_configured_transport
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    stages: list[ConvergenceStage] = []
+    if mode is not PublicationMode.OFF:
+        transport = sinex_transport if sinex_transport is not None else resolve_configured_transport()
+        stages.append(
+            make_sinex_publication_stage(
+                db_path,
+                PublicationService(
+                    source_db_path=db_path.parent / "source.db",
+                    mode=mode,
+                    transport=transport,
+                ),
+            )
+        )
+    stages.extend(
+        (
+            make_fts_stage(db_path),
+            make_embed_stage(db_path),
+            make_insights_stage(db_path),
+            make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
+        )
+    )
+    return tuple(stages)
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -1646,5 +1794,6 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_sinex_publication_stage",
     "make_standing_query_stage",
 ]

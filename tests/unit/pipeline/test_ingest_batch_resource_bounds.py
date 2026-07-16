@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_batch import _IngestWorkerRequest, _iter_ingest_results_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.sinex.models import PublicationMode
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -128,6 +129,7 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
+        publication_mode=PublicationMode.OFF,
     )
 
     assert transaction_started is True
@@ -163,6 +165,7 @@ def test_consume_ingest_results_releases_large_result_payload(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
+        publication_mode=PublicationMode.OFF,
     )
 
     assert transaction_started is True
