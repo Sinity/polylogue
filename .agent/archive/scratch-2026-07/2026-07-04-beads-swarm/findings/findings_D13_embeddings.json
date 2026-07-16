@@ -1,0 +1,78 @@
+{
+  "domain": "D13_embeddings",
+  "summary": "The mhx epic and its 8 children have strong operator-authored descriptions/designs but a systematic defect: every single bead has acceptance_criteria=null, and three intra-epic blocking edges point at non-existent alias IDs (emb-targets, emb-eval) that bd cannot resolve, so the sequencing the designs assume is not actually recorded. Coverage of the epic's own scope is good (provider generality mhx.1, targets mhx.2, eval mhx.3, recall mhx.4, analytics mhx.5, efficiency/spend mhx.6, staleness 0k6). Two structural problems: mhx.1 duplicates 37t.5 (and its dep on 37t.5 is backwards), and the scale bead 0ns is parentless despite being embedding-drain work that overlaps mhx.6.",
+  "underspecified": [
+    {
+      "id": "polylogue-mhx.3",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) `devtools bench retrieval` exists and runs FTS-only, vector-only, and hybrid-RRF (current constants) arms over a committed labeled set of >=50 (query -> expected session/message ids) pairs, with a public seeded-corpus subset runnable in CI and a live-archive variant. (2) Emits recall@5, recall@10, MRR, plus p50/p95 latency and $/1k-queries per arm to a `.local/` campaign artifact; `compare` mode diffs a candidate against a stored baseline. (3) The winning lane is written back as the default `retrieval_lane` resolution AND cited (artifact path + metric deltas) in docs/search.md. (4) The same labeled set is importable by mhx.6 so quantization quality tolerance is measured against it. Verify: `devtools bench retrieval run` produces the artifact; the doc citation resolves; `devtools bench retrieval compare baseline.json candidate.json` returns non-zero on a regression beyond tolerance.",
+      "why": "mhx.3 is the 'retrieval that earns its cost' keystone for the whole epic and blocks mhx.6, yet acceptance_criteria is null so 'done' is unfalsifiable. Design already specifies the exact contestants/metrics/output; acceptance just needs to make them checkable."
+    },
+    {
+      "id": "polylogue-mhx.2",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) Session-vector class implemented: a `session_embeddings` vec0 table in embeddings.db keyed by (session_id, model identity), populated from already-materialized derived text (title + profile summary + top-K authored lines) with ~zero new token spend; `find_similar_sessions`/neighbor candidates can run off it. (2) Assertion-vector class implemented: judged/candidate assertion bodies embedded on-write into their own vec0 table. (3) `[embedding.targets]` per-class enable flags exist; `ops embed preflight` and `ops embed status` report per-class pending/coverage counts separately. (4) Non-targets (tool payloads, generated context packs, protocol rows, reasoning dumps) are documented as policy and asserted excluded by a test. (5) All classes rebuild from index.db/user.db via tier reset. Verify: seed corpus, run backfill, `ops embed status --detail` shows three distinct class coverages; a test asserts a tool_use block is never embedded.",
+      "why": "mhx.2 is a ready-frontier bead (no unmet deps) that blocks mhx.4 and mhx.5, so per doctrine it needs checkable acceptance; the design enumerates three concrete target classes + storage that map directly to AC."
+    },
+    {
+      "id": "polylogue-mhx.1",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) A single OpenAI-compatible /v1/embeddings client replaces the hardcoded Voyage path (sqlite_vec_support.py VOYAGE_API_URL/DEFAULT_MODEL constants), driven by `[embedding]` provider_base_url/model/dimension/api_key_env/requests_per_minute/batch_size; the native Voyage preset remains the unchanged default. (2) message_embeddings_meta records (base_url_host, model, dimension) and query time REFUSES to RRF vectors of differing model identity rather than mixing silently (asserted by test). (3) A dimension change triggers an embeddings-tier reset via `ops reset --embeddings` with an `ops embed preflight` cost estimate shown before any spend; local models price $0 with a tokens/s time estimate. (4) Acceptance demo (folds in 37t.5): a qwen3-class model through the LiteLLM gateway (127.0.0.1:4000) backfills the seeded corpus and `--semantic` returns sane neighbors, $0. Verify: seeded corpus embedded via gateway; `polylogue find --semantic <q>` returns relevant results; mixed-model query raises/refuses.",
+      "why": "Voyage is confirmed hardcoded (polylogue/storage/search_providers/sqlite_vec_support.py:12-13; ops embed still resolves a voyage_api_key). No VectorProvider seam or base_url exists yet, so mhx.1's premise is accurate but has no acceptance to gate it; the design's five items are directly checkable."
+    },
+    {
+      "id": "polylogue-0k6",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) Quantify step recorded: the count of sessions whose index-tier updated_at_ms postdates embedding_status.last_embedded_at_ms at unchanged message count is written into the bead as the fix's impact number. (2) Regression test: ingest a fixture, re-ingest a FULL-REPLACE variant with one message body changed at the same position/count, assert the session is re-selected by select_pending_archive_session_window AND after re-embed message_embeddings_meta.content_hash matches the new hash with the old vector row REPLACED not duplicated. (3) If (2) fails pre-fix, embedding_write.py upserts by (session_id, position). Verify: the new regression test fails on current main if the split-tier bug is live and passes after fix.",
+      "why": "0k6's design already states exact assertions ((a)/(b)) and the fix target; acceptance_criteria is null, so promote the design's asserts into an explicit checkable done-state."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-mhx.4",
+      "kind": "other",
+      "evidence": "mhx.4 dependency depends_on_id=\"emb-targets\" and mhx.5 depends_on_id=\"emb-targets\"; `bd show emb-targets` returns 'no issue found matching emb-targets'. Same for mhx.6 depends_on_id=\"emb-eval\" ('no issue found matching emb-eval').",
+      "fix": "The intended blockers exist under canonical IDs: emb-targets = polylogue-mhx.2, emb-eval = polylogue-mhx.3. Rewire mhx.4->mhx.2, mhx.5->mhx.2, mhx.6->mhx.3 (blocks). As stored, these three edges are dangling and the sequencing the designs rely on (recall/analytics after targets; efficiency after eval) is not actually enforced."
+    },
+    {
+      "id": "polylogue-mhx.1",
+      "kind": "scope-conflict",
+      "evidence": "mhx.1 design: 'Acceptance = 37t.5's demo ... that bead's scope collapses into verifying this abstraction end-to-end locally.' 37t.5 (Local embedding lane via OpenAI-compatible provider) describes the identical OpenAI /v1/embeddings client + LiteLLM gateway + dimension-as-tier-init + eval-before-default. fs1.6 also names 37t.5 as its 'forcing function'.",
+      "fix": "Collapse the duplication: make 37t.5 the acceptance-demo child of mhx.1 (or close it as folded, its scope explicitly absorbed into mhx.1 AC item 4). Keep one canonical provider-abstraction bead; do not run both as independent work."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-mhx.1",
+      "issue": "missing-dep",
+      "detail": "mhx.1 depends_on polylogue-37t.5 (type blocks), i.e. the general provider abstraction is recorded as BLOCKED BY its own local-lane demo. mhx.1's design says the reverse: 37t.5 collapses into mhx.1's acceptance. The dependency direction is backwards.",
+      "proposed": "Reverse to 37t.5 depends_on mhx.1 (or drop the edge and reparent 37t.5 as mhx.1's demo child). The abstraction is the enabler; the local-lane demo is a downstream verification of it."
+    },
+    {
+      "id": "polylogue-mhx.4",
+      "issue": "missing-dep",
+      "detail": "Because the emb-targets/emb-eval alias edges do not resolve, mhx.4 and mhx.5 have NO effective blocking dependency on the session/assertion vector classes they consume (mhx.2), and mhx.6 has no effective dependency on the quality gate (mhx.3) it explicitly says it must sequence after ('efficiency without a quality gate is how retrieval silently degrades').",
+      "proposed": "Add real edges: mhx.4 blocks-on mhx.2, mhx.5 blocks-on mhx.2, mhx.6 blocks-on mhx.3. Ready frontier is then correctly just mhx.2 and mhx.3."
+    },
+    {
+      "id": "polylogue-mhx",
+      "issue": "epic-ac-gap",
+      "detail": "The mhx epic has a rich description but design=null and acceptance_criteria=null, and none of its children carry acceptance either, so the epic has no rollup done-state. The description enumerates five owned gaps (provider generality, embed-target policy, measured retrieval, lifecycle honesty, advanced uses) but there is no acceptance line tying child completion to epic closure.",
+      "proposed": "Add epic acceptance: epic closes when mhx.1 (generality), mhx.2 (targets), mhx.3 (measured retrieval + default updated from evidence), and lifecycle-honesty pair (0k6 staleness + mhx.6 spend/drain) are closed; mhx.4/mhx.5 (recall/analytics) may spin to follow-ups if the eval (mhx.3) does not justify their cost."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-0ns",
+      "change": "reparent",
+      "from": "(none — parentless P2)",
+      "to": "polylogue-mhx",
+      "rationale": "0ns ('Bound archive embedding work within large sessions') is embedding daemon-drain work: _embed_archive_sessions_sync checks the stop-after-seconds bound only between sessions while embed_archive_session_sync can run a huge session past the daemon window. It is squarely embedding-lifecycle and overlaps mhx.6's DRAIN SCOPING item. Parent it under mhx and note the overlap with mhx.6 (windowed selection vs whole-session unit). Focus hint suggests 1xc (scale) as an alternative home; embedding-specific behavior argues for mhx, but if 1xc owns daemon responsiveness broadly, cross-link rather than fully move."
+    }
+  ]
+}

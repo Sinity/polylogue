@@ -1,0 +1,1 @@
+none recovered — the conversation is a single ask -> single delivery; earlier turns (0-19) are just tool/bash exploration of the uploaded archive with no standalone recoverable content beyond what's already reflected in the delivery.

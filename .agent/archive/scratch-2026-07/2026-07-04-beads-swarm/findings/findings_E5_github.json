@@ -1,0 +1,61 @@
+{
+  "domain": "E5_github_reconcile",
+  "summary": "Beads↔GitHub are well-aligned: of 37 open GH issues, 36 map to a bead by title/scope and only #1807 (the intentionally-dropped umbrella EPIC) has no bead — so there is no genuinely untracked open GH work worth a new bead. The real drift is stale GH state: five open GH issues (#2472/#2473/#2474/#2480/#2481) whose corresponding beads are already CLOSED (done) and should be closed on GitHub, plus the dropped #1807 umbrella that is still open. No open bead treats a closed GH issue as live blocking work; the only near-miss is a bead title suffix (#1860) that reads as if it tracks a now-closed daemon issue.",
+  "underspecified": [],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "gh-2472",
+      "kind": "gh-should-close",
+      "evidence": "GH #2472 'cost: count tokens on logical-session basis' is OPEN, but bead polylogue-4ts.2 'Count tokens on logical-session basis (fork/resume replays double-count)' is status=closed (updated 2026-07-04). Titles/scope match 1:1; work done.",
+      "fix": "Report-only: operator should close GH #2472 (delivered via polylogue-4ts.2). Do NOT touch GH from this swarm."
+    },
+    {
+      "id": "gh-2473",
+      "kind": "gh-should-close",
+      "evidence": "GH #2473 'MCP: scoped aggregates silently capped at the page limit' is OPEN, but bead polylogue-1vv 'MCP scoped aggregates silently capped at page limit (wrong totals)' is status=closed (updated 2026-07-03). Verbatim scope match.",
+      "fix": "Report-only: operator should close GH #2473 (delivered via polylogue-1vv)."
+    },
+    {
+      "id": "gh-2474",
+      "kind": "gh-should-close",
+      "evidence": "GH #2474 'parser: ChatGPT image/asset-only nodes and Antigravity non-UTF-8...' is OPEN, but bead polylogue-qda 'Parser drops: ChatGPT image/asset-only nodes; Antigravity non-UTF-8 bodies' is status=closed (updated 2026-07-03). Scope match 1:1.",
+      "fix": "Report-only: operator should close GH #2474 (delivered via polylogue-qda)."
+    },
+    {
+      "id": "gh-2480",
+      "kind": "gh-should-close",
+      "evidence": "GH #2480 'feat: fold agent_forensics.py into polylogue analyze' is OPEN, but bead polylogue-tf2.2 'Fold agent_forensics.py into polylogue analyze' is status=closed (updated 2026-07-03). Identical title.",
+      "fix": "Report-only: operator should close GH #2480 (delivered via polylogue-tf2.2)."
+    },
+    {
+      "id": "gh-2481",
+      "kind": "gh-should-close",
+      "evidence": "GH #2481 'feat: devtools lab probe cost-reconciliation (vs state_5.sqlite + stats-cache.json)' is OPEN, but bead polylogue-lpl of the same title is status=closed (updated 2026-07-03).",
+      "fix": "Report-only: operator should close GH #2481 (delivered via polylogue-lpl)."
+    },
+    {
+      "id": "gh-1807",
+      "kind": "gh-should-close",
+      "evidence": "GH #1807 'EPIC: Polylogue as local AI-work evidence cockpit' is the ONLY open GH issue with no bead reference. Per shared brief + operator doctrine the gh-1807 umbrella was DROPPED ('doctrine lives in docs'); its children are tracked as beads (e.g. #2384->polylogue-rii, #2246->polylogue-xgw, #2308->polylogue-s8q, #2316->polylogue-5hf). It is intentionally-dropped, NOT untracked work — so no new bead is warranted.",
+      "fix": "Report-only: operator should close/convert GH #1807 (dropped umbrella; children already beaded). Do NOT create a bead for it and do NOT treat it as a gap."
+    },
+    {
+      "id": "polylogue-20d.4",
+      "kind": "gh-stale-ref",
+      "evidence": "Bead title is 'CLI structured-query routing parity with daemon (#1860): no FTS gate...'. GH #1860 'Wire query-expression compiler to MCP search tool and daemon' is CLOSED (2026-06-14, daemon-side landed). The trailing '(#1860)' suffix conventionally reads as 'this bead == GH #1860', which is misleading since #1860 is closed daemon work while polylogue-20d.4 is a distinct still-open CLI-side follow-up. Sibling polylogue-20d.1 design correctly treats #1860 as already delivered, so this is a labeling/citation drift only, not live blocking-on-closed.",
+      "fix": "Additive: reword the title/reference so #1860 is cited as the already-delivered daemon behavior this CLI bead builds on (e.g. 'CLI structured-query routing parity with daemon (follow-up to closed #1860)'), rather than a suffix implying the bead tracks #1860."
+    }
+  ],
+  "dep_priority": [],
+  "reorg": [],
+  "notes": {
+    "consistent_folds_verified": [
+      "GH #2317 (still open) -> polylogue-jnj.8 (open) — folded into surface-algebra epic jnj; consistent, work ongoing, NOT should-close.",
+      "GH #2309 (still open) -> polylogue-jnj.9 (open) — folded into jnj; consistent, work ongoing.",
+      "GH #2383 (closed) cited in polylogue-37t.1 as '#2383 memory' — historical context citation, correctly treated as done; not a stale-active ref.",
+      "GH #2464 / #2500 are MERGED PR numbers cited historically ('fixed (#2464)', 'PR #2500 fixed link generation') in polylogue-1xc/6bu/6l6 — correct, not stale."
+    ],
+    "method": "gh issue list --state open --limit 400 (37 open). Grepped all 333 beads' title/description/design/acceptance for (gh-|#)NNNN. Cross-checked GH state for every referenced number not in the open set (1860 closed, 2383 closed, 2464 merged-PR, 2500 merged-PR). Checked bead status for every open-GH↔bead pair to find closed-bead/open-GH mismatches."
+  }
+}

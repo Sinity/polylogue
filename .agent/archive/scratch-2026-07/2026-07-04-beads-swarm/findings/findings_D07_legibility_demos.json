@@ -1,0 +1,65 @@
+{
+  "domain": "D07_legibility_demos",
+  "summary": "The launch gate polylogue-cfk (P1 uplift re-run) is execution-grade and ready NOW (only dep is closed jxe): crisp protocol, operator protocol-decision folded in, checkable acceptance (paired artifact under .agent/demos/uplift-two-arm/ + cold-reader gate). The 3tl legibility epic is healthy at the top but its critical-path enabler 3tl.4 (findings-publishing lane, which produces the 'published finding URL' named in the epic's own acceptance) is P3 with null design/acceptance while its dependents and cpf's provenance hook all point at it. The 212 demo epic has a stale title (says D1/D2/D4/D5 but holds 6 children incl. an un-lettered forensic-Q&A and D8) and no epic-level acceptance; cpf's operator comment surfaces salvage (4 non-goals entries + a 7th closure-discipline doctrine candidate) that its current 'six doctrines' acceptance does not yet account for.",
+  "underspecified": [
+    {
+      "id": "polylogue-3tl.4",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Extend the existing Pages pipeline (docs site builds on master push) with a findings lane under docs/findings/. Each finding is a rendered report REGENERATED FROM THE SEEDED CORPUS (seed 1843) so nothing private ships: (1) a report template (markdown -> pages) carrying the five-part provenance stanza required by cpf (claim, method, data window, re-run supersession, semantic version); (2) a reproduction block (exact `polylogue demo seed` + query/analyze commands that regenerate the numbers); (3) a devtools render findings pass that rebuilds every committed finding against the corpus and fails on drift (same pattern as render all --check). First finding published: the claim-vs-evidence forensics report (sru output). Pitfall: the finding must carry a stable URL before 3tl.3 (leaderboard variant), 3tl.10 (launch kit), or 3tl.8 (pin artifacts) can cite it.",
+      "proposed_acceptance": "docs/findings/ lane live on the deployed pages site with at least one finding (claim-vs-evidence) rendered from the seeded corpus and reachable at a stable public URL; the finding carries the cpf five-part provenance stanza; `devtools render <findings-lane> --check` regenerates it from the corpus with zero drift; reproduction commands in the finding run clean on a fresh checkout.",
+      "why": "3tl.4 is labeled spine/wave:2 and is the direct producer of the 'published finding URL' that the 3tl epic's OWN acceptance requires ('(3) cite a published finding URL'). It is also the named enforcement site for cpf ('provenance-stanza refusal in the findings lane (3tl.4)') and the citation target for 3tl.3/3tl.10/3tl.8 — yet both design and acceptance are null."
+    },
+    {
+      "id": "polylogue-3tl.9",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`devtools verify docs-coverage` exists and is wired into the default verify gate; it fails with the exact missing entry named when any public CLI command/verb, MCP tool, config key, or daemon route is absent from the docs tree (set-diff over generated inventories, topology-gate pattern); every committed screenshot/GIF is a visual-tapes artifact regenerable from the seeded corpus and a regen pass flags perceptual drift beyond threshold; the conductor End Gate declares a docs item that blocks slice closure when public surfaces changed and docs-coverage is red. Verify: introduce a throwaway undocumented CLI flag and confirm the lane fails naming it.",
+      "why": "P2 ready-frontier task with a full design but acceptance_criteria=null; per execution-grade doctrine a ready P2 needs a checkable done-state. The design already implies the exact checks — they just need to be stated as the acceptance contract with a verify command."
+    },
+    {
+      "id": "polylogue-3tl.7",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Lift the acceptance sentence currently buried in the design tail into the acceptance field and make it checkable: an install-matrix CI workflow (scheduled weekly + pre-release) runs fresh-environment install+smoke jobs for uvx/pipx (PyPI), brew tap, docker run (GHCR), and nix run on ubuntu+macos; each job runs install -> `polylogue demo seed` -> one `find` -> one `read` -> `polylogue --version` and asserts correct version per lane; matrix green on two consecutive weekly runs; README install section states the honest Windows story (WSL2 supported path, native untested); the release checklist doc is reduced to 'merge the release PR'.",
+      "why": "P2 ready-frontier; the design ends with an 'Acceptance:' clause but the acceptance_criteria field is null. The done-state exists in prose in the wrong field — promote and make it a checkable matrix-green contract."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-212",
+      "kind": "acc-mismatch",
+      "evidence": "Epic title: 'Demo portfolio: construct-valid demos (D1/D2/D4/D5)' — enumerates four demos. Actual children (6): 212.1 'Post-hoc forensic Q&A' (no D-letter), 212.2 (D1), 212.3 (D2), 212.4 (D4), 212.5 (D5), 212.6 (D8). The title omits 212.1 and 212.6 and the description explains D3/D6/D7 are elsewhere but never mentions that D8 (212.6) and an un-lettered forensic demo were added.",
+      "fix": "Update the epic title to reflect actual scope (e.g. drop the parenthetical enumeration, or make it 'D1/D2/D4/D5 + forensic-QA + D8'); give 212.1 a canonical D-number or state it is the umbrella forensic demo; note D8's addition in the description so the D-map stays legible to a cold reader."
+    },
+    {
+      "id": "polylogue-cpf",
+      "kind": "acc-mismatch",
+      "evidence": "Acceptance says 'Six doctrine documents committed and indexed'. The operator comment (2026-07-04) salvages from superseded docs/execution-plan.md two doctrine fragments NOT in the enumerated six: four NON-GOALS REGISTER candidates (desktop-automation non-goal, OTLP-is-projection, context-images-are-projections, no-one-off-palette) and a LOCALITY/CLOSEOUT-POSTURE rule ('a cloud agent cannot certify deployed truth; closeout of deployment-smoke / receiver-archive / copied-profile proof requires operator live archive') that the comment states 'is not stated as doctrine'. docs/execution-plan.md still exists (17KB) and docs/doctrine/ does not exist yet.",
+      "fix": "Extend cpf acceptance additively: (a) the four salvaged non-goals-register entries are folded into the non-goals-register doctrine (or explicitly rejected with rationale); (b) a decision is recorded on the closeout-posture rule — folded into the degraded-modes doctrine OR spun as a seventh closure-discipline doctrine; (c) docs/execution-plan.md is retired/redirected once its two fragments are cross-checked. This does not overwrite the six-doctrine core — it closes the salvage the operator explicitly flagged."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-3tl.10",
+      "issue": "missing-dep",
+      "detail": "3tl.10 (launch kit) design states 'the uplift result (cfk) decides how loud the memory claim gets (capability-phrased until then)' and the 3tl epic description names cfk 'the natural launch post'. Launch content is gated on cfk reporting, but there is no recorded dependency edge from 3tl.10 (or the epic) to polylogue-cfk.",
+      "proposed": "Add a blocks/depends edge: polylogue-3tl.10 depends_on polylogue-cfk (the memory-claim volume in the announcement cannot be finalized until the uplift re-run reports). Keeps the launch-gate sequencing legible instead of living only in prose."
+    },
+    {
+      "id": "polylogue-212",
+      "issue": "epic-ac-gap",
+      "detail": "The 212 epic has 6 children but acceptance_criteria=null — no portfolio done-state. The description carries a strong COMPOSITIONALITY RULE (every demo decomposes into product primitives; bespoke logic => file+build the primitive first) but nothing states when the portfolio is complete.",
+      "proposed": "Add epic acceptance: every child demo (1) reproduces on the seeded corpus (seed 1843) AND has a live-archive operator variant, (2) decomposes into product primitives per the compositionality rule with any bespoke-logic gaps filed as their own primitive beads, (3) ships a recording via visual-tapes machinery (3tl.5) and a workflow-registry entry so it is a golden path not a doc, (4) every displayed number resolves to structural evidence via --explain."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-3tl.4",
+      "change": "reprioritize",
+      "from": "P3",
+      "to": "P2",
+      "rationale": "3tl.4 produces the 'published finding URL' that is item (3) of the 3tl epic's OWN acceptance and is the named enforcement site for cpf's provenance stanza plus the citation target for 3tl.3/3tl.10/3tl.8. It is a wave:2/spine enabler on the epic's critical path sitting at P3 (deep-backlog tier) while its dependents also sit at P3 — the finding URL cannot exist until 3tl.4 lands, so it is under-prioritized relative to the frame (campaign enablers > surface hygiene)."
+    }
+  ]
+}

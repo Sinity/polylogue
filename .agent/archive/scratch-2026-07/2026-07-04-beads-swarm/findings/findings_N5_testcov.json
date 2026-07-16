@@ -1,0 +1,70 @@
+{
+  "domain": "test-coverage / verification-debt vs beads",
+  "summary": "The four coverage manifests declare ~9 explicit coverage_gaps plus several embedded known_gaps, and every one of them is owned only by manifest-owner strings and a single GH umbrella issue (#590) or bare issue refs (#818, #1000, #802, #1733) — none is tracked as a bead, violating the operator doctrine that anonymous test-debt be converted into tracked beads. The active mutation/benchmark campaigns in campaign-coverage.yaml are real and referenced test files exist; no bead references a non-existent lane. The deprecated test-coverage-domains.yaml carries stale production paths (claude.py, sources/artifact_taxonomy/, schemas/schema_inference.py) that no longer exist after package splits.",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Track manifest-declared coverage gaps as beads (retire GH #590 umbrella)",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-9e5",
+      "why": "docs/plans/scenario-coverage.yaml:93-139 declares 5 coverage_gaps (scenario.storage-correctness, scenario.performance, scenario.security-privacy, scenario.distribution, scenario.schema-rebuild-safety) and docs/plans/test-quality-coverage.yaml:135-171 declares 4 (test-quality.flakiness, .mock-depth, .fuzz-ci, .per-module-coverage). All 9 point at a single external umbrella `issue: 590` with `owner: scenario-coverage`/`test-quality` — a manifest string, not a bead. bead grep for 590 = 0 hits. Per operator doctrine (SHARED_BRIEF + task) GH issues are external-refs NOT the tracking system, and anonymous test-debt must be converted into tracked beads; these gaps currently survive only in YAML + one GH umbrella.",
+      "design": "For each of the 9 coverage_gaps, either (a) create a P3 execution-grade bead owning that gap with the manifest's gap text as the why and its next_evidence command as the verify step, then rewrite the manifest row's `issue:` field to the bead id; or (b) if a gap is genuinely non-actionable (e.g. schema in-place upgrade is deliberately absent per test-closure-matrix.yaml:213-216), remove the row rather than leave a dangling #590 ref. Do not delete the manifests; they stay as the executable closure surface, but their `issue:` owner should resolve to a bead, not a bare GH number.",
+      "acceptance": "Every coverage_gaps row in scenario-coverage.yaml and test-quality-coverage.yaml resolves its owner to a live bead id (or is removed with rationale); `grep -r 'issue: 590' docs/plans` returns nothing; each created bead has why=manifest gap text, acceptance=the row's next_evidence command produces the expected evidence.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Dedicated blob-GC lease/orphan audit test (retire #818/#1000 known_gap)",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-9e5",
+      "why": "docs/plans/test-closure-matrix.yaml:179-181 (domain storage.blob_store) carries known_gap: 'blob GC lease/orphan audit (#818, #1000) not exercised by a dedicated test; reference-counting paths covered by integration only'. bead grep for #818 and blob-GC = 0 hits (the '1000' bead hits are scale-number false positives). docs/internals.md documents an elaborate lease + snapshot GC concurrency model (pending_blob_refs, gc_generations, ORPHAN_LEASE_MAX_AGE_S) whose acquire→commit race window is load-bearing and untested at unit level. This is concrete anonymous test-debt with no owning bead. Note: polylogue-9e5.4 (get->modify->put race audit) touches blob leases but scopes to race-window discovery, not GC orphan-detection correctness.",
+      "design": "Add tests/unit/storage/test_blob_gc.py exercising run_blob_gc against: (1) a blob referenced by raw_sessions is skipped (_still_referenced); (2) a blob with an active pending_blob_refs lease is skipped even with no raw_sessions row (_has_active_lease); (3) an orphan older than the generation/MIN_AGE gate is reclaimed; (4) a lease older than ORPHAN_LEASE_MAX_AGE_S is swept by sweep_orphaned_blob_leases. Use the workspace_env fixture + a real SQLite archive per TESTING.md patterns.",
+      "acceptance": "test_blob_gc.py green in the required lane; test-closure-matrix.yaml storage.blob_store row lists it as a representative_test and the known_gap is narrowed to only the integration-only reference-counting note; `devtools verify closure-matrix` passes.",
+      "deps": ["polylogue-9e5.4"]
+    },
+    {
+      "proposed_title": "Run Atheris fuzz targets in a CI/lab lane (retire test-quality.fuzz-ci gap)",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-9e5",
+      "why": "docs/plans/test-quality-coverage.yaml:71-76 and :154-162 record that tests/fuzz/ Atheris targets exist but are 'Not run in CI or standard devtools verify'; verified: tests/fuzz/ contains fuzz_fts5_escape.py, fuzz_json_parsers.py, fuzz_path_sanitizer.py, fuzz_timestamp.py, and `grep -rl atheris .github/workflows` returns nothing. This is committed test infra with zero execution gate and no owning bead (bead grep atheris = 0 hits) — the exact 'shipped test infra with no bead' pattern.",
+      "design": "Add a bounded nightly/opt-in lane (e.g. a devtools lab lane or a scheduled GitHub workflow) that runs each tests/fuzz/ target for a short fixed iteration/time budget with a seed corpus, failing on any crash. Register the lane in the executable lane registry so devtools lab lanes --list surfaces it. Keep it out of the default per-PR gate (budget-sensitive).",
+      "acceptance": "A named lane executes all four fuzz_*.py targets under a bounded budget and is discoverable via `devtools lab lanes --list`; test-quality-coverage.yaml test-quality.fuzz-ci row's owner resolves to this bead or the gap is closed; a deliberately-crashing seed makes the lane red.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Antigravity language-server export integration test (retire #802 known_gap)",
+      "type": "task",
+      "priority": 4,
+      "parent": "polylogue-9e5",
+      "why": "docs/plans/test-closure-matrix.yaml:104-106 (domain sources.parsers.antigravity, gate optional) known_gap: 'antigravity language-server export path is integration-only and not exercised in unit lane; tracked alongside #802'. bead grep #802 / antigravity-test = 0 hits (the 3 antigravity bead hits are parser-drop / drift-sentinel, not the language-server export test). The AntigravityLanguageServerClient path (docs/architecture.md 'Antigravity Language-Server Export Path') has no unit/contract coverage and no owning bead.",
+      "design": "Add a contract-stub test that drives iter_language_server_exports/parse_markdown_export over a captured SearchConversations + ConvertTrajectoryToMarkdown fixture pair (no live binary), asserting ParsedSession shape and the AntigravityExportError fallback to the brain-artifact walk. Fixtures live under tests/unit/sources/.",
+      "acceptance": "A new test exercises the markdown-export parse + error-fallback without spawning the language server; test-closure-matrix.yaml antigravity row references it and the known_gap is narrowed to the live-binary integration only.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "docs/plans/test-coverage-domains.yaml",
+      "kind": "stale-ref",
+      "evidence": "The deprecated qualitative catalog lists production paths that no longer exist after package splits: line 34/44 `polylogue/sources/parsers/claude.py` (now the `polylogue/sources/parsers/claude/` package), line 72 `polylogue/sources/artifact_taxonomy/` (now `polylogue/archive/artifact_taxonomy/`), line 163 `polylogue/schemas/schema_inference.py` (now `polylogue/schemas/operator/schema_inference.py`). Verified via filesystem: the .py forms MISS, the package/moved forms exist. It is deprecated (test-closure-matrix.yaml:37-44 supersedes it) and NOT gate-enforced, so the drift is silent.",
+      "fix": "Either refresh the three stale production_modules paths to their current package/moved forms, or delete test-coverage-domains.yaml entirely now that test-closure-matrix.yaml is the executable successor — leaving a deprecated manifest with wrong paths invites future agents to cite dead files."
+    },
+    {
+      "id": "docs/plans/scenario-coverage.yaml + test-quality-coverage.yaml",
+      "kind": "other",
+      "evidence": "All 9 coverage_gaps across both manifests use `issue: 590` as the sole owner reference (scenario-coverage.yaml:99,105,111,118,127,137; test-quality-coverage.yaml:142,149,157,169). Beads has zero reference to 590. SHARED_BRIEF doctrine: 'GH issues are external-refs, NOT mirrors' and 'Closed GH issues cited as active = stale'. A single external umbrella issue as the tracking owner for 9 distinct test-debt items is fragile: if #590 is closed, every gap is silently orphaned, and the review_after dates (2026-08-01) will pass with no bead to surface them.",
+      "fix": "Point each coverage_gaps `issue:` at a bead id (see the umbrella gap bead proposed above) rather than a shared external GH number, so backlog tooling (bd ready) can surface the debt when review_after elapses."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-yeq/th0/3uw/mhx.3/3tl.9",
+      "issue": "epic-ac-gap",
+      "detail": "A cluster of standalone P2/P3 test/verification-lane beads (yeq advanced verification lanes, th0 interactive-surface harness, 3uw capture-completeness, mhx.3 retrieval-eval lane, 3tl.9 docs-coverage lint) exists with no owning verification/test-infrastructure epic. The manifest coverage_gaps (scenario/test-quality) and known_gaps (blob-GC #818, antigravity #802, fuzz-CI) are the same theme and also unparented. Per SHARED_BRIEF reorg rule, a cluster of standalone beads implies a missing epic.",
+      "proposed": "Consider a 'Verification & test-coverage program' epic (or reuse polylogue-9e5 Audit-lane epic) to parent the standalone lane beads plus the newly-created coverage-gap beads, so the manifest-declared debt has a single navigable frontier."
+    }
+  ],
+  "reorg": []
+}

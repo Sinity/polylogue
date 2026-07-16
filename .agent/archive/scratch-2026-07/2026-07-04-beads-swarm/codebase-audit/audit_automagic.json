@@ -1,0 +1,49 @@
+{
+  "summary_context": {
+    "invariants_that_ARE_auto_enforced": [
+      "FTS coherence: make_fts_stage in default convergence set + ensure_fts_startup_readiness (daemon startup) + _periodic_fts_merge + convergence-debt retry",
+      "Session insights: make_insights_stage + _periodic_session_insight_convergence_after loop (materializer_version-gated staleness, self-heals on version bump)",
+      "Embeddings: make_embed_stage (opt-in) + periodic_embedding_backlog_check",
+      "Raw->index materialization: _periodic_raw_materialization_convergence_after loop, wired into periodic_loops at daemon/cli.py:1038 (bounded, gated on catch-up)",
+      "Lineage: ensure_lineage_startup_readiness startup sweep",
+      "Blob leases: _sweep_orphaned_blob_leases startup sweep"
+    ],
+    "note_on_bead_1xc.3": "Bead polylogue-1xc.3 ('never AUTO-DRAINED') is now STALE. An auto-drain path DID ship as a periodic loop (daemon/cli.py:456-545 _periodic_raw_materialization_convergence_after -> _drain_raw_materialization_once -> repair_raw_materialization), scheduled in periodic_loops at cli.py:1038. It is a periodic loop rather than the convergence STAGE the bead's design proposes, but the invariant is functionally enforced (bounded). Not a live violation; the bead should be re-scoped/closed, not implemented as written."
+  },
+  "violations": [
+    {
+      "where": "polylogue/storage/sqlite/archive_tiers/write.py:618 (session_model_usage written at ingest) vs polylogue/storage/insights/session/status.py:211-368 (version-gated staleness) + polylogue/operations/archive_debt.py:847-912 (_provider_usage_rows)",
+      "evidence": "session_model_usage is materialized ONCE at ingest by write.py and is absent from the insight rebuild path (grep: not in storage/insights/session/rebuild.py or insights/registry.py). The materializer_version self-heal gate in status.py covers session_profile / logical_session / work / threads insight types but NOT session_model_usage. archive_debt._provider_usage_rows surfaces zero-token codex projections whose ONLY remediation is manual: 'Rebuild the index with current provider-usage materialization' (archive_debt.py:899-904, status='open', no polylogued/convergence action). No convergence stage or periodic loop re-derives provider usage from source blocks.",
+      "invariant_broken": "Provider-usage is a derived read-model that can drift (stale/zero-token rows persist after a materializer improvement or bug fix) with no write-path, startup, or periodic re-derivation. Doctrine: insight/read-model staleness belongs to daemon convergence, not a manual full-index rebuild. session_profiles self-heals via materializer_version; provider usage does not, so the same class of derived state is auto-maintained in one place and operator-maintained in another.",
+      "existing_bead_or_null": "polylogue-f2qv (epic) partially: f2qv.1 = per-model double-count bug, xy95 = speed up stale diagnostics. Neither makes provider-usage self-healing / version-gated. Auto-refresh gap is UNTRACKED."
+    },
+    {
+      "where": "polylogue/cli/commands/reset.py:355-356 + :294; polylogue/operations/archive_debt.py:141-163 (_tier_rows version-mismatch row)",
+      "evidence": "On a derived index-tier schema mismatch, archive_debt emits a version-debt row whose remediation action is ('polylogue','ops','reset','--database') (archive_debt.py:157-161). reset_command then prints 'Next: run polylogue ops maintenance rebuild-index to replay source.db into index.db' (reset.py:356) and reset.py:294. The index tier is DERIVED/rebuildable, yet its schema-version rebuild is an operator reset+rebuild-index sequence, not an automatic blue-green rebuild from source.",
+      "invariant_broken": "Derived tiers (index.db) are rebuildable products; doctrine + docs say they should be rebuilt/blue-green replaced automatically from source evidence. The current fresh-first model REJECTS a mismatched derived tier and hands the rebuild to the operator (reset --index + rebuild-index), turning normal schema-bump convergence into routine user maintenance. The internals doc lists ~20 index schema versions each mandating 'polylogue ops reset --index && polylogued run' by hand.",
+      "existing_bead_or_null": "polylogue-b5l ('Blue-green index rebuilds: fresh-first without downtime') — tracked."
+    },
+    {
+      "where": "polylogue/operations/archive_debt.py:715-739 (parse-pending oversized 'blocked' branch) + polylogue/storage/repair.py RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES; polylogue/cli/commands/maintenance.py:1406-1595 (rebuild-index, no blob-size cap on parse_from_raw)",
+      "evidence": "The daemon auto-drain (repair_raw_materialization) enforces RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES: oversized non-stream-safe raw rows are marked status='blocked' with the only action 'import --explain' (archive_debt.py:715-727). The bulk manual path `maintenance rebuild-index` (_rebuild_index_from_source -> parse_from_raw) has no such blob cap. So oversized non-stream-safe orphan raw rows NEVER self-heal and can only be materialized by an operator running rebuild-index.",
+      "invariant_broken": "A class of raw->index materialization debt is permanently excluded from the automatic drain loop; the only path to convergence is a manual CLI command. The blob-size cap is a deliberate guard against the single-transaction WAL blowup pathology, but it leaves oversized sessions with no automatic (chunked/streaming) materialization path.",
+      "existing_bead_or_null": "Partially: polylogue-1xc.6 (bound per-session insight cost for giant sessions) and polylogue-1xc.1 (chunked rebuild vs WAL blowup) cover the underlying scale bound; the specific 'oversized raw rows never auto-materialize' gap is implied by the 1xc epic but not an explicit AC."
+    },
+    {
+      "where": "polylogue/cli/commands/reset.py:33-43,71 (_REBUILDABLE_ARCHIVE_DATABASES includes ('source database','source.db'); used for reset --database when not --include-user-db)",
+      "evidence": "`reset --database` deletes source.db by default (source.db is in _REBUILDABLE_ARCHIVE_DATABASES, selected at reset.py:71 for the default path). source.db is the durable acquired evidence the auto raw-materialization loop rebuilds index.db FROM. Deleting it makes any session whose live source file has rotated/moved/been deleted permanently unrecoverable.",
+      "invariant_broken": "Undermines the load-bearing 'source.db is the durable rebuild root' invariant that every automatic index/insight/FTS re-derivation depends on. A routine reset destroys the substrate that the automagic convergence loops rely on for self-healing.",
+      "existing_bead_or_null": "polylogue-1xc.2 (residual scope (a): 'source.db still in default reset --database deletion set — remove it or gate it') — tracked, per its 2026-07-04 reality-pass comment."
+    }
+  ],
+  "proposed_beads": [
+    {
+      "title": "Version-gate provider-usage projection so it self-heals like session_profiles",
+      "type": "bug",
+      "priority": 2,
+      "parent": "polylogue-f2qv",
+      "design": "PROBLEM: session_model_usage (provider token/cost rollup) is materialized once at ingest (polylogue/storage/sqlite/archive_tiers/write.py:618) and is NOT in the insight rebuild path (absent from storage/insights/session/rebuild.py and insights/registry.py). The materializer_version self-heal gate in storage/insights/session/status.py:211-368 covers session_profile/logical/work/threads but NOT provider usage. So when the provider-usage materializer improves or a zero-token bug is fixed, stale rows persist and archive_debt._provider_usage_rows (operations/archive_debt.py:847-912) can only offer a manual full 'Rebuild the index' — no convergence stage or periodic loop re-derives it. This violates the automagic-invariants doctrine: derived read-model staleness belongs to daemon convergence, and provider usage is the one insight rollup left as manual operator maintenance. DESIGN: give provider-usage a materializer_version (or reuse insight_materialization with a 'provider_usage' insight_type), have the session-insight rebuild path re-derive session_model_usage from blocks/usage events when the version differs, and add a stale-provider-usage check to the periodic session-insight drain (daemon/cli.py _drain_session_insights_once / _schema_archive_session_ids_missing_profiles) so a version bump auto-refreshes existing rows. Coordinate with f2qv.1 (fix the double-count first so the re-derivation is correct). PITFALL: cache read/write token lanes must stay disjoint (see reference_codex_token_semantics). PITFALL: page the refresh; do not fetchall all sessions.",
+      "acceptance": "1) Provider-usage rollups carry a materializer version and a stale check reachable from the periodic session-insight convergence loop. 2) Bumping the provider-usage materializer version auto-refreshes existing session_model_usage rows on a daemon run without any manual `maintenance rebuild-index` (test: seed rows at an old version, run drain, assert rows re-derived). 3) archive_debt provider-usage 'zero-token' rows drain to zero after a daemon run on an archive whose source blocks carry usage, instead of requiring a full index rebuild. 4) devtools test covering the new stale-provider-usage path passes."
+    }
+  ]
+}

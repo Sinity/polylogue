@@ -1,0 +1,109 @@
+{
+  "domain": "doctrine-coverage",
+  "summary": "Of the operator doctrines, three are properly grounded (token-semantics via test_cost_reconciliation_probe.py 'disjoint lanes' assertion; schema-versioning boundary via `devtools lab policy schema-versioning`; greedy-batch/priority are process norms). But the newest doctrine automagic-invariants (2026-07-04) has ZERO owning bead/lint/docs-decision, and polylogue-cpf ('land the six doctrines') bundles six doctrine texts plus ~6 enforcement hooks into one P2 task with acceptance=None, of which the TEXT-timestamp schema audit, writer-class layering check, and deny-lexicon tripwire test have no owning bead and no code. schema-evolution-v2 migration infrastructure is being built on-branch with no bead tracking it.",
+  "underspecified": [
+    {
+      "id": "polylogue-cpf",
+      "missing": ["acceptance"],
+      "proposed_design": "Keep the existing design's hook list but split it: cpf becomes an epic that lands (a) the doctrine texts under docs/doctrine/ (dir does not exist yet) and (b) each named enforcement hook as a checkable child bead. Do not leave the hooks as prose inside one task.",
+      "proposed_acceptance": "docs/doctrine/{time,writers,finding-provenance,degraded-modes,non-goals,injected-context-trust}.md exist and are linked from architecture-spine; `rg -l 'docs/doctrine' docs/architecture-spine.md` non-empty. Each of the six named enforcement hooks is either landed (with a passing test/lint) or has a linked child bead. `devtools verify --lab` green. Deny-lexicon tripwire fixture rejects an OPERATOR-spoofed QUOTED context block.",
+      "why": "cpf.acceptance is None (bd show polylogue-cpf: 'acceptance: None'). It is a single P2 task carrying six doctrine texts + six enforcement lints — genuinely multi-PR, so per greedy-batch-pr-cadence it should be an epic with children, and per execution-grade-beads it needs a checkable done-state before it is devloop-ready."
+    },
+    {
+      "id": "polylogue-37t.11",
+      "missing": ["acceptance"],
+      "proposed_design": "cpf.design states '37t.11 carries the implementation' of injected-context trust-class typing (OPERATOR/SYSTEM/QUOTED) on the ContextSource protocol. Make that explicit in 37t.11's acceptance so the cross-reference is auditable.",
+      "proposed_acceptance": "ContextSource protocol carries a closed TrustClass enum {OPERATOR, SYSTEM, QUOTED}; every context writer of the SEVEN mechanisms declares its trust class; a test asserts a QUOTED block cannot be promoted to OPERATOR. `devtools verify` green on the context-scheduler slice.",
+      "why": "bd show polylogue-37t.11: acceptance is None, yet cpf.design designates it as the carrier of the trust-class doctrine hook. A P1 bead that a doctrine depends on has no checkable done-state, so the trust-class enforcement cannot be verified as landed."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Land the automagic-convergence invariant: doctrine text + lint against manual-convergence surfaces",
+      "type": "decision",
+      "priority": 2,
+      "parent": "polylogue-t46",
+      "why": "The automagic-invariants memory (2026-07-04, the newest doctrine) has NO owning bead: `bd list` search over titles+descriptions for 'automagic' returns nothing. Its positive legs (source->index raw materialization, FTS coherence, insight refresh, embedding catch-up) exist at runtime and in beads b5l/5wp/mhx, but its NEGATIVE rule ('do not add flags or targets that make normal convergence look like user work; CLI/manual surfaces are diagnostic or break-glass only') is enforced by nothing — grep for 'break-glass|manual convergence|convergence.invariant' across devtools/ and polylogue/ is empty. A durable doctrine that is neither bead, lint, nor docs-decision is exactly the floating-untracked state E4 exists to close.",
+      "design": "(1) Write the automagic-convergence doctrine as docs/doctrine/automagic-convergence.md (or an architecture-spine ADR): enumerate the auto-maintained states and the break-glass carve-out. (2) Add a policy lint (sibling of `devtools lab policy schema-versioning`) that flags new CLI/ops commands or flags whose action duplicates a daemon-convergence invariant unless they are annotated as diagnostic/break-glass. (3) Point scattered notes at the doctrine.",
+      "acceptance": "docs/doctrine/automagic-convergence.md committed and linked; a lint (e.g. `devtools lab policy convergence-surfaces`) fails when a new non-annotated CLI command re-implements raw-materialization/FTS/insight/embedding convergence; lint passes on current tree; entry added to docs/plans/lint-escalation.yaml with a sunset clock.",
+      "deps": ["polylogue-t46"]
+    },
+    {
+      "proposed_title": "Time-doctrine schema audit: reject TEXT timestamps in new tier DDL",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-cpf",
+      "why": "cpf.design names 'schema-audit check for TEXT timestamps in new DDL' as a time-doctrine enforcement hook (UTC epoch-ms canon). No such check exists: grep of devtools/ for a TEXT-timestamp audit is empty, and there is no code carrying it. This is an enforcement hook implied by cpf's own design with no owning bead and no implementation.",
+      "design": "Extend the schema-audit lab check to walk tier DDL under polylogue/storage/sqlite/archive_tiers/ and flag any column whose name matches a timestamp lexicon (*_at, *_ts, occurred_*, updated_*) declared as TEXT rather than INTEGER epoch-ms. Allowlist the few legitimate TEXT-time columns.",
+      "acceptance": "New DDL adding a `*_at TEXT` column fails the audit; existing tiers pass (or their exceptions are allowlisted with rationale); the check runs under `devtools verify`.",
+      "deps": ["polylogue-cpf"]
+    },
+    {
+      "proposed_title": "Writer-class doctrine: one-writer-class-per-file docstring convention + layering check",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-cpf",
+      "why": "cpf.design names 'writer-class docstring convention + layering check' (four writer classes, one writer-class per file, cross-tier interruption validity). It does not exist: the only `writer_class` hit in the tree (tests/unit/pipeline/test_prepare_semantic.py:5) is the unrelated `_semantic_type` block classifier, not the doctrine's four writer classes. Enforcement hook implied by cpf's own design, untracked.",
+      "design": "Define the four writer classes in docs/doctrine/writers.md; add a module docstring convention (`Writer-class: <name>`); extend the layering check (docs/plans/layering.yaml consumer) to assert each write-path module declares exactly one writer class and that cross-tier writes obey the interruption-validity rule.",
+      "acceptance": "A write-path module missing/duplicating a Writer-class declaration fails `devtools verify layering`; current tree passes; convention documented in docs/doctrine/writers.md.",
+      "deps": ["polylogue-cpf"]
+    },
+    {
+      "proposed_title": "Injected-context trust deny-lexicon tripwire test fixture",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-cpf",
+      "why": "cpf.description explicitly says the bead 'lands the doctrine text + the deny-lexicon tripwire test fixture' for injected-context trust classes (OPERATOR/SYSTEM/QUOTED). No deny-lexicon exists: grep for 'deny.lexicon|deny_lexicon' across polylogue/devtools/tests is empty. This is named in cpf's own text as a deliverable of cpf yet has no test and no separable bead.",
+      "design": "Add a fixture + property test asserting that QUOTED (untrusted) context content containing operator/system directive markers is neutralized and cannot be elevated to OPERATOR/SYSTEM trust when compiled into an agent context image (build_context_image / compose_context_preamble paths).",
+      "acceptance": "Test fails if a QUOTED block bearing a deny-lexicon directive is emitted with OPERATOR/SYSTEM trust; passes on hardened path; runs in the default pytest lane.",
+      "deps": ["polylogue-37t.11"]
+    },
+    {
+      "proposed_title": "Own the schema-evolution-v2 durable-tier migration framework as a tracked bead",
+      "type": "feature",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "The schema-evolution-v2 doctrine (2026-07-04) — durable tiers source.db/user.db use numbered additive SQL migrations under polylogue/storage/sqlite/migrations/{source,user}/ with a backup-manifest gate and one-step user_version advancement — is actively being built on branch feature/chore/schema-evolution-v2 (migrations/source/002_raw_capture_multimap.sql, migrations/user/004_user_settings.sql present). But `bd list` search for 'migration|backup manifest|schema evolution|user_version' returns no bead owning this infrastructure (b5l is derived-index blue-green, a different regime). Load-bearing durable-tier framework is landing with no execution-grade bead recording its acceptance/backup-gate contract.",
+      "design": "File the migration-framework bead: numbered SQL runner, one-step user_version guard, mandatory verified backup-manifest before a durable-tier migration runs, and the `devtools lab policy schema-versioning` boundary (durable=numbered migrations allowed; derived=forbidden helper). Cross-link the two already-committed migrations.",
+      "acceptance": "Bead exists with design+acceptance; a durable-tier migration without a backup manifest is refused (test); policy lint green; the on-branch migrations map to this bead's acceptance.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-3tl.4",
+      "kind": "scope-conflict",
+      "evidence": "cpf.design attributes the 'provenance-stanza refusal in the findings lane (3tl.4)' enforcement hook to polylogue-3tl.4. But bd show polylogue-3tl.4 describes it as 'give campaign artifacts ... a publishing lane' on the Pages docs site (acceptance: None) — i.e. docs publishing, not a five-part-provenance-stanza refusal gate. The finding-provenance doctrine's enforcement hook is cross-referenced to a bead that does not actually carry it.",
+      "fix": "Either add the provenance-stanza refusal to 3tl.4's acceptance as an explicit sub-criterion, or (cleaner) create a dedicated finding-provenance enforcement bead under cpf and correct cpf.design to point at it. Do not leave the doctrine hook pointing at a docs-publishing bead."
+    },
+    {
+      "id": "polylogue-cpf",
+      "kind": "scope-conflict",
+      "evidence": "cpf is a single P2 task titled 'Land the six doctrines' whose design enumerates ~6 independent enforcement hooks across schema-audit, layering, findings lane, feature-review, and context protocol. Per greedy-batch-pr-cadence a coherent multi-PR body should be an epic with children; per execution-grade-beads a devloop-ready bead needs a checkable acceptance (cpf.acceptance is None). The bead's own text ('mostly transcription + wiring the named enforcement hooks') understates that three of those hooks have no code and no separable bead.",
+      "fix": "Promote cpf to an epic; spin the three untracked hooks (TEXT-timestamp audit, writer-class layering, deny-lexicon test) and the docs/doctrine text-landing into children; keep 37t.11 and a corrected finding-provenance bead as linked carriers. Add an acceptance matrix listing the six doctrines x {text landed, hook enforced}."
+    },
+    {
+      "id": "lint-escalation.yaml",
+      "kind": "other",
+      "evidence": "docs/plans/lint-escalation.yaml declares 'verify manifests' (severity soft, sunset 2026-05-15) and 'oracle-attribution' (severity soft, sunset 2026-06-01). Today is 2026-07-04 — both sunset clocks have expired but the rules are still 'soft', so the manifest's own escalation contract ('after the sunset date, soft-mode becomes an error') is being violated with no owning bead to escalate them.",
+      "fix": "File a small chore bead (or fold into an existing surface-hygiene epic) to either flip both rules to hard or push the sunset dates with a recorded reason. A policy manifest whose sunset clocks are ignored is the same floating-untracked failure mode this audit targets."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-cpf",
+      "issue": "epic-ac-gap",
+      "detail": "cpf's implied children (TEXT-timestamp audit, writer-class layering, deny-lexicon test) and its linked carriers (37t.11 trust-class, a corrected finding-provenance bead) have no dependency edges recording that the doctrine-text landing gates or is gated by the enforcement hooks. If cpf becomes an epic, the three new hook children should depend on the docs/doctrine text-landing child, and the deny-lexicon test should depend on 37t.11 (which implements the trust-class types it asserts against).",
+      "proposed": "After reparenting: dep deny-lexicon-test -> 37t.11; dep hook children -> doctrine-text-landing child."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-cpf",
+      "change": "new-epic",
+      "from": "task (P2, standalone)",
+      "to": "epic (P2) with children: doctrine-text landing + TEXT-timestamp audit + writer-class layering + deny-lexicon test; linked carriers 37t.11 and a finding-provenance bead",
+      "rationale": "It bundles six doctrine texts and ~6 enforcement lints — multi-PR by construction; greedy-batch-pr-cadence and execution-grade-beads both push this to an epic-with-children so each hook has its own checkable done-state instead of drowning in one task's prose."
+    }
+  ]
+}

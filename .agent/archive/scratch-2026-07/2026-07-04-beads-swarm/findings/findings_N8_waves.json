@@ -1,0 +1,68 @@
+{
+  "domain": "wave-sequencing",
+  "summary": "Wave tags are present (23 wave:1, 10 wave:2) but INCOHERENT as a start-now set: wave:1 is dominated by the whole s7ae subtree (7 beads, 4 of which are dependency-blocked and cannot start now) plus 10 P2/P3 standalone hygiene/refactor beads (cpf, 9l5.7, o21, exb, fnm.11, 20d.2, ttu, 48h, 30h, utf) that are NOT top-of-frame and unblock nothing -- exactly the tier-4-displacing-tier-1 pattern the frame warns against. Meanwhile the actual top-of-frame P1 work carries NO wave tag: the cfk uplift campaign, 83u.4 (missing-blob classification), and 4ts.4 (lineage read-transaction correctness bug) are all ready and untagged, and the 1xc scale-hardening epic has ZERO children so it has no wave-1 entry bead at all. Corrective sequencing: wave:1 = {ready AND (top-of-frame proof OR unblocks a top-of-frame subtree)}; demote blocked s7ae downstream and non-frame P2/P3 polish to wave:2; decompose 1xc's first scale bug into an executable child so the epic has an entry.",
+  "wave_tabulation": {
+    "wave:1_count": 23,
+    "wave:2_count": 10,
+    "coherent_start_now_set": false,
+    "problems": [
+      "wave:1 marks the entire s7ae epic subtree, including s7ae.2 (blocked by pj8+s7ae.1), s7ae.3 (blocked by 37t.11), ahqd (blocked by s7ae.2), bby.9 (blocked by s7ae.1 in_progress) -- 4 of 7 cannot start now.",
+      "10 of 23 wave:1 beads are P2/P3 (cpf, 9l5.7, o21, exb, fnm.11, 20d.2, ttu, 48h, 30h, utf); none are top-of-frame and none unblock a top-of-frame bead.",
+      "cfk (P1 live campaign, ready), 83u.4 (P1 storage-evidence, ready), 4ts.4 (correctness bug, ready), 3tl.7 (external-legibility gate, ready) carry no wave tag despite being top-of-frame and startable."
+    ]
+  },
+  "p1_epic_wave1_entry": [
+    {"epic": "polylogue-s7ae", "entry_bead": "polylogue-s7ae.1", "state": "in_progress, ready (only parent dep)", "top_of_frame": true, "note": "Correct entry already wave:1. Downstream s7ae.2/.3/ahqd/bby.9 are NOT startable and should be wave:2."},
+    {"epic": "polylogue-3tl", "entry_bead": "polylogue-3tl.7", "state": "open, ready", "top_of_frame": true, "note": "P1 children 3tl.1/3tl.2 (README, one-command demo) are CLOSED; 3tl.7 (proven install matrix) is the concrete remaining legibility gate. 3tl.9 (docs+visuals coverage lint) is the parallel candidate."},
+    {"epic": "polylogue-1xc", "entry_bead": null, "state": "NO CHILDREN", "top_of_frame": true, "note": "FLAG: epic AC says 'every child closed' but zero children exist. The tier-1 scale bug (full insight rebuild = one transaction -> 6GB WAL + minutes-long write lock) is named in the epic body but never decomposed. No wave-1 entry can exist until a first child bead is created (see gaps)."},
+    {"epic": "polylogue-83u", "entry_bead": "polylogue-83u.4", "state": "open, ready, P1", "top_of_frame": true, "note": "Classify the 39,586 missing referenced blobs -- storage-evidence residual, the classifier that gates 83u.2/83u.3 acquisition work."},
+    {"epic": "polylogue-4ts", "entry_bead": "polylogue-4ts.4", "state": "open, ready, P2 bug", "top_of_frame": true, "note": "P1 children 4ts.1/4ts.2/9p0y all CLOSED. Remaining residuals are P2; 4ts.4 (wrap lineage composition reads in a single read transaction) is the correctness-first residual -- storage-evidence."},
+    {"epic": "polylogue-4smp", "entry_bead": "polylogue-arso", "state": "open, ready", "top_of_frame": false, "note": "Content-variants substrate (refs/nodes/alignment/storage) is the natural entry (0v9p language-detection also ready; rlsb+d4zk block on them). But 4smp is P1-NOT-in-frame: startable-by-readiness does not make it wave-1-priority. Leave untagged / wave:2 until top-of-frame drains."}
+  ],
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Chunk/checkpoint the full insight rebuild: bound WAL growth and write-lock duration",
+      "type": "bug",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc has zero children yet its AC requires 'every child closed'; the epic body names the confirmed-live tier-1 bug (full insight rebuild runs as one transaction -> ~6GB WAL + minutes-long write lock on the real 38GB archive). Without a decomposed child there is no wave-1 entry and the top-of-frame scale epic cannot start.",
+      "design": "Split insights/registry rebuild + storage/insights/session materialization out of the single ingest/rebuild transaction into bounded, checkpointed batches (per-session or per-N-session windows) so PASSIVE/TRUNCATE checkpoints run between chunks and journal_size_limit (docs/internals.md WAL section) can trim. Verify against a large-archive tier or live-copy probe; measure peak WAL and max write-lock hold before/after with `polylogue ops diagnostics workload --json`.",
+      "acceptance": "Peak WAL during a full insight rebuild on the seeded large-archive tier (or live-copy probe) stays under the journal_size_limit cap; no single write-lock hold exceeds a stated bound (e.g. <5s); before/after WAL + lock-duration evidence committed; a scale-regression lane exists that would have caught the one-transaction rebuild (satisfies part of the 1xc epic terminal-state AC).",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {"id": "polylogue-1xc", "kind": "epic-ac-gap", "evidence": "AC: 'Epic terminal state: every child closed and a scale-regression lane exists...' but the epic has 0 children (jq: no bead has parent==polylogue-1xc).", "fix": "Decompose the epic body's tier-1 checklist into at least one executable child (see gaps: 1xc first scale bug) so the epic has a wave-1 entry."},
+    {"id": "polylogue-cfk", "kind": "other", "evidence": "cfk is the live top-of-frame uplift-re-run campaign (P1, ready -- only parent dep) per the priority frame, yet carries no wave:* label while 10 P2/P3 polish beads carry wave:1.", "fix": "Tag cfk wave:1; it is the single highest-priority startable proof bead."}
+  ],
+  "dep_priority": [
+    {"id": "polylogue-1xc", "issue": "epic-ac-gap", "detail": "Top-of-frame scale epic with no children and no entry bead.", "proposed": "Create the first scale-bug child (gaps entry) and tag it wave:1."},
+    {"id": "polylogue-s7ae.2", "issue": "priority-violation", "detail": "Tagged wave:1 but hard-blocked by pj8 (open) + s7ae.1 (in_progress); cannot start now, so it is not a start-now bead.", "proposed": "Demote to wave:2; it re-enters wave-1-eligible once pj8 and s7ae.1 close."},
+    {"id": "polylogue-83u.4", "issue": "priority-violation", "detail": "P1 storage-evidence residual, ready, untagged; it gates 83u.2/83u.3 acquisition work.", "proposed": "Tag wave:1 as the 83u entry."}
+  ],
+  "reorg": [
+    {"id": "polylogue-cfk", "change": "set-wave", "from": "", "to": "wave:1", "rationale": "TOP-OF-FRAME PROOF. The live two-arm uplift re-run campaign is the single highest-priority startable bead in the frame; ready (only parent dep). Was untagged."},
+    {"id": "polylogue-83u.4", "change": "set-wave", "from": "", "to": "wave:1", "rationale": "TOP-OF-FRAME PROOF (storage-evidence residual). Ready P1; classifies the 39,586 missing blobs and gates the rest of the 83u acquisition tree. Was untagged."},
+    {"id": "polylogue-4ts.4", "change": "set-wave", "from": "", "to": "wave:1", "rationale": "TOP-OF-FRAME PROOF (storage-evidence/correctness residual). Ready lineage read-transaction bug; 4ts's P1 children are all closed so this is the correctness-first remaining entry. Was untagged."},
+    {"id": "polylogue-3tl.7", "change": "set-wave", "from": "", "to": "wave:1", "rationale": "TOP-OF-FRAME PROOF (external legibility). Ready; the proven-install-matrix gate is the concrete remaining 3tl entry now that README/one-command-demo children are closed. Was untagged."},
+    {"id": "polylogue-s7ae.1", "change": "set-wave", "from": "wave:1", "to": "wave:1", "rationale": "KEEP. UNBLOCKS the s7ae top-of-frame subtree (bby.9, s7ae.2) and is the coordination-proof foundation; already in_progress and ready. No change -- listed for completeness."},
+    {"id": "polylogue-pj8", "change": "set-wave", "from": "wave:1", "to": "wave:1", "rationale": "KEEP. UNBLOCKS s7ae.2 and doubles as the agent-discoverability (legibility) layer; ready. No change."},
+    {"id": "polylogue-d1y", "change": "set-wave", "from": "wave:1", "to": "wave:1", "rationale": "KEEP. Coordination enabler (one-command hook wiring), ready, part of the s7ae start-now frontier. No change."},
+    {"id": "polylogue-37t.11", "change": "set-wave", "from": "wave:1", "to": "wave:1", "rationale": "KEEP as UNBLOCKER. Context-scheduler is the hard-blocker of s7ae.3; ready. Heavy P1 feature -- flag as the s7ae subtree's critical-path long pole, but it must lead."},
+    {"id": "polylogue-s7ae.2", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. Hard-blocked by pj8 + s7ae.1 (both open/in_progress); not a start-now bead. Re-enters wave 1 when its blockers close."},
+    {"id": "polylogue-s7ae.3", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. Hard-blocked by 37t.11 (open). Cannot start now."},
+    {"id": "polylogue-ahqd", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. Observation bead blocked by s7ae.2 (open); an after-rollout measurement, not a start-now item."},
+    {"id": "polylogue-bby.9", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. Blocked by s7ae.1 (in_progress, envelope not yet landed); renderer over an envelope that does not exist yet."},
+    {"id": "polylogue-cpf", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 doctrine/docs bead; not top-of-frame proof and unblocks no frame work -- tier-4 polish inflating wave:1."},
+    {"id": "polylogue-9l5.7", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 analytics-substrate (9l5 epic); off-frame, no unblock role."},
+    {"id": "polylogue-o21", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 extension-point ergonomics; surface hygiene, off-frame."},
+    {"id": "polylogue-exb", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 layering refactor; hygiene, off-frame."},
+    {"id": "polylogue-fnm.11", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 query-DSL parity (fnm epic); off-frame, no unblock role."},
+    {"id": "polylogue-20d.2", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P2 startup-import perf; interactive-perf epic is off top-of-frame."},
+    {"id": "polylogue-ttu", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P3 docs IA; tier-4 polish."},
+    {"id": "polylogue-48h", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P3 SQLite-helper consolidation; pure hygiene."},
+    {"id": "polylogue-30h", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P3 display-title synthesis; polish."},
+    {"id": "polylogue-utf", "change": "set-wave", "from": "wave:1", "to": "wave:2", "rationale": "DEMOTE. P3 devtools surface economy; polish."}
+  ]
+}

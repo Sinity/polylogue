@@ -1,0 +1,1205 @@
+{
+ "underspecified": [
+  {
+   "id": "polylogue-pj8",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "MCP server registers ~6 intent-named prompts (resume-context, postmortem-last, decisions-about, unacknowledged-failures, sessions-touching-file, cost-of) that expand to concrete tool-call sequences with cwd/repo prefilled; each prompt is listed in EXPECTED prompt-name contract and covered by a contract test. A 'polylogue' harness skill exists (dots/claude/skills + codex overlay, sinnix-side) stating the archive-root env var rule and refs-over-dumps rule. Baseline vs post-rollout affordance-usage report shows tool diversity rising in agent sessions above today's search/get_session-dominated baseline (record the two measurements). Total prompt count stays small (curation, not a second catalog).",
+   "why": "pj8 is P1/wave:1 under the live s7ae epic and its description ends with an inline 'Acceptance:' sentence, but the acceptance_criteria field is null (D01_coordination.json line 314). Per the execution-grade contract, a ready-frontier P1 needs a checkable done-state; the prose acceptance should be promoted into the field with verify handles.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-ahqd",
+   "missing": [
+    "design"
+   ],
+   "proposed_design": "(1) Wait for or launch a fresh full/evidence/browser-profile agent session started AFTER the Sinnix 7151697 Home Manager activation (the current Codex predates it per polylogue-27p close note). (2) From that session over MCP, perform benign writes against a demo or clearly test-marked session: record_correction, add_tag, blackboard_post. (3) Confirm each resulting user.db row carries the authoring session ref (add_tag/record_correction author_ref extension from 27p; blackboard already attributes). (4) Run `devtools workspace affordance-usage` (or the equivalent Polylogue query) and capture the report showing the real MCP write calls with author refs, distinct from unit-test/shell simulation. (5) Verify claude-lean profile still refuses writes (read role). Pitfall: do not synthesize the rows via CLI/tests \u2014 the proof value is that a live agent used the write MCP surface.",
+   "why": "ahqd is P1/wave:1 and depends_on the closed 27p; design is null (D01_coordination.json line 212) while description+acceptance exist. It is an observation task but still needs the 'how' recorded (which command, which profile, how author-ref is checked) to be execution-grade on the ready frontier.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-37t",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Epic-level: the loop is closed when a declared claim can travel end-to-end through all four named stages against the live archive. Stage owners: claims = 37t.2 (author-declared markers -> candidate assertions) + 37t.1 (assertion consumer wiring); judgment = operator review/accept/reject queue (NO CHILD OWNS THIS \u2014 see gaps); preamble = 37t.4 (SessionStart rollout) refactored onto 37t.11 (scheduler arbiter); reboot = 37t.3 (reboot-with-refs). 37t.11 is the coherence spine all preamble/recall sources register against.",
+   "proposed_acceptance": "A seeded end-to-end scenario demonstrates one claim flowing claims->judgment->preamble->reboot: an agent emits a declared marker (37t.2), it lands as a candidate assertion, the operator accepts it via the judgment queue, it appears (as a ref) in a compiled SessionStart preamble for the matching repo (37t.4/37t.11), and it survives a reboot-with-refs handoff (37t.3) resolvable via resolve_ref. Every stage has an owning open bead with non-null acceptance; no stage relies solely on prose in a sibling's design field.",
+   "why": "37t is a spine epic (title enumerates the four-stage loop) yet has design=null and acceptance_criteria=null, so there is no checkable 'loop is closed' done-state and no way to detect that the judgment stage is unowned.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.4",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "compose_context_preamble is wired into the SessionStart hook (upgrading sessionstart-polylogue-recall.sh, not adding a second hook) for polylogue + sinnix; source-aware branching verified: startup injects the repo brief, resume injects a since-last-session delta, compact injects nothing (test asserts no polylogue bytes on source=compact). Hard token cap enforced (default ~600) with a test that a large brief degrades to refs. Relevance gate: cwd with no archive history -> zero injection (test). POLYLOGUE_PREAMBLE=off suppresses injection (test). The hook logs its own injection as a queryable hook event (arm-B instrumentation for cfk). Freshness cache keyed by (repo, archive cursor) regenerates only on cursor move.",
+   "why": "37t.4 carries a rich 6-point design but acceptance_criteria=null. It is spine/wave:2, arm B of the live uplift re-run (cfk, top-of-frame per brief), AND 37t.11's stated first two ContextSources \u2014 a ready-frontier bead that must be execution-grade.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "First writers exist for the three currently-unwired AssertionKinds (handoff, prompt_eval, highlight \u2014 verified present but writerless at core/enums.py:409/423/426) and each passes the user_audit every-kind-has-a-surface invariant with a registered ObjectRef scope_ref/author_ref. Preamble-consumed claims gain expiry: ASSERTION_CLAIM_KINDS admission (user_write.py:1520) extends its ACTIVE-only read with an expiry check (no new status). Operator judgment ergonomics: a bulk accept/reject-over-a-candidate-batch flow is demonstrated (or explicitly split to the new judgment-queue bead). Test: recording/expiring a claim never mutates sessions.content_hash.",
+   "why": "37t.1 is a core-loop (claims-wiring) stage with a detailed design but acceptance_criteria=null; its own design flags 'the gap is operator-ergonomic review flow (bulk judge candidate batches)' \u2014 the judgment stage \u2014 which needs an explicit checkable owner.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.3",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "compile_context with a new prose_with_refs segment profile emits authored prose verbatim while every tool_use/result collapses to a one-line '<ref:action:...>' resolvable via resolve_ref (test: refs resolve to original block). Budget rule enforced: prose verbatim to 60% of budget, then oldest prose -> one-line recaps, first user message + last N turns kept verbatim, overflow recorded as ContextOmission(reason=budget) (ContextOmission verified at context/compiler.py:48). New session lineage: session_links inheritance='spawned-fresh' link_type='continuation' via record_manual_continuation(child,parent) + first handoff-kind assertion written. hookSpecificOutput.additionalContext field names verified against current Claude Code SessionStart docs.",
+   "why": "37t.3 is the 'reboot' stage the epic title names; it has a concrete design but acceptance_criteria=null, so the last stage of the loop has no verifiable done-state.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.2",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "Final sigil chosen after a corpus collision scan (grep live archive for candidate-prefix false positives; record the scan). Line-anchored '::kind(args): body' and inline '[[kind: body]]' parse at block enrichment into typed rows with exact message/block provenance; malformed markers extract as kind=malformed with raw text (never silently dropped) and malformed-rate is a recorded measure. Kind registry (declare-once) admits note/claim/lesson/decision/predict/handoff/anchor/bead/eval as registry entries, not parser changes (property test: adding a kind touches only the registry). Markdown-inert + streaming-safe + '\\::' escape covered by tests.",
+   "why": "37t.2 is the 'claims' entry stage (author-declared structure -> candidates) with the most extensive design in the epic but acceptance_criteria=null; it is spine-labelled and feeds every downstream stage.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-arso",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "ADDITIVE: append concrete verify commands to the existing acceptance. e.g. `devtools test tests/unit/storage` and a new `tests/unit/storage/test_content_variants.py` proving: (a) a session-level complete variant resolves to all declared child message/block refs; (b) a partial variant is labeled `partial` not silently completed; (c) a summary VariantAlignment maps N source nodes -> 1 variant node with relation `summarizes` and no positional hack; (d) `variant:<id>`/`variant-node:<id>` resolve through the public ref resolver and a translated `assertion:<id>` stays a variant of that assertion. Plus `devtools render all --check` green after schema/DDL/docs refresh, and `devtools lab policy schema-versioning` classifying the new tables (durable user/agent artifacts vs rebuildable detections) correctly.",
+   "why": "arso is the spine (L, labeled 'spine') and gates rlsb+d4zk. Its acceptance says 'Tests prove...' and 'Generated schemas/docs are refreshed' but names no runnable verify command, which the execution-grade contract requires for a P1 ready-frontier bead. The design is otherwise strong; this is an additive gap, not a rewrite.",
+   "_dom": "D03_content_variants"
+  },
+  {
+   "id": "polylogue-fnm.1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "On the live archive: `... | group by tool | agg count, avg:duration_ms, p90:duration_ms` returns per-group rows with each named metric column; sum/avg/min/max lower to native SQLite aggregate functions and percentiles compute via nearest-rank in Python over grouped rows; multi-field group-by (`group by tool, session.origin`) and time bucketing (`group by bucket:day(time)`) reuse the temporal read-view bucket functions; unsupported agg names/fields error naming the unit, the metric, and the supported set (the fnm.11 group-by error pattern); `explain_query_expression` and openapi/cli-output-schemas/cli-reference regens show the new aggregate list; the QueryUnitPipelineStageSpec `aggregate: Literal['count']` union is widened and round-trips through to_payload.",
+   "why": "Priority-2 ready-frontier bead with an execution-grade design (exact touchpoint chain, metadata.py aggregate_metrics, percentile pattern) but acceptance_criteria=null. Doctrine requires ready-frontier P2 to have a checkable done-state + verify command. Design references concrete verb `agg` and stages that need an acceptance gate.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.4",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "A registry-diff snapshot test asserts that every grammar-reachable field/unit/pipeline-stage/read-view name (enumerated from metadata.py descriptors, read_view_registry, and operations.action_contracts.ACTION_CONTRACTS) appears in the completion payload, so new DSL work cannot silently miss completions; completions for pipeline stages, operators, and read-view names are sourced from those same registries (no second vocabulary \u2014 completions.py already imports query_unit_descriptor/terminal_query_pipeline_stage_infos/ACTION_CONTRACTS); archive-backed value providers (origins, repos, tags) return under a latency cap; `polylogue config completions --shell` and the query_completions MCP tool both resolve pipeline-stage and read-view completions.",
+   "why": "P2 bead whose own description states the acceptance target ('a completion snapshot test asserts every grammar-reachable field/unit/stage/view appears in the completion payload') but the acceptance_criteria field is null. Promote that sentence into a checkable criterion; verified completions.py already introspects the shared registries (completions.py:14-32) so the registry-diff gate is buildable as stated.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.10",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "`messages where session.repo:polylogue AND text:timeout | fields text, occurred_at, session.title, session.repo` returns generic dict-shaped rows keyed by requested field name, emitted alongside (not replacing) the typed MessageQueryRowPayload; requested parent fields resolve through the already-paid sessions join; field names are validated against the unit's field registry + the session.* scoped family (metadata.py) and an unknown field errors listing supported fields; typed default consumers are unchanged (payloads.py MessageQueryRowPayload frozen shape preserved); render openapi + cli-output-schemas emit the new generic payload model; the QueryUnitTransformStage reservation (expression.py:377) is now actually produced by the parser for the `fields`/`select` keyword.",
+   "why": "P2 bead, acceptance_criteria=null despite an execution-grade design that names the exact reservation it fills (QueryUnitTransformStage at expression.py:376-386, confirmed present at :377) and the payload files to touch. Needs a done-state gate distinguishing it from fnm.2 (attached-unit field selection, which already landed).",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.6",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "`sessions where ... | read view:temporal`, `messages where ... | limit 40 | context-image budget:4000`, and `... | bundle:handoff` execute end-to-end: the terminal stage dispatches through an executor registry to the existing compile_context / read_view_registry compilers; the terminal's output replaces the row payload with a typed projection-artifact envelope per terminal kind; unknown terminal keywords/args error naming the terminal and supported kinds; explain shows the terminal stage via to_payload; completions offer the terminal keywords and their read-view/bundle argument values from the same registries as fnm.4.",
+   "why": "P2 bead with null acceptance. Design cites the reserved terminal-args slot (expression.py:397-407, confirmed the QueryUnitTransformStage/terminal machinery exists) but gives no checkable end-state for the three named terminal forms.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.2",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "`... with messages[role:user, last:20]` parses per-unit bracket predicates/windows in the hand-parsed with-stage region and lowers onto the existing exact-session-id fetch in attached_units.py (respecting _MAX_ROWS_PER_SESSION cap, extending the landed field-selection payload rather than forking it); a new render/layout pipeline stage binds a read-package/render profile to the result and is picked up by explain via to_payload; the Lark grammar file is unchanged (stages stay hand-parsed); openapi/cli-output-schemas/cli-reference regens pass render all --check.",
+   "why": "P2 bead, acceptance_criteria=null. Design is execution-grade (names WITH_PROJECTION_SUPPORTED_UNITS enforcement region and attached_units.py caps) but has no done-state gate; the two layers (attached-unit predicates vs render/layout stage) each need an explicit acceptance line.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-6il",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Add `--json` and `--check` to the devloop-integration lane so it emits a machine-readable contract carrying branch role, ahead count, stale-ledger state, replay branches, and PR URLs; devloop-review consumes that JSON instead of re-deriving integration state. Mirror the existing devloop-status/readiness JSON envelope shape so review has one parser.",
+   "proposed_acceptance": "`devloop-integration --json` emits a stable schema with branch role, ahead count, stale ledger, replay branches, and PR URLs; `--check` exits non-zero on a failing integration invariant; devloop-review reads the JSON and no longer computes branch role itself.",
+   "why": "P2 standalone bead with design=null and acceptance=null; the description names the exact fields the JSON must carry, so an execution-grade spec is directly recoverable and required for a ready P2.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-avg",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Add a claim-guard section to `polylogue ops status`/readiness deriving 'what you may claim' (archive openable / converged / search-ready / perf-measurable) from the same signals the devloop scripts already use: schema-version match => openable-not-converged, raw-materialization debt zero/classified => converged, FTS freshness => search-ready, live_performance_proof_blocked gate => perf-measurable. Then have devloop-status consume the product surface instead of recomputing it (silo collapse).",
+   "proposed_acceptance": "`polylogue ops status --json` exposes a claim-guard block with the four claim states derived from the documented signals; a session that is openable-but-not-converged reports converged=false with the raw-materialization reason; devloop-status calls the product surface and stops computing its own claim vocabulary; a test asserts parity between the script's old computation and the product output.",
+   "why": "P2 standalone bead, design=null and acceptance=null; the description already enumerates the four claim states and their source signals, so the spec is recoverable and needed for ready-frontier P2.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-83u.6",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Add a read-only census (devtools workspace command or `polylogue ops maintenance` sub-report) over the active index.db that groups attachments by (origin, acquisition_status) with row counts and summed byte_count, joins the blob store to report acquired-with-present-blob vs acquired-missing vs unfetched vs unavailable, and emits a stable JSON + table artifact. Reuse the blob-reference-debt / diagnostics-workload primitives. Baseline the current archive (per 83u.4 evidence: 7,226 attachment rows = 958 acquired w/ non-null hash + 0 missing acquired blobs, 6,268 unfetched blob_hash NULL) as 'before'; re-run after 83u.1/.2/.3 acquisition beads as 'after'.",
+   "proposed_acceptance": "A committed census artifact reports attachments by origin and acquisition_status with byte volumes and blob presence, distinguishing genuinely-unfetchable from re-acquirable; a before/after pair is captured (baseline now, post-acquisition later) and is the exact artifact on which epic 83u closes. Verify: census command runs read-only against /home/sinity/.local/share/polylogue and its JSON matches the epic's before/after claim.",
+   "why": "83u epic AC says 'Epic closes on a census artifact showing the before/after' \u2014 83u.6 IS that closing gate but is fully unspecified (design=null, acceptance=null). It is also the sizing input the other acquisition beads depend on.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-83u.2",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Un-bypass acquisition at each live-handle boundary: (a) Drive \u2014 call DriveSourceClient.download_bytes inside the iterator scope so bytes are read before the source closes (restore the del'd download_assets path); (b) export-zip \u2014 resolve and read the member while the zipfile is still open; (c) local paths \u2014 a transport-only local_source_path resolved under a source-root allowlist with a realpath-escape check. Deposit bytes on ParsedAttachment.inline_bytes and reuse the shipped true-SHA-256 blob write (_acquire_attachment_blob path). Non-live handles stay honest-unfetched with source_url/path preserved for re-acquisition.",
+   "proposed_acceptance": "For each source class (Drive, export-zip member, local path) a seeded fixture ingests attachments whose bytes are live and asserts acquisition_status=acquired with a blob file present at the true SHA-256; a path outside the allowlist is rejected via realpath-escape check; unfetchable handles remain unfetched with preserved source metadata. Verify: `devtools test tests/unit/sources/...` passes; live re-ingest increases acquired-attachment count measured via the 83u.6 census.",
+   "why": "P2 ready-frontier feature: the description carries the intent but design=null and acceptance=null. The transport-only inline_bytes contract and allowlist/realpath escape check are load-bearing security details that belong in design/acceptance, not just a one-line description.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-4ts.5",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "session_events gains boundary_start_position/boundary_end_position/boundary_message_id (index-tier schema bump + rebuild plan stated in PR body, batched with other pending index bumps per fresh-first doctrine); the parser populates them for Codex `compacted` records and Claude inline/`agent-acompact-*` boundaries; get_effective_context(session, at_position) returns [summary]+post-boundary messages and a fixture asserts it differs from the full-composed prefix at the boundary; a `read --view effective_context` surface auto-registers via read_view_registry across CLI/MCP/daemon; the stale_context pathology consumes the precise replaced-range signal. Verify: focused parser + read-view tests pass; live re-ingest shows boundary rows populated for known compaction sessions.",
+   "why": "P2 feature with a strong code-grounded design but acceptance_criteria=null; the schema-bump + surface auto-registration + pathology consumer are concrete checkable done-states that should be pinned.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-4ts.4",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Both the sync (read_archive_session_envelope) and async (get_messages, plus batch/paginated paths) composition paths hold one deferred read transaction across the full inheritance recursion. A regression test interleaves a parent full-replace between the edge-read and the parent-read (via hook/monkeypatch) and asserts the composed transcript is wholly old-consistent or wholly new-consistent, never mixed \u2014 asserted on BOTH paths (twin-path trap). Verify: `devtools test tests/unit/storage/...` passes.",
+   "why": "P2 bug; design already names the fix and a test sketch but acceptance_criteria=null. The both-paths (sync+async) requirement is the trap that must be an explicit checkable done-state.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-4ts.3",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Regression fixtures cover (a) a true main-session agent-acompact-* whose prefix content/UUIDs are members of the main session and (b) a subagent self-compaction (<90% overlap, modeled on 1796b263's '12-commit testing overhaul' subagent); the classifier assigns parent=main only in (a) and sidechain/no-inherited-prefix in (b); a composed read of the (b) session never prepends the main transcript. Verify: focused Claude-parser tests pass; live re-ingest of the ~39 mismatched files reduces mis-parented subagent-acompacts to zero (probe count).",
+   "why": "The acceptance sentence is buried inside the design field ('Acceptance: composition never prepends...') while acceptance_criteria=null; extract and make it a checkable done-state with the fixture pair and the live ~39-file probe count.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-0ns",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Grounded in daemon/convergence_stages.py: _embed_archive_sessions_sync (line 1312) checks `time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS` (=30s, line 43) only in the between-session loop (line 1335), then calls embed_archive_session_sync (line 1337 / storage/embeddings/materialization.py:851) which embeds an ENTIRE session with no internal time/window bound. The same unbounded-per-session shape repeats in daemon/embedding_backlog.py:171/183. Fix: push a bound INTO embed_archive_session_sync \u2014 process a session as message windows (reuse the existing pending-window selector select_pending_embedding_session_window rather than a whole-session unit), record per-window catch-up progress in the embedding status/catchup rows so a huge Codex/Claude session resumes mid-session on the next daemon tick instead of restarting. Alternative (simpler, price it): have the daemon select message windows as the ingest unit at the caller (convergence_stages + embedding_backlog) so the stop-after check straddles windows, not whole sessions. Preserve exact-once embedding and cost accounting; do not double-charge Voyage on a resumed window.",
+   "proposed_acceptance": "A forced embedding-debt drain against a seeded archive containing one very large session (>= a few thousand embeddable messages) honours _DAEMON_EMBED_STOP_AFTER_SECONDS mid-session (stops within one window of the deadline, not after the whole session), and the next tick resumes from the recorded window offset with zero re-embedding of already-embedded messages (assert on message_embeddings count / catchup progress row). A focused devtools test exercises the bounded path; no Voyage double-charge on resume.",
+   "why": "0ns is a P2 with a concrete live-verified defect (2026-07-04 daemon convergence) but design=null and acceptance_criteria=null; per the execution-grade contract a P2 with confirmed evidence should carry how+done-state. The claim is code-grounded (convergence_stages.py:1335 vs :1337).",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-3tl.4",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Extend the existing Pages pipeline (docs site builds on master push) with a findings lane under docs/findings/. Each finding is a rendered report REGENERATED FROM THE SEEDED CORPUS (seed 1843) so nothing private ships: (1) a report template (markdown -> pages) carrying the five-part provenance stanza required by cpf (claim, method, data window, re-run supersession, semantic version); (2) a reproduction block (exact `polylogue demo seed` + query/analyze commands that regenerate the numbers); (3) a devtools render findings pass that rebuilds every committed finding against the corpus and fails on drift (same pattern as render all --check). First finding published: the claim-vs-evidence forensics report (sru output). Pitfall: the finding must carry a stable URL before 3tl.3 (leaderboard variant), 3tl.10 (launch kit), or 3tl.8 (pin artifacts) can cite it.",
+   "proposed_acceptance": "docs/findings/ lane live on the deployed pages site with at least one finding (claim-vs-evidence) rendered from the seeded corpus and reachable at a stable public URL; the finding carries the cpf five-part provenance stanza; `devtools render <findings-lane> --check` regenerates it from the corpus with zero drift; reproduction commands in the finding run clean on a fresh checkout.",
+   "why": "3tl.4 is labeled spine/wave:2 and is the direct producer of the 'published finding URL' that the 3tl epic's OWN acceptance requires ('(3) cite a published finding URL'). It is also the named enforcement site for cpf ('provenance-stanza refusal in the findings lane (3tl.4)') and the citation target for 3tl.3/3tl.10/3tl.8 \u2014 yet both design and acceptance are null.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-3tl.9",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "`devtools verify docs-coverage` exists and is wired into the default verify gate; it fails with the exact missing entry named when any public CLI command/verb, MCP tool, config key, or daemon route is absent from the docs tree (set-diff over generated inventories, topology-gate pattern); every committed screenshot/GIF is a visual-tapes artifact regenerable from the seeded corpus and a regen pass flags perceptual drift beyond threshold; the conductor End Gate declares a docs item that blocks slice closure when public surfaces changed and docs-coverage is red. Verify: introduce a throwaway undocumented CLI flag and confirm the lane fails naming it.",
+   "why": "P2 ready-frontier task with a full design but acceptance_criteria=null; per execution-grade doctrine a ready P2 needs a checkable done-state. The design already implies the exact checks \u2014 they just need to be stated as the acceptance contract with a verify command.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-3tl.7",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Lift the acceptance sentence currently buried in the design tail into the acceptance field and make it checkable: an install-matrix CI workflow (scheduled weekly + pre-release) runs fresh-environment install+smoke jobs for uvx/pipx (PyPI), brew tap, docker run (GHCR), and nix run on ubuntu+macos; each job runs install -> `polylogue demo seed` -> one `find` -> one `read` -> `polylogue --version` and asserts correct version per lane; matrix green on two consecutive weekly runs; README install section states the honest Windows story (WSL2 supported path, native untested); the release checklist doc is reduced to 'merge the release PR'.",
+   "why": "P2 ready-frontier; the design ends with an 'Acceptance:' clause but the acceptance_criteria field is null. The done-state exists in prose in the wrong field \u2014 promote and make it a checkable matrix-green contract.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-20d.1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Fast-path read surface: `--verbose` prints `served-by: daemon (uds, <ms>)` and a warm daemon serves find/read/messages/facets in <=0.5s wall (target 3.6-17s -> 0.3-0.5s, cited against the 20d.14 interactive tier). Golden parity: `--format json` output is byte-identical between direct and daemon-proxied execution for every read surface on the demo corpus. Safety: with the daemon pointed at a different archive_root/index_schema_version/daemon_version than the client's resolved config, the client silently falls back to the in-process path (regression test seeds the POLYLOGUE_ARCHIVE_ROOT=/tmp mismatch trap). `--no-daemon` / `POLYLOGUE_DAEMON=off` force the direct path; daemon-down probe fails in microseconds. Writes never proxy (user.db direct).",
+   "why": "20d.1 is the spine, wave:2 feature and the explicit 'structural attack' of the whole epic, yet acceptance_criteria is null. Its design field already encodes concrete targets (latency, byte-identical parity, config-mismatch fallback marked NON-NEGOTIABLE, escape hatches) \u2014 those are checkable done-states that belong in acceptance so the frontier bead is execution-grade.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "This epic is the front-door interactive-latency spine. Mechanism ordering: 20d.14 states the named budgets first (starting points, evidence-tuned); 20d.2 removes the ~2s import tax for the daemonless cold path; 20d.1 routes the hot path through the daemon over UDS; 20d.12 makes the daemon worth reaching (cursor-keyed result cache); 20d.13 replaces polling with SSE push; 20d.6/20d.15 own the live vs bulk ingest lanes; 20d.4/20d.5/20d.10/20d.11/20d.7/20d.8 are the direct-path and storage-profile fixes that keep the degraded mode fast.",
+   "proposed_acceptance": "The 20d.14 interactive SLO tier is defined in slo-catalog.yaml and runs green in `devtools bench slo` against the seeded corpus with a live daemon in CI; the operator machine meets the daemon-served query, completion round-trip, cold-CLI, and ingest-to-searchable budgets when measured live. No interactive read verb pays the old cold-import or FTS-gate penalties (regression gates from 20d.2 and 20d.4 in place).",
+   "why": "The parent epic has design=null and acceptance_criteria=null. As the anchor for 14 children it should tie its done-state to 20d.14's budgets so 'interactive time' is a measured claim, not a vibe; the epic description already lists the evidence (2s imports, 5-9s helps, 43s regen, 0.2 files/s) that the children must retire.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d.2",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "`python -X importtime` shows surfaces/payloads and api/archive no longer imported on the `polylogue <cmd> --help` path; a new devtools help-latency budget check runs targeted `--help` invocations under a fixed budget (e.g. <700ms cold, citing 20d.14 cold-CLI budget) and fails loudly on drift; nested helps (import/reset/maintenance archive-read/analyze tools) drop from the observed 5-9s to under the budget.",
+   "why": "20d.2 is wave:1 (likely first to execute) with a rich design field but acceptance_criteria=null. Its design already names the regression gate (help-latency budget check); promoting the target into acceptance makes the wave-1 bead execution-grade.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d.4",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Port the daemon's structured-vs-FTS discriminator (http.py ~:1789-1793) to the single CLI search-vs-list dispatch site: branch on spec.query_terms/contains_terms so a structured-only query (filters, no text terms) skips the FTS readiness gate and routes to the list/query-unit path. Verify the current shape first (v23 FTS-readiness + recent work may have moved the gate).",
+   "proposed_acceptance": "A structured-only CLI query (e.g. `--origin ... --since ...` with no text terms) succeeds and returns rows on an archive whose FTS index is deliberately stale/unready; a text FTS query on the same archive still honors the readiness gate. Parity: the CLI's structured/FTS branch decision matches the daemon's for the same spec.",
+   "why": "Both design and acceptance are null; the description embeds a concrete plan and a named regression. Promote them so the bead is checkable. (Also see inconsistencies: this is really a correctness/parity fix, and 20d.1 subsumes it.)",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-jnj.5",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Grounded in reset.py:260-277 (audit confirmed): the `if conv_id:` and `if source_path:` branches call _tombstone_archive_sessions(...) then return BEFORE the preview (lines 327-328) and --yes gate (lines 331-337). AC: (1) `polylogue ops reset --session <ref>` with no --yes prints a dry-run listing exact target rows (origin, native_id, suppression/archive-row counts) and mutates NOTHING; a typo'd/no-match ref yields a zero-target dry-run and zero mutation. (2) mutation occurs only with --yes. (3) both dry-run and mutation emit the same stable JSON envelope as other destructive ops under --format json. (4) same contract applies to --source PATH. (5) regression test asserts no suppression/tombstone row is written on the no--yes path.",
+   "why": "P2 bug with area:security; design is execution-grade but acceptance is null, so 'done' is not checkable. Claim verified against reset.py:260-277.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-x7d",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) archive_query (_summary_payload/_hit_payload/_summary_line/_hit_line), cli.query_output (format_summary_list/format_search_hit_list), and cli.select (select_row_from_result) all obtain title/snippet bounds from ONE shared projection helper/value object; grep shows no residual per-surface truncation constant. (2) title budget (<=96 or table budget) and snippet budget (<=320) plus single-line normalization are enforced identically on all three surfaces. (3) parity test feeds one giant multiline title + one giant search hit and asserts all three surfaces emit bounded single-line output. (4) existing JSON schemas for list/search/select are byte-unchanged except for overlong-value truncation; schema snapshot tests pass.",
+   "why": "P2 task, ready-frontier, has a concrete design naming the three duplicated paths but acceptance is null; the 'collapse onto one contract' claim needs a checkable no-duplication assertion.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-dmp",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) `polylogue note \"...\"` writes exactly one candidate NOTE assertion (default kind=note) via the same candidate writer used by MCP. (2) --ref <session-ref|last> attaches evidence refs; `last` resolves to the most recent archived session for cwd/repo; a bare note with no ref lands but carries an 'unanchored' flag queryable via polylogue judge. (3) --kind note|claim|correction|lesson selects CorrectionKind/assertion kind; all land as candidate, none auto-judged. (4) --stdin ingests piped content with a size cap (reject over cap with a clear error). (5) CLI-written and MCP-written notes are indistinguishable in the candidate queue (identical payload shape) once 27p lands. (6) optional zsh widget snippet documented, not required. Verify: `polylogue note ... && polylogue judge --list` shows the candidate with correct anchor/kind.",
+   "why": "P2 feature with rich design but null acceptance; also states 'Same verb over MCP already exists once 27p lands' which implies a hard dependency (see dep_priority).",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-t46",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "Epic-level done-state AC: (1) each named audit slice (config aliases daemon_host/daemon_port + top-level observability; historical CLI aliases find_help/-n/--full/demo-shelf --bundle; status JSON compatibility aliases; origin->provider output projection bridges; browser-capture synthetic-ID recovery) is either landed-as-a-child-PR or explicitly deferred with a linked bead. (2) for every landed slice, the contract (DSL/registry/generated schema) is the sole owner and the parallel hand-written surface is deleted in the SAME PR (grep shows the alias/bridge gone). (3) render surfaces (openapi, cli-output-schemas, cli-reference) regenerated after each slice and drift-clean. (4) no compatibility front remains for any completed slice.",
+   "why": "P2 epic with a concrete slice design but null acceptance; the 'replacement-first, delete in same PR' rule is the load-bearing invariant and needs a checkable per-slice gate.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-bby.6",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "Re-scope: this bead owns only the mechanical, current-SPA items \u2014 window.prompt() removal (web_shell_workspace.py:398,503 -> app-native modal), dark-only hardcoded palette -> theme variables, saved-query sidebar, and canonical-URL link-out. The JS-extraction-to-static-assets and renderer-drift-resolution halves are superseded by bby.11's TS rewrite (bby.11 design itself says 'bby.6's extraction is superseded for the JS'); reference bby.11 and drop them here rather than double-track.",
+   "proposed_acceptance": "window.prompt() no longer appears in the workspace/recall-pack naming flow (grep of web_shell_* shows zero prompt() calls); naming uses an in-app modal. Theme derives from CSS variables and honors prefers-color-scheme (light+dark verified on the reader). Saved queries render in a sidebar and each row links out to its provider canonical URL. No new inline-JS renderer logic is added (the renderer-drift resolution is deferred to bby.11).",
+   "why": "bby.6 is a P3 dependency of bby.8, described as 'mechanical, independently shippable', so it is a near-term enabler that should be execution-grade, yet acceptance_criteria is null and its scope overlaps the bby.11 rewrite (design text explicitly notes the JS extraction is superseded).",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.1",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "One liveness probe gates all fetch-error rendering: a single daemon-reachability check drives a global 'daemon unreachable' banner + reconnect-with-backoff loop, and per-widget failures render stale-badge + retry rather than independent 'Failed to fetch'. Header chips (convs/msgs) derive from the same convergence snapshot as the result list (no separate 'unknown'/'0' source). The literal curl hint moves behind a collapsed 'debug' disclosure; the product-visible state is retry-with-backoff + stale-badge. Note under bby.11 this becomes the v2 shell's error/loading contract; land it on the current SPA now only if v2 is not imminent.",
+   "proposed_acceptance": "Killing the daemon mid-session surfaces one global daemon-unreachable banner (not N independent 'Failed to fetch' widgets) and auto-reconnects on restart. No product panel renders a literal curl command outside a collapsed debug disclosure. Header conv/msg chips match the result-list count (both derived from one convergence snapshot); a populated list is never shown under '0 convs / 0 msgs' chips. Facets panel shows a stale-badge + retry instead of an indefinite 'loading... showing stale data' spinner.",
+   "why": "bby.1 has design=null and acceptance=null but its description is a concrete live-probe bug list (curl leaking into the product panel, no global daemon banner, chips desynced from the list showing 16,498 results). It is actionable now and cheap to make execution-grade.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.11",
+   "missing": [
+    "design"
+   ],
+   "proposed_design": "Additive only (do not rewrite the existing rich design): add to the component/renderer contract (item 3/6) that the ap7 renderer components must accept variant/dual-lane payloads \u2014 original, variant-only, and interleaved/hover-source visual profiles \u2014 so the scaffold can carry the 4smp/rlsb content-variant reader UX (rlsb requires renderers to 'consume projected variant lanes'). Otherwise the generated typed client + snapshot-against-Python-renderer model is variant-blind and rlsb's web leg has no scaffold seam.",
+   "proposed_acceptance": "",
+   "why": "bby.11 is P1 spine and 4smp/rlsb (both P1) relate-to it for web/in-page variant UX, but bby.11's design never mentions variant/dual-lane rendering. It is otherwise execution-grade and generic enough (generated client, SSE/cache module, mission-control view) to carry s7ae's mission-control projection; the one seam missing for a related P1 epic is variant-lane rendering in the component model.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-5hf",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Build the cross-provider usage ledger on the existing session_provider_usage_events substrate (storage/usage.py) rather than a new store. (1) Keep cache read/write, input, output, and reasoning token lanes DISJOINT per provider semantics: Codex `input` already includes cached (~96%) and `output` includes reasoning \u2014 bill disjoint lanes or double-count (regression fixed 3938bc6c2). (2) Per-model partitioning: usage.py:1406 already warns that summing per-model rows double-counts session totals; the ledger must expose current-window vs cumulative and per-model rows without re-summing them into a session total (the residual #2472 partitioning bug). (3) Coverage/caveats surface: exact provider-event rows vs text-only estimates vs unsupported origins vs stale session_model_usage rollups are distinct states (see docs/internals provider-usage accounting). (4) Pricing resolves through the vendored LiteLLM catalog as the sole source (last path-segment match); do not merge cache lanes into generic input/output. Companions lineage-tokens (fork/resume double-count) and the cost-reconciliation probe (devtools lab probe cost-reconciliation vs ~/.codex/state_5.sqlite) are the validation gates.",
+   "proposed_acceptance": "`polylogue analyze`/provider_usage renders a per-origin ledger with disjoint cache/input/output/reasoning lanes, current-window and cumulative session totals, and an explicit coverage/caveat line per origin (exact-event vs estimate vs unsupported). Per-model rows never sum into an inflated session total (verify against usage.py:1406 caveat path). Cost-reconciliation probe against local Codex state_5.sqlite shows per-thread median token ratio ~1.00. Cached reads are shown free-on-subscription AND API-list-equivalent as two labelled views.",
+   "why": "5hf has empty design and acceptance yet is flagged as core cost-honesty correctness spanning all providers; operator memory (Codex token semantics, subscription credit pricing, #2472, LiteLLM catalog) already supplies an execution-grade spec, so leaving it a one-line stub is the single largest under-specification in this slice.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-da1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "On live ingest, records whose shape diverges from the committed provider schema package are counted into ops.db telemetry keyed by (origin, element kind, unseen-key signature) with no schema bump; `polylogue ops status` prints 'origin X: N% of records since <date> carry unseen shapes' with bounded example native_ids; a seeded drift fixture (a known field removed / type changed) trips a daemon health alert at a DIFFERENT threshold than a benign new-optional-field; the rate is windowed since-date (old archives do not dilute it); ingest never fails or skips on drift (raw payload still stored, reparse remains possible).",
+   "proposed_design": "",
+   "why": "Design is already execution-grade (reuse schemas/ shape signatures, ops.db additive telemetry, three enumerated pitfalls) but the acceptance_criteria field is null; the checkable done-state is inferable directly from the design and should be lifted so this P2 becomes ready-frontier.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-2qx",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "Every origin lives in one package under sources/origins/<name>/ carrying detector, parser entry, declared strictness tier, schema-package pointer, capture/fidelity, usage-coverage class, pricing hints; dispatch order is DERIVED by (tier, registration order) with the hand-ordered chain in dispatch.py:125-171 deleted; a dispatch-order regression test feeds every origin's fixtures through the full chain and asserts each is claimed by its own detector (a loose detector physically cannot outrank a strict one); `devtools lab provider completeness` reads the specs, not its own inventory; migration is mechanical one-origin-per-commit, mypy-net + fixture-suite green throughout.",
+   "proposed_design": "",
+   "why": "Confirmed greenfield (no sources/origins/ package exists; dispatch.py has a hand-ordered if-looks_like chain at lines 125-171). Design is execution-grade but acceptance field is null.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-o21",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "Pilot on MCP tools: a single tool declaration object derives EXPECTED_TOOL_NAMES, TOOL_CONTRACT, role gating, and render inputs (openapi/cli-output-schemas); each registration validator, on failure, names the missing step and the exact fix command; `devtools new tool` scaffolds declaration+stub+test in the right places. Acceptance test = obsolescence-by-construction: a fresh agent with NO access to the registration-traps bd memory adds a new MCP tool end-to-end and every gate passes. Then the pattern sweeps remaining extension points one per PR (origin sweep = 2qx).",
+   "proposed_design": "",
+   "why": "The acceptance is stated inline in the design ('registration-traps bd memory becomes obsolete BY CONSTRUCTION... a new agent adds a tool end-to-end without the memory') but the acceptance_criteria field is null; lift it so the done-state is checkable rather than buried.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-rii.2",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "HOOK_EVENT artifacts (runtime.py:~209, currently parse_as_session=False) are materialized through the write-leg contract into session_events/ObservedEvents keyed to the owning session; the hardcoded provider allowlist in support.py:~82 (claude-code,codex) is replaced by a taxonomy-driven check so any origin's hooks materialize; OTLP spans already in ops.db are projected into the same queryable evidence (no second reader); a seeded hook event (tool annotation / permission decision / cwd change / subagent lifecycle) is queryable via observed-events within one convergence cycle and re-ingest is idempotent.",
+   "proposed_design": "",
+   "why": "Design cites confirmed code lines but acceptance_criteria is null; a P2 with a code-grounded design deserves the matching checkable done-state and idempotency assertion in the acceptance field.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-rii.1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "MCP record_work_event/emit_decision (mutation role) accept typed events (tool run, subagent spawn, decision, artifact change) with evidence/session refs, routed through the existing idempotent ingest seam (write_raw_and_parsed) with no parallel writer; events land in session_events and the run-projection read models pick them up via the normal materializer; an agent posts a work event mid-session and it is queryable via observed-events within one convergence cycle; re-posting the same event is idempotent; MCP registration passes EXPECTED_TOOL_NAMES + TOOL_CONTRACT + role gating + render openapi/cli-output-schemas regen.",
+   "proposed_design": "",
+   "why": "The acceptance sentence already exists in the design body ('Acceptance: an agent posts a work event... queryable... re-posting is idempotent') but the acceptance_criteria field is null \u2014 a field/text mismatch; promote it and fold in the registration-trap gate the design also names.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-fs1.4",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_acceptance": "A named forensics read view/report profile renders all five sections (topology, LLM/request economy, tool profile, failure patterns, local causal footprint) for a Hermes session, each lowering onto existing primitives where possible (get_session_topology, session_provider_usage_events + cost rollups, actions/tool timing, pathology detectors, session_commits) with only Hermes-specific detectors added (loop/stall/reasoning-burn); every section fact is query-composable (capabilities-not-silos), not demo-only; the 2-minute demo packages sanitized fixtures behind one command with a README section and runs in <2min.",
+   "proposed_design": "",
+   "why": "fs1.4 is P2 with execution-grade design but null acceptance; as the campaign-grade packaging of the flagship demo it needs an explicit five-section + composability + <2min checkable done-state.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-mhx.3",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) `devtools bench retrieval` exists and runs FTS-only, vector-only, and hybrid-RRF (current constants) arms over a committed labeled set of >=50 (query -> expected session/message ids) pairs, with a public seeded-corpus subset runnable in CI and a live-archive variant. (2) Emits recall@5, recall@10, MRR, plus p50/p95 latency and $/1k-queries per arm to a `.local/` campaign artifact; `compare` mode diffs a candidate against a stored baseline. (3) The winning lane is written back as the default `retrieval_lane` resolution AND cited (artifact path + metric deltas) in docs/search.md. (4) The same labeled set is importable by mhx.6 so quantization quality tolerance is measured against it. Verify: `devtools bench retrieval run` produces the artifact; the doc citation resolves; `devtools bench retrieval compare baseline.json candidate.json` returns non-zero on a regression beyond tolerance.",
+   "why": "mhx.3 is the 'retrieval that earns its cost' keystone for the whole epic and blocks mhx.6, yet acceptance_criteria is null so 'done' is unfalsifiable. Design already specifies the exact contestants/metrics/output; acceptance just needs to make them checkable.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-mhx.2",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) Session-vector class implemented: a `session_embeddings` vec0 table in embeddings.db keyed by (session_id, model identity), populated from already-materialized derived text (title + profile summary + top-K authored lines) with ~zero new token spend; `find_similar_sessions`/neighbor candidates can run off it. (2) Assertion-vector class implemented: judged/candidate assertion bodies embedded on-write into their own vec0 table. (3) `[embedding.targets]` per-class enable flags exist; `ops embed preflight` and `ops embed status` report per-class pending/coverage counts separately. (4) Non-targets (tool payloads, generated context packs, protocol rows, reasoning dumps) are documented as policy and asserted excluded by a test. (5) All classes rebuild from index.db/user.db via tier reset. Verify: seed corpus, run backfill, `ops embed status --detail` shows three distinct class coverages; a test asserts a tool_use block is never embedded.",
+   "why": "mhx.2 is a ready-frontier bead (no unmet deps) that blocks mhx.4 and mhx.5, so per doctrine it needs checkable acceptance; the design enumerates three concrete target classes + storage that map directly to AC.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-mhx.1",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) A single OpenAI-compatible /v1/embeddings client replaces the hardcoded Voyage path (sqlite_vec_support.py VOYAGE_API_URL/DEFAULT_MODEL constants), driven by `[embedding]` provider_base_url/model/dimension/api_key_env/requests_per_minute/batch_size; the native Voyage preset remains the unchanged default. (2) message_embeddings_meta records (base_url_host, model, dimension) and query time REFUSES to RRF vectors of differing model identity rather than mixing silently (asserted by test). (3) A dimension change triggers an embeddings-tier reset via `ops reset --embeddings` with an `ops embed preflight` cost estimate shown before any spend; local models price $0 with a tokens/s time estimate. (4) Acceptance demo (folds in 37t.5): a qwen3-class model through the LiteLLM gateway (127.0.0.1:4000) backfills the seeded corpus and `--semantic` returns sane neighbors, $0. Verify: seeded corpus embedded via gateway; `polylogue find --semantic <q>` returns relevant results; mixed-model query raises/refuses.",
+   "why": "Voyage is confirmed hardcoded (polylogue/storage/search_providers/sqlite_vec_support.py:12-13; ops embed still resolves a voyage_api_key). No VectorProvider seam or base_url exists yet, so mhx.1's premise is accurate but has no acceptance to gate it; the design's five items are directly checkable.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-0k6",
+   "missing": [
+    "acceptance"
+   ],
+   "proposed_design": "",
+   "proposed_acceptance": "AC: (1) Quantify step recorded: the count of sessions whose index-tier updated_at_ms postdates embedding_status.last_embedded_at_ms at unchanged message count is written into the bead as the fix's impact number. (2) Regression test: ingest a fixture, re-ingest a FULL-REPLACE variant with one message body changed at the same position/count, assert the session is re-selected by select_pending_archive_session_window AND after re-embed message_embeddings_meta.content_hash matches the new hash with the old vector row REPLACED not duplicated. (3) If (2) fails pre-fix, embedding_write.py upserts by (session_id, position). Verify: the new regression test fails on current main if the split-tier bug is live and passes after fix.",
+   "why": "0k6's design already states exact assertions ((a)/(b)) and the fix target; acceptance_criteria is null, so promote the design's asserts into an explicit checkable done-state.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-9e5.3",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "SQL over live index.db: for each of material_origin, tool_result_is_error, tool_result_exit_code, message_type, branch_type, session_kind compute NULL + 'unknown'-sentinel density as a fraction of eligible rows, grouped by origin x YYYY-MM. Columns exist and are CHECK-constrained (index.py: material_origin DEFAULT 'unknown', tool_result_is_error IN (0,1)) so 'unknown'/'NULL' == 'structure absent'. Emit one row per (column, origin, month) plus a per-column rollup. Pitfall: tool_result_* is only populated for tool_result blocks, so denominator must be tool_result rows, not all blocks; material_origin denominator is authored messages only.",
+   "proposed_acceptance": "Evidence artifact (scratch note or demo-shelf entry) committing the density table with method + numbers; per-column go/no-go verdict (populated well enough to replace keyword heuristics vs not) that b0b consumes; coverage-caveat sentence per origin for outcome analytics. No product-code mutation.",
+   "why": "P2, labelled the go/no-go gate for the heuristic->structural sweep (b0b) yet has null design/acceptance; ready-frontier P2 beads must meet the execution-grade contract per doctrine.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.1",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Pure SELECT over user.db: GROUP BY assertion kind x status x author_kind; enumerate all 21 registered CorrectionKind/assertion kinds and mark which return zero rows; count inject:true rows and candidate-vs-judged transitions. Pitfall: read-only role only; do not open a write connection. Output is arithmetic, no heuristics.",
+   "proposed_acceptance": "Artifact with the per-kind x status x author_kind table + explicit list of empty-but-registered kinds + inject:true count; a one-line verdict 'flywheel used vs aspirational'; follow-up beads filed for any promised-but-empty kind. Feeds the ctx epic's prioritization.",
+   "why": "P2, epic calls this 'the sharpest product question the deep-dive surfaced' and a best-bet, but design/acceptance are null.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.2",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Run devtools workspace affordance-usage (devtools/affordance_usage.py exists) over the live archive to get per-tool/per-command invocation counts from archived agent tool-use rows; LEFT JOIN against the full surface set (MCP EXPECTED_TOOL_NAMES from tests/infra/mcp.py, CLI command_inventory) so zero-invocation surfaces surface as kill candidates. Classify each: kill / keep / promote. Pitfall: archive only records surfaces used *by agents that used polylogue*, so absence != dead for operator-only commands; annotate that caveat.",
+   "proposed_acceptance": "Ranked kill/keep/promote table (all ~90 MCP tools + ~50 CLI commands classified) committed as artifact; follow-up beads opened for kill candidates feeding the contracts/surface-algebra programs; no surface removed by this bead itself.",
+   "why": "P2 best-bet ('surface economy with evidence instead of taste') with null design/acceptance; infrastructure it names is confirmed present.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.4",
+   "missing": [
+    "design",
+    "acceptance"
+   ],
+   "proposed_design": "Static-trace the four named get->modify->put sequences (blob leases in write_effects.py, ingest_cursor updates, embedding_status transitions, fts_freshness_state) across daemon/CLI/MCP-mutation writers that share the SQLite files. For each: record connection profile, whether the read and write are in one immediate transaction or split, and sketch the interleaving that loses a write. Confirm/refute each window against source. Pitfall: some sequences are already single-transaction (commit_archive_write_effects) - do not file those as bugs.",
+   "proposed_acceptance": "Race-window table (sequence, writers, one-txn vs split, verdict); each CONFIRMED window filed as a bug bead with an interleaving repro sketch; refuted windows documented as safe with the reason. Method + numbers in an evidence artifact.",
+   "why": "P2 storage-race audit with null design/acceptance; the 'found 16 bugs in sibling project' claim needs a checkable method + done-state to be execution-grade.",
+   "_dom": "D14_audit_lane"
+  }
+ ],
+ "gaps": [
+  {
+   "proposed_title": "Two-agent live coordination proof: worktrees, overlap, scoped message, context injection, handoff",
+   "type": "task",
+   "priority": 1,
+   "parent": "polylogue-s7ae",
+   "why": "The s7ae epic's headline acceptance criterion is 'A live proof demonstrates at least two agents on one repo with separate worktrees, visible overlap/resource awareness, a scoped coordination message, context injection, and a handoff packet.' The confirmed child set {s7ae.1, s7ae.2, s7ae.3, ahqd, bby.9, d1y, pj8} contains no bead that owns this capstone: s7ae.1 is the envelope, s7ae.3 is the message/advisory mechanism, ahqd is a single-agent MCP-write observation, bby.9 is the renderer. The epic cannot be closed against its own AC without this proof, and it is exactly the kind of end-to-end demo the priority frame ranks as a proof campaign (tier 1).",
+   "design": "Reuse existing worktree tooling and the shipped surfaces. (1) Create two git worktrees of polylogue on separate branches; launch one Claude and one Codex full-profile agent, one per worktree. (2) Each agent runs `polylogue agents status --json` (or the MCP agent_coordination tool) and observes the sibling as a same-repo-agent overlap plus any live resource episodes (build/test/daemon) as non-blocking awareness. (3) Agent A posts a session-tree/repo-scoped coordination message (s7ae.3 / blackboard); agent B receives it via the SessionStart preamble delivery leg (37t.11 scheduler + d1y hooks). (4) Show the context-injection ledger row proving the coordination ContextSource entered B's context. (5) Agent A writes a HANDOFF packet under .agent/conductor-devloop/ and B consumes it via `polylogue agents handoff`. Capture all JSON envelopes + ledger rows as the durable proof artifact.",
+   "acceptance": "A recorded run shows: two distinct agent sessions on one repo in separate worktrees; each agent's coordination envelope lists the other as same-repo overlap with blocking=false; at least one build/test/daemon resource episode surfaced as awareness; one scoped coordination message posted by A and delivered to B with provenance; one context-injection ledger row attributing the coordination source with its trust class; and a handoff packet authored by A and read back by B. Artifact stored under .local/ or a proof bead note; no step requires simulating rows outside a live agent session.",
+   "deps": [
+    "polylogue-s7ae.1",
+    "polylogue-s7ae.2",
+    "polylogue-s7ae.3",
+    "polylogue-d1y",
+    "polylogue-37t.11"
+   ],
+   "_dom": "D01_coordination"
+  },
+  {
+   "proposed_title": "Judgment queue: operator bulk review/accept/reject of candidate assertions",
+   "type": "feature",
+   "priority": 2,
+   "parent": "polylogue-37t",
+   "why": "The epic title names four stages (claims -> JUDGMENT -> preamble -> reboot) but no child owns judgment. It survives only as a phrase inside 37t.1's design ('the gap is operator-ergonomic review flow (bulk judge candidate batches)') and is assumed to already exist by 37t.10 ('the existing judgment queue lists setup candidates alongside memory candidates'). Verified today: list_assertion_claims exposes statuses='active,candidate' (server_tools.py:741) and per-item accept/reject MCP tools exist, but there is no batch review surface \u2014 so the pipeline has a stage with no execution-grade bead.",
+   "design": "Build the operator-facing review surface over the existing candidate substrate: (1) a queue read that lists candidate-status assertions grouped by kind/repo/session with evidence ref preview (reuse list_assertion_claims candidate path); (2) bulk verbs \u2014 accept/reject/defer over a selected batch, each writing the judgment transition and preserving the origin ref; (3) a CLI entry ('polylogue judge' or under an existing group) + optional webui panel; (4) only ACCEPTED claims become preamble-eligible (ties to 37t.1's ACTIVE-only ASSERTION_CLAIM_KINDS read). This is the gate that makes background/declared candidate generation (37t.2, 37t.9 'dreaming') safe.",
+   "acceptance": "Given N candidate assertions across mixed kinds, the queue lists them with evidence refs; a bulk accept promotes them to active and they become visible to the preamble compiler; a bulk reject removes them from candidacy; every transition is queryable with its origin ref; none of these operations mutate sessions.content_hash.",
+   "deps": [
+    "polylogue-37t.1"
+   ],
+   "_dom": "D02_context_loop"
+  },
+  {
+   "proposed_title": "Content-variant demo asset: annotated session translated with transcript + assertion variants and clickable alignment",
+   "type": "task",
+   "priority": 1,
+   "parent": "polylogue-4smp",
+   "why": "Epic 4smp AC explicitly requires 'A demo or fixture shows a heavily annotated session translated with transcript variants plus variants of selected assertion annotations, with clickable alignment back to original source and original assertions.' No child commits this as a deliverable: d4zk AC only covers 'demo fixtures cover translate heavily annotated session' and 'a coordination message containing clickable refs' \u2014 it does not commit the clickable-alignment-back-to-source-and-assertion demo asset. Compare ap7, which explicitly commits 'a before/after recording ... committed as the demo asset (3tl.5 machinery).' The variant epic's headline demo AC is currently ownerless. Alternative to a new child: strengthen d4zk acceptance to name this exact asset.",
+   "design": "Reuse the deterministic demo archive (polylogue demo seed) + the 3tl.5 recording/asset machinery. Seed a session that carries several assertion annotations, produce a translation ContentVariant of the transcript plus variants of selected assertion bodies, render through the dual/interleaved variant render profile (rlsb), and capture a committed asset (web recording or rendered HTML/markdown fixture) demonstrating clickable alignment edges from variant nodes back to (a) original source blocks and (b) original assertions. Wire under the existing demo/proof lane rather than a bespoke script.",
+   "acceptance": "A committed demo asset (fixture + optional recording) shows: transcript variant with per-node alignment back to source blocks; at least one assertion-annotation variant aligned back to its original assertion:<id>; a lossy summary node honestly labeled; source vs variant visually distinguished. Reproducible via a single `devtools workspace ...`/`polylogue demo ...` command and referenced from the epic. Serves the 3tl external-legibility goal.",
+   "deps": [
+    "polylogue-arso",
+    "polylogue-rlsb",
+    "polylogue-d4zk",
+    "polylogue-ap7"
+   ],
+   "_dom": "D03_content_variants"
+  },
+  {
+   "proposed_title": "Single-compiler parity gate: CLI/MCP/API/daemon route identical query strings through one grammar",
+   "type": "task",
+   "priority": 2,
+   "parent": "polylogue-fnm",
+   "why": "The epic thesis is 'one grammar owns query semantics ... not a second parser' (fnm epic + fnm.4 description), and MCP already exposes explain_query_expression as the shared compiler entry, but no child asserts that a given query string produces the same typed AST / same lowered SessionQuerySpec across CLI find, MCP search/explain, the Python API, and the daemon/web query route. fnm.4 gates completion coverage and fnm.11 gates the docs matrix, but neither gates surface-execution parity \u2014 a regression could reintroduce per-surface parsing divergence silently. Operator memory repeatedly flags cross-surface parity as a live concern.",
+   "design": "A parametrized parity test feeds a corpus of representative query strings (bare find, unit-where, pipeline with group by|count, with-projection, SEQ) through each surface's public entry and asserts the resulting QueryExpression/SessionQuerySpec (or to_payload) is byte-identical. Guardrail assertion: grep/import-lint that no surface module constructs a Lark parser or hand-rolls query parsing except polylogue/archive/query/expression.py. Wire into render all --check or devtools verify layering.",
+   "acceptance": "The parity test covers >=1 query per grammar entry shape and asserts identical AST/spec across CLI/MCP/API/daemon; a second parser or divergent parse in any surface module fails the gate; explain_query_expression output matches the CLI-compiled spec for the corpus.",
+   "deps": [
+    "polylogue-fnm.4"
+   ],
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "proposed_title": "Chunk full insight rebuild into bounded per-batch transactions",
+   "type": "bug",
+   "priority": 1,
+   "parent": "polylogue-1xc",
+   "why": "1xc's own design names this as a tier-1 confirmed-live item: 'full insight rebuild runs as ONE transaction -> 6GB WAL + minutes-long write lock on the live archive'. No child bead tracks it. 6h7's close note ('bounded 100-session ticks') fixed the daemon catch-up selector, not the full ops-reset rebuild transaction; 20d.15 owns bulk throughput and b5l owns downtime, neither owns the single-transaction/WAL blowup.",
+   "design": "Chunk the storage/insights rebuild path so materialization commits in bounded per-batch transactions (e.g. N sessions per commit) with durable progress rows, so the WAL never grows to multi-GB and the write lock is released between batches. Reconcile with 6h7's existing 100-session daemon tick so the ops-reset rebuild and daemon catch-up share one bounded batching primitive rather than two.",
+   "acceptance": "A full insight rebuild on a live-archive copy keeps WAL under a stated cap (e.g. the 160MiB journal_size_limit, not 6GB) and never holds the write lock for more than one batch interval; progress rows advance monotonically and a mid-rebuild kill resumes without redoing committed batches.",
+   "deps": [],
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "proposed_title": "Audit global PKs derived from non-unique local coordinates (run_ref collision siblings)",
+   "type": "task",
+   "priority": 1,
+   "parent": "polylogue-1xc",
+   "why": "1xc's design: 'the run_ref global-PK collision class was fixed (#2464) -- audit for siblings (any global PK derived from non-unique local coordinates)'. The instance bead (polylogue-85z0 'Run projection subagent run collides with child main run_ref') is CLOSED, but the sibling-audit half of the tier-1 item has no bead.",
+   "design": "Enumerate every table whose primary/unique key is composed from local coordinates that are only unique within a parent scope (position indexes, native offsets, per-session counters) and prove global uniqueness or add the missing parent qualifier. Prime suspects flagged in iec: message_id (session_id + ':' + native/position), block_id compounds, run_ref/observed-event keys. Add a scale-tier fixture that forces two parents with colliding local coordinates for each suspect key.",
+   "acceptance": "A table-by-table matrix of global-PK keys with a uniqueness verdict (safe / needs-qualifier); each 'needs-qualifier' either fixed with a schema slice or filed as its own bead; a scale-tier regression test reproduces the run_ref-class collision shape and would fail on a regression.",
+   "deps": [],
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "proposed_title": "Scale-regression lane: seeded large-archive tier that catches each shipped scale-bug class",
+   "type": "task",
+   "priority": 1,
+   "parent": "polylogue-1xc",
+   "why": "1xc's AC literally requires it: 'a scale-regression lane exists (seeded large-archive tier or live-copy probe) that would have caught each shipped bug class, wired into the optional lanes.' No bead owns building this lane, so the epic can never reach its stated terminal state.",
+   "design": "Extend the synthetic corpus generator to emit a scale-tier fixture (16K+ sessions, 5M+ messages, duplicate native ids, giant single artifacts approximating the 384MB Codex raw row) and register it as an optional validation lane (devtools lab lanes). Each closed 1xc child adds a regression assertion against this fixture (WAL cap for the insight rebuild, planner/no-scan for ma2, bounded stop for 0ns/6wnh, PK-collision for the run_ref siblings).",
+   "acceptance": "An optional lane runs the scale fixture and asserts each fixed scale-bug class stays fixed; the lane is listed in devtools lab lanes --list and referenced from each 1xc child's acceptance; running it on a pre-fix commit reproduces at least one of the shipped bug classes.",
+   "deps": [],
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "proposed_title": "Config bead: classify every setting by governance role (startup/policy/user-pref/provider-cost/presentation/ops)",
+   "type": "task",
+   "priority": 3,
+   "parent": "polylogue-jnj",
+   "why": "Operator doctrine requires the config surface to classify settings by role, but jnj.9's scope statement only covers 'ownership per layer, effective-value inspection, recovery from invalid config' \u2014 it never enumerates the settings taxonomy. Without the classification, 'one coherent config surface' cannot decide which layer owns which knob. This is additive design that jnj.9 currently lacks (design=null); fold into jnj.9 rather than a separate bead if preferred.",
+   "design": "Enumerate every runtime setting and tag it with a governance role: startup (bind host/port, archive root), policy (retention, GC thresholds, embedding cost caps), user-pref (color, default view, format), provider-cost (voyage key, model, cost cap), presentation (themes, layout profiles), ops (daemon telemetry, cursor tuning). The role determines the authoritative owning layer (NixOS/HM vs user polylogue.toml vs CLI flag vs env). `polylogue config` effective-value inspection reports value + winning layer + role for each key. Recovery: invalid config in one role must not brick unrelated roles.",
+   "acceptance": "Every setting appears in a role-tagged registry; `polylogue config` (or config show --effective) prints role + owning layer + effective value per key; a doc table maps role->authoritative layer; an invalid value in one role is reported without preventing startup of surfaces that do not depend on it.",
+   "deps": [],
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "proposed_title": "Fix per-model provider-usage partitioning double-count (#2472 residual)",
+   "type": "bug",
+   "priority": 2,
+   "parent": "polylogue-5hf",
+   "why": "5hf's own text names 'lineage-tokens (double-count)' as a companion, and usage.py:1406 documents that summing per-model rows double-counts session totals; operator memory records this as the residual #2472 partitioning bug still open after #2469. It is implied by 5hf's correctness scope, not invented.",
+   "design": "Ensure per-model usage rows are exposed as a drill-down that never re-sums into the session total; the session total is computed once from disjoint token lanes. Add a regression test with a multi-model session asserting session_total != sum(per_model_totals) when lanes overlap. Ground the fix in storage/usage.py partitioning path (~1406, ~1528 caveat).",
+   "acceptance": "A multi-model Hermes/Codex/Claude session reports one honest session total; per-model rows are drillable; the double-count regression test passes; the caveat at usage.py:1528 is only emitted when genuinely multi-model.",
+   "deps": [
+    "polylogue-5hf"
+   ],
+   "_dom": "D12_intake_sources"
+  }
+ ],
+ "inconsistencies": [
+  {
+   "id": "polylogue-s7ae.1",
+   "kind": "acc-mismatch",
+   "evidence": "s7ae.1 design says the envelope's inputs are archive session evidence: 'session topology, run/session events, tool/action blocks, recent activity ... blackboard/coordination messages, proof/outcome summaries, and context-flow refs.' The in-progress implementation (polylogue/coordination/envelope.py) derives peers, resource episodes, and overlap from the live OS process table (`ps -eo ...`, lines 36/307-354) and /proc, plus git and .beads/bd; it touches the archive only to read PRAGMA user_version on the tier DBs (_archive_payload lines 427-454). It reads NO session topology, session/run events, tool/action blocks, blackboard messages, or context-flow refs.",
+   "fix": "Reconcile the bead with the build: either (a) amend s7ae.1's design/acceptance to state that live agent/resource presence is derived from the process table + git + Beads (a legitimate 'who else is active right now' evidence source that the archive cannot give in real time), and move archive-session-derived fields (session topology, tool/action blocks, blackboard messages, context-flow refs) to explicit 'remaining' or to s7ae.3/bby.9; or (b) record that the archive-evidence legs are still unimplemented so the AC ('reusable envelope over existing archive evidence', 'blackboard/coordination messages' as inputs) is not prematurely marked satisfied. The process-table approach is defensible but is a different evidence model than the bead currently describes.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-6mv",
+   "kind": "other",
+   "evidence": "6mv is a type=decision whose own text says 'Status: adopt as working doctrine' and names concrete residual work: 'the Sinex-side emitter is future work gated on the substrate write-leg and Sinex production restore.' The decision itself is made, but the emitter work exists only as a sentence inside the decision bead, with no task bead and no dependency edge.",
+   "fix": "Treat 6mv as a decided decision (doctrine can live in docs per the dropped-#1807 precedent) and split the actionable residual into a task bead 'Sinex agent-evidence emitter (derived privacy-preserving agent.* events)' gated on the Polylogue substrate write-leg and Sinex production restore, so the emitter is tracked work rather than anonymous debt inside a decision record.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-37t.11",
+   "kind": "other",
+   "evidence": "37t.11 has exactly two dependency edges: parent-child to 37t, and a 'relates-to' to s7ae. But its own design states it 'lands BEFORE mhx.4/rvh/1hj/bfv wire their injection legs' and '37t.4 ships first as the initial two sources and gets refactored onto the protocol here', and the audit focus notes s7ae and 4smp reference it as a dependency. A relates-to under-encodes a blocks relationship for an arbiter the whole injection layer sits on.",
+   "fix": "Encode the sequencing the design already narrates: mhx.4/rvh/1hj/bfv and s7ae/4smp should carry blocks/depends-on edges to 37t.11 (not just relates-to), and 37t.11 should carry a soft depends-on / relates to 37t.4 (its stated 'ships first' prerequisite). Leave the prose; add the graph edges so ready-frontier ordering is machine-visible.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.4",
+   "kind": "acc-mismatch",
+   "evidence": "Description + design describe six distinct, testable behaviors (source-aware branching, relevance gating, hard token cap, freshness cache, POLYLOGUE_PREAMBLE=off escape hatch, self-logging instrumentation) but acceptance_criteria=null, so nothing pins which of those the bead is actually accountable for delivering.",
+   "fix": "Adopt the proposed_acceptance above so the six design points become the checkable done-state (they are arm-B instrumentation for cfk and cannot be verified as 'shipped' without them).",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-fnm",
+   "kind": "other",
+   "evidence": "Epic fnm has design=null and acceptance_criteria=null (domain file lines 210-211). It is a live P2 epic with 13 children spanning aggregates, transforms, terminals, macros, and cross-surface parity, but carries no acceptance criteria of its own.",
+   "fix": "Add an epic-level AC that its children are measured against, e.g.: 'The Lark grammar in expression.py remains the single query language for CLI/MCP/API/daemon/web (no second parser); aggregates beyond count, field projection, terminal projections, and user macros all extend it in place; every new field/unit/stage is reachable from completions and the generated support matrix.' This lets an auditor verify child coverage of the epic (currently there is no AC to check coverage against).",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-83u.4",
+   "kind": "acc-mismatch",
+   "evidence": "Title: 'Classify the 39,586 missing referenced blobs'. Acceptance: 'Every one of the 39,586 missing referenced blobs classified... direct-file-recoverable subset restored via blob-reference-restore-direct with SHA-256 verification.' But the bead's own refreshed description states: 'source-tier referenced blob debt is clean: ... 0 missing; diagnostics workload reports missing_referenced_blobs=0 ... The historical 39,586 warning is therefore not reproducible against the active archive and should be treated as stale/different-backup evidence unless the original backup directory/report is supplied.'",
+   "fix": "Rewrite the acceptance to match the refreshed evidence: acceptance should require EITHER (a) the operator supplies the original backup directory/report and its missing refs are classified+restored where SHA-verifiable, OR (b) record the accept decision that the active archive has 0 missing referenced blobs and pivot the deliverable to making source-tier backup debt and index-tier attachment acquisition debt separately and explicitly reported. Drop the hard '39,586' figure from the title or reframe it as 'historical backup warning'.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-1xc",
+   "kind": "acc-mismatch",
+   "evidence": "AC: 'Epic terminal state: every child closed and a scale-regression lane exists ... wired into the optional lanes.' But .beads/issues.jsonl contains '1xc' exactly twice (its own record at line 62 and a prose mention in polylogue-fie at line 254); `bd dep tree polylogue-1xc` shows no children and no bead has parent=polylogue-1xc. The epic's completion condition ('every child closed') is vacuously satisfiable / structurally impossible to track.",
+   "fix": "Give 1xc real children: reparent the three matching bound-cost beads (ma2/0ns/6wnh) under it and create the three gap beads above (insight-rebuild chunking, run_ref sibling audit, scale-regression lane). The AC then becomes checkable. The epic points to gh-2465 as the authoritative checklist, but 'every child closed' is a Beads-side condition and needs Beads-side children.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-1xc",
+   "kind": "stale-ref",
+   "evidence": "Epic design: 'the run_ref global-PK collision class was fixed (#2464)'. The corresponding bead polylogue-85z0 is CLOSED. The epic still lists this as a live tier-1 item to 'work'; only the sibling-audit half remains open. The wording reads as if the primary fix is still pending.",
+   "fix": "Update the tier-1 note to mark the #2464/85z0 instance fixed and scope the remaining work to the sibling audit (the proposed gap bead), so the open surface is not confused with the already-shipped fix.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-212",
+   "kind": "acc-mismatch",
+   "evidence": "Epic title: 'Demo portfolio: construct-valid demos (D1/D2/D4/D5)' \u2014 enumerates four demos. Actual children (6): 212.1 'Post-hoc forensic Q&A' (no D-letter), 212.2 (D1), 212.3 (D2), 212.4 (D4), 212.5 (D5), 212.6 (D8). The title omits 212.1 and 212.6 and the description explains D3/D6/D7 are elsewhere but never mentions that D8 (212.6) and an un-lettered forensic demo were added.",
+   "fix": "Update the epic title to reflect actual scope (e.g. drop the parenthetical enumeration, or make it 'D1/D2/D4/D5 + forensic-QA + D8'); give 212.1 a canonical D-number or state it is the umbrella forensic demo; note D8's addition in the description so the D-map stays legible to a cold reader.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-cpf",
+   "kind": "acc-mismatch",
+   "evidence": "Acceptance says 'Six doctrine documents committed and indexed'. The operator comment (2026-07-04) salvages from superseded docs/execution-plan.md two doctrine fragments NOT in the enumerated six: four NON-GOALS REGISTER candidates (desktop-automation non-goal, OTLP-is-projection, context-images-are-projections, no-one-off-palette) and a LOCALITY/CLOSEOUT-POSTURE rule ('a cloud agent cannot certify deployed truth; closeout of deployment-smoke / receiver-archive / copied-profile proof requires operator live archive') that the comment states 'is not stated as doctrine'. docs/execution-plan.md still exists (17KB) and docs/doctrine/ does not exist yet.",
+   "fix": "Extend cpf acceptance additively: (a) the four salvaged non-goals-register entries are folded into the non-goals-register doctrine (or explicitly rejected with rationale); (b) a decision is recorded on the closeout-posture rule \u2014 folded into the degraded-modes doctrine OR spun as a seventh closure-discipline doctrine; (c) docs/execution-plan.md is retired/redirected once its two fragments are cross-checked. This does not overwrite the six-doctrine core \u2014 it closes the salvage the operator explicitly flagged.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-20d.4",
+   "kind": "wrong-type",
+   "evidence": "Filed type=task, labels area:cli/area:perf, but the described defect is behavioral: 'structured filters pay the FTS readiness gate' and 'Regression: structured-only query on an archive with deliberately-stale FTS must succeed' \u2014 i.e. structured queries are wrongly gated/blocked by unrelated FTS state. Title cites '#1860 parity'. That is a correctness/parity bug surfacing as latency, not a pure optimization.",
+   "fix": "Reclassify as type=bug (keep area:perf as a secondary label). The done-state is 'the query returns correct results without the spurious gate', which is a correctness assertion.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-k8k",
+   "kind": "scope-conflict",
+   "evidence": "k8k is parent=null, priority=2, about the Sinnix devshell wrapper (`/realm/project/sinnix/scripts/sinnix-direnvrc` routing polylogue through `sinnix-scope background`, 45.59s wall). Its acceptance mutates Sinnix/devenv scoping, not Polylogue code. This is a cross-repo environment bug tracked in the Polylogue backlog.",
+   "fix": "Keep k8k standalone (do NOT reparent under 20d): the fix lives in the Sinnix repo, so making it a 20d child would falsely imply Polylogue-code ownership of the front-door latency it measures. Add a note/ref linking k8k to 20d as measurement context (the wrapper inflates every interactive Polylogue read the 20d work is trying to speed up).",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-jnj",
+   "kind": "other",
+   "evidence": "Epic jnj is priority 3 (surface hygiene, correctly tier-4 in the frame) yet directly parents priority-2 children: x7d (rendering contract) and jnj.5 (bug, area:security). An epic sitting below its highest-value children understates the program's real top-of-frame item.",
+   "fix": "Either raise the epic to P2 to reflect that it contains correctness/security work, or (cleaner, see reorg) lift jnj.5 out of the hygiene epic so the epic stays honestly P3 and the security bug is tracked at its true priority independent of surface polish.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-jnj.13",
+   "kind": "scope-conflict",
+   "evidence": "jnj.13 redefines the no-arg TTY default ('status PLUS the five most recent sessions with one-key open'). jnj.8 also owns bare-invocation/reader-launcher coherence ('tutorial currently prints five status lines on a configured install' / 'reader launcher'). Both beads change what bare `polylogue` does on a TTY.",
+   "fix": "Make jnj.13 the concrete implementation slice of the bare-invocation default and mark jnj.8 as the umbrella onboarding-coherence bead that owns the decision, or add a dependency (jnj.13 depends on jnj.8's default-experience decision) so the two do not land conflicting no-arg behaviors.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-bby.9",
+   "kind": "scope-conflict",
+   "evidence": "bby.9 carries the `bby.` prefix (implying a bby child) but `bd show polylogue-bby.9` shows PARENT = polylogue-s7ae, and it is listed as a child under s7ae's tree. Meanwhile bby.11's design VIEW ROADMAP lists 'mission control (bby.9)' as one of its own view beads.",
+   "fix": "Confirm bby.9 is counted once, under s7ae (its real parent), not as a bby child. In bby.11's roadmap, reference bby.9 as an s7ae-owned view that renders against the bby.11 scaffold, not as a bby deliverable \u2014 so the coordination mission-control isn't double-counted across the two epics.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.8",
+   "kind": "scope-conflict",
+   "evidence": "bby.8 design: 'applied to the existing SPA (sequence after bby.6 extracts the JS to real files \u2014 refactoring inline-string JS is not viable)'. bby.11 design: rewrites the SPA in TypeScript+Preact and lists 'virtualized lists (bby.8)' as a foundation item it incorporates. Building virtualization/optimistic-nav on the extracted inline-string SPA and then discarding it in the v2 rewrite is duplicated work.",
+   "fix": "Decide the target: either fold bby.8's four techniques into bby.11's list/reader view (making bby.8 a v2 acceptance item, not a standalone old-SPA task), or explicitly mark bby.8 as old-SPA-only and 'do not start if bby.11 is greenlit'. Do not build both.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.6",
+   "kind": "scope-conflict",
+   "evidence": "bby.6 owns 'hand-rolled JS message rendering duplicating the Python renderers (drift risk)' and 'extract to real .js/.css static assets'. bby.11 design explicitly states 'bby.6's extraction is superseded for the JS (CSS tokens still shared) \u2014 re-note bby.6' and rebuilds components snapshot-tested against the Python renderer.",
+   "fix": "Narrow bby.6 to the current-SPA mechanical items (prompt() removal, theme variables, saved-query sidebar, canonical-URL link-out, CSS tokens). Move JS extraction and renderer-drift resolution into bby.11 so the drift is fixed once by the rewrite rather than tracked in two beads.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-7aw",
+   "kind": "wrong-type",
+   "evidence": "Filed as a single 'feature' but the acceptance enumerates five independently-checkable multi-PR outcomes: config-artifact ingest with content-hash versioning + watcher coverage; session->config-state resolution; skill-invocation report; one state-like CLAUDE.md section migrated to injected-equivalent with drill-verified parity; and the four-class classification map committed. The design has four numbered legs (CAPTURE/UNDERSTAND/REPLACEMENT-PATH/EDIT-FRICTION).",
+   "fix": "Reclassify 7aw as an epic and split into children: (a) config-artifact source family + content-hash versioning + watcher; (b) session->config-state join (session_agent_policies extension); (c) skill-invocation tracking report; (d) one-section migration drill (composes with stc experiment substrate); (e) config-doc surface + edit-affordance routing. Keep the four-class classification map as the epic's design artifact.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-5hf",
+   "kind": "other",
+   "evidence": "Description ends 'this bead's scope statement wins where they conflict' but the bead's actual scope statement is a single fragment ('Coverage, caveats, cached-vs-uncached splits, reasoning tokens, current-window + cumulative session usage'). There is no design and no acceptance for the GH thread to be overridden by.",
+   "fix": "Populate design+acceptance (see underspecified) so the 'scope statement wins' clause references real content; otherwise the boilerplate is asserting authority over an empty field.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-mhx.4",
+   "kind": "other",
+   "evidence": "mhx.4 dependency depends_on_id=\"emb-targets\" and mhx.5 depends_on_id=\"emb-targets\"; `bd show emb-targets` returns 'no issue found matching emb-targets'. Same for mhx.6 depends_on_id=\"emb-eval\" ('no issue found matching emb-eval').",
+   "fix": "The intended blockers exist under canonical IDs: emb-targets = polylogue-mhx.2, emb-eval = polylogue-mhx.3. Rewire mhx.4->mhx.2, mhx.5->mhx.2, mhx.6->mhx.3 (blocks). As stored, these three edges are dangling and the sequencing the designs rely on (recall/analytics after targets; efficiency after eval) is not actually enforced.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-mhx.1",
+   "kind": "scope-conflict",
+   "evidence": "mhx.1 design: 'Acceptance = 37t.5's demo ... that bead's scope collapses into verifying this abstraction end-to-end locally.' 37t.5 (Local embedding lane via OpenAI-compatible provider) describes the identical OpenAI /v1/embeddings client + LiteLLM gateway + dimension-as-tier-init + eval-before-default. fs1.6 also names 37t.5 as its 'forcing function'.",
+   "fix": "Collapse the duplication: make 37t.5 the acceptance-demo child of mhx.1 (or close it as folded, its scope explicitly absorbed into mhx.1 AC item 4). Keep one canonical provider-abstraction bead; do not run both as independent work.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-9e5.9",
+   "kind": "scope-conflict",
+   "evidence": "Epic 9e5 contract: 'the audit itself never mutates product code'. But 9e5.9 design (operator 2026-07-03) makes it 'a devtools bench campaign (devtools bench heuristics)' with a committed fixture corpus and compare mode -- i.e. it ships product/tooling code, not just an evidence artifact.",
+   "fix": "Either graduate 9e5.9 out of the read-only audit lane into an analytics/tooling epic, or amend the 9e5 epic contract to explicitly permit audit->repeatable-lane graduation. Do not silently keep a build task under a 'never mutates product code' epic.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.15",
+   "kind": "scope-conflict",
+   "evidence": "9e5.15 acceptance: 'at least one batched deletion PR merged with net-negative diff ... the lane is invocable via devtools'. That is execution + a new devtools lane, exceeding the epic's read-only audit-artifact contract.",
+   "fix": "Split into an audit half (the three-signal intersection artifact, read-only, stays in 9e5) and an execution follow-up (the deletion PRs + devtools lane) parented under a refactor/tooling epic, or re-contract the epic as above.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.16",
+   "kind": "scope-conflict",
+   "evidence": "9e5.16 acceptance: 'api-doc symbol check wired into verify; ... drifted rows fixed' -- wires a gate into devtools verify and edits the library API, not a read-only audit artifact.",
+   "fix": "Keep the reachability-matrix generation as the read-only audit; move the verify-gate wiring and drift fixes to a surface/contracts execution bead (rides 1fp, which its own design already references).",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5",
+   "kind": "acc-mismatch",
+   "evidence": "Epic states a clear per-child output contract in its description ('an evidence artifact ... plus follow-up beads ... the audit itself never mutates product code') but acceptance_criteria is null, so nothing checkably binds children to that contract -- which is exactly why .9/.15/.16 drifted past it.",
+   "fix": "Lift the description's output contract into the epic acceptance_criteria: 'every child produces a committed evidence artifact (method+numbers) and files follow-up beads for actionable findings; product-code/tooling changes are separate execution beads, not audit deliverables.'",
+   "_dom": "D14_audit_lane"
+  }
+ ],
+ "dep_priority": [
+  {
+   "id": "polylogue-lnd",
+   "issue": "missing-dep",
+   "detail": "lnd (Decision: beads vs assertions boundary) ends 'Status: working doctrine; revisit when beads ingestion lands' and its seam (1) explicitly references 'the beads-history ingestion bead' (7fj) for the close-reason claim-vs-evidence composition. There is no recorded dependency or relates-to edge from lnd to 7fj (its dependencies are null in D01_coordination.json line 384-386).",
+   "proposed": "Add a relates-to (or revisit-blocked-by) edge lnd -> polylogue-7fj so the 'revisit when beads ingestion lands' trigger is a graph fact, and a relates-to lnd -> polylogue-4c0 (4c0 implements the close-reason cross-check the decision describes).",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-s7ae",
+   "issue": "epic-ac-gap",
+   "detail": "The epic's live two-agent proof AC (worktrees + overlap + scoped message + context injection + handoff) is not covered by any child (see gaps). Additionally the epic AC 'Beads integration enriches ... hook health, gates, merge slot, claims, dependencies' is only partially realized: s7ae.1 reads bd list for the work item, but hook-health/gates/merge-slot enrichment is deferred into s7ae.2/d1y with no explicit acceptance line tying those back to the coordination envelope's beads fields.",
+   "proposed": "Create the capstone proof child bead (gaps entry) and add an explicit acceptance line on s7ae.2 or d1y that Beads hook-health/merge-slot state is surfaced through the coordination envelope's work_item.fields when present, so the epic AC's Beads-enrichment clause has a checkable owner.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-37t.4",
+   "issue": "priority-violation",
+   "detail": "37t.4 is P2 while 37t.11 (P1) explicitly names it as the prerequisite that 'ships first as the initial two sources and gets refactored onto the protocol here'. A P1 bead's stated first-lands dependency should not sit below it. 37t.4 is also arm B of the live uplift re-run (cfk), which the brief lists as top-of-frame.",
+   "proposed": "Raise 37t.4 to P1 (matching 37t.11) and add a dependency/relates edge 37t.11 -> 37t.4 so the 'ships first, then refactor' order is enforced, or explicitly re-scope 37t.11 to not require 37t.4 first.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t.11",
+   "issue": "missing-dep",
+   "detail": "37t.11's design asserts it must land before mhx.4/rvh/1hj/bfv wire their injection legs and that s7ae/4smp depend on it, but no blocks edges exist to those beads (only relates-to s7ae). Without edges, downstream injectors can be picked up before the arbiter exists, re-opening the exact fragmentation risk 37t.11 was created to fix.",
+   "proposed": "Add depends-on edges from mhx.4, rvh, 1hj, bfv (and s7ae, 4smp per focus note) TO 37t.11. These are cross-domain beads \u2014 flag to orchestrator to add the reverse edges.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-37t",
+   "issue": "epic-ac-gap",
+   "detail": "The epic has no acceptance_criteria, and its children do not fully cover its own four-stage title: the judgment stage has no owning bead (see gaps). So even if every current child closed, the epic's named loop would not be demonstrably closed.",
+   "proposed": "Add the epic acceptance above (end-to-end one-claim-through-four-stages demo) and the judgment-queue child bead so each named stage maps to an execution-grade owner.",
+   "_dom": "D02_context_loop"
+  },
+  {
+   "id": "polylogue-4smp",
+   "issue": "priority-violation",
+   "detail": "4smp (P1 epic) and all four P1 children are predicated on the read algebra: the epic AC says variants are 'rendered through the existing Query x Projection x Render algebra' and rlsb relates-to 4p1/jnj.1/fnm.2/fnm.6/fnm.10. But that substrate is lower priority and unbuilt: 4p1 (the 'one read algebra' DECISION) is P3 and still open (undecided), jnj.1 is P3, and fnm.2/fnm.6/fnm.10 are P2. A P1 spine epic cannot land coherently ahead of the P3 decision that defines its render/query contract.",
+   "proposed": "Either (a) lift the load-bearing read-algebra deps to P1 as explicit hard blockers of 4smp \u2014 at minimum make the 4p1 decision and the fnm terminal-stage/projection work (fnm.6/fnm.10) blockers, not mere relates-to \u2014 or (b) resequence 4smp so arso/0v9p (substrate, which need no read-algebra) proceed at P1 while rlsb/d4zk are gated behind the read-algebra frontier. Do not leave a P1 epic whose render/query AC depends on an unmade P3 decision.",
+   "_dom": "D03_content_variants"
+  },
+  {
+   "id": "polylogue-rlsb",
+   "issue": "missing-dep",
+   "detail": "rlsb defines variant render profiles (original-only / variant-only / dual / interleaved / hover-source) as RenderSpec layout and its own design warns 'no duplicated new variant-layout abstraction.' But ap7 (this domain: 'shared CLI/web renderer registry', RenderSpec layout profiles) and 1lm (selector x transform x budget algebra over ProjectionSpec) are exactly the shared render/projection machinery those profiles must plug into \u2014 and rlsb links neither. Building variant layouts without coordinating ap7's renderer registry re-opens the duplication rlsb explicitly forbids.",
+   "proposed": "Add relates-to edges rlsb -> polylogue-ap7 and rlsb -> polylogue-1lm (and mention them in the rlsb design's 'Coordinate with ...' list, which currently names fnm.2/6/10, jnj.1, bby.11, 4p1 but omits ap7/1lm). Variant dual/interleaved layouts should be render profiles in ap7's registry, not a new silo.",
+   "_dom": "D03_content_variants"
+  },
+  {
+   "id": "polylogue-rlsb",
+   "issue": "missing-dep",
+   "detail": "rlsb hard-blocks on 0v9p (language facts). rlsb's core deliverable \u2014 request variants through ProjectionSpec, label source-vs-variant, render dual/interleaved \u2014 does not require language detection; 0v9p only informs projection DEFAULTS such as 'translate-if-source-not-preferred.' Treating 0v9p as a hard blocker over-serializes the epic.",
+   "proposed": "Consider downgrading the rlsb depends_on 0v9p edge from 'blocks' to 'relates-to' so rlsb's variant projection/render can proceed in parallel with language-fact work; keep the hard block only on arso (the substrate rlsb genuinely needs).",
+   "_dom": "D03_content_variants"
+  },
+  {
+   "id": "polylogue-fnm.1",
+   "issue": "missing-dep",
+   "detail": "fnm.11's design states 'Feeds fnm.1 (aggregates) \u2014 do the matrix first so fnm.1 lands against known gaps' (domain file line 53). fnm.1 has only a parent-child dep on fnm; there is no ordering dep on fnm.11, so the intended sequencing (build the support matrix/gap list before aggregates) is not encoded.",
+   "proposed": "Add dependency: fnm.1 depends_on fnm.11 (type blocks/depends). The matrix generator doubles as the gap list fnm.1 targets.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.9",
+   "issue": "missing-dep",
+   "detail": "fnm.9 (pipeline-as-subquery, P4) description: 'defer until aggregates + child-count predicates prove the demand shape' (domain file line 340). It depends only on the epic; the two prerequisites it names (fnm.1 aggregates, fnm.7 child-count predicates) are not encoded as deps.",
+   "proposed": "Add dependencies: fnm.9 depends_on fnm.1 and fnm.9 depends_on fnm.7. Priority P4 already reflects the deferral; make the sequencing explicit.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-6kh",
+   "issue": "missing-dep",
+   "detail": "6kh design: 'Implemented as an implicit macro layer: the resolved prefs compile to a predicate group prepended to bare queries (the fnm.12 expansion machinery \u2014 visible in explain as implicit-scope)' (domain file line 368). 6kh currently depends only on y4c (settings registry); it also structurally depends on fnm.12's macro-expansion/provenance machinery to render implicit-scope in explain.",
+   "proposed": "Add dependency: 6kh depends_on fnm.12 (or at minimum on the shared expansion/provenance layer). Otherwise 6kh must build its own expansion path, contradicting its stated reuse of fnm.12.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-fnm.7",
+   "issue": "missing-dep",
+   "detail": "fnm.7 design: 'This is the query form of outcome-conditioned analytics \u2014 coordinate with the analytics program bead so they share the relation' (domain file line 263). The shared relation is the actions/child aggregation surface that fnm.1 aggregates also lower onto, but no dep or explicit cross-link to fnm.1 exists.",
+   "proposed": "Add a relates-to link fnm.7 <-> fnm.1 (or a soft dep) so the correlated-aggregate-subquery relation is built once and shared, not forked between child-count predicates and the aggregate pipeline.",
+   "_dom": "D04_query_dsl"
+  },
+  {
+   "id": "polylogue-38x",
+   "issue": "missing-dep",
+   "detail": "38x's seed findings include 'Codex FORK vs RESUME conflation' and 'Codex token lane normalizer divergence' \u2014 exactly the residual that ivsc ('Classify Codex state_5 token drift outside lineage replay') was split out to own (from closed 4ts.2). 38x currently has relates-to edges to 4ts and 83u (confirmed via bd show) but NOT to ivsc, and ivsc has zero dependencies.",
+   "proposed": "Add a relates-to edge 38x -> ivsc so the Codex-token-drift seed finding is explicitly linked to its owning executable bead. Separately, 38x's seed 'child usage rollups counting inherited prefix' is already FIXED by the CLOSED 4ts.2 and should be recorded as fixed (cite 4ts.2 close reason) in 38x's reconciliation table rather than re-triaged.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-gjg",
+   "issue": "missing-dep",
+   "detail": "gjg's FORENSICS part diffs a pre-compaction snapshot against the post-compact continuation's early context using 'the exact assembled context'. 4ts.5 delivers session_events boundary_start/end_position + boundary_message_id + get_effective_context(session, at_position) \u2014 the effective-context substrate gjg's loss measure needs to know what the model actually saw vs the full composed prefix. They overlap on compaction context derivation.",
+   "proposed": "Add a dependency gjg (forensics) -> 4ts.5 (compaction boundary columns / effective-context), or explicitly note in both beads that 4ts.5 provides the effective-context primitive gjg's loss forensics consumes, to avoid two divergent compaction-boundary models.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-4ts",
+   "issue": "epic-ac-gap",
+   "detail": "Epic AC terminal state includes 'composed correctly (read paths serve full logical transcripts across the branch-point matrix)'. Open children fix specific composition bugs (4ts.3 subagent-acompact, 4ts.4 read-txn atomicity) but no bead asserts a full composition-correctness matrix across all edge types (fork / resume / subagent / acompact / inline-compact / spawned-fresh). The closed 4ts.1 gate samples only prefix-sharing children through the composed read path.",
+   "proposed": "Either extend the 4ts.1 lineage-validation gate to assert composed-read correctness across every branch-point edge type (not just prefix-sharing sampling), or add a small child that runs a branch-point-matrix composition test on the live archive; make it the citable proof of the 'composed correctly across the branch-point matrix' criterion before the epic closes.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-1xc",
+   "issue": "epic-ac-gap",
+   "detail": "No child bead covers any of the epic's three AC obligations (tier-1 insight-rebuild chunking, run_ref sibling audit, scale-regression lane). The epic is P1 but currently un-actionable as an epic because it has no decomposition.",
+   "proposed": "Create the three gap beads above and reparent ma2/0ns/6wnh; only then can 'every child closed' mean anything.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-20d.15",
+   "issue": "priority-violation",
+   "detail": "b5l (P1, spine, 'Blue-green index rebuilds') is blocked by 20d.15 (P2, bulk ingest throughput) per its dependency; b5l's own design says the 20d.15 dependency is what makes the double-write window trivial. A P1 spine bead is gated on a P2.",
+   "proposed": "Either elevate 20d.15 to P1 (it is on the critical path of a P1 spine deliverable and owns the 20-40min downtime measurement), or weaken the b5l->20d.15 edge to 'related' since b5l's design already offers a slower-rebuild fallback (delta-replay) that does not require the 5-min target.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-pf1",
+   "issue": "priority-violation",
+   "detail": "hiu (P2, 'Collapse storage twins') is blocked by pf1 (P3, sync/async divergence diff). hiu's design step (0) makes pf1 a hard prereq ('reconcile the 10 documented divergences INTO the sync store ... BEFORE any wiring moves'). A P2 with a decided operator direction is gated on a P3.",
+   "proposed": "Elevate pf1 to P2 to match the bead it blocks, or fold pf1's divergence-reconciliation into hiu step (0) as an explicit sub-task so the collapse is not stalled behind a lower-priority standalone.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-3tl.10",
+   "issue": "missing-dep",
+   "detail": "3tl.10 (launch kit) design states 'the uplift result (cfk) decides how loud the memory claim gets (capability-phrased until then)' and the 3tl epic description names cfk 'the natural launch post'. Launch content is gated on cfk reporting, but there is no recorded dependency edge from 3tl.10 (or the epic) to polylogue-cfk.",
+   "proposed": "Add a blocks/depends edge: polylogue-3tl.10 depends_on polylogue-cfk (the memory-claim volume in the announcement cannot be finalized until the uplift re-run reports). Keeps the launch-gate sequencing legible instead of living only in prose.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-212",
+   "issue": "epic-ac-gap",
+   "detail": "The 212 epic has 6 children but acceptance_criteria=null \u2014 no portfolio done-state. The description carries a strong COMPOSITIONALITY RULE (every demo decomposes into product primitives; bespoke logic => file+build the primitive first) but nothing states when the portfolio is complete.",
+   "proposed": "Add epic acceptance: every child demo (1) reproduces on the seeded corpus (seed 1843) AND has a live-archive operator variant, (2) decomposes into product primitives per the compositionality rule with any bespoke-logic gaps filed as their own primitive beads, (3) ships a recording via visual-tapes machinery (3tl.5) and a workflow-registry entry so it is a golden path not a doc, (4) every displayed number resolves to structural evidence via --explain.",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-20d.12",
+   "issue": "missing-dep",
+   "detail": "20d.12 design explicitly states 'Sequence: lands with/after 20d.1 so CLI + webui + MCP all hit the same cache' \u2014 the cache is only worth building once the fast path routes callers through the daemon. But dependency_count=0 (only the parent-child edge exists).",
+   "proposed": "Add dep: polylogue-20d.12 depends_on polylogue-20d.1.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d.15",
+   "issue": "missing-dep",
+   "detail": "20d.15 text sets up two relationships that are prose-only: '20d.6 owns the LIVE catch-up lane ... this bead owns the BULK lane' (clean split, but the shared WAL-autocheckpoint interplay is cross-cutting) and its throughput target '>=100 rows/s ... stated in the SLO catalog as a maintenance-tier budget (20d.14)'. dependency_count=0.",
+   "proposed": "Add dep polylogue-20d.15 depends_on polylogue-20d.14 (its acceptance target is the budget 20d.14 must define). Record a coordinate/relates link to 20d.6 for the shared WAL/autocheckpoint measurement rather than a hard block.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d.14",
+   "issue": "epic-ac-gap",
+   "detail": "20d.14 is the definitional hub: its design says 'The budgets become the acceptance criteria for the sibling beads: fast path, cache, push, import deferral all cite this tier instead of inventing their own targets.' Several siblings already cite it in prose (20d.15 -> maintenance-tier budget; 20d.12 -> SLO lane hit-rate; 20d.13 -> within 2s) but no dep edges record that 20d.1/20d.2/20d.12/20d.13 acceptance depends on 20d.14 defining the tier.",
+   "proposed": "Treat 20d.14 as the budget anchor for the SLO story: add depends_on polylogue-20d.14 from 20d.1, 20d.2, 20d.12, and 20d.13 so their acceptance criteria reference the named budgets rather than re-inventing targets. Sequence 20d.14 (or at least its budget skeleton) ahead of the measured beads.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-20d.8",
+   "issue": "missing-dep",
+   "detail": "20d.8 description: 'Likely falls out of the action-unit outcome fields work (SQL-side pairing instead of Python row inspection). Re-measure after that lands.' 20d.10 in the same epic lowers the action matchers onto the actions view (SQL-side, keystone v16 columns). The 43s regen is an implied downstream of that SQL-side pairing work, but no dep is recorded and the upstream 'action-unit outcome fields work' bead isn't linked.",
+   "proposed": "Add a soft dep / relates edge polylogue-20d.8 depends_on polylogue-20d.10 (or the specific action-unit-outcome bead if it lives in another epic) and mark 20d.8 as 're-measure after upstream lands' so it isn't worked before its prerequisite.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-dmp",
+   "issue": "missing-dep",
+   "detail": "dmp design: 'Same verb over MCP already exists once 27p lands (candidate writer) \u2014 keep payload shapes identical.' polylogue-27p (write-capable MCP / candidate writer) is a real bead (present in beads_index). dmp requires the candidate-writer substrate to land first, but no dependency edge exists.",
+   "proposed": "Add dep: polylogue-dmp depends-on polylogue-27p (blocks). At minimum the shared candidate-writer/payload contract from 27p must exist before dmp can guarantee CLI/MCP note indistinguishability.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-jnj.3",
+   "issue": "priority-violation",
+   "detail": "jnj.3 (P3, 'Output dialect normalization ... remove aliases not buying value') and jnj.1 (P3, 'remove the aliases' after extending the spec algebra) both delete CLI aliases. t46 (P2 epic) explicitly owns alias deletion via named slices ('historical CLI aliases find_help/-n/--full/demo-shelf --bundle', 'status JSON compatibility aliases', 'config aliases'). Two epics assert ownership of the same 'delete parallel/alias surface' doctrine at different priorities with no sequencing.",
+   "proposed": "Sequence t46 (P2, replacement-first alias/bridge deletion) ahead of jnj.1/jnj.3 (P3), and partition the alias inventory: t46 owns historical/compat/config aliases; jnj owns per-view-flag and output-dialect aliases that only exist once the ProjectionSpec/RenderSpec algebra is extended. Add a relates-to/depends-on edge between jnj.3 and t46 so the same alias is not deleted twice or left orphaned.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-jnj",
+   "issue": "epic-ac-gap",
+   "detail": "The epic claims 'agents and users should be able to infer one rule for output format, destination, projection, and mutation safety' and 'Absorbs gh#2317 and gh#2309', but has no acceptance criteria defining that end-state, and no way to tell when the four 'one rule per concern' invariants are satisfied.",
+   "proposed": "Add epic AC: (1) exactly one output-format mechanism, one destination mechanism, one projection algebra, and one destructive-mutation contract remain across CLI/MCP; (2) gh#2317 scope (root onboarding/facets \u2014 jnj.2, jnj.8) and gh#2309 scope (config \u2014 jnj.9) each have a covering child that is closed; (3) a CLI-surface-audit test asserts no verb carries a boolean-mode mux or a per-view flag that duplicates the spec algebra.",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-bby",
+   "issue": "priority-violation",
+   "detail": "The epic bby is P3, but its child bby.11 is P1 (spine, wave:2) and two P1 epics (4smp, s7ae) relate-to bby.11 for their web/mission-control/variant projections (per their design text: 4smp anchors 'bby.11 and 90y for web/in-page UX'; s7ae uses 'bby.11 only where the web architecture must carry the projection'). A P3 epic reads as deep backlog while it actually gates P1 cross-epic web work.",
+   "proposed": "Lift epic bby to P2 to reflect that it carries P1-blocking architecture, OR reparent bby.11 out of bby into a foundational/spine epic and leave the remaining bby children at P3. The status quo hides a P1 spine decision inside a deep-backlog epic.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.8",
+   "issue": "priority-violation",
+   "detail": "bby.8 is P2 \u2014 higher than the epic (P3) and most siblings \u2014 for a perceived-performance web feature, but its premise (retrofit the inline-string SPA) may be obsoleted by the P1 bby.11 rewrite. Under the priority frame (proof/enablers/correctness > surface hygiene), a possibly-throwaway web-perf feature at P2 outranks its own foundation.",
+   "proposed": "Demote bby.8 to P3 and gate it on the bby.8-vs-bby.11 scope decision, or fold it into bby.11 (its techniques are already listed as bby.11 foundation items).",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-bby.11",
+   "issue": "missing-dep",
+   "detail": "bby.9 (web mission control) and rlsb (variant-aware reader render) are P1 and render against the v2 web stack, but they only relate-to bby.11 \u2014 there is no depends/blocks edge asserting bby.11 provides their scaffold. If v2 is the target web surface, their web legs cannot land before the scaffold exists.",
+   "proposed": "Either add blocks edges bby.11 -> (bby.9 web-render leg, rlsb web dual-lane leg), or document in bby.11 that these views may render on the current SPA (so the sequencing is intentional, not accidental). Operator already hedged with 'bby.11 only where the web architecture must carry the projection' \u2014 make that boundary explicit as an edge or a note rather than leaving it as an unlabeled relates-to.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-fs1.1",
+   "issue": "priority-violation",
+   "detail": "fs1.4 (P2, forensics report / flagship demo) has a blocks-dependency on fs1.1 (P3, Hermes state.db importer). fs1.1 also blocks fs1.5 and fs1.6. A P3 blocker gating the P2 deliverable is a priority inversion \u2014 the keystone importer + wiring-completion (keystone outcome extraction, real fixtures) is prerequisite to every downstream Hermes bead.",
+   "proposed": "Raise fs1.1 to P2 to match the highest bead it blocks (fs1.4). Alternatively, if the Hermes program is genuinely gated (epic says priority rises when an artifact is scheduled), drop fs1.4 to P3 so the whole fs1 subtree is P3-consistent \u2014 but do not leave a P2 blocked by P3.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-2qx",
+   "issue": "missing-dep",
+   "detail": "o21 (declare-once across ALL extension points; wave:1) explicitly lists origins as one of its extension points ('a new origin touches detector, parser, enum, schema package, usage-coverage, completeness matrix') and sequences 'pilot on MCP tools, extract the pattern, then sweep the rest one per PR'. 2qx (OriginSpec) IS the origin sweep \u2014 the deep, strictness-tier-derived instantiation of o21's declare-once pattern for the origin extension point.",
+   "proposed": "Add a dependency 2qx depends-on o21 (o21 extracts the declare-once pattern first) and tag 2qx wave:2 so it follows o21's wave:1. Keep them separate beads: 2qx carries origin-specific value (derived dispatch by strictness tier) beyond a mechanical pattern application.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-rii.1",
+   "issue": "epic-ac-gap",
+   "detail": "rii epic carries an OPERATOR GATE ('full program needs explicit green-light before a large build') and per focus-hint overlaps s7ae (coordination) and 37t (context loop): rii.1's agent work-event write-leg is adjacent to 37t's in-loop context read and s7ae's coordination writes. The boundary of which program owns the generic write-leg vs the context-read-back vs coordination is not pinned in rii's epic (design=null).",
+   "proposed": "Add an epic design/boundary note on rii stating: rii owns the generic write-leg + intake seams (record_work_event->session_events->read-models); 37t owns the read-back/context-compilation loop; s7ae owns multi-agent coordination semantics. Orchestrator should reconcile against s7ae/37t records (not in this slice) before marking rii.1 ready given the operator gate.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-mhx.1",
+   "issue": "missing-dep",
+   "detail": "mhx.1 depends_on polylogue-37t.5 (type blocks), i.e. the general provider abstraction is recorded as BLOCKED BY its own local-lane demo. mhx.1's design says the reverse: 37t.5 collapses into mhx.1's acceptance. The dependency direction is backwards.",
+   "proposed": "Reverse to 37t.5 depends_on mhx.1 (or drop the edge and reparent 37t.5 as mhx.1's demo child). The abstraction is the enabler; the local-lane demo is a downstream verification of it.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-mhx.4",
+   "issue": "missing-dep",
+   "detail": "Because the emb-targets/emb-eval alias edges do not resolve, mhx.4 and mhx.5 have NO effective blocking dependency on the session/assertion vector classes they consume (mhx.2), and mhx.6 has no effective dependency on the quality gate (mhx.3) it explicitly says it must sequence after ('efficiency without a quality gate is how retrieval silently degrades').",
+   "proposed": "Add real edges: mhx.4 blocks-on mhx.2, mhx.5 blocks-on mhx.2, mhx.6 blocks-on mhx.3. Ready frontier is then correctly just mhx.2 and mhx.3.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-mhx",
+   "issue": "epic-ac-gap",
+   "detail": "The mhx epic has a rich description but design=null and acceptance_criteria=null, and none of its children carry acceptance either, so the epic has no rollup done-state. The description enumerates five owned gaps (provider generality, embed-target policy, measured retrieval, lifecycle honesty, advanced uses) but there is no acceptance line tying child completion to epic closure.",
+   "proposed": "Add epic acceptance: epic closes when mhx.1 (generality), mhx.2 (targets), mhx.3 (measured retrieval + default updated from evidence), and lifecycle-honesty pair (0k6 staleness + mhx.6 spend/drain) are closed; mhx.4/mhx.5 (recall/analytics) may spin to follow-ups if the eval (mhx.3) does not justify their cost.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-b0b",
+   "issue": "missing-dep",
+   "detail": "b0b (replace keyword heuristics) has dependency_count 0, but 9e5.3 states it is 'the go/no-go gate for the heuristic->structural sweep bead' and 9e5.9 states it 'produces the labeled fixture set that sweep needs for regression'. Both are prerequisites asserted in prose but unrecorded.",
+   "proposed": "Add b0b depends_on 9e5.3 (structural-column coverage go/no-go) and b0b depends_on 9e5.9 (accuracy baseline + labeled fixtures). Also link b0b relates-to the claim-vs-evidence campaign (devtools/claim_vs_evidence.py exists) since b0b's tool_result_is_error/exit_code consumption is that campaign's analytics stratum.",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.16",
+   "issue": "missing-dep",
+   "detail": "9e5.16 design explicitly builds its capability matrix from 'facade methods (9e5.14 map)', so it cannot start before 9e5.14 produces that map. dependency_count on .16 is 0; .14 shows dependent_count 1 (edge asserted somewhere but not the .16 parent-independent dep).",
+   "proposed": "Add 9e5.16 depends_on 9e5.14 (facade decomposition map).",
+   "_dom": "D14_audit_lane"
+  },
+  {
+   "id": "polylogue-9e5.15",
+   "issue": "missing-dep",
+   "detail": "9e5.15 (systematic dead-code sweep) design names 9e5.5 (dead-table kill list) as one of the already-beaded component signals it intersects/complements; its table-level output feeds the sweep's coverage picture.",
+   "proposed": "Add 9e5.15 relates-to (or depends_on) 9e5.5 so the table-level and symbol-level dead-weight audits are sequenced, not run twice from scratch.",
+   "_dom": "D14_audit_lane"
+  }
+ ],
+ "reorg": [
+  {
+   "id": "polylogue-4c0",
+   "change": "new-epic",
+   "from": "parent=null (standalone)",
+   "to": "new epic 'Beads/devloop work-evidence rail' grouping 4c0, 7fj, lnd, lio, kph (and 6mv's emitter task)",
+   "rationale": "4c0 (session<->bead join), 7fj (beads-history ingestion, its substrate dep), lnd (beads-vs-assertions decision), lio (cross-repo devloop contract on beads), and kph (provenance-carrying PRs) form one coherent theme \u2014 joining external work-tracking/PR evidence with the archive \u2014 that is distinct from s7ae's live-agent coordination. They are currently all parent=null. An epic would make 7fj's blocking role and the decisions' scope explicit instead of a loose standalone cluster. Medium confidence: only propose if the orchestrator agrees the cluster is real; do not force-fit h6r (it belongs to the analytics/uplift tower, blocking h10) into it.",
+   "_dom": "D01_coordination"
+  },
+  {
+   "id": "polylogue-ap7",
+   "change": "reparent",
+   "from": "(none)",
+   "to": "polylogue-fnm",
+   "rationale": "ap7 and 1lm are standalone parentless P2 read-algebra tasks, yet both explicitly extend the same substrate: 1lm 'Extend ProjectionSpec (jnj.1) ... 4p1's Projection axis, deepened'; ap7 'Layout profiles ... RenderSpec presets per 4p1.' fnm ('Query DSL: one grammar owns query semantics') and jnj ('Product surface algebra') are the read-algebra epics. Parenting ap7 (and 1lm) under the read-algebra epic makes the program that 4smp depends on visible as one deliverable rather than three floating tasks. Low confidence \u2014 they may be intentionally standalone; if so, at minimum link them under 4p1/fnm so the read-algebra frontier is auditable as a unit.",
+   "_dom": "D03_content_variants"
+  },
+  {
+   "id": "polylogue-gjg",
+   "change": "new-epic",
+   "from": "task (parent=null)",
+   "to": "epic under polylogue-s7ae with children",
+   "rationale": "gjg is typed 'task' with parent=null but its design carries four epic-sized workstreams (PreCompact snapshot capture, corpus-wide compaction-loss forensics measure, opt-in re-grounding SessionStart lane armable as an ExperimentSpec, and the 37t handoff-triad documentation) and it is already dep-linked to s7ae via d1y and references the 37t epic. Promote to an epic (or at minimum reparent under s7ae) and decompose into children so each part becomes independently ready/verifiable rather than one unschedulable mega-task.",
+   "_dom": "D05_storage_evidence"
+  },
+  {
+   "id": "polylogue-ma2",
+   "change": "reparent",
+   "from": "(none)",
+   "to": "polylogue-1xc",
+   "rationale": "ma2 (FK index for web_content_constructs message cleanup) is a textbook 1xc case: correct on small fixtures, SCAN over ~89k rows on the live v24 rebuild. Its blockers 3wb and 6h7 are both now CLOSED, so it is ready-frontier and gives the empty epic a concrete, verifiable child.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-0ns",
+   "change": "reparent",
+   "from": "(none)",
+   "to": "polylogue-1xc",
+   "rationale": "0ns (bound embedding work within large sessions) is exactly 1xc's stated class: 'code correct on small/clean fixtures but wrong at real scale ... giant single artifacts'. Unbounded per-session embedding only bites on huge Codex/Claude sessions.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-6wnh",
+   "change": "reparent",
+   "from": "(none)",
+   "to": "polylogue-1xc",
+   "rationale": "6wnh (bound thread_refresh for large Codex appends) is the same scale-bug class (3.02s of 3.04s graph_resolve on a 340.8MB Codex append). Its blocker 3wb is CLOSED, so it is ready. Reparenting ma2/0ns/6wnh converts the empty epic into a real 3-child decomposition.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-iec",
+   "change": "reparent",
+   "from": "(none)",
+   "to": "(keep standalone)",
+   "rationale": "Considered and REJECTED reparenting iec/hiu/b5l/exb under 1xc. 1xc's scope is confirmed-severe scale BUGS; iec is a proactive schema-cost audit, hiu/exb are refactors (twin collapse, layering), and b5l is an operational architecture change (P1 spine in its own right). They relate to scale but are not the 'wrong-at-scale bug' class 1xc owns; only the bound-cost/scan-bug beads (ma2/0ns/6wnh) belong under it.",
+   "_dom": "D06_scale_storage_perf"
+  },
+  {
+   "id": "polylogue-3tl.4",
+   "change": "reprioritize",
+   "from": "P3",
+   "to": "P2",
+   "rationale": "3tl.4 produces the 'published finding URL' that is item (3) of the 3tl epic's OWN acceptance and is the named enforcement site for cpf's provenance stanza plus the citation target for 3tl.3/3tl.10/3tl.8. It is a wave:2/spine enabler on the epic's critical path sitting at P3 (deep-backlog tier) while its dependents also sit at P3 \u2014 the finding URL cannot exist until 3tl.4 lands, so it is under-prioritized relative to the frame (campaign enablers > surface hygiene).",
+   "_dom": "D07_legibility_demos"
+  },
+  {
+   "id": "polylogue-k8k",
+   "change": "reparent",
+   "from": "null (standalone)",
+   "to": "keep standalone (do NOT move under polylogue-20d)",
+   "rationale": "Answering the focus hint: k8k does not belong as a 20d child. Its fix is in the Sinnix repo (devshell scope wrapper), not Polylogue code; 20d children are Polylogue-code front-door perf work. Reparenting would misattribute ownership. Link it to 20d as external measurement context instead.",
+   "_dom": "D08_interactive_perf"
+  },
+  {
+   "id": "polylogue-jnj.5",
+   "change": "reparent",
+   "from": "polylogue-jnj",
+   "to": "(standalone P2 correctness bug, or a security/mutation-safety bead)",
+   "rationale": "jnj is a surface-hygiene program (correctly P3 in the priority frame). jnj.5 is a P2 area:security bug where `ops reset --session/--source` tombstones before any confirmation (reset.py:260-277). Nesting live correctness/security work under a hygiene epic makes the epic's priority ambiguous and risks the bug inheriting hygiene-tier deprioritization. Track it at its true priority independent of the polish program (keep a relates-to link to jnj for the shared mutation-contract theme).",
+   "_dom": "D10_surface_algebra"
+  },
+  {
+   "id": "polylogue-3v1,polylogue-90y",
+   "change": "new-epic",
+   "from": "parent=null (both standalone)",
+   "to": "new epic e.g. 'Capture extension: reliability, coverage, and in-page presence'",
+   "rationale": "3v1 (MV3 spool health/badge/completeness/gemini bridge/error telemetry) and 90y (in-page shadow-DOM overlay: archive state + assertion capture) are both P2, both area:ingest+area:web, and both scoped to the browser extension \u2014 a coherent cluster distinct from the daemon-served web workbench (bby is the daemon reader). They have no owning epic, so extension work is uncounted at the epic level. Group them (and future extension beads) under a capture-extension epic; do NOT reparent them under bby, since 3v1 is pure MV3 reliability with no daemon-reader surface. Caveat: verify no existing capture/extension epic already exists before creating a new one.",
+   "_dom": "D11_web_workbench"
+  },
+  {
+   "id": "polylogue-5hf",
+   "change": "new-epic",
+   "from": "standalone P2 (area:usage)",
+   "to": "usage/cost-honesty epic parenting 5hf + lineage-token-double-count + cost-reconciliation companions",
+   "rationale": "Answering the focus hint: 5hf must NOT go under fs1 \u2014 cost honesty is cross-provider correctness, not Hermes-specific. It names two companions (lineage-tokens double-count, cost-reconciliation probe) and the residual #2472 partitioning bug; those + 5hf form a coherent usage epic. If those companions already exist as beads elsewhere, parent them together; otherwise 5hf can stay standalone but must be specified. Keep it out of the Hermes bridge subtree either way.",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-7aw",
+   "change": "new-epic",
+   "from": "type=feature",
+   "to": "epic with 4-5 children (capture/versioning, session-config join, skill-invocation report, one-section migration drill, config-doc surface)",
+   "rationale": "Acceptance enumerates five independent multi-PR done-states and the design has four numbered legs; a single feature bead cannot honestly track it as one PR-shaped unit (see inconsistencies wrong-type).",
+   "_dom": "D12_intake_sources"
+  },
+  {
+   "id": "polylogue-0ns",
+   "change": "reparent",
+   "from": "(none \u2014 parentless P2)",
+   "to": "polylogue-mhx",
+   "rationale": "0ns ('Bound archive embedding work within large sessions') is embedding daemon-drain work: _embed_archive_sessions_sync checks the stop-after-seconds bound only between sessions while embed_archive_session_sync can run a huge session past the daemon window. It is squarely embedding-lifecycle and overlaps mhx.6's DRAIN SCOPING item. Parent it under mhx and note the overlap with mhx.6 (windowed selection vs whole-session unit). Focus hint suggests 1xc (scale) as an alternative home; embedding-specific behavior argues for mhx, but if 1xc owns daemon responsiveness broadly, cross-link rather than fully move.",
+   "_dom": "D13_embeddings"
+  },
+  {
+   "id": "polylogue-9e5",
+   "change": "new-epic",
+   "from": "polylogue-9e5 (audit lane, read-only)",
+   "to": "audit-lane (pure read-only artifacts) + audit-graduation execution epic",
+   "rationale": "The epic is coherent as a catalog, but operator direction on 9e5.9 (make it a repeatable devtools lane) plus the acceptance criteria on .15 (merged deletion PRs, new lane) and .16 (verify gate + API fixes) show the natural arc is audit -> tooling/execution. Rather than let build tasks sit under a 'never mutates product code' epic, either (a) re-contract 9e5 to permit graduation and spin child execution beads for .9/.15/.16's build+merge halves, or (b) create a sibling execution epic that receives those halves. Low-churn preference: (a) plus splitting .15/.16 execution out; keep the read-only measurement halves in 9e5.",
+   "_dom": "D14_audit_lane"
+  }
+ ]
+}

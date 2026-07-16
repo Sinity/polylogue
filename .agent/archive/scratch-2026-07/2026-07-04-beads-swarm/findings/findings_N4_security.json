@@ -1,0 +1,66 @@
+{
+  "domain": "security-privacy",
+  "summary": "Excision (27m) is well-specified and execution-grade but is epic-sized (excision engine + ingest secret scanner + retro pass) filed as one flat P2 bead with no children and no owning epic. The bigger structural gap: docs/plans/security-privacy-coverage.yaml declares three 'major' coverage_gaps (xss-prevention test, crawl-source file-permissions, CI secrets scanning) whose only owner is GH issue 590 — no bead covers any of them, and there is no security/privacy epic to parent 27m/jsy/jnj.5/jnj.7. Daemon network/CSRF/MCP-role commitments in security.md are genuinely enforced by tests, so the gap is in backlog ownership, not runtime controls.",
+  "underspecified": [
+    {
+      "id": "polylogue-jnj.5",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`polylogue ops reset --session <typo-ref>` prints a dry-run envelope with zero target rows and performs NO tombstone mutation (verified: suppression state unchanged before/after). `--session <real-ref>` without --yes prints the exact target rows (origin/native_id + per-tier counts) and mutates nothing; adding --yes performs the tombstone. Both the dry-run and the mutation emit the same stable JSON envelope shape used by the other destructive ops. A regression test asserts the tombstone write happens AFTER the confirmation branch (the audited bug was that it happened before).",
+      "why": "Bead is a confirmed security-correctness bug (destructive identity reset bypasses dry-run/--yes, so a typo mutates suppression state). Its design carries a test sketch but the acceptance field is null; a ready-frontier destructive-op fix needs a checkable done-state with verify command before it is claimable."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Own the declared security coverage-manifest gaps (XSS test, crawl-source perms, CI secrets scan)",
+      "type": "task",
+      "priority": 2,
+      "parent": "<propose new security/privacy epic; see reorg>",
+      "why": "docs/plans/security-privacy-coverage.yaml:140-167 declares three coverage_gaps with severity: major and owner: security-privacy: (1) security.xss-prevention 'No dedicated XSS test file; relies on snapshot rendering', (2) security.file-permissions 'Crawl-source file permissions not verified', (3) security.secrets-detection 'No automated secrets scanning in CI'. The sole owner recorded is GH issue 590, and per swarm doctrine 'GH issues are external-refs, NOT mirrors' — no bead owns these. review_after dates (2026-08-01) will lapse with no tracked work. Repo grep confirms no gitleaks/GitGuardian workflow file under .github/workflows/ and no bead references a dedicated XSS test, crawl-source permission check, or CI secrets scan.",
+      "design": "Split into three checkable slices tracked as one bead or three: (a) add tests/unit/security/test_xss_sanitizer.py exercising sanitize_html() (polylogue/rendering/renderers/html_sanitizer.py) directly against script-tag/event-handler/javascript:-URL vectors incl. the _SCRIPT_RE whitespace/junk-attr bypass cases, instead of relying on snapshot rendering; (b) add a permission assertion for crawl-source/data files paralleling the existing FileTokenStore 0o600 check in tests/unit/security/test_path_sanitization.py::TestFileTokenStoreSecurity; (c) decide and wire a CI secrets scan (gitleaks-class ruleset over repo source) — distinct from 27m's ingest-side archive-content scanner — or explicitly downgrade/close the manifest gap if org-level GitGuardian already covers it. Whichever lands, update security-privacy-coverage.yaml so the gap's owner is the bead id, not issue 590.",
+      "acceptance": "Each of the three manifest coverage_gaps is either (i) closed with the described test/CI control landed and the manifest 'gap' entry updated to reference the owning bead and a passing next_evidence command, or (ii) an explicit decision recorded (with rationale) downgrading severity. `pytest -q tests/unit/security` exercises a dedicated XSS test and a crawl-source-permission test; the secrets-scan decision is reflected in .github/workflows or a decision bead.",
+      "deps": []
+    },
+    {
+      "proposed_title": "MCP write/admin destructive paths (session delete, maintenance) share the excision/reset audit contract",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-27m",
+      "why": "docs/daemon-threat-model.md:72-79 documents that the MCP `write` role can perform 'session deletion' and `admin` can run maintenance/rebuilds — a destructive surface parallel to CLI `ops reset` (which jnj.5 is routing through a dry-run/--yes/JSON mutation contract). jnj.5 and 27m only cover CLI-side destructive ops; there is no bead ensuring MCP write-role deletion produces an ops.db audit row / tombstone (27m's audit-row discipline). Since MCP is non-interactive, --yes does not apply, so it needs its own explicit destructive-effect audit rather than inheriting the CLI contract for free.",
+      "design": "Verify polylogue/mcp/server_tools.py write-role delete and admin maintenance paths; if a write-role delete tombstones/deletes without an ops.db audit row or reason, extend it to emit the same audit-row evidence 27m defines for `polylogue ops excise` and jnj.5 defines for `ops reset`. Add a per-tool contract test (tests/unit/mcp/test_per_tool_contracts.py) asserting a write-role delete records durable audit evidence.",
+      "acceptance": "A write-role MCP session-delete produces an ops.db audit row (actor/role, reason, target native_id, timestamp) and the deletion is recoverable-as-intent via that audit trail; an admin-role maintenance op is likewise audited. Contract test asserts the audit row exists after the operation.",
+      "deps": ["polylogue-jnj.5"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "docs/plans/security-privacy-coverage.yaml",
+      "kind": "stale-ref",
+      "evidence": "coverage_gaps entries at lines 141-167 all set `issue: 590` as the sole owner, and the manifest header is dated 'Updated 2026-04-29'. Per swarm doctrine, GH issues are external refs, not bead mirrors; no Polylogue bead references issue 590 for these gaps (the only '590' hit in beads_all.json is polylogue-6h7, an unrelated closed index-schema-v24 bead). The declared 'No automated secrets scanning in CI' gap also can't be confirmed against reality: no gitleaks/GitGuardian workflow exists under .github/workflows/, so the gap is plausibly still open but tracked nowhere durable.",
+      "fix": "Create/attach owning beads for each coverage_gap (see gaps[0]) and rewrite the manifest gap owners from `issue: 590` to the bead id. If org-level GitGuardian actually covers the secrets-detection gap, downgrade/close that entry with evidence rather than leaving a major gap pointing at an untracked GH issue."
+    },
+    {
+      "id": "polylogue-27m",
+      "kind": "scope-conflict",
+      "evidence": "27m bundles two independent programs in one flat P2 bead: (1) the EXCISION engine (source tombstone + content_hash recompute + derived-tier rebuild + ref-counted blob delete with GC-lease discipline + embeddings delete + FTS) and (2) an INGEST-side SECRET SCANNER (entropy + gitleaks-class ruleset -> secret_candidate assertions -> judge queue -> excise on accept) plus a rate-limited retro pass over the live 38GB archive. Its own acceptance lists four separable done-states (excise-all-tiers, no-resurrect-on-reingest, scanner-flags-without-logging, retro-scan-bounded-list). This is multi-PR epic scope, not one PR.",
+      "fix": "Promote 27m to an epic with children: 27m.1 excision engine + `polylogue ops excise <ref>` (dry-run/reason/ops.db audit), 27m.2 blob/embedding tier excision + no-resurrect idempotency guard, 27m.3 ingest secret-candidate scanner (span-coords only, never log value), 27m.4 retro rate-limited corpus scan. Keep the strong existing description/design/acceptance and distribute the acceptance clauses across children."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-27m",
+      "issue": "missing-dep",
+      "detail": "27m's excise operation is specified as 'a single polylogue ops excise <ref> with a mandatory reason, a dry-run diff, and an ops.db audit row' — the exact mutation contract jnj.5 is establishing for `ops reset --session/--source` (dry-run preview + --yes + stable JSON). Building excise on top of, not parallel to, that contract avoids a second bespoke destructive-op path. Additionally, 27m's secret-candidate scanner emits assertions into the judge queue, which depends on the candidate/judgment substrate (polylogue-p5g 'polylogue judge' and the polylogue-37t agent context/memory candidate loop).",
+      "proposed": "Add dep 27m -> jnj.5 (share the destructive mutation contract). Add dep for the scanner half onto the judgment-queue substrate (p5g / relevant 37t child) once 27m is split — the scanner slice needs somewhere to surface candidates."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-27m",
+      "change": "new-epic",
+      "from": "(standalone P2, parent=None)",
+      "to": "Security & privacy epic (proposed)",
+      "rationale": "There is no security/privacy epic anywhere in the open backlog (confirmed by scanning all parent-less-with-children beads). Security work is scattered: 27m (excision+secret hygiene, standalone), jsy (blob-hash hardening, standalone P3), jnj.5 (reset security bug) and jnj.7 (provider-token help leakage) live under jnj which is a CLI *surface-algebra* epic, not a security epic. docs/plans/security-privacy-coverage.yaml is itself an owned surface ('owner: security-privacy') with no owning bead. A thin security/privacy epic should parent: 27m (split per inconsistencies), jsy, the manifest-gap bead (gaps[0]), and the MCP-destructive-audit bead (gaps[1]); jnj.5/jnj.7 can stay under jnj but be cross-referenced. This gives the security manifest and the daemon threat-model's 'Secrets in sessions... future redaction layer' commitment a durable owner instead of a scatter of orphans."
+    }
+  ]
+}

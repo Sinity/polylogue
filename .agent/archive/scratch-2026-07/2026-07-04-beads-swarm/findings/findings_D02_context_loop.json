@@ -1,0 +1,84 @@
+{
+  "domain": "D02_context_loop",
+  "summary": "The 37t.11 context scheduler is the only execution-grade child (full design + 5 checkable AC, and its greenfield claims — ContextSource protocol, context ledger — verify as not-yet-existing while its impl home context/compiler.py + context/preamble.py are real), so it is strong enough to be depended on. But its blocking role is under-encoded: it narrates 'lands BEFORE mhx.4/rvh/1hj/bfv' and '37t.4 ships first then is refactored onto the protocol here' with zero dependency edges to match, and 37t.4 (its stated prerequisite, plus uplift-arm-B) sits at P2 below the P1 scheduler. The epic names a four-stage loop (claims->judgment->preamble->reboot) but the JUDGMENT stage has no bead — it survives only as a one-line 'the gap is operator-ergonomic review flow' inside 37t.1's design — and the epic itself plus every child except 37t.11 has null acceptance_criteria.",
+  "underspecified": [
+    {
+      "id": "polylogue-37t",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Epic-level: the loop is closed when a declared claim can travel end-to-end through all four named stages against the live archive. Stage owners: claims = 37t.2 (author-declared markers -> candidate assertions) + 37t.1 (assertion consumer wiring); judgment = operator review/accept/reject queue (NO CHILD OWNS THIS — see gaps); preamble = 37t.4 (SessionStart rollout) refactored onto 37t.11 (scheduler arbiter); reboot = 37t.3 (reboot-with-refs). 37t.11 is the coherence spine all preamble/recall sources register against.",
+      "proposed_acceptance": "A seeded end-to-end scenario demonstrates one claim flowing claims->judgment->preamble->reboot: an agent emits a declared marker (37t.2), it lands as a candidate assertion, the operator accepts it via the judgment queue, it appears (as a ref) in a compiled SessionStart preamble for the matching repo (37t.4/37t.11), and it survives a reboot-with-refs handoff (37t.3) resolvable via resolve_ref. Every stage has an owning open bead with non-null acceptance; no stage relies solely on prose in a sibling's design field.",
+      "why": "37t is a spine epic (title enumerates the four-stage loop) yet has design=null and acceptance_criteria=null, so there is no checkable 'loop is closed' done-state and no way to detect that the judgment stage is unowned."
+    },
+    {
+      "id": "polylogue-37t.4",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "compose_context_preamble is wired into the SessionStart hook (upgrading sessionstart-polylogue-recall.sh, not adding a second hook) for polylogue + sinnix; source-aware branching verified: startup injects the repo brief, resume injects a since-last-session delta, compact injects nothing (test asserts no polylogue bytes on source=compact). Hard token cap enforced (default ~600) with a test that a large brief degrades to refs. Relevance gate: cwd with no archive history -> zero injection (test). POLYLOGUE_PREAMBLE=off suppresses injection (test). The hook logs its own injection as a queryable hook event (arm-B instrumentation for cfk). Freshness cache keyed by (repo, archive cursor) regenerates only on cursor move.",
+      "why": "37t.4 carries a rich 6-point design but acceptance_criteria=null. It is spine/wave:2, arm B of the live uplift re-run (cfk, top-of-frame per brief), AND 37t.11's stated first two ContextSources — a ready-frontier bead that must be execution-grade."
+    },
+    {
+      "id": "polylogue-37t.1",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "First writers exist for the three currently-unwired AssertionKinds (handoff, prompt_eval, highlight — verified present but writerless at core/enums.py:409/423/426) and each passes the user_audit every-kind-has-a-surface invariant with a registered ObjectRef scope_ref/author_ref. Preamble-consumed claims gain expiry: ASSERTION_CLAIM_KINDS admission (user_write.py:1520) extends its ACTIVE-only read with an expiry check (no new status). Operator judgment ergonomics: a bulk accept/reject-over-a-candidate-batch flow is demonstrated (or explicitly split to the new judgment-queue bead). Test: recording/expiring a claim never mutates sessions.content_hash.",
+      "why": "37t.1 is a core-loop (claims-wiring) stage with a detailed design but acceptance_criteria=null; its own design flags 'the gap is operator-ergonomic review flow (bulk judge candidate batches)' — the judgment stage — which needs an explicit checkable owner."
+    },
+    {
+      "id": "polylogue-37t.3",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "compile_context with a new prose_with_refs segment profile emits authored prose verbatim while every tool_use/result collapses to a one-line '<ref:action:...>' resolvable via resolve_ref (test: refs resolve to original block). Budget rule enforced: prose verbatim to 60% of budget, then oldest prose -> one-line recaps, first user message + last N turns kept verbatim, overflow recorded as ContextOmission(reason=budget) (ContextOmission verified at context/compiler.py:48). New session lineage: session_links inheritance='spawned-fresh' link_type='continuation' via record_manual_continuation(child,parent) + first handoff-kind assertion written. hookSpecificOutput.additionalContext field names verified against current Claude Code SessionStart docs.",
+      "why": "37t.3 is the 'reboot' stage the epic title names; it has a concrete design but acceptance_criteria=null, so the last stage of the loop has no verifiable done-state."
+    },
+    {
+      "id": "polylogue-37t.2",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "Final sigil chosen after a corpus collision scan (grep live archive for candidate-prefix false positives; record the scan). Line-anchored '::kind(args): body' and inline '[[kind: body]]' parse at block enrichment into typed rows with exact message/block provenance; malformed markers extract as kind=malformed with raw text (never silently dropped) and malformed-rate is a recorded measure. Kind registry (declare-once) admits note/claim/lesson/decision/predict/handoff/anchor/bead/eval as registry entries, not parser changes (property test: adding a kind touches only the registry). Markdown-inert + streaming-safe + '\\::' escape covered by tests.",
+      "why": "37t.2 is the 'claims' entry stage (author-declared structure -> candidates) with the most extensive design in the epic but acceptance_criteria=null; it is spine-labelled and feeds every downstream stage."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Judgment queue: operator bulk review/accept/reject of candidate assertions",
+      "type": "feature",
+      "priority": 2,
+      "parent": "polylogue-37t",
+      "why": "The epic title names four stages (claims -> JUDGMENT -> preamble -> reboot) but no child owns judgment. It survives only as a phrase inside 37t.1's design ('the gap is operator-ergonomic review flow (bulk judge candidate batches)') and is assumed to already exist by 37t.10 ('the existing judgment queue lists setup candidates alongside memory candidates'). Verified today: list_assertion_claims exposes statuses='active,candidate' (server_tools.py:741) and per-item accept/reject MCP tools exist, but there is no batch review surface — so the pipeline has a stage with no execution-grade bead.",
+      "design": "Build the operator-facing review surface over the existing candidate substrate: (1) a queue read that lists candidate-status assertions grouped by kind/repo/session with evidence ref preview (reuse list_assertion_claims candidate path); (2) bulk verbs — accept/reject/defer over a selected batch, each writing the judgment transition and preserving the origin ref; (3) a CLI entry ('polylogue judge' or under an existing group) + optional webui panel; (4) only ACCEPTED claims become preamble-eligible (ties to 37t.1's ACTIVE-only ASSERTION_CLAIM_KINDS read). This is the gate that makes background/declared candidate generation (37t.2, 37t.9 'dreaming') safe.",
+      "acceptance": "Given N candidate assertions across mixed kinds, the queue lists them with evidence refs; a bulk accept promotes them to active and they become visible to the preamble compiler; a bulk reject removes them from candidacy; every transition is queryable with its origin ref; none of these operations mutate sessions.content_hash.",
+      "deps": ["polylogue-37t.1"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-37t.11",
+      "kind": "other",
+      "evidence": "37t.11 has exactly two dependency edges: parent-child to 37t, and a 'relates-to' to s7ae. But its own design states it 'lands BEFORE mhx.4/rvh/1hj/bfv wire their injection legs' and '37t.4 ships first as the initial two sources and gets refactored onto the protocol here', and the audit focus notes s7ae and 4smp reference it as a dependency. A relates-to under-encodes a blocks relationship for an arbiter the whole injection layer sits on.",
+      "fix": "Encode the sequencing the design already narrates: mhx.4/rvh/1hj/bfv and s7ae/4smp should carry blocks/depends-on edges to 37t.11 (not just relates-to), and 37t.11 should carry a soft depends-on / relates to 37t.4 (its stated 'ships first' prerequisite). Leave the prose; add the graph edges so ready-frontier ordering is machine-visible."
+    },
+    {
+      "id": "polylogue-37t.4",
+      "kind": "acc-mismatch",
+      "evidence": "Description + design describe six distinct, testable behaviors (source-aware branching, relevance gating, hard token cap, freshness cache, POLYLOGUE_PREAMBLE=off escape hatch, self-logging instrumentation) but acceptance_criteria=null, so nothing pins which of those the bead is actually accountable for delivering.",
+      "fix": "Adopt the proposed_acceptance above so the six design points become the checkable done-state (they are arm-B instrumentation for cfk and cannot be verified as 'shipped' without them)."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-37t.4",
+      "issue": "priority-violation",
+      "detail": "37t.4 is P2 while 37t.11 (P1) explicitly names it as the prerequisite that 'ships first as the initial two sources and gets refactored onto the protocol here'. A P1 bead's stated first-lands dependency should not sit below it. 37t.4 is also arm B of the live uplift re-run (cfk), which the brief lists as top-of-frame.",
+      "proposed": "Raise 37t.4 to P1 (matching 37t.11) and add a dependency/relates edge 37t.11 -> 37t.4 so the 'ships first, then refactor' order is enforced, or explicitly re-scope 37t.11 to not require 37t.4 first."
+    },
+    {
+      "id": "polylogue-37t.11",
+      "issue": "missing-dep",
+      "detail": "37t.11's design asserts it must land before mhx.4/rvh/1hj/bfv wire their injection legs and that s7ae/4smp depend on it, but no blocks edges exist to those beads (only relates-to s7ae). Without edges, downstream injectors can be picked up before the arbiter exists, re-opening the exact fragmentation risk 37t.11 was created to fix.",
+      "proposed": "Add depends-on edges from mhx.4, rvh, 1hj, bfv (and s7ae, 4smp per focus note) TO 37t.11. These are cross-domain beads — flag to orchestrator to add the reverse edges."
+    },
+    {
+      "id": "polylogue-37t",
+      "issue": "epic-ac-gap",
+      "detail": "The epic has no acceptance_criteria, and its children do not fully cover its own four-stage title: the judgment stage has no owning bead (see gaps). So even if every current child closed, the epic's named loop would not be demonstrably closed.",
+      "proposed": "Add the epic acceptance above (end-to-end one-claim-through-four-stages demo) and the judgment-queue child bead so each named stage maps to an execution-grade owner."
+    }
+  ],
+  "reorg": []
+}

@@ -1,0 +1,77 @@
+{
+  "domain": "D11_web_workbench",
+  "summary": "The bby epic is mostly a healthy, well-authored deep-P3 web roadmap, but it carries a genuine priority inversion (P3 epic over its P1 spine child bby.11) and two supersession tangles where bby.6/bby.8 plan work on the inline-string SPA that bby.11's TS rewrite obsoletes. bby.11 is execution-grade and generic enough (generated typed client + component model + mission-control/timeline views) to carry s7ae's and 4smp's web projections, with only a soft variant-lane gap. bby.9 is prefix-named as a bby child but is correctly parented to s7ae, and the two standalone P2 extension beads (90y, 3v1) form a coherent capture-extension cluster with no owning epic.",
+  "underspecified": [
+    {
+      "id": "polylogue-bby.6",
+      "missing": ["acceptance"],
+      "proposed_design": "Re-scope: this bead owns only the mechanical, current-SPA items — window.prompt() removal (web_shell_workspace.py:398,503 -> app-native modal), dark-only hardcoded palette -> theme variables, saved-query sidebar, and canonical-URL link-out. The JS-extraction-to-static-assets and renderer-drift-resolution halves are superseded by bby.11's TS rewrite (bby.11 design itself says 'bby.6's extraction is superseded for the JS'); reference bby.11 and drop them here rather than double-track.",
+      "proposed_acceptance": "window.prompt() no longer appears in the workspace/recall-pack naming flow (grep of web_shell_* shows zero prompt() calls); naming uses an in-app modal. Theme derives from CSS variables and honors prefers-color-scheme (light+dark verified on the reader). Saved queries render in a sidebar and each row links out to its provider canonical URL. No new inline-JS renderer logic is added (the renderer-drift resolution is deferred to bby.11).",
+      "why": "bby.6 is a P3 dependency of bby.8, described as 'mechanical, independently shippable', so it is a near-term enabler that should be execution-grade, yet acceptance_criteria is null and its scope overlaps the bby.11 rewrite (design text explicitly notes the JS extraction is superseded)."
+    },
+    {
+      "id": "polylogue-bby.1",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "One liveness probe gates all fetch-error rendering: a single daemon-reachability check drives a global 'daemon unreachable' banner + reconnect-with-backoff loop, and per-widget failures render stale-badge + retry rather than independent 'Failed to fetch'. Header chips (convs/msgs) derive from the same convergence snapshot as the result list (no separate 'unknown'/'0' source). The literal curl hint moves behind a collapsed 'debug' disclosure; the product-visible state is retry-with-backoff + stale-badge. Note under bby.11 this becomes the v2 shell's error/loading contract; land it on the current SPA now only if v2 is not imminent.",
+      "proposed_acceptance": "Killing the daemon mid-session surfaces one global daemon-unreachable banner (not N independent 'Failed to fetch' widgets) and auto-reconnects on restart. No product panel renders a literal curl command outside a collapsed debug disclosure. Header conv/msg chips match the result-list count (both derived from one convergence snapshot); a populated list is never shown under '0 convs / 0 msgs' chips. Facets panel shows a stale-badge + retry instead of an indefinite 'loading... showing stale data' spinner.",
+      "why": "bby.1 has design=null and acceptance=null but its description is a concrete live-probe bug list (curl leaking into the product panel, no global daemon banner, chips desynced from the list showing 16,498 results). It is actionable now and cheap to make execution-grade."
+    },
+    {
+      "id": "polylogue-bby.11",
+      "missing": ["design"],
+      "proposed_design": "Additive only (do not rewrite the existing rich design): add to the component/renderer contract (item 3/6) that the ap7 renderer components must accept variant/dual-lane payloads — original, variant-only, and interleaved/hover-source visual profiles — so the scaffold can carry the 4smp/rlsb content-variant reader UX (rlsb requires renderers to 'consume projected variant lanes'). Otherwise the generated typed client + snapshot-against-Python-renderer model is variant-blind and rlsb's web leg has no scaffold seam.",
+      "proposed_acceptance": "",
+      "why": "bby.11 is P1 spine and 4smp/rlsb (both P1) relate-to it for web/in-page variant UX, but bby.11's design never mentions variant/dual-lane rendering. It is otherwise execution-grade and generic enough (generated client, SSE/cache module, mission-control view) to carry s7ae's mission-control projection; the one seam missing for a related P1 epic is variant-lane rendering in the component model."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-bby.9",
+      "kind": "scope-conflict",
+      "evidence": "bby.9 carries the `bby.` prefix (implying a bby child) but `bd show polylogue-bby.9` shows PARENT = polylogue-s7ae, and it is listed as a child under s7ae's tree. Meanwhile bby.11's design VIEW ROADMAP lists 'mission control (bby.9)' as one of its own view beads.",
+      "fix": "Confirm bby.9 is counted once, under s7ae (its real parent), not as a bby child. In bby.11's roadmap, reference bby.9 as an s7ae-owned view that renders against the bby.11 scaffold, not as a bby deliverable — so the coordination mission-control isn't double-counted across the two epics."
+    },
+    {
+      "id": "polylogue-bby.8",
+      "kind": "scope-conflict",
+      "evidence": "bby.8 design: 'applied to the existing SPA (sequence after bby.6 extracts the JS to real files — refactoring inline-string JS is not viable)'. bby.11 design: rewrites the SPA in TypeScript+Preact and lists 'virtualized lists (bby.8)' as a foundation item it incorporates. Building virtualization/optimistic-nav on the extracted inline-string SPA and then discarding it in the v2 rewrite is duplicated work.",
+      "fix": "Decide the target: either fold bby.8's four techniques into bby.11's list/reader view (making bby.8 a v2 acceptance item, not a standalone old-SPA task), or explicitly mark bby.8 as old-SPA-only and 'do not start if bby.11 is greenlit'. Do not build both."
+    },
+    {
+      "id": "polylogue-bby.6",
+      "kind": "scope-conflict",
+      "evidence": "bby.6 owns 'hand-rolled JS message rendering duplicating the Python renderers (drift risk)' and 'extract to real .js/.css static assets'. bby.11 design explicitly states 'bby.6's extraction is superseded for the JS (CSS tokens still shared) — re-note bby.6' and rebuilds components snapshot-tested against the Python renderer.",
+      "fix": "Narrow bby.6 to the current-SPA mechanical items (prompt() removal, theme variables, saved-query sidebar, canonical-URL link-out, CSS tokens). Move JS extraction and renderer-drift resolution into bby.11 so the drift is fixed once by the rewrite rather than tracked in two beads."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-bby",
+      "issue": "priority-violation",
+      "detail": "The epic bby is P3, but its child bby.11 is P1 (spine, wave:2) and two P1 epics (4smp, s7ae) relate-to bby.11 for their web/mission-control/variant projections (per their design text: 4smp anchors 'bby.11 and 90y for web/in-page UX'; s7ae uses 'bby.11 only where the web architecture must carry the projection'). A P3 epic reads as deep backlog while it actually gates P1 cross-epic web work.",
+      "proposed": "Lift epic bby to P2 to reflect that it carries P1-blocking architecture, OR reparent bby.11 out of bby into a foundational/spine epic and leave the remaining bby children at P3. The status quo hides a P1 spine decision inside a deep-backlog epic."
+    },
+    {
+      "id": "polylogue-bby.8",
+      "issue": "priority-violation",
+      "detail": "bby.8 is P2 — higher than the epic (P3) and most siblings — for a perceived-performance web feature, but its premise (retrofit the inline-string SPA) may be obsoleted by the P1 bby.11 rewrite. Under the priority frame (proof/enablers/correctness > surface hygiene), a possibly-throwaway web-perf feature at P2 outranks its own foundation.",
+      "proposed": "Demote bby.8 to P3 and gate it on the bby.8-vs-bby.11 scope decision, or fold it into bby.11 (its techniques are already listed as bby.11 foundation items)."
+    },
+    {
+      "id": "polylogue-bby.11",
+      "issue": "missing-dep",
+      "detail": "bby.9 (web mission control) and rlsb (variant-aware reader render) are P1 and render against the v2 web stack, but they only relate-to bby.11 — there is no depends/blocks edge asserting bby.11 provides their scaffold. If v2 is the target web surface, their web legs cannot land before the scaffold exists.",
+      "proposed": "Either add blocks edges bby.11 -> (bby.9 web-render leg, rlsb web dual-lane leg), or document in bby.11 that these views may render on the current SPA (so the sequencing is intentional, not accidental). Operator already hedged with 'bby.11 only where the web architecture must carry the projection' — make that boundary explicit as an edge or a note rather than leaving it as an unlabeled relates-to."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-3v1,polylogue-90y",
+      "change": "new-epic",
+      "from": "parent=null (both standalone)",
+      "to": "new epic e.g. 'Capture extension: reliability, coverage, and in-page presence'",
+      "rationale": "3v1 (MV3 spool health/badge/completeness/gemini bridge/error telemetry) and 90y (in-page shadow-DOM overlay: archive state + assertion capture) are both P2, both area:ingest+area:web, and both scoped to the browser extension — a coherent cluster distinct from the daemon-served web workbench (bby is the daemon reader). They have no owning epic, so extension work is uncounted at the epic level. Group them (and future extension beads) under a capture-extension epic; do NOT reparent them under bby, since 3v1 is pure MV3 reliability with no daemon-reader surface. Caveat: verify no existing capture/extension epic already exists before creating a new one."
+    }
+  ]
+}

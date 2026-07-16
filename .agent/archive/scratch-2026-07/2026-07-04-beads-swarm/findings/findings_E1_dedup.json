@@ -1,0 +1,100 @@
+{
+  "domain": "E1-dedup",
+  "summary": "Swept all 333 beads for cross-domain semantic twins. Found one strong near-duplicate (jnj.9 vs y4c, both 'one coherent config surface'), several strict-subset pairs where a narrow bead is a slice of a broad one but sits in a different epic (0ns/mhx.6, 6wnh/20d.15, ivsc/5hf, 9e5.14/1fp, jnj.7/9e5.8, 7le/ap7), and two orphan clusters that imply a missing epic (runtime-config/preferences: y4c+jnj.9+6kh+3xx+y8w+ze5+1jc; browser-capture/posting: 3uw+3v1+90y+ptx+s8q). The suspect keyword-heuristic trio (b0b/9e5.3/9e5.9) is NOT duplicate work: 9e5.3 and 9e5.9 are the go/no-go audit + labeled-fixture gates that b0b's structural sweep consumes (dependency chain, correctly split).",
+  "underspecified": [],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "jnj.9",
+      "kind": "duplicate",
+      "evidence": "jnj.9 'Intentional runtime/deployment configuration surface' = 'One coherent config surface across user/NixOS/daemon/CLI/MCP/web: ownership per layer, effective-value inspection, recovery from invalid config.' y4c 'Configuration doctrine' = same scope in more detail: 'separation between deployment config (paths/ports/keys) and runtime preferences ... config effective names source per key; Nix module options generated ...'. Both own: layer ownership, deployment-vs-runtime split, effective-value inspection, Nix/HM module parity.",
+      "fix": "Treat y4c as canonical (it carries the operator-authored doctrine + design + acceptance; jnj.9 has empty acceptance). Merge jnj.9 into y4c, or demote jnj.9 to the CLI-surface slice only and depend it on y4c so the two stop describing the same 'one config surface' twice under different epics."
+    },
+    {
+      "id": "0ns",
+      "kind": "subset",
+      "evidence": "0ns 'Bound archive embedding work within large sessions' = make the embed drain resumable/bounded within one huge session (STOP_AFTER_SECONDS only checked between sessions). mhx.6 'Embedding storage/spend efficiency: quantization, matryoshka, and scoped drain' explicitly owns 'scoped drain' and the same root evidence: 'embedding_enabled=true makes ANY polylogued run a paid catch-up worker' that 'silently drained pending embeddings ... within minutes'. 0ns's entire scope is mhx.6's scoped-drain clause viewed as a responsiveness bug.",
+      "fix": "Reparent 0ns under the mhx embedding epic and fold it into mhx.6's scoped-drain acceptance (or keep as a focused mhx child depending on mhx.6). Do not leave it standalone describing the same unbounded-drain behavior."
+    },
+    {
+      "id": "6wnh",
+      "kind": "subset",
+      "evidence": "6wnh 'Bound thread refresh cost for large Codex appends' targets append.index.graph_resolve.thread_refresh (3.02s of 3.04s on a 340.8 MB Codex append). 20d.15 'Bulk ingest throughput + resource envelope' owns the whole rebuild throughput target ('16,725 raw rows at 12-15 rows/s whole-run, 5/s when it hit big sessions'). The 'big sessions' slowdown 20d.15 must beat is precisely the thread_refresh tail 6wnh names; 6wnh is one concrete lever inside 20d.15's envelope.",
+      "fix": "Reparent 6wnh under the 20d interactive-performance epic as a specific optimization for 20d.15, with 20d.15 depending on it. Keep both (broad envelope vs focused incremental thread_refresh) but stop treating 6wnh as an unrelated standalone."
+    },
+    {
+      "id": "ivsc",
+      "kind": "subset",
+      "evidence": "ivsc 'Classify Codex state_5 token drift outside lineage replay' is a narrow reconciliation task (78 outside-tolerance threads, state_5.sqlite archived=0 rows). 5hf 'Provider token accounting: honest cross-provider usage ledger' names its own companions: 'lineage-tokens (double-count), cost reconciliation probe'. ivsc IS that cost-reconciliation-probe residual work — a slice of 5hf's honest ledger.",
+      "fix": "Depend ivsc on / reparent it under 5hf (make 5hf the accounting epic). It is a classification sub-task of the ledger, not an independent concern. (Note: xy95=usage-report perf and 38x=archived-audit residue are NOT part of this cluster despite touching Codex tokens.)"
+    },
+    {
+      "id": "9e5.14",
+      "kind": "subset",
+      "evidence": "9e5.14 'Facade decomposition MAP: which of api/archive.py's ~126 methods each surface uses' self-describes as 'Input to the contracts program if the facade is due for decomposition'. 1fp 'Facade decomposition: split api/archive.py into per-capability protocols' is that decomposition. 9e5.14 is the analysis-first slice of 1fp's own work.",
+      "fix": "Keep both (audit-map correctly under 9e5, refactor 1fp standalone) but add dependency 1fp -> 9e5.14 so the split boundaries come from the measured call-graph, not a guess."
+    },
+    {
+      "id": "jnj.7",
+      "kind": "subset",
+      "evidence": "jnj.7 'Provider-token leakage cleanup in public CLI help' tightens help/validation where public filtering still advertises provider tokens. 9e5.8 'Provider->Origin completion map: sequenced retirement plan' produces 'the sequenced retirement PR plan for the origin/provider purge slice'. jnj.7 is one concrete step of the retirement 9e5.8 sequences.",
+      "fix": "Sequence jnj.7 after 9e5.8 (depend jnj.7 -> 9e5.8) so the CLI-help cleanup executes as a step of the single retirement plan rather than an out-of-band cleanup that can contradict it."
+    },
+    {
+      "id": "7le",
+      "kind": "subset",
+      "evidence": "7le 'Consolidate the three session->HTML paths' (rendering/renderers/html.py, web-shell hand-rolled JS, third path) wants 'one canonical renderer with the web consuming its output'. ap7 'Semantic transcript rendering: ... shared CLI/web renderer registry' builds exactly that shared CLI/web renderer registry. Consolidating the HTML paths is a component of ap7's registry, and both say 'do the inventory once and decide the owner'.",
+      "fix": "Fold 7le into ap7 (or depend ap7 -> 7le as its HTML-path-inventory prerequisite). Also cross-links bby.6 (web JS renderer de-drift). One owner should decide the renderer registry; three beads should not each re-inventory the HTML paths."
+    },
+    {
+      "id": "3v1",
+      "kind": "other",
+      "evidence": "Four browser-capture-extension-UX beads are already CLOSED (qvgt 'UX and diagnostics polish', 3nmf 'live-page UX and responsiveness proof', x5k3 'UX and capture-state reliability audit', yajm 'UX and diagnostics redesign'). Open 3v1 'Capture extension reliability + status UX: spool health, completeness, gap visibility' overlaps that closed UX/redesign line by title.",
+      "fix": "Verify 3v1 is genuine RESIDUAL (its distinct claims: spool-drain-on-receiver-restart, badge per-tab state, gemini.google.com missing from host_permissions) and not a re-tread of the closed redesign. Trim any AC already satisfied by yajm/x5k3 so 3v1 does not silently redo closed work."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "0ns",
+      "change": "absorb",
+      "from": "(standalone)",
+      "to": "mhx.6",
+      "rationale": "0ns and mhx.6 both bound/scope the embedding drain from the same live 2026-07 evidence (unbounded paid catch-up in a single huge session). Absorb 0ns's responsiveness requirement into mhx.6's scoped-drain acceptance, or at minimum reparent 0ns under the mhx epic."
+    },
+    {
+      "id": "jnj.9",
+      "change": "merge",
+      "from": "jnj",
+      "to": "y4c",
+      "rationale": "jnj.9 and y4c describe the same 'one coherent config surface / deployment-vs-runtime split / Nix module parity / effective-value inspection'. y4c is the fuller, operator-authored spec — make it canonical and merge jnj.9 in (or reduce jnj.9 to the CLI-surface slice under y4c)."
+    },
+    {
+      "id": "6wnh",
+      "change": "absorb",
+      "from": "(standalone)",
+      "to": "20d.15",
+      "rationale": "6wnh (thread_refresh incremental) is the concrete lever for 20d.15's 'big sessions 5 rows/s' slowdown. Reparent 6wnh under the 20d epic as a child optimization of 20d.15 rather than a standalone P2."
+    },
+    {
+      "id": "gjg",
+      "change": "reparent",
+      "from": "(standalone)",
+      "to": "37t",
+      "rationale": "gjg 'Compaction lifecycle: pre-compaction snapshot, loss forensics, post-compaction re-grounding' overlaps 37t.3 'Reboot-with-refs self-compaction' and 37t.7 'verify postmortem -> next session's context seed' on the post-compaction re-grounding / context-seed concern. gjg belongs inside the 37t agent context/memory-loop epic; keep the pre-compaction-snapshot part but coordinate re-grounding scope with 37t.3/37t.7 so the three don't each build 're-establish context after compaction'."
+    },
+    {
+      "id": "y4c",
+      "change": "new-epic",
+      "from": "(standalone P3 cluster)",
+      "to": "new epic: Runtime configuration & preferences",
+      "rationale": "A no-epic cluster all describes one config-and-preferences program: y4c (doctrine + user.db-backed prefs), jnj.9 (config surface - merge per above), ze5 (decision: user.db vocabulary), and three implementation bundles 6kh (query-scope prefs), 3xx (verb/ops prefs), y8w (reading prefs - literally 'from the y4c inventory'), plus 1jc (learned defaults propose config). The bundles are strict subsets of y4c's inventory. Anchor them under one epic with y4c as the doctrine and 6kh/3xx/y8w/1jc as children, ze5 as the vocabulary decision gate."
+    },
+    {
+      "id": "3uw",
+      "change": "new-epic",
+      "from": "(standalone browser-capture cluster)",
+      "to": "new epic: Browser capture & posting completeness",
+      "rationale": "Standalone browser-capture/posting beads share one concern and no epic: 3uw (archive-side coverage-error measure - substrate), 3v1 (extension spool/status UX - consumes 3uw's signal), 90y (in-page overlay + assertion capture - overlaps 3v1 on the per-chat capture-state indicator), ptx (posting channel un-gate), s8q (deployed capture state trustworthy). 3v1 should depend on 3uw (surface over measure); 3v1 and 90y should specify the per-chat capture-state signal ONCE (3v1 owns the signal, 90y renders it). 83u already owns attachment-bytes (83u.3) so keep that separate. Group the rest under a capture epic to stop the per-chat capture-state indicator being designed twice."
+    }
+  ]
+}

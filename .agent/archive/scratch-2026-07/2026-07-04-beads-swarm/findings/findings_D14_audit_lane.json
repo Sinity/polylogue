@@ -1,0 +1,90 @@
+{
+  "domain": "D14_audit_lane",
+  "summary": "9e5 is a coherent read-only audit catalog, NOT a dumping ground: each of the 16 children names a concrete evidence artifact and most carry a construct-validity stance. Two real problems: (1) the four P2 value-bearing audits (.1 assertion adoption, .2 affordance usage, .3 column honesty, .4 race audit) that 'decide product direction' all lack design/acceptance despite being the ready-frontier; (2) three children (.9, .15, .16) have grown designs/acceptance that build tooling and merge PRs, violating the epic's explicit 'audit never mutates product code' contract. Missing dependency edges (b0b<-9e5.3/9e5.9, 9e5.16<-9e5.14) are asserted in bead prose but not recorded.",
+  "underspecified": [
+    {
+      "id": "polylogue-9e5.3",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "SQL over live index.db: for each of material_origin, tool_result_is_error, tool_result_exit_code, message_type, branch_type, session_kind compute NULL + 'unknown'-sentinel density as a fraction of eligible rows, grouped by origin x YYYY-MM. Columns exist and are CHECK-constrained (index.py: material_origin DEFAULT 'unknown', tool_result_is_error IN (0,1)) so 'unknown'/'NULL' == 'structure absent'. Emit one row per (column, origin, month) plus a per-column rollup. Pitfall: tool_result_* is only populated for tool_result blocks, so denominator must be tool_result rows, not all blocks; material_origin denominator is authored messages only.",
+      "proposed_acceptance": "Evidence artifact (scratch note or demo-shelf entry) committing the density table with method + numbers; per-column go/no-go verdict (populated well enough to replace keyword heuristics vs not) that b0b consumes; coverage-caveat sentence per origin for outcome analytics. No product-code mutation.",
+      "why": "P2, labelled the go/no-go gate for the heuristic->structural sweep (b0b) yet has null design/acceptance; ready-frontier P2 beads must meet the execution-grade contract per doctrine."
+    },
+    {
+      "id": "polylogue-9e5.1",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Pure SELECT over user.db: GROUP BY assertion kind x status x author_kind; enumerate all 21 registered CorrectionKind/assertion kinds and mark which return zero rows; count inject:true rows and candidate-vs-judged transitions. Pitfall: read-only role only; do not open a write connection. Output is arithmetic, no heuristics.",
+      "proposed_acceptance": "Artifact with the per-kind x status x author_kind table + explicit list of empty-but-registered kinds + inject:true count; a one-line verdict 'flywheel used vs aspirational'; follow-up beads filed for any promised-but-empty kind. Feeds the ctx epic's prioritization.",
+      "why": "P2, epic calls this 'the sharpest product question the deep-dive surfaced' and a best-bet, but design/acceptance are null."
+    },
+    {
+      "id": "polylogue-9e5.2",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Run devtools workspace affordance-usage (devtools/affordance_usage.py exists) over the live archive to get per-tool/per-command invocation counts from archived agent tool-use rows; LEFT JOIN against the full surface set (MCP EXPECTED_TOOL_NAMES from tests/infra/mcp.py, CLI command_inventory) so zero-invocation surfaces surface as kill candidates. Classify each: kill / keep / promote. Pitfall: archive only records surfaces used *by agents that used polylogue*, so absence != dead for operator-only commands; annotate that caveat.",
+      "proposed_acceptance": "Ranked kill/keep/promote table (all ~90 MCP tools + ~50 CLI commands classified) committed as artifact; follow-up beads opened for kill candidates feeding the contracts/surface-algebra programs; no surface removed by this bead itself.",
+      "why": "P2 best-bet ('surface economy with evidence instead of taste') with null design/acceptance; infrastructure it names is confirmed present."
+    },
+    {
+      "id": "polylogue-9e5.4",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Static-trace the four named get->modify->put sequences (blob leases in write_effects.py, ingest_cursor updates, embedding_status transitions, fts_freshness_state) across daemon/CLI/MCP-mutation writers that share the SQLite files. For each: record connection profile, whether the read and write are in one immediate transaction or split, and sketch the interleaving that loses a write. Confirm/refute each window against source. Pitfall: some sequences are already single-transaction (commit_archive_write_effects) - do not file those as bugs.",
+      "proposed_acceptance": "Race-window table (sequence, writers, one-txn vs split, verdict); each CONFIRMED window filed as a bug bead with an interleaving repro sketch; refuted windows documented as safe with the reason. Method + numbers in an evidence artifact.",
+      "why": "P2 storage-race audit with null design/acceptance; the 'found 16 bugs in sibling project' claim needs a checkable method + done-state to be execution-grade."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-9e5.9",
+      "kind": "scope-conflict",
+      "evidence": "Epic 9e5 contract: 'the audit itself never mutates product code'. But 9e5.9 design (operator 2026-07-03) makes it 'a devtools bench campaign (devtools bench heuristics)' with a committed fixture corpus and compare mode -- i.e. it ships product/tooling code, not just an evidence artifact.",
+      "fix": "Either graduate 9e5.9 out of the read-only audit lane into an analytics/tooling epic, or amend the 9e5 epic contract to explicitly permit audit->repeatable-lane graduation. Do not silently keep a build task under a 'never mutates product code' epic."
+    },
+    {
+      "id": "polylogue-9e5.15",
+      "kind": "scope-conflict",
+      "evidence": "9e5.15 acceptance: 'at least one batched deletion PR merged with net-negative diff ... the lane is invocable via devtools'. That is execution + a new devtools lane, exceeding the epic's read-only audit-artifact contract.",
+      "fix": "Split into an audit half (the three-signal intersection artifact, read-only, stays in 9e5) and an execution follow-up (the deletion PRs + devtools lane) parented under a refactor/tooling epic, or re-contract the epic as above."
+    },
+    {
+      "id": "polylogue-9e5.16",
+      "kind": "scope-conflict",
+      "evidence": "9e5.16 acceptance: 'api-doc symbol check wired into verify; ... drifted rows fixed' -- wires a gate into devtools verify and edits the library API, not a read-only audit artifact.",
+      "fix": "Keep the reachability-matrix generation as the read-only audit; move the verify-gate wiring and drift fixes to a surface/contracts execution bead (rides 1fp, which its own design already references)."
+    },
+    {
+      "id": "polylogue-9e5",
+      "kind": "acc-mismatch",
+      "evidence": "Epic states a clear per-child output contract in its description ('an evidence artifact ... plus follow-up beads ... the audit itself never mutates product code') but acceptance_criteria is null, so nothing checkably binds children to that contract -- which is exactly why .9/.15/.16 drifted past it.",
+      "fix": "Lift the description's output contract into the epic acceptance_criteria: 'every child produces a committed evidence artifact (method+numbers) and files follow-up beads for actionable findings; product-code/tooling changes are separate execution beads, not audit deliverables.'"
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-b0b",
+      "issue": "missing-dep",
+      "detail": "b0b (replace keyword heuristics) has dependency_count 0, but 9e5.3 states it is 'the go/no-go gate for the heuristic->structural sweep bead' and 9e5.9 states it 'produces the labeled fixture set that sweep needs for regression'. Both are prerequisites asserted in prose but unrecorded.",
+      "proposed": "Add b0b depends_on 9e5.3 (structural-column coverage go/no-go) and b0b depends_on 9e5.9 (accuracy baseline + labeled fixtures). Also link b0b relates-to the claim-vs-evidence campaign (devtools/claim_vs_evidence.py exists) since b0b's tool_result_is_error/exit_code consumption is that campaign's analytics stratum."
+    },
+    {
+      "id": "polylogue-9e5.16",
+      "issue": "missing-dep",
+      "detail": "9e5.16 design explicitly builds its capability matrix from 'facade methods (9e5.14 map)', so it cannot start before 9e5.14 produces that map. dependency_count on .16 is 0; .14 shows dependent_count 1 (edge asserted somewhere but not the .16 parent-independent dep).",
+      "proposed": "Add 9e5.16 depends_on 9e5.14 (facade decomposition map)."
+    },
+    {
+      "id": "polylogue-9e5.15",
+      "issue": "missing-dep",
+      "detail": "9e5.15 (systematic dead-code sweep) design names 9e5.5 (dead-table kill list) as one of the already-beaded component signals it intersects/complements; its table-level output feeds the sweep's coverage picture.",
+      "proposed": "Add 9e5.15 relates-to (or depends_on) 9e5.5 so the table-level and symbol-level dead-weight audits are sequenced, not run twice from scratch."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-9e5",
+      "change": "new-epic",
+      "from": "polylogue-9e5 (audit lane, read-only)",
+      "to": "audit-lane (pure read-only artifacts) + audit-graduation execution epic",
+      "rationale": "The epic is coherent as a catalog, but operator direction on 9e5.9 (make it a repeatable devtools lane) plus the acceptance criteria on .15 (merged deletion PRs, new lane) and .16 (verify gate + API fixes) show the natural arc is audit -> tooling/execution. Rather than let build tasks sit under a 'never mutates product code' epic, either (a) re-contract 9e5 to permit graduation and spin child execution beads for .9/.15/.16's build+merge halves, or (b) create a sibling execution epic that receives those halves. Low-churn preference: (a) plus splitting .15/.16 execution out; keep the read-only measurement halves in 9e5."
+    }
+  ]
+}
