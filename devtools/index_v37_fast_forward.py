@@ -90,8 +90,27 @@ def _schema_rootpages(conn: sqlite3.Connection) -> dict[str, int]:
 
 def _checks(conn: sqlite3.Connection) -> dict[str, object]:
     quick_check = [str(row[0]) for row in conn.execute("PRAGMA quick_check")]
-    foreign_keys = [tuple(row) for row in conn.execute("PRAGMA foreign_key_check")]
-    return {"quick_check": quick_check, "foreign_key_check": foreign_keys}
+    attachment_native_ids_foreign_keys = [
+        tuple(row) for row in conn.execute("PRAGMA foreign_key_check(attachment_native_ids)")
+    ]
+    return {
+        "quick_check": quick_check,
+        "attachment_native_ids_foreign_key_check": attachment_native_ids_foreign_keys,
+    }
+
+
+def _require_retired_tables_unreferenced(conn: sqlite3.Connection) -> None:
+    """Prove dropping the caches cannot remove a surviving FK parent."""
+    tables = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    references = {
+        (table, str(row[2]))
+        for table in tables
+        if table not in RETIRED_TABLES
+        for row in conn.execute(f'PRAGMA foreign_key_list("{table}")')
+        if str(row[2]) in RETIRED_TABLES
+    }
+    if references:
+        raise IndexV37FastForwardError(f"surviving tables reference retired cache parents: {sorted(references)}")
 
 
 def _file_identity(path: Path) -> dict[str, object]:
@@ -221,6 +240,7 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         conn.execute("PRAGMA foreign_keys = OFF")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) != FROM_VERSION:
             raise IndexV37FastForwardError("clone version changed before transformation")
+        _require_retired_tables_unreferenced(conn)
         changes_before = conn.total_changes
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -255,7 +275,7 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
     }
     if version != INDEX_SCHEMA_VERSION or version != TO_VERSION:
         raise IndexV37FastForwardError(f"clone ended at unexpected index version {version}")
-    if checks["quick_check"] != ["ok"] or checks["foreign_key_check"]:
+    if checks["quick_check"] != ["ok"] or checks["attachment_native_ids_foreign_key_check"]:
         raise IndexV37FastForwardError(f"clone postflight failed: {checks}")
     if after_schema != canonical:
         raise IndexV37FastForwardError("clone schema does not exactly match canonical v37 DDL")
