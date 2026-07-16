@@ -1027,8 +1027,8 @@ def validate_raw_replay_application_receipt(
     sessions_by_id: dict[str, Mapping[str, object]] = {}
     for session in session_rows:
         session_id = str(session.get("session_id"))
-        previous = sessions_by_id.setdefault(session_id, session)
-        if previous != session:
+        existing_session = sessions_by_id.setdefault(session_id, session)
+        if existing_session != session:
             problems.append(f"materialized session receipt conflicts for {session_id}")
     application_keys: set[str] = set()
     applications_matching_current_head: set[str] = set()
