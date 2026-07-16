@@ -251,6 +251,11 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
         package=package,
         element_schemas={"session_record_stream": {"type": "object"}},
         privacy_policy="standard",
+        observation_outcomes={
+            "total": 2,
+            "status_counts": {"included": 1, "decode_failed": 1},
+            "reason_counts": {"payload_decode_failed": 1, "observed_schema_units": 1},
+        },
     )
 
     relationships = cast(dict[str, JSONValue], profile["relationships"])
@@ -271,6 +276,9 @@ def test_workload_profile_models_tool_relationships_without_persisting_ids() -> 
     loss = cast(dict[str, JSONValue], stream["loss_inventory"])
     all_observations = cast(dict[str, JSONValue], loss["all_observations"])
     assert all_observations["count"] == 2
+    provenance = cast(dict[str, JSONValue], profile["provenance"])
+    outcomes = cast(dict[str, JSONValue], provenance["observation_outcomes"])
+    assert outcomes["status_counts"] == {"included": 1, "decode_failed": 1}
 
 
 def test_archive_profile_preserves_composition_without_private_dimension_values(tmp_path: Path) -> None:

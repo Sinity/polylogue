@@ -352,6 +352,7 @@ def build_package_workload_profile(
     package: _PackageAccumulator,
     element_schemas: Mapping[str, JSONDocument],
     privacy_policy: str,
+    observation_outcomes: JSONDocument | None = None,
 ) -> JSONDocument:
     """Build a bounded package profile without retaining corpus content."""
     package_metadata = metadata_memberships(package.memberships)
@@ -392,6 +393,11 @@ def build_package_workload_profile(
         "relationships": _relationship_profile(package.memberships),
         "elements": elements,
     }
+    if observation_outcomes:
+        provenance = profile["provenance"]
+        if not isinstance(provenance, dict):
+            raise TypeError("Workload profile provenance must be an object")
+        provenance["observation_outcomes"] = observation_outcomes
     profile["profile_id"] = workload_profile_identity(profile)
     return profile
 

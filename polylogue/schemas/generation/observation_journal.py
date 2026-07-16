@@ -13,20 +13,13 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Literal, Self, TypeAlias, overload
+from typing import Self, overload
 
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.paths import cache_home
 from polylogue.schemas.generation.models import _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
-
-ObservationTerminalStatus: TypeAlias = Literal[
-    "included",
-    "intentionally_excluded",
-    "decode_failed",
-    "unsupported",
-    "quarantined",
-]
+from polylogue.schemas.observation_models import ObservationTerminalStatus
 
 _JOURNAL_FORMAT = 1
 _DEFAULT_STALE_AGE_S = 24 * 60 * 60
@@ -500,6 +493,22 @@ class ObservationJournal:
                     )
                 }
             )
+        )
+
+    def terminal_summary(self) -> JSONDocument:
+        """Return privacy-safe typed loss counts without raw identities or paths."""
+        reasons = {
+            str(row[0]): int(row[1])
+            for row in self._connection.execute(
+                "SELECT reason, COUNT(*) FROM artifact_terminals WHERE reason IS NOT NULL GROUP BY reason"
+            )
+        }
+        return json_document(
+            {
+                "total": int(self._connection.execute("SELECT COUNT(*) FROM artifact_terminals").fetchone()[0]),
+                "status_counts": self.terminal_counts(),
+                "reason_counts": reasons,
+            }
         )
 
     def close(self) -> None:

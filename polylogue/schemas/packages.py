@@ -165,6 +165,7 @@ class SchemaPackageCatalog:
     recommended_version: str | None = None
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
     selection_rationale: JSONDocument = field(default_factory=dict)
+    observation_outcomes: JSONDocument = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.generated_at:
@@ -184,6 +185,8 @@ class SchemaPackageCatalog:
         )
         if self.selection_rationale:
             data["selection_rationale"] = self.selection_rationale
+        if self.observation_outcomes:
+            data["observation_outcomes"] = self.observation_outcomes
         return json_document(data)
 
     @classmethod
@@ -196,6 +199,7 @@ class SchemaPackageCatalog:
             recommended_version=_string_or_none(data.get("recommended_version")),
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
             selection_rationale=json_document(data.get("selection_rationale")),
+            observation_outcomes=json_document(data.get("observation_outcomes")),
             packages=[SchemaVersionPackage.from_dict(item) for item in json_document_list(data.get("packages"))],
         )
 

@@ -116,6 +116,7 @@ def build_provider_catalog_artifacts(
     artifact_counts: dict[str, int],
     orphan_adjunct_counts: dict[str, int],
     privacy_config: SchemaPrivacyConfig | None,
+    observation_outcomes: JSONDocument,
 ) -> ProviderCatalogArtifacts:
     """Build package schemas, catalog metadata, and manifest for a provider."""
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
@@ -228,6 +229,7 @@ def build_provider_catalog_artifacts(
             package=package_acc,
             element_schemas=package_schemas[version],
             privacy_policy=privacy_config.level if privacy_config is not None else "standard",
+            observation_outcomes=observation_outcomes,
         )
         catalog_packages.append(package)
         for cluster_id in package.profile_family_ids:
@@ -244,6 +246,7 @@ def build_provider_catalog_artifacts(
         recommended_version=recommended_version,
         orphan_adjunct_counts=orphan_adjunct_counts,
         selection_rationale=selection_rationale,
+        observation_outcomes=observation_outcomes,
     )
     manifest_clusters: list[SchemaCluster] = []
     for cluster_id, acc in sorted(clusters.items(), key=_cluster_sort_key, reverse=True):

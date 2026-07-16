@@ -87,7 +87,13 @@ def collect_cluster_analysis(
             summary.representative_paths.append(unit.source_path)
         total_schema_samples += len(unit.schema_samples)
 
-    observed_units = iter_schema_units(provider, db_path=db_path, max_samples=max_samples, full_corpus=full_corpus)
+    observed_units = iter_schema_units(
+        provider,
+        db_path=db_path,
+        max_samples=max_samples,
+        full_corpus=full_corpus,
+        terminal_recorder=journal.record_terminal if journal is not None else None,
+    )
     if journal is None:
         retained_units = list(observed_units)
         for unit in retained_units:

@@ -4,13 +4,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocumentList, JSONValue
 
 SchemaSampleGranularity: TypeAlias = Literal["document", "record"]
 SchemaClusterPayload: TypeAlias = JSONValue
+ObservationTerminalStatus: TypeAlias = Literal[
+    "included",
+    "intentionally_excluded",
+    "decode_failed",
+    "unsupported",
+    "quarantined",
+]
+
+
+class ObservationTerminalRecorder(Protocol):
+    """Sink for one raw artifact's terminal schema-observation outcome."""
+
+    def __call__(
+        self,
+        *,
+        raw_id: str,
+        status: ObservationTerminalStatus,
+        artifact_kind: str | None,
+        source_path: str | None,
+        reason: str | None,
+    ) -> None: ...
 
 
 @dataclass
@@ -105,6 +126,8 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
 
 
 __all__ = [
+    "ObservationTerminalRecorder",
+    "ObservationTerminalStatus",
     "PROVIDERS",
     "ProviderConfig",
     "SchemaClusterPayload",

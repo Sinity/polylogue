@@ -128,6 +128,9 @@ def _build_provider_bundle(
                         artifact_counts=artifact_counts,
                     ),
                 )
+            observation_outcomes = journal.terminal_summary()
+            if observation_outcomes.get("total") == 0:
+                observation_outcomes = {}
             catalog_artifacts = build_provider_catalog_artifacts(
                 provider_token=provider_token,
                 config=config,
@@ -139,6 +142,7 @@ def _build_provider_bundle(
                 artifact_counts=artifact_counts,
                 orphan_adjunct_counts=orphan_adjunct_counts,
                 privacy_config=privacy_config,
+                observation_outcomes=observation_outcomes,
             )
             return build_success_provider_bundle(
                 provider_token=provider_token,

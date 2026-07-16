@@ -26,6 +26,7 @@ from polylogue.schemas.observation import (
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
+from polylogue.schemas.observation_models import ObservationTerminalRecorder, ObservationTerminalStatus
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import connection_context
 
@@ -63,6 +64,7 @@ class _RawSessionRow:
     blob_hash: bytes
     file_mtime_ms: int | None
     acquired_at_ms: int | None
+    validation_status: str | None
 
     @property
     def provider_token(self) -> str:
@@ -105,6 +107,26 @@ def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
         blob_hash=bytes(row["blob_hash"]) if row["blob_hash"] is not None else b"",
         file_mtime_ms=row["file_mtime_ms"],
         acquired_at_ms=row["acquired_at_ms"],
+        validation_status=row["validation_status"],
+    )
+
+
+def _record_terminal(
+    recorder: ObservationTerminalRecorder | None,
+    row: _RawSessionRow,
+    *,
+    status: ObservationTerminalStatus,
+    reason: str,
+    artifact_kind: str | None = None,
+) -> None:
+    if recorder is None:
+        return
+    recorder(
+        raw_id=row.raw_id,
+        status=status,
+        artifact_kind=artifact_kind,
+        source_path=row.source_path,
+        reason=reason,
     )
 
 
@@ -134,19 +156,15 @@ def _iter_record_stream_units(
     if canonical_schema_provider(runtime_provider) != str(source_name):
         return
 
-    try:
-        samples = extract_record_samples_from_raw_content(
-            raw_content,
-            max_samples=_record_sample_limit(
-                config=config,
-                max_samples=max_samples,
-                full_corpus=full_corpus,
-            ),
-            record_type_key=config.record_type_key,
-        )
-    except Exception:
-        logger.exception("Failed to extract record samples from raw content: %s", raw_content)
-        samples = []
+    samples = extract_record_samples_from_raw_content(
+        raw_content,
+        max_samples=_record_sample_limit(
+            config=config,
+            max_samples=max_samples,
+            full_corpus=full_corpus,
+        ),
+        record_type_key=config.record_type_key,
+    )
 
     if not samples:
         return
@@ -169,18 +187,14 @@ def _build_raw_payload_envelope_for_row(
     raw_content: Path,
     config: ProviderConfig,
 ) -> RawPayloadEnvelope | None:
-    try:
-        from polylogue.schemas import sampling as sampling_root
+    from polylogue.schemas import sampling as sampling_root
 
-        return sampling_root.build_raw_payload_envelope(
-            raw_content,
-            source_path=row.source_path,
-            fallback_provider=row.provider_token or str(source_name),
-            jsonl_dict_only=config.sample_granularity == "record",
-        )
-    except Exception:
-        logger.exception("Failed to build raw payload envelope for %s", raw_content)
-        return None
+    return sampling_root.build_raw_payload_envelope(
+        raw_content,
+        source_path=row.source_path,
+        fallback_provider=row.provider_token or str(source_name),
+        jsonl_dict_only=config.sample_granularity == "record",
+    )
 
 
 def _iter_schema_units_from_db(
@@ -190,6 +204,7 @@ def _iter_schema_units_from_db(
     config: ProviderConfig,
     max_samples: int | None = None,
     full_corpus: bool = False,
+    terminal_recorder: ObservationTerminalRecorder | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_sessions.
 
@@ -209,7 +224,8 @@ def _iter_schema_units_from_db(
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             f"""
-            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms
+            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                   validation_status
             FROM raw_sessions
             WHERE origin IN ({placeholders})
             """,
@@ -223,32 +239,75 @@ def _iter_schema_units_from_db(
             for row in batch:
                 raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
 
+                if row.validation_status == "failed":
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="quarantined",
+                        reason="source_validation_failed",
+                    )
+                    continue
+
                 if config.sample_granularity == "record":
-                    yielded_record_units = False
-                    for unit in _iter_record_stream_units(
-                        row=row,
+                    try:
+                        record_units = list(
+                            _iter_record_stream_units(
+                                row=row,
+                                source_name=source_name,
+                                raw_content=raw_content,
+                                config=config,
+                                max_samples=max_samples,
+                                full_corpus=full_corpus,
+                            )
+                        )
+                    except Exception:
+                        logger.exception("Failed to extract record samples from raw content: %s", raw_content)
+                        record_units = []
+                    if record_units:
+                        yield from record_units
+                        artifact_kinds = {unit.artifact_kind for unit in record_units}
+                        _record_terminal(
+                            terminal_recorder,
+                            row,
+                            status="included",
+                            reason="observed_schema_units",
+                            artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
+                        )
+                        continue
+
+                try:
+                    envelope = _build_raw_payload_envelope_for_row(
+                        row,
                         source_name=source_name,
                         raw_content=raw_content,
                         config=config,
-                        max_samples=max_samples,
-                        full_corpus=full_corpus,
-                    ):
-                        yielded_record_units = True
-                        yield unit
-                    if yielded_record_units:
-                        continue
-
-                envelope = _build_raw_payload_envelope_for_row(
-                    row,
-                    source_name=source_name,
-                    raw_content=raw_content,
-                    config=config,
-                )
+                    )
+                except Exception:
+                    logger.exception("Failed to build raw payload envelope for %s", raw_content)
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="decode_failed",
+                        reason="payload_decode_failed",
+                    )
+                    continue
                 if envelope is None:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="decode_failed",
+                        reason="payload_envelope_missing",
+                    )
                     continue
                 if canonical_schema_provider(envelope.provider) != str(source_name):
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason="provider_mismatch",
+                    )
                     continue
-                yield from extract_schema_units_from_payload(
+                units = extract_schema_units_from_payload(
                     envelope.payload,
                     source_name=source_name,
                     source_path=row.source_path,
@@ -256,6 +315,23 @@ def _iter_schema_units_from_db(
                     observed_at=row.observed_at,
                     config=config,
                     max_samples=max_samples,
+                )
+                if not units:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="unsupported",
+                        reason="no_schema_eligible_units",
+                    )
+                    continue
+                yield from units
+                artifact_kinds = {unit.artifact_kind for unit in units}
+                _record_terminal(
+                    terminal_recorder,
+                    row,
+                    status="included",
+                    reason="observed_schema_units",
+                    artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
                 )
 
 

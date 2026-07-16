@@ -61,6 +61,11 @@ def test_journal_roundtrips_units_samples_and_terminal_evidence(tmp_path: Path) 
         assert journal.unit_count == 1
         assert journal.sample_count == 2
         assert journal.terminal_counts() == {"included": 1, "quarantined": 1}
+        assert journal.terminal_summary() == {
+            "total": 2,
+            "status_counts": {"included": 1, "quarantined": 1},
+            "reason_counts": {"artifact taxonomy excludes provider-wire decoding": 1},
+        }
 
         journal_path = journal.path
         assert stat.S_IMODE(root.stat().st_mode) == 0o700

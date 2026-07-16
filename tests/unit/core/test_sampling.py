@@ -14,7 +14,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
-from polylogue.schemas.sampling import load_samples_from_db, load_samples_from_sessions
+from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
 from tests.infra.schema_access import schema_node
 
 
@@ -237,6 +237,49 @@ class TestLoadSamplesFromDb:
         text = first_block.get("text")
         assert isinstance(text, str)
         assert len(text) == 1024
+
+    def test_schema_observation_records_included_and_decode_failed_raws(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db = _archive_index_db(tmp_path)
+        good_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/good.jsonl",
+            raw_content=b'{"type":"session_meta","id":"sess-1"}\n',
+        )
+        bad_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/bad.jsonl",
+            raw_content=b"not-json\n",
+        )
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling.build_raw_payload_envelope",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("not provider JSON")),
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert len(units) == 1
+        assert {outcome["raw_id"]: outcome["status"] for outcome in outcomes} == {
+            good_raw_id: "included",
+            bad_raw_id: "decode_failed",
+        }
+        assert {outcome["raw_id"]: outcome["reason"] for outcome in outcomes} == {
+            good_raw_id: "observed_schema_units",
+            bad_raw_id: "payload_decode_failed",
+        }
 
 
 class TestLoadSamplesFromSessions:
