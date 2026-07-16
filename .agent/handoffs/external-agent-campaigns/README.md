@@ -1,0 +1,77 @@
+# External-agent campaign workspace
+
+This directory is the repository-side, provider-independent home for external
+agent campaign inputs and returned artifacts. It is local orchestration data,
+not a Polylogue product protocol and not browser-extension state.
+
+Each campaign run is a self-contained directory with one or more workload
+subdirectories. A workload has:
+
+- `campaign.json`: stable campaign, workload, job, dependency, prompt, and
+  expected-result identities;
+- `briefs/`: concise job-specific source material;
+- `prompts/`: fully rendered prompts ready to paste or submit;
+- `results/index.json`: the append-only reconciliation ledger for returned
+  attempts and artifacts;
+- `results/README.md`: the on-disk result convention.
+
+The prompt renderer combines a workload's brief with the named shared contract:
+
+```bash
+python .agent/handoffs/external-agent-campaigns/render_prompts.py \
+  .agent/handoffs/external-agent-campaigns/2026-07-16-gpt-pro-wave/testdiet
+```
+
+Use `--check` at a publication boundary. The rendered prompt is the dispatch
+artifact; a launcher never needs to understand prompt fragments.
+
+## Stable identities
+
+- Campaign: a dated, readable execution portfolio, for example
+  `gpt-pro-wave-2026-07-16`.
+- Workload: a reusable problem family within the campaign, for example
+  `testdiet` or `deep-research`.
+- Job: `<workload>-NN`, with a fixed two-digit number and readable slug.
+- Attempt: `aNN`; a retry or same-chat repair is a new attempt, not an
+  overwrite.
+- Package revision: `rNN`; the exact output filename is declared in the job.
+
+An orchestrator may add provider conversation IDs, Polylogue ObjectRefs,
+content hashes, Beads, worktrees, agents, PRs, and merge outcomes to
+`results/index.json`. It must not infer completion from a filename alone.
+
+## Result path
+
+Returned material is stored as:
+
+```text
+results/<job-id>/<attempt-id>/
+  result.json
+  raw/                 # immutable downloaded/captured provider artifacts
+  extracted/           # deterministic extraction of raw packages
+  integration/         # local adjudication, worktree, test, PR receipts
+```
+
+`raw/` is hash-addressed evidence. `extracted/` can be rebuilt. `integration/`
+records what Polylogue maintainers actually accepted and verified. Large or
+private artifacts stay outside Git when policy requires it; `result.json`
+then records the absolute custody path and checksum rather than pretending the
+file is absent.
+
+Machine-readable shapes are documented by `schemas/campaign.schema.json` and
+`schemas/result.schema.json`. `campaign.json` is dispatch intent and should
+remain stable after launch. Per-attempt `result.json` is immutable evidence.
+`results/index.json` is a rebuildable reconciliation projection across those
+receipts.
+
+## Attachment policy
+
+For ChatGPT Pro, attachment bytes are not assumed to consume the active prompt
+context. Attach all relevant authorized evidence, including a complete Chisel
+project-state archive, and provide navigation instructions. Do not remove
+useful evidence merely because it is large. Reduce inputs only for a real
+provider upload/retrieval limit, privacy boundary, or irrelevance.
+
+Generated result packages must not copy the supplied repository/state archive
+back into their output. They contain only new analysis, patches, tests,
+evidence, and explanation.
