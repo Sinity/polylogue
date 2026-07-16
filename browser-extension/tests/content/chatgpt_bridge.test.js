@@ -461,6 +461,107 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     ]);
   });
 
+  it("captures typed live generation start and terminal UI timing before native reconciliation", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter());
+    const turn = harness.dom.window.document.createElement("section");
+    turn.setAttribute("data-testid", "conversation-turn-2");
+    turn.setAttribute("data-turn", "assistant");
+    turn.setAttribute("data-turn-id", "assistant-turn-2");
+    const stop = harness.dom.window.document.createElement("button");
+    stop.setAttribute("data-testid", "stop-button");
+    stop.textContent = "Stop";
+    turn.appendChild(stop);
+    harness.dom.window.document.body.appendChild(turn);
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 1600));
+    const started = harness.runtimeMessages.find((message) =>
+      message.type === "polylogue.captureFreshnessHint"
+      && message.generation_observations?.some((observation) => observation.state === "started")
+    );
+    expect(started).toMatchObject({
+      reason: "generation_started",
+      provider_session_id: "conversation-1",
+      delay_ms: 1000,
+      generation_observations: [{
+        state: "started",
+        evidence_source: "dom_control",
+        fidelity: "observed",
+        duration_semantics: "dom_observed_wall",
+        turn_provider_id: "assistant-turn-2",
+      }],
+    });
+
+    stop.remove();
+    const workedFor = harness.dom.window.document.createElement("button");
+    workedFor.textContent = "Worked for 86m 30s";
+    turn.appendChild(workedFor);
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 1600));
+    const completed = harness.runtimeMessages.findLast((message) =>
+      message.type === "polylogue.captureFreshnessHint"
+      && message.generation_observations?.some((observation) => observation.state === "completed")
+    );
+    expect(completed).toMatchObject({
+      reason: "generation_completed",
+      delay_ms: 0,
+      generation_observations: [{
+        state: "completed",
+        evidence_source: "dom_duration_control",
+        fidelity: "observed",
+        duration_semantics: "provider_ui_elapsed",
+        displayed_elapsed_ms: 5_190_000,
+        raw_label: "Worked for 86m 30s",
+        turn_provider_id: "assistant-turn-2",
+      }],
+    });
+  });
+
+  it("does not attribute an older Worked-for control to a newly completed turn", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter());
+    const priorTurn = harness.dom.window.document.createElement("section");
+    priorTurn.setAttribute("data-testid", "conversation-turn-2");
+    priorTurn.setAttribute("data-turn", "assistant");
+    priorTurn.setAttribute("data-turn-id", "prior-assistant-turn");
+    const priorWorkedFor = harness.dom.window.document.createElement("button");
+    priorWorkedFor.textContent = "Worked for 4m 10s";
+    priorTurn.appendChild(priorWorkedFor);
+    harness.dom.window.document.body.appendChild(priorTurn);
+
+    const activeTurn = harness.dom.window.document.createElement("section");
+    activeTurn.setAttribute("data-testid", "conversation-turn-4");
+    activeTurn.setAttribute("data-turn", "assistant");
+    activeTurn.setAttribute("data-turn-id", "active-assistant-turn");
+    const stop = harness.dom.window.document.createElement("button");
+    stop.setAttribute("data-testid", "stop-button");
+    activeTurn.appendChild(stop);
+    harness.dom.window.document.body.appendChild(activeTurn);
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 1600));
+    stop.remove();
+    activeTurn.appendChild(harness.dom.window.document.createTextNode("Finished"));
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 1600));
+
+    const completed = harness.runtimeMessages.findLast((message) =>
+      message.type === "polylogue.captureFreshnessHint"
+      && message.generation_observations?.some((observation) =>
+        observation.state === "completed"
+        && observation.turn_provider_id === "active-assistant-turn"
+      )
+    );
+    expect(completed).toMatchObject({
+      reason: "generation_completed",
+      generation_observations: [{
+        state: "completed",
+        evidence_source: "dom_control_transition",
+        fidelity: "inferred",
+        duration_semantics: "dom_observed_wall",
+        turn_provider_id: "active-assistant-turn",
+        displayed_elapsed_ms: null,
+        raw_label: null,
+      }],
+    });
+  });
+
   it("reuses supplied native detail without a second conversation read", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter, { url: "https://chatgpt.com/" });
@@ -480,6 +581,28 @@ describe("ChatGPT authenticated asset capture envelope", () => {
       adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
     ).toHaveLength(0);
     expect(result.envelope.session.attachments).toHaveLength(1);
+  });
+
+  it("carries background-observed lifecycle evidence into the exact native envelope", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/" });
+    const observation = {
+      observation_id: "conversation-1:assistant-turn-2:completed:worked-for",
+      state: "completed",
+      observed_at: "2026-07-16T01:26:30Z",
+      evidence_source: "dom_duration_control",
+      fidelity: "observed",
+      displayed_elapsed_ms: 5_190_000,
+    };
+
+    const result = await harness.sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "freshness_convergence",
+      providerSessionId: "conversation-1",
+      nativePayload: conversationPayload(),
+      generationObservations: [observation],
+    });
+
+    expect(result.envelope.session.provider_meta.generation_observations).toEqual([observation]);
   });
 
   it("prefers fresh native detail over an intercepted page-load payload", async () => {

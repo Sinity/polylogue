@@ -19,6 +19,9 @@
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
   const freshnessHintTimers = new Map();
+  const pendingFreshnessObservations = new Map();
+  const lifecycleObservationHistory = new Map();
+  const lifecycleRuntime = new Map();
   let domFreshnessScanTimer = null;
   let lastDomFreshnessSignature = null;
 
@@ -39,12 +42,31 @@
     return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
   }
 
-  function queueFreshnessHint(reason, nativeId = conversationIdFromUrl(), delayMs = 5000, providerUpdatedAt = null) {
+  function queueFreshnessHint(
+    reason,
+    nativeId = conversationIdFromUrl(),
+    delayMs = 5000,
+    providerUpdatedAt = null,
+    generationObservation = null,
+  ) {
     if (!nativeId || !/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return;
+    if (generationObservation) {
+      const pending = pendingFreshnessObservations.get(nativeId) || [];
+      const byId = new Map(pending.map((observation) => [observation.observation_id, observation]));
+      byId.set(generationObservation.observation_id, generationObservation);
+      pendingFreshnessObservations.set(nativeId, [...byId.values()].slice(-24));
+
+      const history = lifecycleObservationHistory.get(nativeId) || [];
+      const historyById = new Map(history.map((observation) => [observation.observation_id, observation]));
+      historyById.set(generationObservation.observation_id, generationObservation);
+      lifecycleObservationHistory.set(nativeId, [...historyById.values()].slice(-64));
+    }
     const existingTimer = freshnessHintTimers.get(nativeId);
     if (existingTimer) clearTimeout(existingTimer);
     const timer = setTimeout(() => {
       freshnessHintTimers.delete(nativeId);
+      const observations = pendingFreshnessObservations.get(nativeId) || [];
+      pendingFreshnessObservations.delete(nativeId);
       chrome.runtime.sendMessage({
         type: "polylogue.captureFreshnessHint",
         provider: "chatgpt",
@@ -52,9 +74,125 @@
         provider_updated_at: providerUpdatedAt,
         reason,
         delay_ms: delayMs,
+        generation_observations: observations,
       }).catch(() => undefined);
     }, 750);
     freshnessHintTimers.set(nativeId, timer);
+  }
+
+  function displayedElapsedMs(label) {
+    const text = String(label || "").replace(/\s+/g, " ").trim();
+    if (!/^Worked for\b/i.test(text)) return null;
+    const hours = Number(text.match(/\b(\d+)\s*h\b/i)?.[1] || 0);
+    const minutes = Number(text.match(/\b(\d+)\s*m\b/i)?.[1] || 0);
+    const seconds = Number(text.match(/\b(\d+)\s*s\b/i)?.[1] || 0);
+    if (![hours, minutes, seconds].every(Number.isFinite) || hours + minutes + seconds === 0) return null;
+    return ((hours * 60 + minutes) * 60 + seconds) * 1000;
+  }
+
+  function lifecycleTurnIdentity(node) {
+    return node?.getAttribute?.("data-turn-id")
+      || node?.getAttribute?.("data-message-id")
+      || node?.getAttribute?.("data-testid")
+      || null;
+  }
+
+  function completedDurationControl() {
+    const turns = [...document.querySelectorAll(MESSAGE_CONTAINER_SELECTOR)].reverse();
+    for (const turn of turns) {
+      const role = turn.getAttribute("data-turn") || turn.getAttribute("data-message-author-role") || "";
+      if (role && role !== "assistant") continue;
+      for (const button of turn.querySelectorAll("button")) {
+        const label = String(button.innerText || button.textContent || "").replace(/\s+/g, " ").trim();
+        if (/^Worked for\b/i.test(label)) return { turn, label };
+      }
+    }
+    return null;
+  }
+
+  function observeGenerationLifecycle(trigger) {
+    const nativeId = conversationIdFromUrl();
+    if (!nativeId) return null;
+    const nowMs = Date.now();
+    const previous = lifecycleRuntime.get(nativeId) || {};
+    const stopButton = document.querySelector(
+      '[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]',
+    );
+    const completed = completedDurationControl();
+    let observation = null;
+    let next = previous;
+
+    if (stopButton) {
+      const stopTurnId = lifecycleTurnIdentity(stopButton.closest(MESSAGE_CONTAINER_SELECTOR));
+      const completedKey = completed
+        ? `${lifecycleTurnIdentity(completed.turn) || "active"}:${completed.label}`
+        : null;
+      const startedAtMs = previous.started_at_ms || nowMs;
+      const state = previous.running ? "in_progress" : "started";
+      if (state === "started" || nowMs - (previous.last_progress_at_ms || 0) >= 30_000) {
+        observation = {
+          observation_id: `${nativeId}:${stopTurnId || "active"}:${state}:${state === "started" ? startedAtMs : Math.floor(nowMs / 30_000)}`,
+          state,
+          observed_at: new Date(nowMs).toISOString(),
+          evidence_source: "dom_control",
+          fidelity: "observed",
+          duration_semantics: "dom_observed_wall",
+          turn_provider_id: stopTurnId,
+          wall_elapsed_ms: Math.max(0, nowMs - startedAtMs),
+          trigger,
+        };
+      }
+      next = {
+        ...previous,
+        running: true,
+        started_at_ms: startedAtMs,
+        last_progress_at_ms: observation ? nowMs : previous.last_progress_at_ms,
+        turn_provider_id: stopTurnId || previous.turn_provider_id,
+        baseline_completed_key: previous.running ? previous.baseline_completed_key : completedKey,
+      };
+    } else if (completed || previous.running) {
+      const completedKey = completed
+        ? `${lifecycleTurnIdentity(completed.turn) || "active"}:${completed.label}`
+        : null;
+      const effectiveCompleted = previous.running
+        && completedKey
+        && completedKey === previous.baseline_completed_key
+        ? null
+        : completed;
+      const turn = effectiveCompleted?.turn || null;
+      const label = effectiveCompleted?.label || null;
+      const turnId = lifecycleTurnIdentity(turn) || previous.turn_provider_id || "active";
+      const elapsedMs = displayedElapsedMs(label);
+      const terminalKey = `${turnId}:${label || "stop_disappeared"}`;
+      if (previous.terminal_key !== terminalKey) {
+        observation = {
+          observation_id: `${nativeId}:${turnId}:completed:${window.polylogueCapture.fnv1a(terminalKey)}`,
+          state: "completed",
+          observed_at: new Date(nowMs).toISOString(),
+          evidence_source: effectiveCompleted ? "dom_duration_control" : "dom_control_transition",
+          fidelity: effectiveCompleted ? "observed" : "inferred",
+          duration_semantics: effectiveCompleted ? "provider_ui_elapsed" : "dom_observed_wall",
+          turn_provider_id: turnId === "active" ? null : turnId,
+          displayed_elapsed_ms: elapsedMs,
+          wall_elapsed_ms: previous.started_at_ms ? Math.max(0, nowMs - previous.started_at_ms) : null,
+          raw_label: label,
+          trigger,
+        };
+      }
+      next = { ...previous, running: false, terminal_key: terminalKey, turn_provider_id: turnId };
+    }
+
+    lifecycleRuntime.set(nativeId, next);
+    if (observation) {
+      queueFreshnessHint(
+        `generation_${observation.state}`,
+        nativeId,
+        observation.state === "completed" ? 0 : 1000,
+        null,
+        observation,
+      );
+    }
+    return observation;
   }
 
   function nativeCaptureIdentity(capture) {
@@ -654,7 +792,12 @@
     return { attachments, outcome };
   }
 
-  function buildNativeEnvelope(payload, assetAcquisition = null, requestedConversationId = null) {
+  function buildNativeEnvelope(
+    payload,
+    assetAcquisition = null,
+    requestedConversationId = null,
+    generationObservations = [],
+  ) {
     const turns = collectNativeTurns(payload);
     if (!turns.length) return null;
     return window.polylogueCapture.buildEnvelope({
@@ -673,7 +816,8 @@
         mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0,
         is_temporary: payload.is_temporary === true,
         session_kind: payload.is_temporary === true ? "temporary" : null,
-        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null
+        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null,
+        generation_observations: generationObservations,
       },
       rawProviderPayload: payload,
       attachments: assetAcquisition ? assetAcquisition.attachments : []
@@ -685,6 +829,7 @@
     requestedConversationId = null,
     deferReceiver = false,
     nativePayloadOverride = null,
+    generationObservationsOverride = [],
   ) {
     // Intercepted responses are only a bootstrap/fallback cache. A long-running
     // conversation can grow substantially after the response observed at page
@@ -735,7 +880,29 @@
         };
       }
     }
-    const envelope = nativePayload ? buildNativeEnvelope(nativePayload, assetAcquisition, requestedConversationId) : null;
+    const nativeId = String(
+      nativePayload?.conversation_id
+      || nativePayload?.id
+      || requestedConversationId
+      || conversationIdFromUrl()
+      || "",
+    );
+    const generationObservations = [
+      ...(lifecycleObservationHistory.get(nativeId) || []),
+      ...(Array.isArray(generationObservationsOverride) ? generationObservationsOverride : []),
+    ].reduce((byId, observation) => {
+      if (observation?.observation_id) byId.set(observation.observation_id, observation);
+      return byId;
+    }, new Map());
+    const normalizedGenerationObservations = [...generationObservations.values()].slice(-64);
+    const envelope = nativePayload
+      ? buildNativeEnvelope(
+        nativePayload,
+        assetAcquisition,
+        requestedConversationId,
+        normalizedGenerationObservations,
+      )
+      : null;
     const fallbackEnvelope = () => {
       const turns = collectTurns();
       if (!turns.length) return null;
@@ -745,7 +912,8 @@
         turns,
         providerMeta: {
           capture_fidelity: "dom_degraded",
-          native_attempts: nativeAttemptDiagnostics.slice(-6)
+          native_attempts: nativeAttemptDiagnostics.slice(-6),
+          generation_observations: normalizedGenerationObservations,
         }
       });
     };
@@ -793,14 +961,18 @@
       })
       .join("|");
     lastDomFreshnessSignature = domFreshnessSignature();
+    observeGenerationLifecycle("initial_scan");
     const freshnessObserver = new MutationObserver(() => {
       if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
       domFreshnessScanTimer = setTimeout(() => {
         domFreshnessScanTimer = null;
+        const lifecycleObservation = observeGenerationLifecycle("dom_mutation");
         const signature = domFreshnessSignature();
         if (!signature || signature === lastDomFreshnessSignature) return;
         lastDomFreshnessSignature = signature;
-        queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+        if (!lifecycleObservation) {
+          queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+        }
       }, 750);
     });
     freshnessObserver.observe(document.documentElement, {
@@ -816,6 +988,7 @@
       message.providerSessionId || null,
       message.deferReceiver === true,
       message.nativePayload ?? null,
+      message.generationObservations ?? [],
     )
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));

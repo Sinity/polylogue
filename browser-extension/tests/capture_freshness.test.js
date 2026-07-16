@@ -39,6 +39,31 @@ describe("capture freshness queue", () => {
     expect(entry.provider_updated_at).toBe("2026-07-16T00:00:00Z");
   });
 
+  it("retains deduplicated lifecycle observations until the exact capture claim completes", () => {
+    const started = {
+      observation_id: "conversation-1:turn-2:started:1000",
+      state: "started",
+      observed_at: "2026-07-16T00:00:00Z",
+    };
+    const completed = {
+      observation_id: "conversation-1:turn-2:completed:worked-for",
+      state: "completed",
+      observed_at: "2026-07-16T01:26:30Z",
+    };
+    const first = hint(null, "conversation-1", 1000, { generationObservations: [started] });
+    const repeated = hint(first, "conversation-1", 2000, {
+      delayMs: 0,
+      generationObservations: [started, completed],
+    });
+
+    expect(repeated.entries["chatgpt:conversation-1"].generation_observations).toEqual([
+      started,
+      completed,
+    ]);
+    expect(claimDueFreshness(repeated, { nowMs: 2000, owner: "one", leaseMs: 5000 }).claim)
+      .toMatchObject({ generation_observations: [started, completed] });
+  });
+
   it("leases one due identity and recovers an expired lease", () => {
     let queue = hint(null, "later", 1000, { delayMs: 10_000 });
     queue = hint(queue, "due", 1000, { delayMs: 0 });
