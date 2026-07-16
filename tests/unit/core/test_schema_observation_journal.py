@@ -248,6 +248,39 @@ def test_journal_cleanup_runs_for_sigterm(tmp_path: Path) -> None:
     assert not list(root.glob("run-*.sqlite3*"))
 
 
+def test_journal_cleanup_runs_for_real_terminated_process(tmp_path: Path) -> None:
+    """A launcher SIGTERM must unwind the journal owner, not only a unit test frame."""
+    root = tmp_path / "journals"
+    script = """
+import signal
+import sys
+from pathlib import Path
+from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.schemas.observation import SchemaUnit
+
+with ObservationJournal.create(root=Path(sys.argv[1])) as journal:
+    journal.append_unit(SchemaUnit(
+        cluster_payload={"x": 1}, schema_samples=[{"x": 1}],
+        artifact_kind="session_document", exact_structure_id="x",
+        profile_tokens=("field:x",),
+    ))
+    print(journal.path, flush=True)
+    signal.pause()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(root)],
+        cwd=Path.cwd(),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    journal_path = Path(process.stdout.readline().strip())
+    process.terminate()
+    assert process.wait(timeout=10) == 128 + signal.SIGTERM
+    assert not journal_path.exists()
+    assert not list(root.glob("run-*.sqlite3*"))
+
+
 def test_journal_replays_assignments_without_retaining_cluster_payloads(tmp_path: Path) -> None:
     first = _unit()
     second = SchemaUnit(
