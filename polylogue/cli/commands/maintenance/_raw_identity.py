@@ -65,6 +65,44 @@ def raw_authority_census_command(
         click.echo(f"Next: {next_handle}")
 
 
+@click.command("raw-authority-blocker-resolve")
+@click.option("--blocker-id", required=True, help="Exact unresolved durable blocker identifier.")
+@click.option("--reason", required=True, help="Operator rationale recorded in the immutable resolution receipt.")
+@click.option("--yes", "confirmed", is_flag=True, help="Confirm resolving this blocker against current evidence.")
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+@click.pass_obj
+def raw_authority_blocker_resolve_command(
+    env: AppEnv,
+    blocker_id: str,
+    reason: str,
+    confirmed: bool,
+    output_format: str,
+) -> None:
+    """Resolve one stale-plan blocker after replanning current evidence."""
+    del env
+    if not confirmed:
+        raise click.ClickException("refusing to resolve a durable blocker without --yes")
+    from polylogue.storage.raw_authority import resolve_raw_authority_blocker
+
+    try:
+        receipt = resolve_raw_authority_blocker(archive_root(), blocker_id, resolution=reason)
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_format == "json":
+        click.echo(json.dumps(receipt, indent=2, sort_keys=True))
+        return
+    click.echo(f"Resolved {blocker_id}")
+    current_plan = receipt.get("current_plan")
+    if isinstance(current_plan, dict):
+        click.echo(f"Current plan: {current_plan.get('plan_id', 'unknown')}")
+
+
 def _raw_blob_path_for_hash(root: Path, blob_hash: bytes | str) -> Path | None:
     hex_hash = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash).lower()
     if len(hex_hash) != 64 or any(char not in "0123456789abcdef" for char in hex_hash):

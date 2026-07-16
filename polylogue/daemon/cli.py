@@ -655,6 +655,9 @@ def _emit_raw_materialization_pass(result: Any) -> None:
             "executable_plan_count": census.executable_plan_count,
             "residual_plan_count": census.residual_plan_count,
             "predecessor_census_id": census.predecessor_census_id,
+            "mode": census.mode,
+            "lifecycle_status": census.lifecycle_status,
+            "quiescent": census.quiescent,
             "fixed_point": census.fixed_point,
             "query_handle": census.query_handle,
         }

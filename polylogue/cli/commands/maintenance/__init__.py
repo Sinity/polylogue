@@ -60,6 +60,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Read a bounded page from a durable raw-authority census ledger.",
     ),
     (
+        "raw-authority-blocker-resolve",
+        "_raw_identity",
+        "raw_authority_blocker_resolve_command",
+        "Resolve one stale-plan blocker against current source evidence.",
+    ),
+    (
         "missing-raw-blob-cursors",
         "_raw_identity",
         "missing_raw_blob_cursors_command",

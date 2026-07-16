@@ -104,11 +104,24 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither
 -- can be the authority for whether an accepted replay plan was conserved.
+CREATE TABLE IF NOT EXISTS raw_authority_parser_census (
+    raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    parser_fingerprint      TEXT NOT NULL,
+    status                  TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
+    logical_keys_json       TEXT NOT NULL CHECK(json_valid(logical_keys_json)),
+    detail                  TEXT NOT NULL DEFAULT '',
+    censused_at_ms          INTEGER NOT NULL CHECK(censused_at_ms >= 0)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     census_id               TEXT PRIMARY KEY,
     sequence_no             INTEGER NOT NULL UNIQUE CHECK(sequence_no > 0),
     scope_json              TEXT NOT NULL CHECK(json_valid(scope_json)),
+    residual_json           TEXT NOT NULL CHECK(json_valid(residual_json)),
     parser_fingerprint      TEXT NOT NULL,
+    mode                    TEXT NOT NULL CHECK(mode IN ('census', 'dry_run', 'apply')),
+    lifecycle_status        TEXT NOT NULL CHECK(lifecycle_status IN ('planned', 'completed', 'interrupted')),
+    quiescent               INTEGER NOT NULL CHECK(quiescent IN (0, 1)),
     inventory_digest        TEXT NOT NULL CHECK(length(inventory_digest) = 64),
     residual_digest         TEXT NOT NULL CHECK(length(residual_digest) = 64),
     plan_count              INTEGER NOT NULL CHECK(plan_count >= 0),
@@ -117,9 +130,13 @@ CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     predecessor_census_id   TEXT REFERENCES raw_authority_censuses(census_id),
     fixed_point             INTEGER NOT NULL DEFAULT 0 CHECK(fixed_point IN (0, 1)),
     created_at_ms           INTEGER NOT NULL CHECK(created_at_ms >= 0),
-    completed_at_ms         INTEGER NOT NULL CHECK(completed_at_ms >= created_at_ms),
+    completed_at_ms         INTEGER CHECK(completed_at_ms IS NULL OR completed_at_ms >= created_at_ms),
     CHECK(plan_count >= executable_plan_count),
-    CHECK(plan_count >= residual_plan_count)
+    CHECK(plan_count >= residual_plan_count),
+    CHECK(
+        (lifecycle_status = 'planned' AND completed_at_ms IS NULL)
+        OR (lifecycle_status IN ('completed', 'interrupted') AND completed_at_ms IS NOT NULL)
+    )
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_authority_plans (
@@ -145,6 +162,7 @@ CREATE TABLE IF NOT EXISTS raw_authority_census_plans (
     reason             TEXT NOT NULL,
     next_action        TEXT NOT NULL,
     application_receipt_json TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(application_receipt_json)),
+    outcome_recorded   INTEGER NOT NULL DEFAULT 0 CHECK(outcome_recorded IN (0, 1)),
     recorded_at_ms     INTEGER NOT NULL CHECK(recorded_at_ms >= 0),
     PRIMARY KEY(census_id, plan_id),
     UNIQUE(census_id, ordinal)

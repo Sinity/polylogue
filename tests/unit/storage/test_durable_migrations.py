@@ -553,6 +553,7 @@ def test_source_publication_backfill_requires_verified_backup(
 ) -> None:
     db_path = workspace_env["archive_root"] / "source.db"
     with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE raw_authority_parser_census")
         conn.execute("DROP TABLE raw_authority_blockers")
         conn.execute("DROP TABLE raw_authority_census_plans")
         conn.execute("DROP TABLE raw_authority_plans")
@@ -584,6 +585,7 @@ def test_source_publication_backfill_requires_verified_backup(
             "sinex_publication_receipts",
             "excised_content",
             "raw_authority_censuses",
+            "raw_authority_parser_census",
             "raw_authority_plans",
             "raw_authority_census_plans",
             "raw_authority_blockers",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import sqlite3
@@ -61,6 +62,101 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
         self.limit_bytes = limit_bytes
         self.total_bytes = total_bytes
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
+
+
+def uncensused_historical_revision_raw_ids(archive_root: Path, raw_ids: list[str]) -> tuple[str, ...]:
+    """Return inputs whose current parser identity has not been persisted.
+
+    The dedicated receipt proves that the current parser actually observed
+    every relevant raw. Durable revision or membership rows alone may have
+    been produced by an older parser and therefore cannot establish current
+    quiescence.
+    """
+    if not raw_ids:
+        return ()
+    placeholders = ",".join("?" for _ in raw_ids)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT r.raw_id
+            FROM raw_sessions AS r
+            LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+            WHERE r.raw_id IN ({placeholders})
+              AND NOT COALESCE(
+                  c.parser_fingerprint = 'revision-membership-v1'
+                  AND c.status = 'complete',
+                  0
+              )
+            ORDER BY r.raw_id
+            """,
+            raw_ids,
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, ...]) -> None:
+    """Persist per-raw current-parser completion without changing governance."""
+    if not raw_ids:
+        return
+    with sqlite3.connect(archive_root / "source.db") as conn, conn:
+        for raw_id in raw_ids:
+            raw = conn.execute(
+                """
+                SELECT logical_source_key, revision_kind
+                FROM raw_sessions WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            membership_census = conn.execute(
+                """
+                SELECT status, detail FROM raw_membership_census
+                WHERE raw_id = ? AND parser_fingerprint = 'revision-membership-v1'
+                """,
+                (raw_id,),
+            ).fetchone()
+            membership_keys = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT logical_source_key FROM raw_session_memberships
+                    WHERE raw_id = ? ORDER BY logical_source_key
+                    """,
+                    (raw_id,),
+                )
+            ]
+            typed_key = (
+                str(raw[0])
+                if raw is not None and raw[0] is not None and str(raw[1]) != RawRevisionKind.UNKNOWN.value
+                else None
+            )
+            complete = typed_key is not None or (
+                membership_census is not None and str(membership_census[0]) in {"complete", "non_session"}
+            )
+            logical_keys = sorted(set(membership_keys) | ({typed_key} if typed_key is not None else set()))
+            detail = (
+                "current parser established durable authority identity"
+                if complete
+                else (
+                    str(membership_census[1])
+                    if membership_census is not None
+                    else "current parser produced no durable authority identity"
+                )
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census (
+                    raw_id, parser_fingerprint, status, logical_keys_json,
+                    detail, censused_at_ms
+                ) VALUES (?, 'revision-membership-v1', ?, ?, ?, 0)
+                ON CONFLICT(raw_id) DO UPDATE SET
+                    parser_fingerprint = excluded.parser_fingerprint,
+                    status = excluded.status,
+                    logical_keys_json = excluded.logical_keys_json,
+                    detail = excluded.detail,
+                    censused_at_ms = excluded.censused_at_ms
+                """,
+                (raw_id, "complete" if complete else "failed", json.dumps(logical_keys), detail),
+            )
 
 
 def _census_historical_revision_evidence(
@@ -169,6 +265,7 @@ def census_historical_revision_evidence(
             max_payload_bytes=max_payload_bytes,
         )
         expanded, logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
+    _record_raw_authority_parser_census(archive_root, tuple(expanded))
     return RevisionCensusResult(
         state.scanned,
         state.classified,

@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.config import Config
 from polylogue.maintenance.models import DerivedModelStatus
+from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
@@ -1636,7 +1637,7 @@ def test_raw_materialization_blocks_oversized_actual_replay(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "1 replay candidate(s) remain" in result.detail
+    assert "planning paused" in result.detail
     assert result.metrics["raw_materialization_oversized_count"] == 1.0
     assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
     assert result.metrics["raw_materialization_executed_count"] == 0.0
@@ -1663,6 +1664,7 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (oversized, raw_id))
         conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     config = _config(tmp_path)
     calls: dict[str, object] = {}
 
@@ -1738,6 +1740,7 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
             (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, oversized_raw),
         )
         source_conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[small_raw, oversized_raw])
 
     monkeypatch.setattr(
         "polylogue.sources.revision_backfill._parse_retained_raw",
@@ -1785,6 +1788,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
             ("large-done", "codex-session", large_raw, "done", bytes(32)),
         )
         index_conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[small_raw, large_raw])
 
     backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
     assert backlog["candidate_count"] == 1
@@ -1827,6 +1831,7 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
             ((per_raw_size, raw_id) for raw_id in raw_ids),
         )
         source_conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=raw_ids)
 
     backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
     assert backlog["oversized_count"] == 0
@@ -1916,6 +1921,7 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(tmp_
             (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_ids[0]),
         )
         conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=raw_ids)
 
     first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert first.plan_outcomes[0].status.value == "retryable"
@@ -2072,7 +2078,7 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "typed revision authority" in result.detail
+    assert "parser census completes" in result.detail
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
 
 

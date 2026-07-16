@@ -353,6 +353,29 @@ more rows remain. `--limit` is bounded to 1–500; `--offset` can override the
 offset encoded in the URI. MCP clients resolve the URI directly through the
 matching resource template.
 
+Every receipt identifies its `mode` (`census`, `dry_run`, or `apply`), whether
+the parser census was `quiescent`, and its lifecycle. Apply receipts remain
+`planned` until every selected immutable plan has an outcome; startup recovery
+then validates exact source, application/membership, accepted-head, and session
+postconditions before marking an interrupted pass `executed`. Readiness never
+reports a `planned` row as the latest completed census and exposes its pending
+count separately.
+
+A stale precondition or incomplete application receipt creates a durable,
+fail-closed blocker. After inspecting the census URI and current evidence,
+explicitly reopen replanning with a recorded rationale:
+
+```bash
+polylogue ops maintenance raw-authority-blocker-resolve \
+  --blocker-id 'raw-authority-blocker:...' \
+  --reason 'reviewed current source/index evidence; replan from this state' \
+  --yes
+```
+
+Resolution never applies the stale plan. It stores the replacement plan
+witness in the resolution receipt; the next ordinary convergence pass plans
+and validates current evidence normally.
+
 ### Draining the convergence-debt queue
 
 **Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial

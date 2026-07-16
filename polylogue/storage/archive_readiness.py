@@ -229,13 +229,24 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
             authority_census: dict[str, object] | None = None
+            authority_pending_census_count = 0
             if _table_columns(conn, "source", "raw_authority_censuses"):
+                authority_pending_census_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM source.raw_authority_censuses
+                        WHERE lifecycle_status = 'planned'
+                        """
+                    ).fetchone()[0]
+                )
                 census_row = conn.execute(
                     """
                     SELECT census_id, sequence_no, inventory_digest, residual_digest,
                            plan_count, executable_plan_count, residual_plan_count,
-                           predecessor_census_id, fixed_point, completed_at_ms
+                           predecessor_census_id, mode, lifecycle_status, quiescent,
+                           fixed_point, completed_at_ms
                     FROM source.raw_authority_censuses
+                    WHERE lifecycle_status IN ('completed', 'interrupted')
                     ORDER BY sequence_no DESC LIMIT 1
                     """
                 ).fetchone()
@@ -249,8 +260,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                         "executable_plan_count": int(census_row["executable_plan_count"]),
                         "residual_plan_count": int(census_row["residual_plan_count"]),
                         "predecessor_census_id": census_row["predecessor_census_id"],
+                        "mode": str(census_row["mode"]),
+                        "lifecycle_status": str(census_row["lifecycle_status"]),
+                        "quiescent": bool(census_row["quiescent"]),
                         "fixed_point": bool(census_row["fixed_point"]),
                         "completed_at_ms": int(census_row["completed_at_ms"]),
+                        "pending_census_count": authority_pending_census_count,
                         "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
                     }
             authority_blocker_count = 0
@@ -292,6 +307,8 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         category_counts["adoption_deferred"] = adoption_deferred_count
     if authority_blocker_count:
         category_counts["raw_authority_blocker"] = authority_blocker_count
+    if authority_pending_census_count:
+        category_counts["raw_authority_pending_census"] = authority_pending_census_count
     category_counts.update(
         {category: count for category, count in classified_counts.items() if category != "parse-failed"}
     )
@@ -307,12 +324,12 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "critical": critical,
         "warning": 0,
         "actionable": actionable,
-        "blocked": adoption_deferred_count + authority_blocker_count,
+        "blocked": adoption_deferred_count + authority_blocker_count + authority_pending_census_count,
         "classified": classified,
         "unchecked": unchecked,
         "affected_total": total,
         "affected_actionable": affected_actionable,
-        "affected_blocked": adoption_deferred_count + authority_blocker_count,
+        "affected_blocked": adoption_deferred_count + authority_blocker_count + authority_pending_census_count,
         "affected_open": 0,
         "affected_classified": classified,
         "affected_unchecked": unchecked,
@@ -322,6 +339,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
         "raw_authority_census": authority_census,
         "raw_authority_blocker_count": authority_blocker_count,
+        "raw_authority_pending_census_count": authority_pending_census_count,
     }
 
 

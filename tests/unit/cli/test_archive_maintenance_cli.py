@@ -43,6 +43,8 @@ def test_raw_authority_census_cli_resolves_receipt_handle(
         (),
         selected_plan_ids=set(),
         executable_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
         scope={"source_family": "codex"},
         residual={},
     )
@@ -65,6 +67,37 @@ def test_raw_authority_census_cli_resolves_receipt_handle(
     payload = json.loads(result.output)
     assert payload["query_handle"] == receipt.query_handle
     assert payload["census"]["census_id"] == receipt.census_id
+
+
+def test_raw_authority_blocker_resolution_cli_requires_confirmation(
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def resolve(_root: Path, blocker_id: str, *, resolution: str) -> dict[str, object]:
+        calls.append((blocker_id, resolution))
+        return {"blocker_id": blocker_id, "current_plan": {"plan_id": "current-plan"}}
+
+    monkeypatch.setattr("polylogue.storage.raw_authority.resolve_raw_authority_blocker", resolve)
+    base = [
+        "--plain",
+        "ops",
+        "maintenance",
+        "raw-authority-blocker-resolve",
+        "--blocker-id",
+        "blocker-1",
+        "--reason",
+        "reviewed current evidence",
+    ]
+    refused = cli_runner.invoke(cli, base)
+    accepted = cli_runner.invoke(cli, [*base, "--yes"], catch_exceptions=False)
+
+    assert refused.exit_code != 0
+    assert "without --yes" in refused.output
+    assert accepted.exit_code == 0
+    assert "Resolved blocker-1" in accepted.output
+    assert calls == [("blocker-1", "reviewed current evidence")]
 
 
 def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:

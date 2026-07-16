@@ -691,6 +691,9 @@ def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: py
         executable_plan_count=1,
         residual_plan_count=2,
         predecessor_census_id="census:1:inventory:residual",
+        mode="apply",
+        lifecycle_status="completed",
+        quiescent=True,
         fixed_point=False,
         query_handle="polylogue://raw-authority-census/census:2:inventory:residual/0",
     )
@@ -715,6 +718,9 @@ def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: py
         "executable_plan_count": 1,
         "residual_plan_count": 2,
         "predecessor_census_id": census.predecessor_census_id,
+        "mode": "apply",
+        "lifecycle_status": "completed",
+        "quiescent": True,
         "fixed_point": False,
         "query_handle": census.query_handle,
     }

@@ -91,6 +91,9 @@ class RawAuthorityCensusReceipt:
     executable_plan_count: int
     residual_plan_count: int
     predecessor_census_id: str | None
+    mode: str
+    lifecycle_status: str
+    quiescent: bool
     fixed_point: bool
 
     @property
@@ -151,7 +154,8 @@ def read_raw_authority_census(
         conn.row_factory = sqlite3.Row
         census = conn.execute(
             """
-            SELECT census_id, sequence_no, scope_json, parser_fingerprint,
+            SELECT census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
+                   mode, lifecycle_status, quiescent,
                    inventory_digest, residual_digest, plan_count,
                    executable_plan_count, residual_plan_count,
                    predecessor_census_id, fixed_point, created_at_ms,
@@ -166,6 +170,7 @@ def read_raw_authority_census(
             """
             SELECT cp.ordinal, cp.selected, cp.outcome_status, cp.reason,
                    cp.next_action, cp.application_receipt_json, cp.recorded_at_ms,
+                   cp.outcome_recorded,
                    p.plan_id, p.input_digest, p.input_raw_ids_json,
                    p.logical_keys_json, p.authority_witness_json,
                    p.source_preconditions_json, p.index_preconditions_json,
@@ -212,6 +217,7 @@ def read_raw_authority_census(
             "reason": str(row["reason"]),
             "next_action": str(row["next_action"]),
             "application_receipt": _decode_json_field(row["application_receipt_json"]),
+            "outcome_recorded": bool(row["outcome_recorded"]),
             "recorded_at_ms": int(row["recorded_at_ms"]),
             "plan": {
                 "plan_id": str(row["plan_id"]),
@@ -241,7 +247,11 @@ def read_raw_authority_census(
                 "census_id": str(census["census_id"]),
                 "sequence_no": int(census["sequence_no"]),
                 "scope": _decode_json_field(census["scope_json"]),
+                "residual": _decode_json_field(census["residual_json"]),
                 "parser_fingerprint": str(census["parser_fingerprint"]),
+                "mode": str(census["mode"]),
+                "lifecycle_status": str(census["lifecycle_status"]),
+                "quiescent": bool(census["quiescent"]),
                 "inventory_digest": str(census["inventory_digest"]),
                 "residual_digest": str(census["residual_digest"]),
                 "plan_count": total,
@@ -250,7 +260,7 @@ def read_raw_authority_census(
                 "predecessor_census_id": census["predecessor_census_id"],
                 "fixed_point": bool(census["fixed_point"]),
                 "created_at_ms": int(census["created_at_ms"]),
-                "completed_at_ms": int(census["completed_at_ms"]),
+                "completed_at_ms": (int(census["completed_at_ms"]) if census["completed_at_ms"] is not None else None),
             },
             "plans": plans,
             "blockers": blockers,
@@ -320,6 +330,15 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
         """,
         raw_ids,
     )
+    parser_census_rows = _rows(
+        conn,
+        f"""
+        SELECT raw_id, parser_fingerprint, status, logical_keys_json, detail
+        FROM raw_authority_parser_census
+        WHERE raw_id IN ({marks}) ORDER BY raw_id
+        """,
+        raw_ids,
+    )
     logical_keys = tuple(
         sorted(
             {
@@ -356,12 +375,15 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
     )
     authority_witness = json_document(
         {
+            "parser_census": parser_census_rows,
             "membership_census": census_rows,
             "memberships": membership_rows,
             "revision_heads": head_rows,
         }
     )
-    source_preconditions = json_document({"raw_sessions": source_rows})
+    source_preconditions = json_document(
+        {"raw_sessions": source_rows, "raw_authority_parser_census": parser_census_rows}
+    )
     index_preconditions = json_document({"sessions": session_rows, "revision_heads": head_rows})
     identity = {
         "schema": "polylogue.raw-replay-plan.v2",
@@ -406,9 +428,12 @@ def raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
             str(row[0]): int(row[1])
             for row in conn.execute(
                 """
-                SELECT plan_id, MAX(recorded_at_ms)
-                FROM raw_authority_census_plans
-                WHERE selected = 1 GROUP BY plan_id
+                SELECT cp.plan_id, MAX(cp.recorded_at_ms)
+                FROM raw_authority_census_plans AS cp
+                JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
+                WHERE cp.selected = 1
+                  AND c.lifecycle_status IN ('completed', 'interrupted')
+                GROUP BY cp.plan_id
                 """
             )
         }
@@ -435,19 +460,27 @@ def record_raw_authority_census(
     *,
     selected_plan_ids: set[str],
     executable_plan_ids: set[str] | None = None,
+    mode: str,
+    quiescent: bool,
     scope: Mapping[str, object],
     residual: Mapping[str, object],
 ) -> RawAuthorityCensusReceipt:
-    """Atomically publish a complete plan census with carried-forward outcomes."""
+    """Atomically publish a plan census, finalized only when no apply is pending."""
+    if mode not in {"census", "dry_run", "apply"}:
+        raise ValueError(f"unsupported raw authority census mode: {mode}")
+    if mode != "apply" and selected_plan_ids:
+        raise ValueError(f"{mode} census cannot select plans for application")
     now = int(time.time() * 1000)
     inventory_digest = _digest([plan.plan_id for plan in plans])
     residual_digest = _digest(residual)
     scope_json = _canonical_json(scope)
+    residual_json = _canonical_json(residual)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         previous = conn.execute(
             """
             SELECT census_id, sequence_no, inventory_digest, residual_digest,
-                   executable_plan_count, scope_json
+                   executable_plan_count, scope_json, parser_fingerprint,
+                   mode, lifecycle_status, quiescent
             FROM raw_authority_censuses ORDER BY sequence_no DESC LIMIT 1
             """
         ).fetchone()
@@ -458,7 +491,7 @@ def record_raw_authority_census(
         if unknown_ids:
             raise RuntimeError(f"raw authority census references unknown plans: {sorted(unknown_ids)}")
         executable_count = len(executable_ids)
-        residual_count = len(plans) - len(selected_plan_ids)
+        residual_count = len(plans) - executable_count
         fixed_point = bool(
             previous is not None
             and int(previous[4]) == 0
@@ -466,8 +499,16 @@ def record_raw_authority_census(
             and str(previous[2]) == inventory_digest
             and str(previous[3]) == residual_digest
             and str(previous[5]) == scope_json
+            and str(previous[6]) == RAW_AUTHORITY_PARSER_FINGERPRINT
+            and str(previous[7]) == "dry_run"
+            and str(previous[8]) == "completed"
+            and bool(previous[9])
+            and mode == "dry_run"
+            and quiescent
         )
         census_id = f"census:{sequence_no}:{inventory_digest[:16]}:{residual_digest[:16]}"
+        lifecycle_status = "planned" if mode == "apply" and selected_plan_ids else "completed"
+        completed_at_ms = None if lifecycle_status == "planned" else now
         for plan in plans:
             values = (
                 plan.plan_id,
@@ -504,17 +545,22 @@ def record_raw_authority_census(
         conn.execute(
             """
             INSERT INTO raw_authority_censuses (
-                census_id, sequence_no, scope_json, parser_fingerprint,
+                census_id, sequence_no, scope_json, residual_json,
+                parser_fingerprint, mode, lifecycle_status, quiescent,
                 inventory_digest, residual_digest, plan_count,
                 executable_plan_count, residual_plan_count,
                 predecessor_census_id, fixed_point, created_at_ms, completed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 census_id,
                 sequence_no,
                 scope_json,
+                residual_json,
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
+                mode,
+                lifecycle_status,
+                int(quiescent),
                 inventory_digest,
                 residual_digest,
                 len(plans),
@@ -523,7 +569,7 @@ def record_raw_authority_census(
                 predecessor,
                 int(fixed_point),
                 now,
-                now,
+                completed_at_ms,
             ),
         )
         for ordinal, plan in enumerate(plans):
@@ -532,18 +578,21 @@ def record_raw_authority_census(
                 """
                 INSERT INTO raw_authority_census_plans (
                     census_id, plan_id, ordinal, selected, outcome_status,
-                    reason, next_action, application_receipt_json, recorded_at_ms
-                ) VALUES (?, ?, ?, ?, 'carried_forward', ?, ?, '{}', ?)
+                    reason, next_action, application_receipt_json,
+                    outcome_recorded, recorded_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
                 """,
                 (
                     census_id,
                     plan.plan_id,
                     ordinal,
                     int(selected),
-                    "selected plan awaits a typed application outcome"
+                    RawReplayPlanStatus.RETRYABLE.value if selected else RawReplayPlanStatus.CARRIED_FORWARD.value,
+                    "selected plan application is pending"
                     if selected
                     else "bounded scheduler carried this complete plan forward unchanged",
                     "execute this plan in the current pass" if selected else "retain for a later bounded pass",
+                    0 if selected else 1,
                     now,
                 ),
             )
@@ -556,6 +605,9 @@ def record_raw_authority_census(
         executable_plan_count=executable_count,
         residual_plan_count=residual_count,
         predecessor_census_id=predecessor,
+        mode=mode,
+        lifecycle_status=lifecycle_status,
+        quiescent=quiescent,
         fixed_point=fixed_point,
     )
 
@@ -601,14 +653,104 @@ def raw_replay_application_receipt(archive_root: Path, plan: RawReplayPlan) -> J
             """,
             plan.input_raw_ids,
         )
+        if plan.logical_keys:
+            key_marks = ",".join("?" for _ in plan.logical_keys)
+            heads = _rows(
+                conn,
+                f"""
+                SELECT logical_source_key, session_id, accepted_raw_id,
+                       accepted_source_revision,
+                       hex(accepted_content_hash) AS accepted_content_hash,
+                       accepted_frontier_kind, accepted_frontier
+                FROM index_tier.raw_revision_heads
+                WHERE logical_source_key IN ({key_marks})
+                ORDER BY logical_source_key
+                """,
+                plan.logical_keys,
+            )
+            sessions = _rows(
+                conn,
+                f"""
+                SELECT s.session_id, s.raw_id, hex(s.content_hash) AS content_hash,
+                       s.message_count
+                FROM index_tier.sessions AS s
+                JOIN index_tier.raw_revision_heads AS h ON h.session_id = s.session_id
+                WHERE h.logical_source_key IN ({key_marks})
+                ORDER BY s.session_id
+                """,
+                plan.logical_keys,
+            )
+        else:
+            heads = []
+            sessions = []
     return json_document(
         {
-            "schema": "polylogue.raw-replay-application-receipt.v1",
+            "schema": "polylogue.raw-replay-application-receipt.v2",
             "source_rows": source,
             "membership_rows": memberships,
             "application_rows": applications,
+            "head_rows": heads,
+            "session_rows": sessions,
         }
     )
+
+
+def validate_raw_replay_application_receipt(
+    plan: RawReplayPlan,
+    receipt: Mapping[str, object],
+) -> tuple[bool, tuple[str, ...]]:
+    """Prove exact replay postconditions; parsed timestamps are never sufficient."""
+    problems: list[str] = []
+    if receipt.get("schema") != "polylogue.raw-replay-application-receipt.v2":
+        problems.append("application receipt schema is not v2")
+
+    def rows(name: str) -> list[Mapping[str, object]]:
+        value = receipt.get(name)
+        if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+            problems.append(f"{name} is not a row list")
+            return []
+        return value
+
+    source_rows = rows("source_rows")
+    membership_rows = rows("membership_rows")
+    application_rows = rows("application_rows")
+    head_rows = rows("head_rows")
+    session_rows = rows("session_rows")
+    source_ids = {str(row.get("raw_id")) for row in source_rows}
+    if source_ids != set(plan.input_raw_ids):
+        problems.append("source receipt raw ids do not match the immutable plan")
+    if any(row.get("parsed_at_ms") is None or row.get("parse_error") is not None for row in source_rows):
+        problems.append("source receipt contains an unparsed or parse-failed raw")
+    expected_keys = set(plan.logical_keys)
+    head_keys = {str(row.get("logical_source_key")) for row in head_rows}
+    if not expected_keys:
+        problems.append("executed replay plan has no logical authority keys")
+    elif head_keys != expected_keys:
+        problems.append("accepted head keys do not match the immutable plan")
+    terminal_keys = {
+        str(row.get("logical_source_key"))
+        for row in application_rows
+        if row.get("decision") in {"selected_baseline", "applied_append", "superseded"}
+    } | {
+        str(row.get("logical_source_key"))
+        for row in membership_rows
+        if row.get("decision") in {"applied", "superseded_equivalent", "superseded_prefix"}
+    }
+    if not expected_keys.issubset(terminal_keys):
+        problems.append("not every logical key has a terminal application or membership decision")
+    head_session_ids = {str(row.get("session_id")) for row in head_rows}
+    session_ids = {str(row.get("session_id")) for row in session_rows}
+    if head_session_ids != session_ids:
+        problems.append("accepted head sessions do not match materialized session rows")
+    session_content = {str(row.get("session_id")): str(row.get("content_hash")) for row in session_rows}
+    if any(
+        str(row.get("accepted_content_hash")) != session_content.get(str(row.get("session_id"))) for row in head_rows
+    ):
+        problems.append("accepted head content hashes do not match materialized sessions")
+    input_raw_ids = set(plan.input_raw_ids)
+    if any(str(row.get("accepted_raw_id")) not in input_raw_ids for row in head_rows):
+        problems.append("accepted heads do not point into the immutable input component")
+    return not problems, tuple(problems)
 
 
 def record_raw_replay_outcome(
@@ -622,8 +764,10 @@ def record_raw_replay_outcome(
             """
             UPDATE raw_authority_census_plans
             SET outcome_status = ?, reason = ?, next_action = ?,
-                application_receipt_json = ?, recorded_at_ms = ?
+                application_receipt_json = ?, outcome_recorded = 1,
+                recorded_at_ms = ?
             WHERE census_id = ? AND plan_id = ? AND selected = 1
+              AND outcome_recorded = 0
             """,
             (
                 outcome.status.value,
@@ -637,6 +781,189 @@ def record_raw_replay_outcome(
         ).rowcount
         if updated != 1:
             raise RuntimeError(f"outcome does not conserve one selected plan: {outcome.plan_id}")
+
+
+def _raw_replay_plan_from_row(row: sqlite3.Row) -> RawReplayPlan:
+    return RawReplayPlan(
+        plan_id=str(row["plan_id"]),
+        input_digest=str(row["input_digest"]),
+        input_raw_ids=tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"]))),
+        logical_keys=tuple(str(value) for value in json.loads(str(row["logical_keys_json"]))),
+        authority_witness=json_document(json.loads(str(row["authority_witness_json"]))),
+        source_preconditions=json_document(json.loads(str(row["source_preconditions_json"]))),
+        index_preconditions=json_document(json.loads(str(row["index_preconditions_json"]))),
+    )
+
+
+def _raw_authority_census_receipt(conn: sqlite3.Connection, census_id: str) -> RawAuthorityCensusReceipt:
+    row = conn.execute(
+        """
+        SELECT census_id, sequence_no, inventory_digest, residual_digest,
+               plan_count, executable_plan_count, residual_plan_count,
+               predecessor_census_id, mode, lifecycle_status, quiescent,
+               fixed_point
+        FROM raw_authority_censuses WHERE census_id = ?
+        """,
+        (census_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(census_id)
+    return RawAuthorityCensusReceipt(
+        census_id=str(row[0]),
+        sequence_no=int(row[1]),
+        inventory_digest=str(row[2]),
+        residual_digest=str(row[3]),
+        plan_count=int(row[4]),
+        executable_plan_count=int(row[5]),
+        residual_plan_count=int(row[6]),
+        predecessor_census_id=str(row[7]) if row[7] is not None else None,
+        mode=str(row[8]),
+        lifecycle_status=str(row[9]),
+        quiescent=bool(row[10]),
+        fixed_point=bool(row[11]),
+    )
+
+
+def finalize_raw_authority_census(
+    archive_root: Path,
+    census_id: str,
+    *,
+    interrupted: bool = False,
+) -> RawAuthorityCensusReceipt:
+    """Publish a census only after every selected plan has a recorded outcome."""
+    now = int(time.time() * 1000)
+    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+        status = conn.execute(
+            "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?",
+            (census_id,),
+        ).fetchone()
+        if status is None:
+            raise KeyError(census_id)
+        if str(status[0]) != "planned":
+            return _raw_authority_census_receipt(conn, census_id)
+        pending = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM raw_authority_census_plans
+                WHERE census_id = ? AND selected = 1 AND outcome_recorded = 0
+                """,
+                (census_id,),
+            ).fetchone()[0]
+        )
+        if pending:
+            raise RuntimeError(f"raw authority census still has {pending} pending selected outcome(s)")
+        conn.execute(
+            """
+            UPDATE raw_authority_censuses
+            SET lifecycle_status = ?, completed_at_ms = ?
+            WHERE census_id = ? AND lifecycle_status = 'planned'
+            """,
+            ("interrupted" if interrupted else "completed", now, census_id),
+        )
+        return _raw_authority_census_receipt(conn, census_id)
+
+
+def recover_interrupted_raw_authority_censuses(archive_root: Path) -> int:
+    """Reconcile unfinished apply censuses from durable postconditions."""
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return 0
+    with closing(sqlite3.connect(source_db)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT c.census_id, p.*
+            FROM raw_authority_censuses AS c
+            JOIN raw_authority_census_plans AS cp ON cp.census_id = c.census_id
+            JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
+            WHERE c.lifecycle_status = 'planned'
+              AND cp.selected = 1 AND cp.outcome_recorded = 0
+            ORDER BY c.sequence_no, cp.ordinal
+            """
+        ).fetchall()
+        census_ids = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT census_id FROM raw_authority_censuses WHERE lifecycle_status = 'planned' ORDER BY sequence_no"
+            )
+        )
+    for row in rows:
+        census_id = str(row["census_id"])
+        plan = _raw_replay_plan_from_row(row)
+        receipt = raw_replay_application_receipt(archive_root, plan)
+        valid_receipt, problems = validate_raw_replay_application_receipt(plan, receipt)
+        if valid_receipt:
+            outcome = RawReplayPlanOutcome(
+                plan.plan_id,
+                plan.input_raw_ids,
+                RawReplayPlanStatus.EXECUTED,
+                "interrupted application recovered from exact durable postconditions",
+                "none",
+                receipt,
+            )
+            record_raw_replay_outcome(archive_root, census_id, outcome)
+            continue
+        valid_plan, observed = validate_raw_replay_plan(archive_root, plan)
+        if not valid_plan:
+            reject_stale_raw_replay_plan(archive_root, census_id, plan, observed)
+        else:
+            outcome = RawReplayPlanOutcome(
+                plan.plan_id,
+                plan.input_raw_ids,
+                RawReplayPlanStatus.RETRYABLE,
+                "interrupted before exact application postconditions were durable: " + "; ".join(problems),
+                "retry the same immutable plan",
+                receipt,
+            )
+            record_raw_replay_outcome(archive_root, census_id, outcome)
+    for census_id in census_ids:
+        finalize_raw_authority_census(archive_root, census_id, interrupted=True)
+    return len(census_ids)
+
+
+def resolve_raw_authority_blocker(archive_root: Path, blocker_id: str, *, resolution: str) -> JSONDocument:
+    """Explicitly acknowledge current evidence and reopen replanning."""
+    if not resolution.strip():
+        raise ValueError("raw authority blocker resolution must be non-empty")
+    source_db = archive_root / "source.db"
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT b.blocker_id, b.plan_id, b.expected_json, p.input_raw_ids_json
+            FROM raw_authority_blockers AS b
+            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+            WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
+            """,
+            (blocker_id,),
+        ).fetchone()
+    if row is None:
+        raise KeyError(blocker_id)
+    input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
+    observed = build_raw_replay_plans(archive_root, (input_raw_ids,))[0]
+    now = int(time.time() * 1000)
+    receipt = json_document(
+        {
+            "schema": "polylogue.raw-authority-blocker-resolution.v1",
+            "blocker_id": blocker_id,
+            "superseded_plan_id": str(row["plan_id"]),
+            "current_plan": observed.to_dict(),
+            "operator_resolution": resolution.strip(),
+            "resolved_at_ms": now,
+        }
+    )
+    with closing(sqlite3.connect(source_db)) as conn, conn:
+        updated = conn.execute(
+            """
+            UPDATE raw_authority_blockers
+            SET resolved_at_ms = ?, resolution = ?
+            WHERE blocker_id = ? AND resolved_at_ms IS NULL
+            """,
+            (now, _canonical_json(receipt), blocker_id),
+        ).rowcount
+        if updated != 1:
+            raise RuntimeError(f"raw authority blocker changed during resolution: {blocker_id}")
+    return receipt
 
 
 def reject_stale_raw_replay_plan(
@@ -679,8 +1006,10 @@ def reject_stale_raw_replay_plan(
             """
             UPDATE raw_authority_census_plans
             SET outcome_status = 'rejected_stale', reason = ?, next_action = ?,
-                application_receipt_json = ?, recorded_at_ms = ?
+                application_receipt_json = ?, outcome_recorded = 1,
+                recorded_at_ms = ?
             WHERE census_id = ? AND plan_id = ? AND selected = 1
+              AND outcome_recorded = 0
             """,
             (
                 outcome.reason,
@@ -696,6 +1025,67 @@ def reject_stale_raw_replay_plan(
     return outcome
 
 
+def reject_invalid_raw_replay_application(
+    archive_root: Path,
+    census_id: str,
+    plan: RawReplayPlan,
+    receipt: JSONDocument,
+    problems: Sequence[str],
+) -> RawReplayPlanOutcome:
+    """Fail closed when a writer returns without exact application postconditions."""
+    now = int(time.time() * 1000)
+    observed = json_document({"application_receipt": receipt, "problems": list(problems)})
+    blocker_id = f"raw-authority-blocker:{_digest([plan.plan_id, observed])}"
+    outcome = RawReplayPlanOutcome(
+        plan.plan_id,
+        plan.input_raw_ids,
+        RawReplayPlanStatus.REJECTED_STALE,
+        "raw replay application did not satisfy exact durable postconditions",
+        "resolve the durable raw-authority blocker before automatic convergence resumes",
+        json_document({"expected": plan.to_dict(), "observed": observed, "blocker_id": blocker_id}),
+    )
+    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_blockers (
+                blocker_id, plan_id, census_id, reason, expected_json,
+                observed_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(blocker_id) DO NOTHING
+            """,
+            (
+                blocker_id,
+                plan.plan_id,
+                census_id,
+                outcome.reason,
+                _canonical_json(plan.to_dict()),
+                _canonical_json(observed),
+                now,
+            ),
+        )
+        updated = conn.execute(
+            """
+            UPDATE raw_authority_census_plans
+            SET outcome_status = 'rejected_stale', reason = ?, next_action = ?,
+                application_receipt_json = ?, outcome_recorded = 1,
+                recorded_at_ms = ?
+            WHERE census_id = ? AND plan_id = ? AND selected = 1
+              AND outcome_recorded = 0
+            """,
+            (
+                outcome.reason,
+                outcome.next_action,
+                _canonical_json(outcome.application_receipt or {}),
+                now,
+                census_id,
+                plan.plan_id,
+            ),
+        ).rowcount
+        if updated != 1:
+            raise RuntimeError(f"invalid application does not conserve one selected plan: {plan.plan_id}")
+    return outcome
+
+
 __all__ = [
     "RAW_AUTHORITY_CENSUS_QUERY_PREFIX",
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
@@ -705,13 +1095,18 @@ __all__ = [
     "RawReplayPlanStatus",
     "build_raw_replay_plan",
     "build_raw_replay_plans",
+    "finalize_raw_authority_census",
     "raw_replay_application_receipt",
     "raw_authority_census_query_handle",
     "raw_replay_plan_last_attempts",
+    "recover_interrupted_raw_authority_censuses",
     "read_raw_authority_census",
     "record_raw_authority_census",
     "record_raw_replay_outcome",
+    "reject_invalid_raw_replay_application",
     "reject_stale_raw_replay_plan",
+    "resolve_raw_authority_blocker",
     "unresolved_raw_authority_blockers",
     "validate_raw_replay_plan",
+    "validate_raw_replay_application_receipt",
 ]

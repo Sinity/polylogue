@@ -570,6 +570,8 @@ class TestResourceSurfaces:
             (),
             selected_plan_ids=set(),
             executable_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
             scope={"origin": "codex-session"},
             residual={},
         )
