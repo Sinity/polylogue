@@ -80,6 +80,8 @@ dist/
 !.agent/archive/**
 !.agent/reports/
 !.agent/reports/**
+!.agent/handoffs/
+!.agent/handoffs/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md
