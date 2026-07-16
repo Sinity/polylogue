@@ -172,9 +172,9 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     """C-03: irrelevant sessions cannot amplify an exact-session action count."""
     root = tmp_path / "archive"
     target_session_id = "codex-session:target"
-    session_rows = []
-    message_rows = []
-    block_rows = []
+    session_rows: list[tuple[str, str, bytes]] = []
+    message_rows: list[tuple[str, str, int, str, str, bytes]] = []
+    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
