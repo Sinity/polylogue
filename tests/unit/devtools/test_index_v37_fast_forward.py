@@ -115,6 +115,8 @@ def test_prepare_checkpoints_stopped_active_index_before_census(
 ) -> None:
     root = _archive(tmp_path)
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    active = IndexGenerationStore(root).active_pointer.resolve()
+    Path(f"{active}-shm").write_bytes(b"stopped-writer-residue")
     observed: list[Path] = []
     original = forward._checkpoint_stopped_database
 
@@ -127,6 +129,7 @@ def test_prepare_checkpoints_stopped_active_index_before_census(
     prepare_forward(archive_root=root, receipt_path=tmp_path / "receipt.json")
 
     assert observed == [IndexGenerationStore(root).active_pointer]
+    assert not Path(f"{active}-shm").exists()
 
 
 def test_activate_refuses_changed_source_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

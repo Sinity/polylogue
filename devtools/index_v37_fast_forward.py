@@ -149,13 +149,17 @@ def _require_daemon_stopped(archive_root: Path) -> None:
 
 def _checkpoint_stopped_database(path: Path) -> None:
     """Consolidate a stopped writer's committed WAL before clone evidence."""
-    with closing(sqlite3.connect(path, timeout=120.0)) as conn:
+    resolved = path.resolve(strict=True)
+    with closing(sqlite3.connect(resolved, timeout=120.0)) as conn:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-    if checkpoint is None or int(checkpoint[0]) != 0:
+    if checkpoint is None or int(checkpoint[0]) != 0 or len(checkpoint) < 3 or int(checkpoint[1]) != int(checkpoint[2]):
         raise IndexV37FastForwardError(f"active index WAL checkpoint failed: {checkpoint}")
     for suffix in ("-wal", "-shm"):
-        sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
-        if sidecar.exists() and sidecar.stat().st_size == 0:
+        # A successful checkpoint under the stopped-daemon rebuild lease makes
+        # both coordination files disposable.  SQLite commonly leaves a
+        # non-empty SHM file behind after the final writer exits.
+        sidecar = Path(f"{resolved}{suffix}")
+        if sidecar.exists():
             sidecar.unlink()
 
 
