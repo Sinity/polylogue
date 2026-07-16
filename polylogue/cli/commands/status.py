@@ -1856,6 +1856,25 @@ def _show_direct_json(
     env.ui.console.print(json.dumps(output, indent=2, default=str))
 
 
+def _component_computation_failure(component: str, exc: Exception, *, scope: str = "archive") -> dict[str, Any]:
+    """Explicit unknown-state entry for a component whose readiness computation failed.
+
+    A component that cannot be computed must stay visible as unknown; silently
+    omitting it is indistinguishable from not-applicable (polylogue-feqr).
+    """
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+
+    return dict(
+        ComponentReadiness(
+            component=component,
+            scope=scope,
+            state=CapabilityReadinessState.UNKNOWN,
+            summary=f"status computation failed: {type(exc).__name__}: {exc}",
+            caveats=("component readiness could not be computed; unknown is not healthy",),
+        ).to_dict()
+    )
+
+
 def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
     """Return direct-fallback health without penalizing intentionally unknown probes."""
 
@@ -1910,19 +1929,19 @@ def _direct_component_readiness(
                         repair_hint=_ARCHIVE_COMPONENT_REPAIR_HINTS.get(component),
                     )
                     components[readiness.component] = readiness.to_dict()
-        except Exception:
-            pass
+        except Exception as exc:
+            components["archive_surfaces"] = _component_computation_failure("archive_surfaces", exc)
     try:
         raw_component = _direct_raw_materialization_component(raw_materialization_readiness)
         components[raw_component["component"]] = raw_component
-    except Exception:
-        pass
+    except Exception as exc:
+        components["raw_materialization"] = _component_computation_failure("raw_materialization", exc)
     if raw_frontier_integrity is not None:
         try:
             frontier_component = _direct_raw_frontier_integrity_component(raw_frontier_integrity)
             components[frontier_component["component"]] = frontier_component
-        except Exception:
-            pass
+        except Exception as exc:
+            components["raw_frontier_integrity"] = _component_computation_failure("raw_frontier_integrity", exc)
     try:
         from polylogue.readiness.capability import component_from_embedding_payload
         from polylogue.storage.embeddings.status_payload import embedding_status_payload
@@ -1930,18 +1949,18 @@ def _direct_component_readiness(
         embedding_payload = embedding_status_payload(env, include_retrieval_bands=False)
         embedding = component_from_embedding_payload(embedding_payload)
         components[embedding.component] = embedding.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        components["embeddings"] = _component_computation_failure("embeddings", exc)
     try:
         assertions = _direct_assertion_component(active_root)
         components[assertions["component"]] = assertions
-    except Exception:
-        pass
+    except Exception as exc:
+        components["assertions"] = _component_computation_failure("assertions", exc)
     try:
         transforms = _direct_transform_component(archive_readiness)
         components[transforms["component"]] = transforms
-    except Exception:
-        pass
+    except Exception as exc:
+        components["transforms"] = _component_computation_failure("transforms", exc)
     return components
 
 
