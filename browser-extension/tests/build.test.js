@@ -238,9 +238,18 @@ describe("build.mjs full archive emission", () => {
           lease: { lease_id: "packaged-lease", generation: 1, proof: "packaged-proof" },
         }) };
       }
+      if (receiverPath.endsWith("/update")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
+          job: {
+            job_id: "packaged-capture-job", provider: "chatgpt", revision: 2, lease_generation: 1,
+            lease_expires_at: "2026-07-16T10:02:00Z",
+          },
+          receipt: { kind: "capture_job_update" },
+        }) };
+      }
       if (receiverPath.endsWith("/checkpoint")) {
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
-          job: { job_id: "packaged-capture-job", provider: "chatgpt", revision: 2 }, receipt: {},
+          job: { job_id: "packaged-capture-job", provider: "chatgpt", revision: 3 }, receipt: {},
         }) };
       }
       const contentHash = createHash("sha256").update(options.body, "utf8").digest("hex");

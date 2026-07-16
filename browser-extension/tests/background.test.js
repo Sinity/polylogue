@@ -769,8 +769,17 @@ describe("background receiver diagnostics", () => {
           lease: { lease_id: "lease-1", generation: 1, proof: "proof-1" },
         });
       }
+      if (path.endsWith("/update")) {
+        return responseJson({
+          job: {
+            job_id: "capture-job-1", provider: "chatgpt", revision: 2, lease_generation: 1,
+            lease_expires_at: "2026-07-16T10:02:00Z",
+          },
+          receipt: { kind: "capture_job_update" },
+        });
+      }
       if (path.endsWith("/checkpoint")) {
-        return responseJson({ job: { job_id: "capture-job-1", revision: 2 }, receipt: {} });
+        return responseJson({ job: { job_id: "capture-job-1", revision: 3 }, receipt: {} });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -785,7 +794,7 @@ describe("background receiver diagnostics", () => {
       (call) => new URL(call.url).pathname.endsWith("/checkpoint") && call.options.method === "PUT",
     )).toBe(true));
     const captureJobCalls = fetchCalls.filter((call) => new URL(call.url).pathname.startsWith("/v1/capture-jobs"));
-    expect(captureJobCalls.length).toBeGreaterThanOrEqual(4);
+    expect(captureJobCalls.length).toBeGreaterThanOrEqual(5);
     for (const call of captureJobCalls) {
       expect(call.options.body).not.toContain(accountHandle);
       expect(call.options.body).not.toContain("paired:");

@@ -168,12 +168,33 @@ async function mirrorCaptureJobsToReceiver(instanceId, checkpoint) {
       revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
     };
     try {
-      const adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      adopted = await client.update(adopted, captureJobRetryState(job));
       await client.checkpoint(adopted, payload);
     } catch (error) {
       await appendDebugLog({ stage: "capture_job_mirror_error", provider: job.provider, error: String(error.message || error) });
     }
   }));
+}
+
+function captureJobRetryState(job) {
+  const attempt = Number.isSafeInteger(job.transport_failures) && job.transport_failures >= 0
+    ? job.transport_failures
+    : 0;
+  const nextEligible = Number.isFinite(job.cooldown_until_ms)
+    ? new Date(job.cooldown_until_ms).toISOString()
+    : null;
+  let state = "ready";
+  if (job.status === "complete") state = "completed";
+  else if (job.status === "cancelled") state = "abandoned";
+  else if (job.status === "paused") state = "held";
+  else if (nextEligible) state = "retry_wait";
+  return {
+    state,
+    attempt,
+    reason: job.cooldown_reason || job.last_error || null,
+    next_eligible_at: state === "retry_wait" ? nextEligible : null,
+  };
 }
 
 async function restoreBackfillCheckpointFromReceiver(store, instanceId) {

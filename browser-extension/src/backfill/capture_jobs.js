@@ -84,6 +84,26 @@ export class CaptureJobClient {
     return result.jobs.filter((job) => job.checkpoint?.payload).sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
   }
 
+  async update(adopted, retry, leaseTtlSeconds = 120) {
+    const result = await this.request("POST", `/v1/capture-jobs/${adopted.job.job_id}/update`, {
+      provider: adopted.job.provider,
+      account_scope: adopted.account_scope,
+      request_id: crypto.randomUUID(),
+      expected_revision: adopted.job.revision,
+      lease_id: adopted.lease.lease_id,
+      generation: adopted.lease.generation,
+      proof: adopted.lease.proof,
+      retry,
+      lease_ttl_seconds: leaseTtlSeconds,
+    });
+    return {
+      ...adopted,
+      job: result.job,
+      lease: { ...adopted.lease, expires_at: result.job.lease_expires_at },
+      update_receipt: result.receipt,
+    };
+  }
+
   async checkpoint(adopted, checkpointPayload) {
     const checkpointDigest = await digest(checkpointPayload);
     if (adopted.job.checkpoint_digest === checkpointDigest) {

@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import polylogue.browser_capture.capture_jobs as capture_jobs
 from polylogue.browser_capture.capture_jobs import canonical_digest
+from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
 
 TOKEN = "capture-job-test-token"
@@ -278,3 +279,75 @@ def test_expired_profile_lease_is_replaceable_but_live_lease_is_not(tmp_path: Pa
         )
         assert status == 200
         assert replacement["lease"]["generation"] == first["lease"]["generation"] + 1
+
+
+def test_state_update_renews_lease_is_idempotent_and_exposes_receipts(tmp_path: Path) -> None:
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        update = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "request_id": "hold-update",
+            "expected_revision": adopted["job"]["revision"],
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+            "lease_ttl_seconds": 240,
+            "retry": {
+                "state": "held",
+                "attempt": 3,
+                "reason": "provider_safety_interstitial",
+                "next_eligible_at": None,
+            },
+        }
+        status, updated = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update)
+        assert status == 200
+        assert updated["job"]["revision"] == adopted["job"]["revision"] + 1
+        assert updated["job"]["retry"] == update["retry"]
+        assert updated["receipt"]["kind"] == "capture_job_update"
+        assert updated["job"]["lease_expires_at"] != adopted["job"]["lease_expires_at"]
+
+        status, duplicate = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update)
+        assert status == 200 and duplicate["duplicate"] is True
+        conflict = {**update, "retry": {**update["retry"], "attempt": 4}}
+        status, rejected = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", conflict)
+        assert status == 409 and rejected["error"]["code"] == "request_id_conflict"
+
+        query = f"provider=chatgpt&account_scope={SCOPE}&client_protocol=1"
+        status, detail = request(host, port, "GET", f"/v1/capture-jobs/{job['job_id']}?{query}", {})
+        assert status == 200
+        assert detail["job"]["latest_receipt"] is None
+        assert detail["receipts"] == [updated["receipt"]]
+
+
+def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: Path) -> None:
+    root = tmp_path / "backfill-checkpoints"
+    root.mkdir(parents=True)
+    (root / "legacy-instance.json").write_text(
+        json.dumps({"extension_instance_id": "legacy-instance", "checkpoint": {"version": 1, "jobs": []}}),
+        encoding="utf-8",
+    )
+    with receiver(tmp_path) as (host, port):
+        status, found = request(
+            host,
+            port,
+            "POST",
+            "/v1/capture-jobs/discover",
+            {"provider": "chatgpt", "account_scope": SCOPE},
+        )
+        assert status == 200
+        assert found["jobs"] == []
+        assert len(found["orphans"]) == 1
+        assert found["orphans"][0]["orphan_kind"] == "legacy_backfill_checkpoint"
+        assert "legacy-instance" not in json.dumps(found["orphans"])
+
+    routes = {
+        ("POST", "/v1/capture-jobs"),
+        ("POST", "/v1/capture-jobs/discover"),
+        ("GET", "/v1/capture-jobs/job-id"),
+        ("POST", "/v1/capture-jobs/job-id/adopt"),
+        ("POST", "/v1/capture-jobs/job-id/update"),
+        ("PUT", "/v1/capture-jobs/job-id/checkpoint"),
+    }
+    assert all(browser_capture_route_contract_for(method, path) is not None for method, path in routes)

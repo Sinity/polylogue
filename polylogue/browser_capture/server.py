@@ -347,7 +347,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 protocol = -1
             try:
                 capture_job_payload = registry_for_receiver(
-                    self.server.config.spool_path, self.server.config.auth_token
+                    self.server.config.spool_path,
+                    receiver_identity(self.server.config),
                 ).get(
                     job_id,
                     {
@@ -421,7 +422,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._browser_action_reconcile(action_id)
             return
         if path in {"/v1/capture-jobs", "/v1/capture-jobs/discover"} or (
-            path.startswith("/v1/capture-jobs/") and path.endswith("/adopt")
+            path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update"))
         ):
             self._capture_job_post(path)
             return
@@ -517,12 +518,18 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         payload = self._capture_job_body()
         if payload is None:
             return
-        registry = registry_for_receiver(self.server.config.spool_path, self.server.config.auth_token)
+        registry = registry_for_receiver(
+            self.server.config.spool_path,
+            receiver_identity(self.server.config),
+        )
         try:
             if path == "/v1/capture-jobs":
                 status, result = registry.create(payload)
             elif path == "/v1/capture-jobs/discover":
                 status, result = HTTPStatus.OK, registry.discover(payload)
+            elif path.endswith("/update"):
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
+                status, result = HTTPStatus.OK, registry.update(job_id, payload)
             else:
                 job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
                 status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
@@ -537,9 +544,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
         try:
-            result = registry_for_receiver(self.server.config.spool_path, self.server.config.auth_token).checkpoint(
-                job_id, payload
-            )
+            result = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            ).checkpoint(job_id, payload)
         except CaptureJobError as exc:
             self._capture_job_error(exc)
             return

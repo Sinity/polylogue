@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.paths import browser_capture_spool_root
+
+_RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
 
 
 class CaptureJobError(Exception):
@@ -64,7 +67,7 @@ def _stamp(value: datetime | None = None) -> str:
 @dataclass(slots=True)
 class CaptureJobRegistry:
     spool_path: Path | None
-    lease_secret: str
+    receiver_id: str
 
     protocol_min: int = 1
     protocol_max: int = 1
@@ -97,6 +100,12 @@ class CaptureJobRegistry:
             """CREATE TABLE IF NOT EXISTS capture_job_orphans (
                 source_digest TEXT PRIMARY KEY, orphan_kind TEXT NOT NULL, diagnostic TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            ) STRICT"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_update_receipts (
+                job_id TEXT NOT NULL, request_id TEXT NOT NULL, request_digest TEXT NOT NULL,
+                receipt_json TEXT NOT NULL, PRIMARY KEY(job_id, request_id)
             ) STRICT"""
         )
         return connection
@@ -138,17 +147,103 @@ class CaptureJobRegistry:
             "intent_key": row["intent_key"],
             "intent_version": intent["version"],
             "intent_digest": intent["digest"],
+            "intent": intent,
             "revision": row["revision"],
             "checkpoint_sequence": row["checkpoint_sequence"],
             "checkpoint_digest": row["checkpoint_digest"],
             "retry": retry,
             "checkpoint": json.loads(row["checkpoint_json"]) if row["checkpoint_json"] else None,
+            "latest_receipt": json.loads(row["receipt_json"]) if row["receipt_json"] else None,
             "lease_generation": lease["generation"] if lease else 0,
             "lease_expires_at": lease["expires_at"] if lease else None,
+            "lease": (
+                {
+                    "generation": lease["generation"],
+                    "session_id": lease["session_id"],
+                    "expires_at": lease["expires_at"],
+                }
+                if lease
+                else None
+            ),
             "min_client_protocol": self.protocol_min,
             "max_client_protocol": self.protocol_max,
             "updated_at": row["updated_at"],
         }
+
+    @staticmethod
+    def _retry(value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            raise CaptureJobError(400, "invalid_retry_state")
+        state = value.get("state")
+        attempt = value.get("attempt")
+        reason = value.get("reason")
+        next_eligible_at = value.get("next_eligible_at")
+        if state not in _RETRY_STATES or not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
+            raise CaptureJobError(400, "invalid_retry_state")
+        if reason is not None and (not isinstance(reason, str) or len(reason) > 256):
+            raise CaptureJobError(400, "invalid_retry_state")
+        if next_eligible_at is not None:
+            if not isinstance(next_eligible_at, str):
+                raise CaptureJobError(400, "invalid_retry_state")
+            try:
+                datetime.fromisoformat(next_eligible_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise CaptureJobError(400, "invalid_retry_state") from exc
+        if state == "retry_wait" and next_eligible_at is None:
+            raise CaptureJobError(400, "invalid_retry_state")
+        return {
+            "state": state,
+            "attempt": attempt,
+            "reason": reason,
+            "next_eligible_at": next_eligible_at,
+        }
+
+    @staticmethod
+    def _lease(row: sqlite3.Row) -> dict[str, object] | None:
+        value = json.loads(row["lease_json"]) if row["lease_json"] else None
+        return value if isinstance(value, dict) else None
+
+    def _require_live_lease(self, job_id: str, row: sqlite3.Row, body: dict[str, object]) -> dict[str, object]:
+        lease = self._lease(row)
+        supplied_proof = body.get("proof")
+        expected_proof = self._proof(job_id, lease) if lease else ""
+        if (
+            not lease
+            or body.get("lease_id") != lease.get("lease_id")
+            or body.get("generation") != lease.get("generation")
+            or not isinstance(supplied_proof, str)
+            or not hmac.compare_digest(supplied_proof, expected_proof)
+        ):
+            raise CaptureJobError(409, "lease_replaced")
+        expires_at = lease.get("expires_at")
+        if not isinstance(expires_at, str) or datetime.fromisoformat(expires_at.replace("Z", "+00:00")) <= _now():
+            raise CaptureJobError(409, "lease_expired")
+        return lease
+
+    def _census_legacy_orphans(self, connection: sqlite3.Connection) -> list[dict[str, object]]:
+        root = backfill_checkpoint_root(self.spool_path)
+        if root.is_dir():
+            for path in sorted(root.glob("*.json")):
+                try:
+                    raw = path.read_bytes()
+                except OSError:
+                    continue
+                digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+                try:
+                    payload = json.loads(raw)
+                    valid = isinstance(payload, dict) and isinstance(payload.get("checkpoint"), dict)
+                except json.JSONDecodeError:
+                    valid = False
+                kind = "legacy_backfill_checkpoint" if valid else "malformed_legacy_checkpoint"
+                diagnostic = "account scope unavailable; explicit migration or abandonment required"
+                connection.execute(
+                    "INSERT OR IGNORE INTO capture_job_orphans VALUES (?, ?, ?, ?)",
+                    (digest, kind, diagnostic, _stamp()),
+                )
+        rows = connection.execute(
+            "SELECT source_digest, orphan_kind, diagnostic, created_at FROM capture_job_orphans ORDER BY created_at"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _require_scoped(
         self, connection: sqlite3.Connection, job_id: str, provider: object, account_scope: object, protocol: object
@@ -204,13 +299,14 @@ class CaptureJobRegistry:
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
         with self._connect() as connection:
+            orphans = self._census_legacy_orphans(connection)
             rows = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
                 + (" AND intent_key=?" if intent_key else "")
                 + " ORDER BY updated_at DESC",
                 (provider, scope, intent_key) if intent_key else (provider, scope),
             ).fetchall()
-            return {"jobs": [self._summary(row) for row in rows]}
+            return {"jobs": [self._summary(row) for row in rows], "orphans": orphans}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connect() as connection:
@@ -221,7 +317,21 @@ class CaptureJobRegistry:
                 body.get("account_scope"),
                 body.get("client_protocol"),
             )
-            return {"job": self._summary(row)}
+            receipts = [
+                json.loads(receipt["receipt_json"])
+                for receipt in connection.execute(
+                    "SELECT receipt_json FROM capture_job_receipts WHERE job_id=? ORDER BY checkpoint_sequence",
+                    (job_id,),
+                ).fetchall()
+            ]
+            updates = [
+                json.loads(receipt["receipt_json"])
+                for receipt in connection.execute(
+                    "SELECT receipt_json FROM capture_job_update_receipts WHERE job_id=? ORDER BY rowid",
+                    (job_id,),
+                ).fetchall()
+            ]
+            return {"job": self._summary(row), "receipts": [*receipts, *updates]}
 
     def _proof(self, job_id: str, lease: dict[str, object]) -> str:
         message = "\0".join(
@@ -235,7 +345,7 @@ class CaptureJobRegistry:
             )
         )
         return (
-            base64.urlsafe_b64encode(hmac.new(self.lease_secret.encode(), message.encode(), hashlib.sha256).digest())
+            base64.urlsafe_b64encode(hmac.new(self.receiver_id.encode(), message.encode(), hashlib.sha256).digest())
             .rstrip(b"=")
             .decode()
         )
@@ -257,7 +367,9 @@ class CaptureJobRegistry:
             if not isinstance(generation, int):
                 raise CaptureJobError(409, "invalid_stored_lease")
             if lease and lease["request_id"] == request_id and lease["session_id"] == session_id:
-                return {"job": self._summary(row), "lease": {**lease, "proof": self._proof(job_id, lease)}}
+                expires_at = datetime.fromisoformat(str(lease["expires_at"]).replace("Z", "+00:00"))
+                if expires_at > _now():
+                    return {"job": self._summary(row), "lease": {**lease, "proof": self._proof(job_id, lease)}}
             if body.get("expected_revision") != row["revision"] or body.get("expected_lease_generation") != generation:
                 raise CaptureJobError(
                     409, "cas_mismatch", {"revision": row["revision"], "lease_generation": generation}
@@ -280,6 +392,63 @@ class CaptureJobRegistry:
             next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
             return {"job": self._summary(next_row), "lease": {**next_lease, "proof": self._proof(job_id, next_lease)}}
 
+    def update(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            raise CaptureJobError(400, "invalid_request_id")
+        retry = self._retry(body.get("retry")) if "retry" in body else None
+        ttl = body.get("lease_ttl_seconds")
+        if ttl is not None and (not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 300):
+            raise CaptureJobError(400, "invalid_lease_ttl")
+        if retry is None and ttl is None:
+            raise CaptureJobError(400, "empty_capture_job_update")
+        request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl})
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+            )
+            lease = self._require_live_lease(job_id, row, body)
+            existing = connection.execute(
+                "SELECT request_digest, receipt_json FROM capture_job_update_receipts WHERE job_id=? AND request_id=?",
+                (job_id, request_id),
+            ).fetchone()
+            if existing:
+                if not hmac.compare_digest(existing["request_digest"], request_digest):
+                    raise CaptureJobError(409, "request_id_conflict")
+                return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
+            if body.get("expected_revision") != row["revision"]:
+                raise CaptureJobError(409, "cas_mismatch", {"revision": row["revision"]})
+            current_retry = json.loads(row["retry_json"])
+            next_retry = retry or current_retry
+            next_lease = dict(lease)
+            now = _now()
+            if ttl is not None:
+                next_lease["expires_at"] = _stamp(now + timedelta(seconds=ttl))
+            if next_retry == current_retry and next_lease == lease:
+                return {"job": self._summary(row), "receipt": None, "duplicate": True}
+            revision = row["revision"] + 1
+            receipt = {
+                "receipt_id": str(uuid4()),
+                "request_id": request_id,
+                "job_id": job_id,
+                "kind": "capture_job_update",
+                "revision": revision,
+                "retry": next_retry,
+                "lease_expires_at": next_lease["expires_at"],
+                "acknowledged_at": _stamp(now),
+            }
+            connection.execute(
+                "UPDATE capture_jobs SET revision=?, retry_json=?, lease_json=?, updated_at=? WHERE job_id=?",
+                (revision, canonical_json(next_retry), canonical_json(next_lease), _stamp(now), job_id),
+            )
+            connection.execute(
+                "INSERT INTO capture_job_update_receipts VALUES (?, ?, ?, ?)",
+                (job_id, request_id, request_digest, canonical_json(receipt)),
+            )
+            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+            return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
+
     def checkpoint(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         checkpoint = body.get("checkpoint")
         if (
@@ -297,16 +466,7 @@ class CaptureJobRegistry:
             row = self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
             )
-            lease = json.loads(row["lease_json"]) if row["lease_json"] else None
-            if (
-                not lease
-                or body.get("lease_id") != lease["lease_id"]
-                or body.get("generation") != lease["generation"]
-                or body.get("proof") != self._proof(job_id, lease)
-            ):
-                raise CaptureJobError(409, "lease_replaced")
-            if datetime.fromisoformat(lease["expires_at"].replace("Z", "+00:00")) <= _now():
-                raise CaptureJobError(409, "lease_expired")
+            self._require_live_lease(job_id, row, body)
             receipt_row = connection.execute(
                 "SELECT receipt_json, checkpoint_sequence, checkpoint_digest FROM capture_job_receipts WHERE job_id=? AND request_id=?",
                 (job_id, request_id),
@@ -360,7 +520,11 @@ class CaptureJobRegistry:
             return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
 
 
-def registry_for_receiver(spool_path: Path | None, auth_token: str | None) -> CaptureJobRegistry:
-    # The loopback bearer already protects every route.  It also derives
-    # non-persisted lease proofs, so a registry snapshot cannot mutate jobs.
-    return CaptureJobRegistry(spool_path, auth_token or "unauthenticated-local-receiver")
+def registry_for_receiver(spool_path: Path | None, receiver_id: str) -> CaptureJobRegistry:
+    """Build the registry without moving the receiver bearer downstream.
+
+    HTTP authentication remains the bearer token's only job. Lease proofs are
+    opaque fencing values derived from the stable, non-secret receiver identity;
+    they reject stale clients but grant no route access on their own.
+    """
+    return CaptureJobRegistry(spool_path, receiver_id)
