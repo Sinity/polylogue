@@ -586,7 +586,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/extraction.py
-    loc: 571
+    loc: 445
     target: polylogue/archive/session/extraction.py
     owner: archive-session
     reason: archive-domain semantics
@@ -611,7 +611,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/runtime.py
-    loc: 584
+    loc: 587
     target: polylogue/archive/session/runtime.py
     owner: archive-session
     reason: archive-domain semantics
@@ -940,7 +940,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2522
+    loc: 2551
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1871,7 +1871,7 @@ files:
     target: polylogue/insights/resume.py
     owner: stable
   - path: polylogue/insights/rigor.py
-    loc: 1091
+    loc: 1067
     target: polylogue/insights/rigor.py
     owner: stable
   - path: polylogue/insights/run_projection.py
@@ -3162,7 +3162,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 407
+    loc: 410
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3290,7 +3290,7 @@ files:
     target: polylogue/storage/embeddings/embedding_stats.py
     owner: stable
   - path: polylogue/storage/embeddings/materialization.py
-    loc: 1327
+    loc: 1330
     target: polylogue/storage/embeddings/materialization.py
     owner: stable
   - path: polylogue/storage/embeddings/models.py
@@ -3484,7 +3484,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 542
+    loc: 547
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
@@ -3493,7 +3493,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7006
+    loc: 7015
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
