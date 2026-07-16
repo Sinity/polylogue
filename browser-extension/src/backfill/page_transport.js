@@ -79,7 +79,13 @@ export async function executeProviderPageRequest(request) {
       return {
         parts: content.parts.flatMap((part) => {
           if (typeof part === "string") return [part];
-          if (part && typeof part === "object" && typeof part.text === "string") return [{ text: part.text }];
+          if (part && typeof part === "object") {
+            const projected = {};
+            for (const key of ["content_type", "text", "asset_pointer", "file_id", "name", "mime_type"]) {
+              if (typeof part[key] === "string") projected[key] = part[key];
+            }
+            return Object.keys(projected).length ? [projected] : [];
+          }
           return [];
         }),
       };
@@ -87,6 +93,19 @@ export async function executeProviderPageRequest(request) {
     if (typeof content.text === "string") return { text: content.text };
     if (typeof content.result === "string") return { result: content.result };
     return {};
+  }
+
+  function compactChatGptAttachments(metadata) {
+    if (!Array.isArray(metadata?.attachments)) return [];
+    return metadata.attachments.flatMap((attachment) => {
+      if (!attachment || typeof attachment !== "object") return [];
+      const projected = {};
+      for (const key of ["id", "name", "mime_type", "library_file_id"]) {
+        if (typeof attachment[key] === "string") projected[key] = attachment[key];
+      }
+      if (Number.isFinite(attachment.size)) projected.size = attachment.size;
+      return typeof projected.id === "string" ? [projected] : [];
+    });
   }
 
   function compactChatGptConversation(body) {
@@ -108,7 +127,12 @@ export async function executeProviderPageRequest(request) {
               content: compactChatGptContent(message.content),
               create_time: typeof message.create_time === "string" || typeof message.create_time === "number" ? message.create_time : null,
               status: typeof message.status === "string" ? message.status : null,
-              metadata: { model_slug: typeof message.metadata?.model_slug === "string" ? message.metadata.model_slug : null },
+              end_turn: typeof message.end_turn === "boolean" ? message.end_turn : null,
+              recipient: typeof message.recipient === "string" ? message.recipient : null,
+              metadata: {
+                model_slug: typeof message.metadata?.model_slug === "string" ? message.metadata.model_slug : null,
+                attachments: compactChatGptAttachments(message.metadata),
+              },
             }
           : null,
       };
@@ -119,6 +143,7 @@ export async function executeProviderPageRequest(request) {
       title: typeof source.title === "string" ? source.title : null,
       create_time: typeof source.create_time === "string" || typeof source.create_time === "number" ? source.create_time : null,
       update_time: typeof source.update_time === "string" || typeof source.update_time === "number" ? source.update_time : null,
+      current_node: typeof source.current_node === "string" ? source.current_node : null,
       mapping,
     });
     const bytes = new globalThis.TextEncoder().encode(projected).length;

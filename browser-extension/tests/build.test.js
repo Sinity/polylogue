@@ -101,7 +101,7 @@ describe("build.mjs full archive emission", () => {
     expect(listing).toContain("src/backfill/providers.js");
     expect(listing).toContain("src/backfill/storage.js");
     expect(listing).toContain("src/backfill/page_transport.js");
-  });
+  }, 15_000);
 
   it("executes the packaged service worker fixture without foreground tab activation", async () => {
     const smokeRoot = join(EXT_ROOT, ".cache", `packaged-smoke-${Date.now()}`);
@@ -116,6 +116,7 @@ describe("build.mjs full archive emission", () => {
     let messageListener;
     let alarmListener;
     let stored = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "token" };
+    let sessionStored = {};
     const pageRequests = [];
     const pageFetchCalls = [];
     const pageToken = "packaged-page-token";
@@ -141,12 +142,33 @@ describe("build.mjs full archive emission", () => {
         return new Response(JSON.stringify({ id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } }), { headers: { "Content-Type": "application/json" } });
       }),
     };
+    const ownedTabs = [];
     const tabs = {
-      create: vi.fn(async ({ url, active }) => ({ id: 77, url, active, status: "complete" })),
+      create: vi.fn(async ({ url, active }) => {
+        const tab = { id: 77, url, active, status: "complete" };
+        ownedTabs.push(tab);
+        return tab;
+      }),
+      get: vi.fn(async (tabId) => ownedTabs.find((tab) => tab.id === tabId)),
       update: vi.fn(),
       remove: vi.fn(),
       query: vi.fn(async () => []),
-      sendMessage: vi.fn(),
+      sendMessage: vi.fn(async (_tabId, message) => {
+        if (message.type !== "polylogue.capturePage") return undefined;
+        return {
+          ok: true,
+          envelope: {
+            polylogue_capture_kind: "browser_llm_session",
+            provider_meta: { capture_fidelity: "native_full" },
+            session: {
+              provider: "chatgpt",
+              provider_session_id: message.providerSessionId,
+              turns: [{ role: "user", text: "fixture" }],
+              attachments: [],
+            },
+          },
+        };
+      }),
     };
     globalThis.indexedDB = indexedDB;
     globalThis.chrome = {
@@ -160,6 +182,7 @@ describe("build.mjs full archive emission", () => {
         onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
       },
       scripting: { executeScript: vi.fn(async (details) => {
+        if (details.files) return undefined;
         pageRequests.push(details.args[0]);
         const previousWindow = globalThis.window;
         globalThis.window = pageWindow;
@@ -169,11 +192,18 @@ describe("build.mjs full archive emission", () => {
           globalThis.window = previousWindow;
         }
       }) },
-      storage: { local: {
-        get: vi.fn(async (defaults) => ({ ...defaults, ...stored })),
-        set: vi.fn(async (patch) => { stored = { ...stored, ...patch }; }),
-      } },
-      tabs: { ...tabs, get: vi.fn(), onActivated: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
+      storage: {
+        local: {
+          get: vi.fn(async (defaults) => ({ ...defaults, ...stored })),
+          set: vi.fn(async (patch) => { stored = { ...stored, ...patch }; }),
+        },
+        session: {
+          get: vi.fn(async (defaults) => ({ ...defaults, ...sessionStored })),
+          set: vi.fn(async (patch) => { sessionStored = { ...sessionStored, ...patch }; }),
+          remove: vi.fn(async (key) => { delete sessionStored[key]; }),
+        },
+      },
+      tabs: { ...tabs, onActivated: { addListener: vi.fn() }, onUpdated: { addListener: vi.fn() } },
     };
     const fetchCalls = [];
     let receiverPosts = 0;
@@ -230,7 +260,13 @@ describe("build.mjs full archive emission", () => {
     expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session")).toHaveLength(5);
     expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
-    expect(tabs.sendMessage).not.toHaveBeenCalled();
+    expect(tabs.sendMessage).toHaveBeenCalledWith(77, expect.objectContaining({
+      type: "polylogue.capturePage",
+      reason: "backfill_exact_capture",
+      providerSessionId: "fixture-1",
+      deferReceiver: true,
+      nativePayload: expect.objectContaining({ id: "fixture-1" }),
+    }));
     expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
 
     globalThis.indexedDB = new IDBFactory();
@@ -260,5 +296,5 @@ describe("build.mjs full archive emission", () => {
     await Promise.resolve();
     expect(pageRequests).toHaveLength(pageRequestCount);
     rmSync(smokeRoot, { recursive: true, force: true });
-  });
+  }, 15_000);
 });

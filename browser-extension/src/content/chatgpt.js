@@ -187,9 +187,16 @@
       const content = message && message.content;
       if (!message || !content) continue;
       const text = extractContentText(content);
-      if (!text) continue;
       const role = roleFromRaw(message.author && message.author.role);
       const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+      const hasAttachmentEvidence =
+        (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
+        || (Array.isArray(content.parts) && content.parts.some((part) =>
+          part && typeof part === "object" && (
+            typeof part.asset_pointer === "string" || typeof part.file_id === "string"
+          )
+        ));
+      if (!text && !hasAttachmentEvidence) continue;
       turns.push({
         provider_turn_id: String(message.id || node.id || nodeId),
         role,
@@ -208,24 +215,25 @@
     return turns;
   }
 
-  function parseNativeCapture(capture) {
+  function parseNativeCapture(capture, expectedConversationId = conversationIdFromUrl()) {
     if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    const currentConversationId = conversationIdFromUrl();
-    if (!currentConversationId || !String(capture.url || "").includes(`/conversation/${currentConversationId}`)) {
+    if (!expectedConversationId || !String(capture.url || "").includes(`/conversation/${expectedConversationId}`)) {
       return null;
     }
     try {
       const payload = JSON.parse(capture.body);
       if (!payload || typeof payload !== "object" || !payload.mapping) return null;
+      const payloadConversationId = payload.conversation_id || payload.id;
+      if (payloadConversationId && String(payloadConversationId) !== expectedConversationId) return null;
       return payload;
     } catch {
       return null;
     }
   }
 
-  function latestNativePayload() {
+  function latestNativePayload(expectedConversationId = conversationIdFromUrl()) {
     for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
-      const payload = parseNativeCapture(nativeCaptures[index]);
+      const payload = parseNativeCapture(nativeCaptures[index], expectedConversationId);
       if (payload) return payload;
     }
     return null;
@@ -323,12 +331,13 @@
     }
   }
 
-  async function fetchNativePayloadOnDemand() {
-    const conversationId = conversationIdFromUrl();
+  async function fetchNativePayloadOnDemand(requestedConversationId = null) {
+    const conversationId = requestedConversationId || conversationIdFromUrl();
     if (!conversationId) return null;
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return null;
     const pageResult = await requestNativeCaptureFromPage(conversationId);
     const pageCapture = pageResult && pageResult.capture;
-    const pagePayload = parseNativeCapture(pageCapture);
+    const pagePayload = parseNativeCapture(pageCapture, conversationId);
     rememberNativeAttempt({
       stage: "page_bridge_fetch",
       ok: pageCapture?.ok ?? null,
@@ -370,7 +379,7 @@
   // breaker: a conversation can reference dozens of sandbox files, and once
   // the sandbox container is gone every one of them fails the same way --
   // without these bounds a capture could stall for minutes on dead links.
-  // Must fit inside the 15s capturePage message timeout raced by popup and
+  // Must fit inside the 35s capturePage message timeout raced by popup and
   // background (CAPTURE_MESSAGE_TIMEOUT_MS) with headroom for the
   // conversation fetch itself. Dead links answer fast; anything slower is
   // skipped and disclosed -- a later re-capture backfills idempotently.
@@ -600,14 +609,14 @@
     return { attachments, outcome };
   }
 
-  function buildNativeEnvelope(payload, assetAcquisition = null) {
+  function buildNativeEnvelope(payload, assetAcquisition = null, requestedConversationId = null) {
     const turns = collectNativeTurns(payload);
     if (!turns.length) return null;
     return window.polylogueCapture.buildEnvelope({
       provider: "chatgpt",
       adapterName: nativeAdapterName,
       turns,
-      providerSessionId: String(payload.conversation_id || payload.id || conversationIdFromUrl()),
+      providerSessionId: String(payload.conversation_id || payload.id || requestedConversationId || conversationIdFromUrl()),
       sessionKind: payload.is_temporary === true ? "temporary" : null,
       title: typeof payload.title === "string" && payload.title ? payload.title : null,
       createdAt: timestampFromSeconds(payload.create_time),
@@ -626,19 +635,37 @@
     });
   }
 
-  async function capture(reason = null) {
+  async function capture(
+    reason = null,
+    requestedConversationId = null,
+    deferReceiver = false,
+    nativePayloadOverride = null,
+  ) {
     // Intercepted responses are only a bootstrap/fallback cache. A long-running
     // conversation can grow substantially after the response observed at page
     // load, so every explicit capture first asks ChatGPT for current native
     // detail with cache: "no-store". Falling back preserves degraded/offline
     // capture without allowing an old response to outrank fresh provider state.
-    const nativePayload = (await fetchNativePayloadOnDemand()) || latestNativePayload();
+    let nativePayload = nativePayloadOverride;
+    if (nativePayload !== null) {
+      if (!nativePayload || typeof nativePayload !== "object" || !nativePayload.mapping) {
+        throw new Error("provided_native_payload_invalid");
+      }
+      const suppliedId = nativePayload.conversation_id || nativePayload.id;
+      if (requestedConversationId && suppliedId && String(suppliedId) !== requestedConversationId) {
+        throw new Error("provided_native_payload_identity_mismatch");
+      }
+    } else {
+      nativePayload =
+        (await fetchNativePayloadOnDemand(requestedConversationId))
+        || latestNativePayload(requestedConversationId || conversationIdFromUrl());
+    }
     let assetAcquisition = null;
     if (nativePayload) {
       try {
         assetAcquisition = await acquireAssets(
           nativePayload,
-          String(nativePayload.conversation_id || nativePayload.id || conversationIdFromUrl())
+          String(nativePayload.conversation_id || nativePayload.id || requestedConversationId || conversationIdFromUrl())
         );
       } catch {
         assetAcquisition = {
@@ -663,7 +690,7 @@
         };
       }
     }
-    const envelope = nativePayload ? buildNativeEnvelope(nativePayload, assetAcquisition) : null;
+    const envelope = nativePayload ? buildNativeEnvelope(nativePayload, assetAcquisition, requestedConversationId) : null;
     const fallbackEnvelope = () => {
       const turns = collectTurns();
       if (!turns.length) return null;
@@ -677,8 +704,9 @@
         }
       });
     };
-    const finalEnvelope = envelope || fallbackEnvelope();
+    const finalEnvelope = envelope || (requestedConversationId ? null : fallbackEnvelope());
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
+    if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });
@@ -709,7 +737,12 @@
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture(message.reason || null)
+    capture(
+      message.reason || null,
+      message.providerSessionId || null,
+      message.deferReceiver === true,
+      message.nativePayload ?? null,
+    )
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

@@ -183,6 +183,20 @@ describe("ChatGPT Sol Pro launch adapter", () => {
     });
   });
 
+  it("recognizes the job-specific readable handoff filename", () => {
+    const filename = "polylogue-extension-mission-control-sol-next-extension-handoff.zip";
+    installPage(`
+      <section data-testid="conversation-turn-1">
+        <a href="sandbox:/mnt/data/${filename}">${filename}</a>
+      </section>
+    `);
+
+    expect(inspectChatGptLaunchPage(filename)).toMatchObject({
+      assistant_turns: 1,
+      handoff_name: filename,
+    });
+  });
+
   it("detects a provider safety lock while monitoring", () => {
     installPage('<section data-testid="conversation-turn-2">Access to conversations temporarily blocked</section>');
     expect(inspectChatGptLaunchPage()).toMatchObject({ safety_lock: true });

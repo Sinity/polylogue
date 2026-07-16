@@ -21,6 +21,7 @@ from uuid import uuid4
 import orjson
 
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserBackfillCheckpointRecord,
     BrowserBackfillCheckpointRequest,
@@ -595,9 +596,28 @@ def write_capture_envelope(
     )
 
 
+def receiver_identity(config: BrowserCaptureReceiverConfig) -> str:
+    """Return a stable, non-secret identity for one paired receiver.
+
+    The persisted bearer token is the receiver's pairing root and remains stable
+    across daemon restarts.  Hashing it with a domain separator produces a
+    comparison-safe identifier without sending the token itself.  The explicit
+    no-auth escape hatch has no token, so it falls back to the resolved spool
+    path; that setup is already opt-in and local-only.
+    """
+    if config.auth_token:
+        material = f"token:{config.auth_token}"
+    else:
+        material = f"no-auth-spool:{config.spool_path.expanduser().resolve()}"
+    digest = hashlib.sha256(f"polylogue-browser-capture-receiver\0{material}".encode()).hexdigest()
+    return f"rx-{digest[:20]}"
+
+
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:
     """Return JSON status for extension health checks."""
     return BrowserCaptureReceiverStatusPayload(
+        api_schema=BROWSER_CAPTURE_API_SCHEMA,
+        receiver_id=receiver_identity(config),
         spool_path=str(config.spool_path),
         spool_ready=True,
         allowed_origins=sorted(config.allowed_origins),
@@ -976,6 +996,7 @@ __all__ = [
     "poll_post_commands",
     "post_command_queue_root",
     "read_backfill_checkpoint",
+    "receiver_identity",
     "receiver_status_payload",
     "resolve_receiver_auth_token",
     "write_backfill_checkpoint",

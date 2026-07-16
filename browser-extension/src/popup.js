@@ -8,6 +8,12 @@ const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
 // the sole cross-script binding and call through it instead.
 const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
+let currentCaptureQueue = { entries: [], dropped_count: 0 };
+let currentBackfillJobs = [];
+let currentLaunchJobs = [];
+let currentLaunchContext = { launchEnabled: false, ownerInstanceId: null, launchSource: "live", cachedAt: null };
+let currentReceiverOnline = true;
+
 function hostMatches(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
 }
@@ -62,10 +68,22 @@ function contentScriptFiles(url) {
   try {
     const parsed = new URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
-      return ["src/common.js", "src/content/message_layer.js", "src/content/chatgpt.js"];
+      return [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/chatgpt.js",
+      ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
-      return ["src/common.js", "src/content/message_layer.js", "src/content/claude.js"];
+      return [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/claude.js",
+      ];
     }
     if (
       parsed.hostname === "grok.com" ||
@@ -145,16 +163,6 @@ function conversationKey(provider, providerSessionId) {
   return provider && providerSessionId ? `${provider}:${providerSessionId}` : null;
 }
 
-function timelineLabel(entry) {
-  const labels = {
-    captured: "Captured",
-    detected_new: "New conversation detected",
-    held_with_reason: "Held",
-    first_seen: "First seen",
-  };
-  return labels[entry?.event] || entry?.event || "Observed";
-}
-
 function renderTimeline(items) {
   const node = document.getElementById("timeline");
   if (!node) return;
@@ -164,8 +172,8 @@ function renderTimeline(items) {
     return;
   }
   node.innerHTML = events.map((entry) => {
-    const detail = [entry.reason, entry.detail].filter(Boolean).join(" · ");
-    return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(timelineLabel(entry))}</div><div class="log-meta">${escapeHtml(detail)}</div></div></div>`;
+    const presentation = operatorStatusApi.eventPresentation(entry);
+    return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(presentation.label)}</div><div class="log-meta">${escapeHtml(presentation.detail || "")}</div></div></div>`;
   }).join("");
 }
 
@@ -223,7 +231,7 @@ function activeConversationState(tab, globalState, ledger) {
   };
 }
 
-function renderOpenTabs(tabs, ledger, activeTabId) {
+function renderOpenTabs(tabs, ledger, activeTabId, receiverOnline = true) {
   const node = document.getElementById("open-tabs");
   if (!node) return;
   const supported = (Array.isArray(tabs) ? tabs : []).map((tab) => ({ tab, ...tabState(tab, ledger) }))
@@ -235,7 +243,7 @@ function renderOpenTabs(tabs, ledger, activeTabId) {
   }
   node.innerHTML = supported.map(({ tab, provider, sessionId, ledger: item }) => {
     const status = operatorStatusApi.operatorStatusForState({
-      online: true,
+      online: receiverOnline,
       captured: item.archive_state?.state === "archived" || Boolean(item.receiver_request_id),
       archive_state: item.archive_state,
       capture_mode: item.capture_mode,
@@ -315,14 +323,55 @@ function renderAssetAcquisition(assetAcquisition) {
     : "";
 }
 
+function workKindLabel(kind) {
+  return {
+    capture_retry: "Capture retry",
+    backfill: "Backfill",
+    sol_pro: "Sol Pro",
+  }[kind] || "Work";
+}
+
+function renderWorkQueue() {
+  const countNode = document.getElementById("work-count");
+  const listNode = document.getElementById("work-queue");
+  if (!countNode || !listNode) return;
+  const items = operatorStatusApi.normalizeWorkItems({
+    captureQueue: currentCaptureQueue,
+    backfillJobs: currentBackfillJobs,
+    launchJobs: currentLaunchJobs,
+    ownerInstanceId: currentLaunchContext.ownerInstanceId,
+    receiverOnline: currentReceiverOnline,
+  });
+  countNode.textContent = String(items.length);
+  if (!items.length) {
+    listNode.innerHTML = '<div class="empty">No queued, running, or recently completed external work.</div>';
+    return;
+  }
+  listNode.innerHTML = items.slice(0, 12).map((item) => {
+    const meta = [item.phase, item.cadence, `Owner: ${item.owner}`].filter(Boolean).join(" · ");
+    const extra = [
+      item.cooldown ? `Cooldown/backoff: ${item.cooldown}` : null,
+      item.kind === "sol_pro" ? `Handoff: ${item.handoff}` : null,
+      item.kind === "sol_pro" && currentLaunchContext.launchSource === "cached"
+        ? `Last known ${relativeAge(currentLaunchContext.cachedAt)} ago`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return `<div class="work-item"><div class="work-head"><div class="work-title"><span class="work-kind">${escapeHtml(workKindLabel(item.kind))}</span><br>${escapeHtml(item.title)}</div><span class="work-pill ${escapeHtml(item.status.tone)}">${escapeHtml(item.status.label)}</span></div><div class="work-meta">${escapeHtml(meta)}</div>${extra ? `<div class="work-meta">${escapeHtml(extra)}</div>` : ""}</div>`;
+  }).join("");
+}
+
 function renderQueue(queue) {
+  currentCaptureQueue = queue && typeof queue === "object" ? queue : { entries: [], dropped_count: 0 };
   const countNode = document.getElementById("queue-count");
   const listNode = document.getElementById("queue-log");
-  const entries = Array.isArray(queue?.entries) ? queue.entries : [];
-  const droppedCount = Number(queue?.dropped_count) || 0;
+  const entries = Array.isArray(currentCaptureQueue.entries) ? currentCaptureQueue.entries : [];
+  const droppedCount = Number(currentCaptureQueue.dropped_count) || 0;
   countNode.textContent = droppedCount ? `${entries.length} (+${droppedCount} dropped)` : String(entries.length);
   if (!entries.length) {
     listNode.innerHTML = '<div class="log-meta">No captures queued for retry.</div>';
+    renderWorkQueue();
     return;
   }
   listNode.innerHTML = entries
@@ -330,10 +379,10 @@ function renderQueue(queue) {
       const session = entry.envelope?.session || {};
       const provider = session.provider || "unknown";
       const providerSessionId = session.provider_session_id || "";
-      const title = `${provider} ${providerSessionId}`.trim();
+      const title = session.title || `${provider} ${providerSessionId}`.trim();
       const meta = [
         `attempt ${entry.attempts || 0}`,
-        entry.next_attempt_at ? `next in ${relativeAge(entry.next_attempt_at)}` : null,
+        entry.next_attempt_at ? operatorStatusApi.normalizeWorkItems({ captureQueue: { entries: [entry] } })[0]?.cadence : null,
         entry.last_error,
       ]
         .filter(Boolean)
@@ -341,18 +390,48 @@ function renderQueue(queue) {
       return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.enqueued_at))}</div><div><div class="log-title">${providerLogo(provider)} ${escapeHtml(title)}</div><div class="log-meta">${escapeHtml(meta)}</div></div></div>`;
     })
     .join("");
+  renderWorkQueue();
 }
 
-function renderReceiverHealth(health) {
+function renderReceiverPairing(pairing, health = null, configuredUrl = "") {
+  const statusNode = document.getElementById("receiver-pairing-status");
+  const detailNode = document.getElementById("receiver-pairing-detail");
+  if (!statusNode || !detailNode) return;
+  const presentation = operatorStatusApi.receiverPairingPresentation({ pairing, health, configuredUrl });
+  statusNode.textContent = presentation.headline;
+  detailNode.textContent = presentation.detail;
+  statusNode.title = pairing?.receiver_id || "";
+}
+
+function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
   const node = document.getElementById("receiver-health");
+  if (!node) return;
   if (!health) {
     node.textContent = "--";
     node.title = "";
+    node.className = "state-chip neutral";
+    renderReceiverPairing(pairing, health, configuredUrl);
     return;
   }
-  const labels = { ok: "OK", unauthorized: "Unauthorized", unreachable: "Unreachable", error: "Error" };
+  const labels = {
+    ok: "Online",
+    recovered: "Recovered",
+    unauthorized: "Token required",
+    pairing_mismatch: "Identity mismatch",
+    unreachable: "Receiver offline",
+    error: "Receiver error",
+  };
+  const tone = ["ok", "recovered"].includes(health.status)
+    ? "ok"
+    : ["unauthorized", "pairing_mismatch", "error"].includes(health.status)
+      ? "bad"
+      : "warn";
   node.textContent = labels[health.status] || health.status || "--";
   node.title = health.detail || "";
+  node.className = `state-chip ${tone}`;
+  currentReceiverOnline = ["ok", "recovered"].includes(health.status);
+  renderReceiverPairing(pairing || health.pairing || null, health, configuredUrl);
+  renderWorkQueue();
 }
 
 let selectedBackfillJobId = null;
@@ -365,11 +444,13 @@ function renderBackfill(jobs) {
     const rightActive = ["running", "paused"].includes(right.status) ? 1 : 0;
     return rightActive - leftActive || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
   }) : [];
+  currentBackfillJobs = list;
+  renderWorkQueue();
   const job = list.find((candidate) => candidate.id === selectedBackfillJobId) || list[0] || null;
   const selector = document.getElementById("backfill-job");
   if (selector) {
     selector.innerHTML = list.length
-      ? list.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(`${candidate.provider} · ${candidate.status} · ${candidate.cutoff || "no cutoff"}`)}</option>`).join("")
+      ? list.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(`${candidate.job_title || `${candidate.provider} history backfill`} · ${candidate.status}`)}</option>`).join("")
       : '<option value="">No jobs yet</option>';
   }
   if (!job) {
@@ -422,7 +503,7 @@ function launchEventLabel(job) {
   return [latest.kind, latest.detail].filter(Boolean).join(" · ");
 }
 
-function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = {}) {
+function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null, launchSource = "live", cachedAt = null } = {}) {
   const statusNode = document.getElementById("launch-status");
   if (!statusNode) return;
   const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
@@ -430,6 +511,9 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     return Number(active.has(right.status)) - Number(active.has(left.status))
       || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
   }) : [];
+  currentLaunchJobs = list;
+  currentLaunchContext = { launchEnabled: Boolean(launchEnabled), ownerInstanceId, launchSource, cachedAt };
+  renderWorkQueue();
   const job = list.find((candidate) => candidate.job_id === selectedLaunchJobId) || list[0] || null;
   selectedLaunchJob = job;
   selectedLaunchJobId = job?.job_id || null;
@@ -438,13 +522,13 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
   const selector = document.getElementById("launch-job");
   if (selector) {
     selector.innerHTML = list.length
-      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`#${candidate.queue_position || "?"} ${candidate.job_id} · ${candidate.status}/${candidate.phase} · ${candidate.cadence_minutes}m · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
+      ? list.map((candidate) => `<option value="${escapeHtml(candidate.job_id)}">${escapeHtml(`#${candidate.queue_position || "?"} ${candidate.job_title || candidate.job_id} · ${candidate.status}/${candidate.phase} · ${candidate.cadence_minutes}m · ${candidate.attachments?.length || 0} files`)}</option>`).join("")
       : '<option value="">No jobs yet</option>';
     if (job) selector.value = job.job_id;
   }
   if (!job) {
     statusNode.textContent = launchEnabled ? "idle" : "disabled";
-    for (const id of ["launch-phase", "launch-cadence", "launch-owner", "launch-last"]) {
+    for (const id of ["launch-title", "launch-phase", "launch-cadence", "launch-owner", "launch-handoff", "launch-last"]) {
       document.getElementById(id).textContent = "--";
     }
     for (const id of ["launch-poll", "launch-now", "launch-pause", "launch-resume", "launch-retry", "launch-confirm-existing", "launch-confirm-absent", "launch-cancel", "launch-inspect"]) {
@@ -452,7 +536,10 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
     }
     return;
   }
-  statusNode.textContent = launchEnabled ? job.status : `${job.status} · disabled`;
+  statusNode.textContent = launchSource === "cached"
+    ? `receiver offline · last known ${job.status}`
+    : launchEnabled ? job.status : `${job.status} · disabled`;
+  document.getElementById("launch-title").textContent = job.job_title || "GPT-5.6 Sol Pro work";
   document.getElementById("launch-phase").textContent = job.phase || job.status;
   const due = job.next_attempt_at ? new Date(job.next_attempt_at).toLocaleTimeString() : "now";
   const remainingMinutes = job.next_attempt_at
@@ -465,22 +552,33 @@ function renderLaunch(jobs, { launchEnabled = false, ownerInstanceId = null } = 
   document.getElementById("launch-owner").textContent = job.lease_owner
     ? (job.lease_owner === ownerInstanceId ? "this extension" : "another extension")
     : "unclaimed";
-  document.getElementById("launch-last").textContent = launchEventLabel(job);
+  const normalizedJob = operatorStatusApi.normalizeWorkItems({
+    launchJobs: [job],
+    ownerInstanceId,
+    receiverOnline: currentReceiverOnline,
+  })[0];
+  document.getElementById("launch-handoff").textContent = normalizedJob?.handoff || "Awaiting completion handoff";
+  const lastEvent = launchEventLabel(job);
+  document.getElementById("launch-last").textContent = launchSource === "cached"
+    ? `Last known ${relativeAge(cachedAt)} ago · ${lastEvent}`
+    : lastEvent;
   const active = ["leased", "uploading", "submitting", "submitted"].includes(job.status);
+  const liveControls = launchSource === "live" && currentReceiverOnline;
   const protectedCircuit = ["rate_limited", "safety_locked"].includes(job.cooldown_reason)
     && (!job.next_attempt_at || Date.parse(job.next_attempt_at) > Date.now());
-  document.getElementById("launch-pause").disabled = active || ["completed", "cancelled"].includes(job.status);
-  document.getElementById("launch-now").disabled = active
+  document.getElementById("launch-pause").disabled = !liveControls || active || ["completed", "cancelled"].includes(job.status);
+  document.getElementById("launch-now").disabled = !liveControls || active
     || ["completed", "cancelled"].includes(job.status)
     || protectedCircuit;
-  document.getElementById("launch-resume").disabled = protectedCircuit
+  document.getElementById("launch-resume").disabled = !liveControls || protectedCircuit
     || !["paused", "cooldown", "failed"].includes(job.status);
-  document.getElementById("launch-retry").disabled = protectedCircuit
+  document.getElementById("launch-retry").disabled = !liveControls || protectedCircuit
     || !["paused", "cooldown", "failed"].includes(job.status);
-  document.getElementById("launch-confirm-existing").disabled = job.status !== "submission_unknown"
+  document.getElementById("launch-confirm-existing").disabled = !liveControls
+    || job.status !== "submission_unknown"
     || (!job.tab_id && !job.conversation_url);
-  document.getElementById("launch-confirm-absent").disabled = job.status !== "submission_unknown";
-  document.getElementById("launch-cancel").disabled = ["completed", "cancelled"].includes(job.status);
+  document.getElementById("launch-confirm-absent").disabled = !liveControls || job.status !== "submission_unknown";
+  document.getElementById("launch-cancel").disabled = !liveControls || ["completed", "cancelled"].includes(job.status);
   document.getElementById("launch-inspect").disabled = !job.tab_id && !job.conversation_url;
 }
 
@@ -494,6 +592,61 @@ async function refreshLaunches() {
     renderLaunch([], { launchEnabled: false });
     document.getElementById("launch-status").textContent = "unavailable";
     throw error;
+  }
+}
+
+function ambientFallback(raw, tabUrl) {
+  const settings = raw && typeof raw === "object" ? raw : {};
+  const disabledSites = settings.disabled_sites && typeof settings.disabled_sites === "object"
+    ? settings.disabled_sites
+    : {};
+  let hostname = "";
+  try { hostname = new URL(tabUrl || "").hostname; } catch { hostname = ""; }
+  return {
+    enabled: settings.enabled !== false,
+    disabled_sites: disabledSites,
+    site: hostname || null,
+    site_enabled: hostname ? disabledSites[hostname] !== true : true,
+  };
+}
+
+function renderAmbient(ambient, tabUrl = "", assertions = null) {
+  const enabledNode = document.getElementById("ambient-enabled");
+  const siteNode = document.getElementById("ambient-site-enabled");
+  const siteLabel = document.getElementById("ambient-site");
+  const assertionNode = document.getElementById("assertion-status");
+  if (enabledNode) enabledNode.checked = ambient?.enabled !== false;
+  if (siteNode) {
+    siteNode.checked = ambient?.site_enabled !== false;
+    siteNode.disabled = !providerFromUrl(tabUrl) || providerFromUrl(tabUrl) === "unknown";
+  }
+  if (siteLabel) siteLabel.textContent = ambient?.site || hostLabel(tabUrl || "") || "Current site";
+  if (assertionNode) {
+    assertionNode.textContent = assertions?.persistence_supported
+      ? "The receiver advertises assertion persistence, but this extension build has no authenticated write handler. Save remains disabled."
+      : "Text selections form a local assertion candidate only. Save stays disabled because the authenticated receiver advertises no assertion route.";
+  }
+}
+
+function renderReverse(reverse) {
+  const statusNode = document.getElementById("reverse-status");
+  const detailNode = document.getElementById("reverse-detail");
+  if (!statusNode || !detailNode) return;
+  const enabled = Boolean(reverse?.enabled);
+  statusNode.textContent = enabled ? "Configured on" : "Off — safe default";
+  statusNode.className = `state-chip ${enabled ? "warn" : "neutral"}`;
+  detailNode.textContent = enabled
+    ? "Posting is configured elsewhere, but this ambient surface never posts or submits. The receiver's independent posting gate is still required."
+    : "No ambient control can post or submit. Extension and receiver posting gates remain independently required.";
+}
+
+async function loadMissionSnapshot() {
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false });
+    if (!result?.ok || (!result.state && !result.work && !result.receiver)) return null;
+    return result;
+  } catch {
+    return null;
   }
 }
 
@@ -558,20 +711,51 @@ async function render() {
     polylogueState: null,
     polylogueSessionLedger: {},
     polylogueConversationTimeline: {},
+    polylogueReceiverPairing: null,
+    polylogueAmbientSettings: { enabled: true, disabled_sites: {} },
+    postingEnabled: false,
     receiverAuthToken: "",
-    receiverBaseUrl: DEFAULT_RECEIVER
+    receiverBaseUrl: DEFAULT_RECEIVER,
   });
   renderLog(stored.polylogueCaptureLog);
   renderDebugLog(stored.polylogueDebugLog);
-  renderQueue(stored.polylogueCaptureQueue);
   document.getElementById("receiver-url").value = stored.receiverBaseUrl;
   document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
-  const tab = await activeTab();
-  const openTabs = await chrome.tabs.query({});
+
+  const [tab, openTabs, mission] = await Promise.all([
+    activeTab(),
+    chrome.tabs.query({}),
+    loadMissionSnapshot(),
+  ]);
+  const extensionBuild = document.getElementById("extension-build");
+  if (extensionBuild) {
+    const runtime = mission?.extension;
+    extensionBuild.textContent = runtime?.contract_epoch
+      ? `${runtime.contract_epoch} · ${runtime.manifest_version || "unversioned"}`
+      : "Legacy / stale runtime";
+    extensionBuild.title = [runtime?.extension_id, runtime?.instance_id].filter(Boolean).join(" · ");
+  }
   const currentProvider = providerFromUrl(tab?.url || "");
   document.getElementById("page").innerHTML = `${providerLogo(currentProvider)} <span>${escapeHtml(hostLabel(tab?.url || ""))}</span>`;
-  const state = activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
+
+  const state = mission?.state || activeConversationState(tab, stored.polylogueState, stored.polylogueSessionLedger || {});
+  const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
+  const health = mission?.receiver?.health || state?.receiver_health || (
+    state?.error === "unauthorized"
+      ? { status: "unauthorized", detail: "unauthorized", pairing }
+      : state?.error === "receiver_pairing_mismatch"
+        ? { status: "pairing_mismatch", detail: "receiver_pairing_mismatch", pairing }
+        : state?.online === false
+          ? { status: "unreachable", detail: state?.error || "receiver_unavailable", pairing }
+          : null
+  );
+  currentReceiverOnline = health
+    ? ["ok", "recovered"].includes(health.status)
+    : state?.online !== false;
+  if (health) renderReceiverHealth(health, pairing, mission?.receiver?.configured_url || stored.receiverBaseUrl);
+  else renderReceiverPairing(pairing, null, stored.receiverBaseUrl);
+
   const status = operatorStatusApi.operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
   const modeNode = document.getElementById("mode");
@@ -603,12 +787,30 @@ async function render() {
   }
   const fidelityFlag = document.getElementById("fidelity-flag");
   if (fidelityFlag) fidelityFlag.hidden = !status.partialFidelity;
+
   const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
   const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
-  renderTimeline(stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
-  renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id);
-  await refreshBackfills().catch(() => renderBackfill([]));
-  await refreshLaunches().catch(() => undefined);
+  renderTimeline(mission?.timeline || stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
+  renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id, currentReceiverOnline);
+
+  if (mission?.work) {
+    renderQueue(mission.work.capture_queue || stored.polylogueCaptureQueue);
+    renderBackfill(mission.work.backfill_jobs || []);
+    renderLaunch(mission.work.launch_jobs || [], {
+      launchEnabled: mission.work.launch_enabled,
+      ownerInstanceId: mission.work.launch_owner_instance_id,
+      launchSource: mission.work.launch_source || "live",
+      cachedAt: mission.work.launch_cached_at || null,
+    });
+  } else {
+    renderQueue(stored.polylogueCaptureQueue);
+    await refreshBackfills().catch(() => renderBackfill([]));
+    await refreshLaunches().catch(() => undefined);
+  }
+
+  const ambient = mission?.ambient || ambientFallback(stored.polylogueAmbientSettings, tab?.url || "");
+  renderAmbient(ambient, tab?.url || "", mission?.assertions || null);
+  renderReverse(mission?.reverse || { enabled: Boolean(stored.postingEnabled) });
 }
 
 async function refreshStatus(reason = "popup_manual") {
@@ -663,7 +865,7 @@ document.getElementById("check-receiver").addEventListener("click", async () => 
       "check-receiver",
       async () => {
         const health = await chrome.runtime.sendMessage({ type: "polylogue.checkReceiverHealth" });
-        renderReceiverHealth(health);
+        renderReceiverHealth(health, health?.pairing || null, health?.endpoint || "");
         if (health?.status === "unreachable") throw new Error(health?.detail || "unreachable");
       },
       { busy: "Checking", ok: "Checked", bad: "Unreachable" },
@@ -673,6 +875,42 @@ document.getElementById("check-receiver").addEventListener("click", async () => 
     // swallow here so a genuinely unreachable receiver doesn't surface as an
     // unhandled rejection from this click listener.
   }
+});
+
+document.getElementById("reset-pairing")?.addEventListener("click", async () => {
+  const confirmed = typeof globalThis.confirm !== "function"
+    || globalThis.confirm("Reset the trusted receiver identity? Capture, backfill, and Sol Pro queues will be preserved.");
+  if (!confirmed) return;
+  await withAction("reset-pairing", async () => {
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset" });
+    renderReceiverHealth(result?.health, result?.pairing, result?.health?.endpoint || "");
+    await render();
+  }, { busy: "Resetting", ok: "Pairing reset" });
+});
+
+document.getElementById("retry-captures")?.addEventListener("click", async () => {
+  await withAction("retry-captures", async () => {
+    await chrome.runtime.sendMessage({ type: "polylogue.retryCaptureQueue" });
+    await render();
+  }, { busy: "Retrying", ok: "Queue checked" });
+});
+
+document.getElementById("ambient-enabled")?.addEventListener("change", async (event) => {
+  await chrome.runtime.sendMessage({
+    type: "polylogue.ambient.configure",
+    enabled: Boolean(event.target.checked),
+  });
+  await render();
+});
+
+document.getElementById("ambient-site-enabled")?.addEventListener("change", async (event) => {
+  const tab = await activeTab();
+  await chrome.runtime.sendMessage({
+    type: "polylogue.ambient.configure",
+    url: tab?.url || "",
+    site_enabled: Boolean(event.target.checked),
+  });
+  await render();
 });
 
 document.getElementById("save").addEventListener("click", async () => {

@@ -31,6 +31,7 @@
   const originalFetch = window.fetch;
   const accessTokenCacheTtlMs = 15000;
   let cachedAccessToken = null;
+  let cachedAccountId = null;
   let cachedAccessTokenUntil = 0;
   let accessTokenPromise = null;
 
@@ -47,11 +48,18 @@
     return null;
   }
 
+  function accountIdFromPayload(payload) {
+    const candidates = [payload?.account?.id, payload?.session?.account?.id, payload?.account_id];
+    return candidates.find((candidate) => typeof candidate === "string" && candidate) || null;
+  }
+
   function bootstrapAccessToken() {
     try {
       const raw = document.getElementById("client-bootstrap")?.textContent;
       if (!raw) return null;
-      return accessTokenFromPayload(JSON.parse(raw));
+      const payload = JSON.parse(raw);
+      cachedAccountId = accountIdFromPayload(payload) || cachedAccountId;
+      return accessTokenFromPayload(payload);
     } catch {
       return null;
     }
@@ -66,7 +74,9 @@
     );
     if (!response.ok) return null;
     try {
-      return accessTokenFromPayload(await response.json());
+      const payload = await response.json();
+      cachedAccountId = accountIdFromPayload(payload) || cachedAccountId;
+      return accessTokenFromPayload(payload);
     } catch {
       return null;
     }
@@ -93,7 +103,9 @@
   }
 
   function bearerHeaders(accessToken) {
-    return { Authorization: `Bearer ${accessToken}` };
+    const headers = { Authorization: `Bearer ${accessToken}` };
+    if (cachedAccountId) headers["ChatGPT-Account-Id"] = cachedAccountId;
+    return headers;
   }
 
   function conversationUrl(conversationId) {

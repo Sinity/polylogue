@@ -2,305 +2,249 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Polylogue Capture</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Polylogue Mission Control</title>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: light dark;
         --ink: #172026;
         --muted: #5f6b76;
         --line: #d7dde2;
         --surface: #ffffff;
         --panel: #f4f7f9;
+        --panel-strong: #eaf1f8;
         --ok: #14764e;
         --warn: #9a5b00;
         --bad: #ad2f2f;
+        --neutral: #59636e;
         --accent: #325d8f;
+        --accent-hover: #264f7d;
         --focus: #0f6cbd;
-        --gpt: #10a37f;
-        --claude: #d97745;
+        --gpt: #087f65;
+        --claude: #b85f32;
         --grok: #111827;
       }
-      * {
-        box-sizing: border-box;
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #eef3f6;
+          --muted: #aab5be;
+          --line: #3a4650;
+          --surface: #151a1f;
+          --panel: #20272d;
+          --panel-strong: #29353f;
+          --ok: #3ca97c;
+          --warn: #d89a36;
+          --bad: #e06c6c;
+          --neutral: #86929c;
+          --accent: #6e9fd2;
+          --accent-hover: #83b2e1;
+          --focus: #8cc5ff;
+          --grok: #4b5563;
+        }
       }
+      * { box-sizing: border-box; }
       body {
-        width: 620px;
-        min-width: 480px;
+        width: 600px;
+        min-width: 460px;
         max-width: 680px;
         margin: 0;
         color: var(--ink);
         background: var(--surface);
-        font: 15px/1.45 system-ui, sans-serif;
+        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      main {
-        padding: 18px;
-      }
+      main { padding: 18px; }
       header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        padding-bottom: 12px;
+        padding-bottom: 13px;
         border-bottom: 1px solid var(--line);
       }
-      h1 {
-        margin: 0;
-        font-size: 19px;
-        letter-spacing: 0;
-      }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-      }
+      h1 { margin: 0; font-size: 19px; letter-spacing: .01em; }
+      strong { font-weight: 700; }
+      p { margin: 6px 0; }
+      .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
       .mark {
         display: grid;
         place-items: center;
-        width: 30px;
-        height: 30px;
+        width: 32px;
+        height: 32px;
         flex: 0 0 auto;
-        border-radius: 7px;
+        border-radius: 9px;
         color: #fff;
         background: var(--accent);
-        font-weight: 700;
+        font-weight: 800;
       }
-      .subtitle {
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .badge {
-        min-width: 86px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        color: #fff;
-        text-align: center;
-        font-size: 13px;
-        font-weight: 650;
-        background: var(--muted);
-      }
-      .badge.ok { background: var(--ok); }
-      .badge.warn { background: var(--warn); }
-      .badge.bad { background: var(--bad); }
-      .provider-chip {
+      .subtitle { color: var(--muted); font-size: 12px; }
+      .badge,
+      .state-chip,
+      .work-pill {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        justify-content: flex-end;
-      }
-      .provider-logo {
-        display: inline-grid;
-        place-items: center;
-        min-width: 24px;
-        height: 26px;
-        padding: 0 6px;
-        border-radius: 6px;
-        color: #fff;
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .provider-logo.chatgpt { background: var(--gpt); }
-      .provider-logo.claude-ai { background: var(--claude); }
-      .provider-logo.grok { background: var(--grok); }
-      .provider-logo.unknown { background: var(--muted); }
-      .state-chip {
-        display: inline-flex;
-        align-items: center;
+        justify-content: center;
         width: fit-content;
-        padding: 3px 8px;
         border-radius: 999px;
         color: #fff;
-        background: var(--muted);
-        font-size: 12px;
-        font-weight: 650;
+        background: var(--neutral);
+        font-weight: 700;
       }
-      .state-chip.ok { background: var(--ok); }
-      .state-chip.warn { background: var(--warn); }
-      .state-chip.bad { background: var(--bad); }
-      .tab-list { display: grid; gap: 7px; }
-      .tab-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 9px;
+      .badge { min-width: 88px; padding: 6px 10px; font-size: 12px; }
+      .state-chip,
+      .work-pill { padding: 3px 8px; font-size: 11px; }
+      .badge.ok, .state-chip.ok, .work-pill.ok { background: var(--ok); }
+      .badge.warn, .state-chip.warn, .work-pill.warn { background: var(--warn); }
+      .badge.bad, .state-chip.bad, .work-pill.bad { background: var(--bad); }
+      .badge.neutral, .state-chip.neutral, .work-pill.neutral { background: var(--neutral); }
+      section { padding: 14px 0; border-bottom: 1px solid var(--line); }
+      section:last-child { border-bottom: 0; padding-bottom: 0; }
+      .active-card,
+      .surface-card {
+        margin-top: 12px;
+        padding: 12px;
         border: 1px solid var(--line);
-        border-radius: 7px;
+        border-radius: 9px;
+        background: var(--panel);
       }
-      .tab-item.active { border-color: var(--accent); background: #eaf1f8; }
-      .active-card { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-      #fidelity-flag { margin-left: 6px; }
-      section {
-        padding: 14px 0;
-        border-bottom: 1px solid var(--line);
-      }
-      section:last-child {
-        border-bottom: 0;
-        padding-bottom: 0;
-      }
-      .row {
+      .surface-card { margin-top: 8px; }
+      .section-head,
+      .row,
+      .work-head,
+      .switch-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        margin: 8px 0;
       }
-      .label {
-        color: var(--muted);
-      }
+      .row { margin: 8px 0; }
+      .switch-row { margin: 10px 0; align-items: flex-start; }
+      .label,
+      .meta,
+      .log-meta,
+      .section-note { color: var(--muted); }
+      .section-note { margin-top: 8px; font-size: 12px; }
       .value {
-        max-width: 330px;
+        max-width: 365px;
         overflow: hidden;
         text-align: right;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .controls {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-      }
-      button {
-        position: relative;
-        width: 100%;
-        min-height: 42px;
-        padding: 9px 12px;
-        border: 1px solid var(--line);
+      .provider-chip { display: inline-flex; align-items: center; gap: 6px; }
+      .provider-logo {
+        display: inline-grid;
+        place-items: center;
+        min-width: 25px;
+        height: 25px;
+        padding: 0 6px;
         border-radius: 6px;
-        color: var(--ink);
-        background: var(--panel);
-        font: inherit;
-        cursor: pointer;
-        transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
-      }
-      button:hover {
-        border-color: var(--accent);
-        background: #eaf1f8;
-      }
-      button:focus-visible {
-        outline: 3px solid color-mix(in srgb, var(--focus), transparent 70%);
-        outline-offset: 2px;
-      }
-      button:active {
-        transform: translateY(1px);
-      }
-      button:disabled {
-        cursor: wait;
-        opacity: 0.72;
-      }
-      button.primary {
-        border-color: var(--accent);
         color: #fff;
-        background: var(--accent);
-      }
-      button.primary:hover {
-        background: #264f7d;
-      }
-      button[data-state="ok"] {
-        border-color: var(--ok);
-        box-shadow: inset 0 -3px 0 var(--ok);
-      }
-      button[data-state="bad"] {
-        border-color: var(--bad);
-        box-shadow: inset 0 -3px 0 var(--bad);
-      }
-      .button-label,
-      .button-status {
-        display: block;
-      }
-      .button-status {
-        min-height: 15px;
-        color: var(--muted);
         font-size: 11px;
-        line-height: 1.1;
+        font-weight: 800;
       }
-      button.primary .button-status {
-        color: #d8e6f2;
-      }
-      input, select {
-        width: 100%;
-        min-height: 40px;
-        padding: 8px 10px;
+      .provider-logo.chatgpt { background: var(--gpt); }
+      .provider-logo.claude-ai { background: var(--claude); }
+      .provider-logo.grok { background: var(--grok); }
+      .provider-logo.unknown { background: var(--neutral); }
+      .tab-list,
+      .work-list,
+      .log { display: grid; gap: 8px; }
+      .tab-item,
+      .work-item {
+        padding: 9px 10px;
         border: 1px solid var(--line);
-        border-radius: 6px;
-        font: inherit;
+        border-radius: 8px;
+        background: var(--surface);
       }
-      .setting-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 96px;
-        gap: 10px;
-        margin-top: 8px;
-      }
-      #state {
-        min-height: 28px;
-        margin: 0;
-        color: var(--ink);
-        font-weight: 650;
-        white-space: pre-wrap;
-      }
-      #state-detail {
-        min-height: 42px;
-        margin: 6px 0 12px;
-        color: var(--muted);
-      }
-      .log {
-        display: grid;
-        gap: 8px;
-        max-height: 180px;
-        overflow: auto;
-        padding-right: 2px;
-      }
-      .log-item {
-        display: grid;
-        grid-template-columns: 54px minmax(0, 1fr);
-        gap: 10px;
-        padding: 8px 0;
-        border-top: 1px solid var(--line);
-      }
-      .log-time {
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .log-title {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .log-meta {
-        color: var(--muted);
-        font-size: 12px;
-      }
-      .section-head {
+      .tab-item {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 10px;
-        margin-bottom: 8px;
       }
-      .link-button {
-        width: auto;
-        min-height: 34px;
-        padding: 5px 9px;
-      }
-      #debug-panel[hidden] {
-        display: none;
-      }
-      .debug-actions {
+      .tab-item.active { border-color: var(--accent); background: var(--panel-strong); }
+      .tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .work-title { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+      .work-meta { margin-top: 4px; color: var(--muted); font-size: 12px; }
+      .work-kind { text-transform: uppercase; letter-spacing: .06em; font-size: 10px; color: var(--muted); }
+      .controls {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 140px;
-        gap: 10px;
-        margin-bottom: 10px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
       }
-      @media (max-width: 460px) {
-        body {
-          width: 100vw;
-          min-width: 360px;
-        }
-        .controls {
-          grid-template-columns: 1fr;
-        }
-        .value {
-          max-width: 210px;
-        }
+      button,
+      input,
+      select {
+        min-height: 40px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        color: var(--ink);
+        background: var(--surface);
+        font: inherit;
+      }
+      button {
+        position: relative;
+        width: 100%;
+        padding: 8px 11px;
+        background: var(--panel);
+        cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+      }
+      button:hover { border-color: var(--accent); background: var(--panel-strong); }
+      button:active { transform: translateY(1px); }
+      button:disabled { cursor: not-allowed; opacity: .58; }
+      button.primary { border-color: var(--accent); color: #fff; background: var(--accent); }
+      button.primary:hover { background: var(--accent-hover); }
+      button.danger { border-color: color-mix(in srgb, var(--bad), var(--line) 45%); }
+      button:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--focus), transparent 68%);
+        outline-offset: 2px;
+      }
+      button[data-state="ok"] { border-color: var(--ok); box-shadow: inset 0 -3px 0 var(--ok); }
+      button[data-state="bad"] { border-color: var(--bad); box-shadow: inset 0 -3px 0 var(--bad); }
+      .button-label,
+      .button-status { display: block; }
+      .button-status { min-height: 14px; color: var(--muted); font-size: 10px; line-height: 1.1; }
+      button.primary .button-status { color: #e8f1f9; }
+      input, select { width: 100%; padding: 8px 10px; }
+      input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+      .setting-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 104px;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      #state { min-height: 28px; margin: 0; font-weight: 700; white-space: pre-wrap; }
+      #state-detail { min-height: 38px; color: var(--muted); }
+      #fidelity-flag { margin-left: 6px; }
+      .log { max-height: 190px; overflow: auto; padding-right: 2px; }
+      .log-item {
+        display: grid;
+        grid-template-columns: 54px minmax(0, 1fr);
+        gap: 10px;
+        padding: 7px 0;
+        border-top: 1px solid var(--line);
+      }
+      .log-time { color: var(--muted); font-size: 11px; }
+      .log-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .log-meta { font-size: 11px; overflow-wrap: anywhere; }
+      .debug-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+      .link-button { min-height: 34px; padding: 5px 8px; }
+      details { margin-top: 10px; }
+      summary { color: var(--muted); cursor: pointer; }
+      .pairing-id { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      .empty { color: var(--muted); padding: 5px 0; }
+      @media (max-width: 520px) {
+        body { width: 100vw; min-width: 360px; }
+        main { padding: 14px; }
+        .controls { grid-template-columns: 1fr; }
+        .value { max-width: 220px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { scroll-behavior: auto !important; transition: none !important; }
       }
     </style>
   </head>
@@ -308,22 +252,22 @@
     <main>
       <header>
         <div class="brand">
-          <div class="mark">P</div>
+          <div class="mark" aria-hidden="true">P</div>
           <div>
-            <h1>Polylogue Capture</h1>
-            <div class="subtitle">ChatGPT, Claude.ai, Grok</div>
+            <h1>Polylogue Mission Control</h1>
+            <div class="subtitle">Capture, recovery, and external work across open conversations</div>
           </div>
         </div>
-        <div id="badge" class="badge">checking</div>
+        <div id="badge" class="badge neutral" aria-live="polite">checking</div>
       </header>
 
       <section>
         <div class="section-head"><strong>Open conversations</strong><span id="open-tab-count" class="value">0</span></div>
-        <div id="open-tabs" class="tab-list"></div>
+        <div id="open-tabs" class="tab-list" aria-live="polite"></div>
       </section>
 
-      <section class="active-card">
-        <div class="section-head"><strong>Active conversation</strong><span id="operator-state" class="state-chip">Checking</span></div>
+      <section class="active-card" aria-labelledby="active-heading">
+        <div class="section-head"><strong id="active-heading">Active conversation</strong><span id="operator-state" class="state-chip neutral">Checking</span></div>
         <div class="row"><span id="page" class="value provider-chip">Unknown</span><span id="fidelity-flag" class="state-chip warn" hidden>Partial fidelity</span></div>
         <p id="state">Checking receiver...</p>
         <p id="state-detail"></p>
@@ -334,7 +278,7 @@
         <div id="asset-failures" class="log-meta"></div>
       </section>
 
-      <section>
+      <section aria-label="Conversation controls">
         <div class="controls">
           <button id="capture" class="primary"><span class="button-label">Capture page</span><span class="button-status"></span></button>
           <button id="check"><span class="button-label">Check status</span><span class="button-status"></span></button>
@@ -345,18 +289,37 @@
         </div>
       </section>
 
-      <section>
-        <div class="section-head"><strong>What Polylogue did here</strong></div>
-        <div id="timeline" class="log"></div>
+      <section aria-labelledby="timeline-heading">
+        <div class="section-head"><strong id="timeline-heading">What Polylogue did here</strong></div>
+        <div id="timeline" class="log" aria-live="polite"></div>
       </section>
 
-      <section>
-        <div class="row"><span class="label">Receiver health</span><span id="receiver-health" class="value">--</span></div>
+      <section aria-labelledby="receiver-heading">
+        <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
+        <div class="surface-card">
+          <div id="receiver-pairing-status" class="pairing-id">Identity not checked</div>
+          <p id="receiver-pairing-detail" class="log-meta">Polylogue will bind the first compatible authenticated receiver it reaches.</p>
+        </div>
+        <div class="controls">
+          <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
+          <button id="retry-captures"><span class="button-label">Retry capture queue</span><span class="button-status"></span></button>
+        </div>
+        <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture, backfill, or Sol Pro queues.</p>
       </section>
 
-      <section id="backfill-panel">
+      <section aria-labelledby="work-heading">
+        <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value">0</span></div>
+        <p class="section-note">One vocabulary covers local capture retries, provider backfills, and receiver-owned GPT-5.6 Sol Pro work.</p>
+        <div id="work-queue" class="work-list" aria-live="polite"></div>
+        <details>
+          <summary>Capture retry detail · <span id="queue-count">0</span></summary>
+          <div id="queue-log" class="log"></div>
+        </details>
+      </section>
+
+      <section id="backfill-panel" aria-labelledby="backfill-heading">
         <div class="section-head">
-          <strong>Background backfill</strong>
+          <strong id="backfill-heading">Background backfill</strong>
           <span id="backfill-status" class="value">idle</span>
         </div>
         <select id="backfill-job" aria-label="Backfill job"><option value="">No jobs yet</option></select>
@@ -378,23 +341,25 @@
           <button id="backfill-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
           <button id="backfill-export"><span class="button-label">Export ledger</span><span class="button-status"></span></button>
         </div>
-        <p class="log-meta">Runs against the authenticated provider inventory without activating foreground tabs. Provider controls and cooldowns are always honored.</p>
+        <p class="section-note">Runs against authenticated provider inventory without activating foreground tabs. Provider cooldowns remain authoritative.</p>
       </section>
 
-      <section id="launch-panel">
+      <section id="launch-panel" aria-labelledby="launch-heading">
         <div class="section-head">
-          <strong>Agent work</strong>
+          <strong id="launch-heading">GPT-5.6 Sol Pro queue</strong>
           <span id="launch-status" class="value">disabled</span>
         </div>
-        <div class="setting-row">
-          <label for="launch-enabled">Run queued jobs in background tabs</label>
+        <div class="switch-row">
+          <label for="launch-enabled">Allow this extension to execute receiver-leased jobs in inactive tabs</label>
           <input id="launch-enabled" type="checkbox">
         </div>
         <select id="launch-job" aria-label="Agent work job"><option value="">No jobs yet</option></select>
-        <div class="row"><span class="label">Target</span><span class="value">Chat · GPT-5.6 Sol · Pro</span></div>
+        <div class="row"><span class="label">Job</span><span id="launch-title" class="value">--</span></div>
+        <div class="row"><span class="label">Target safeguard</span><span class="value">Chat · GPT-5.6 Sol · Pro</span></div>
         <div class="row"><span class="label">Phase</span><span id="launch-phase" class="value">--</span></div>
         <div class="row"><span class="label">Cadence / cooldown</span><span id="launch-cadence" class="value">--</span></div>
         <div class="row"><span class="label">Owner</span><span id="launch-owner" class="value">--</span></div>
+        <div class="row"><span class="label">Handoff</span><span id="launch-handoff" class="value">--</span></div>
         <div class="row"><span class="label">Last receipt / error</span><span id="launch-last" class="value">--</span></div>
         <div class="controls">
           <button id="launch-poll" class="primary"><span class="button-label">Run due job</span><span class="button-status"></span></button>
@@ -407,30 +372,34 @@
           <button id="launch-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
           <button id="launch-inspect"><span class="button-label">Inspect chat</span><span class="button-status"></span></button>
         </div>
-        <p class="log-meta">The receiver owns the queue and grants one submission lease across every installed extension instance; submitted chats may continue in parallel. Launch now bypasses ordinary cadence, never a provider rate/safety circuit. Jobs fail closed if Chat, Sol, or Pro is not selected exactly.</p>
+        <p class="section-note">The receiver owns queue order and grants one submission lease across extension instances. Launch now never bypasses provider rate or safety circuits, and execution fails closed unless Chat, GPT-5.6 Sol, and Pro are selected exactly.</p>
+      </section>
+
+      <section aria-labelledby="ambient-heading">
+        <div class="section-head"><strong id="ambient-heading">Ambient surface</strong><span id="ambient-site" class="value">Current site</span></div>
+        <div class="switch-row">
+          <label for="ambient-enabled">Show the in-page status chip on supported sites</label>
+          <input id="ambient-enabled" type="checkbox">
+        </div>
+        <div class="switch-row">
+          <label for="ambient-site-enabled">Show it on this site</label>
+          <input id="ambient-site-enabled" type="checkbox">
+        </div>
+        <p id="assertion-status" class="section-note">Text selections can form a local assertion candidate. Save remains disabled until the authenticated receiver advertises an assertion route.</p>
+      </section>
+
+      <section aria-labelledby="reverse-heading">
+        <div class="section-head"><strong id="reverse-heading">Reverse channel</strong><span id="reverse-status" class="state-chip neutral">Off — safe default</span></div>
+        <p id="reverse-detail" class="section-note">No ambient control can post or submit. Extension and receiver posting gates remain independently required.</p>
       </section>
 
       <section>
-        <div class="section-head">
-          <span class="label">Queued retries</span>
-          <span id="queue-count" class="value">0</span>
-        </div>
-        <div id="queue-log" class="log"></div>
-      </section>
-
-      <section>
-        <div class="section-head">
-          <span class="label">Recent log</span>
-          <span id="log-count" class="value">0</span>
-        </div>
+        <div class="section-head"><span class="label">Recent capture log</span><span id="log-count" class="value">0</span></div>
         <div id="log" class="log"></div>
       </section>
 
       <section>
-        <div class="section-head">
-          <span class="label">Debug log</span>
-          <span id="debug-count" class="value">0</span>
-        </div>
+        <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value">0</span></div>
         <div class="debug-actions">
           <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
           <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
@@ -440,19 +409,21 @@
           <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
           <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
           <div class="row"><span class="label">Request</span><span id="receiver-request" class="value">--</span></div>
+          <div class="row"><span class="label">Extension build</span><span id="extension-build" class="value">--</span></div>
           <div class="row"><span class="label">Updated</span><span id="updated" class="value">--</span></div>
           <div id="debug-log" class="log"></div>
         </div>
       </section>
 
-      <section>
+      <section aria-labelledby="settings-heading">
+        <strong id="settings-heading">Receiver settings</strong>
         <label class="label" for="receiver-url">Local receiver URL</label>
         <div class="setting-row">
           <input id="receiver-url" value="http://127.0.0.1:8765">
           <button id="save"><span class="button-label">Save</span><span class="button-status"></span></button>
         </div>
-        <label class="label" for="receiver-token">Bearer token (optional)</label>
-        <input id="receiver-token" type="password" autocomplete="off" placeholder="Only needed when receiver auth is enabled">
+        <label class="label" for="receiver-token">Bearer token</label>
+        <input id="receiver-token" type="password" autocomplete="off" placeholder="Required by the default authenticated receiver">
       </section>
     </main>
     <script src="operator_status.js"></script>
