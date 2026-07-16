@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import stat
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from polylogue.scenarios import (
+    MeasurementScope,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 from polylogue.schemas.generation import observation_journal as observation_journal_module
 from polylogue.schemas.generation.observation_journal import (
     ObservationJournal,
@@ -18,6 +29,128 @@ from polylogue.schemas.generation.observation_journal import (
 )
 from polylogue.schemas.generation.replay import MembershipSessionIds
 from polylogue.schemas.observation import SchemaUnit
+from polylogue.schemas.workload_tiers import WorkloadScaleTier
+
+
+@dataclass(frozen=True, slots=True)
+class _InferenceProbeResult:
+    sample_count: int
+    peak_rss_bytes: int
+    peak_journal_bytes: int
+    receipt: WorkloadReceipt
+
+
+def _process_rss_bytes(pid: int) -> int:
+    try:
+        resident_pages = int(Path(f"/proc/{pid}/statm").read_text(encoding="ascii").split()[1])
+    except (FileNotFoundError, IndexError, ValueError):
+        return 0
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
+def _journal_bytes(root: Path) -> int:
+    journal_root = root / "cache" / "polylogue" / "schema-observation-journals"
+    return sum(path.stat().st_size for path in journal_root.glob("run-*.sqlite3*") if path.is_file())
+
+
+def _run_inference_probe(tmp_path: Path, *, count: int, scale_tier: WorkloadScaleTier) -> _InferenceProbeResult:
+    run_root = tmp_path / scale_tier.value
+    archive_root = run_root / "archive"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "tests.infra.schema_inference_memory_probe",
+            "--archive-root",
+            str(archive_root),
+            "--count",
+            str(count),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdin is not None
+        assert process.stderr is not None
+        assert process.stdout.readline().strip() == "READY"
+        process.stdin.write("run\n")
+        process.stdin.flush()
+
+        started = time.perf_counter()
+        peak_rss_bytes = 0
+        peak_journal_bytes = 0
+        while process.poll() is None:
+            peak_rss_bytes = max(peak_rss_bytes, _process_rss_bytes(process.pid))
+            peak_journal_bytes = max(peak_journal_bytes, _journal_bytes(run_root))
+            time.sleep(0.01)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        payload = json.loads(stdout)
+        assert payload["success"] is True
+        assert payload["journal_remaining"] == []
+        wall_ms = (time.perf_counter() - started) * 1_000
+        spec = WorkloadEnvelopeSpec(
+            workload_id="canary:schema-inference-memory-scaling",
+            family_id="schema-profile-production-canary",
+            version=1,
+            inputs=(
+                WorkloadInputRef(
+                    input_id=f"synthetic-chatgpt:{scale_tier.value}:{count}",
+                    corpus_id=f"archive:test:schema-inference:{scale_tier.value}",
+                    profile_id="workload-profile:schema-inference-memory",
+                    scale_tier=scale_tier.value,
+                    seed=0,
+                    distribution_refs=("provider-package.artifact_count", "provider-package.sample_count"),
+                ),
+            ),
+            phases=("infer", "quiescent"),
+            measurement_scope=MeasurementScope.PROCESS_TREE,
+        )
+        receipt = WorkloadReceipt.from_observations(
+            spec=spec,
+            status=WorkloadRunStatus.SUCCEEDED,
+            build_id="git:test",
+            runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}",
+            archive_id=f"archive:test:schema-inference:{scale_tier.value}",
+            generation_id=f"synthetic:chatgpt:{count}",
+            frame_id=None,
+            phases=(
+                WorkloadPhaseObservation(
+                    name="infer",
+                    measurement_scope=MeasurementScope.PROCESS_TREE,
+                    wall_ms=wall_ms,
+                    peak_rss_bytes=peak_rss_bytes,
+                    temp_storage_bytes=peak_journal_bytes,
+                    progress_completed=int(payload["sample_count"]),
+                    progress_total=count,
+                ),
+                WorkloadPhaseObservation(
+                    name="quiescent",
+                    measurement_scope=MeasurementScope.PROCESS_TREE,
+                    cleanup_complete=True,
+                    quiescent=True,
+                ),
+            ),
+            cleanup_complete=True,
+            notes=("The probe process owns no child workers; process RSS is the complete process tree.",),
+        )
+        return _InferenceProbeResult(
+            sample_count=int(payload["sample_count"]),
+            peak_rss_bytes=peak_rss_bytes,
+            peak_journal_bytes=peak_journal_bytes,
+            receipt=receipt,
+        )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def _unit() -> SchemaUnit:
@@ -214,3 +347,17 @@ os._exit(0)
     assert not stale_path.exists()
     assert live_path.exists()
     live.close()
+
+
+def test_full_generation_10x_scales_counts_without_10x_python_memory(tmp_path: Path) -> None:
+    one_x = _run_inference_probe(tmp_path, count=32, scale_tier=WorkloadScaleTier.ARCHIVE_1X)
+    ten_x = _run_inference_probe(tmp_path, count=320, scale_tier=WorkloadScaleTier.ARCHIVE_10X)
+
+    assert ten_x.sample_count == one_x.sample_count * 10
+    assert one_x.peak_journal_bytes > 0
+    assert ten_x.peak_journal_bytes > 0
+    assert ten_x.peak_rss_bytes <= one_x.peak_rss_bytes + 96 * 1024 * 1024
+    assert one_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_1X.value
+    assert ten_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_10X.value
+    assert one_x.receipt.cleanup_complete is True
+    assert ten_x.receipt.cleanup_complete is True
