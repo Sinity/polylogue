@@ -188,7 +188,9 @@ def collect_cluster_analysis(
         list(clusters.values()),
         reservoir_size=reservoir_size,
     )
-    initial_cluster_profiles = {cluster_id: frozenset(acc.member_profiles) for cluster_id, acc in clusters.items()}
+    initial_cluster_profiles = {
+        cluster_id: (acc.artifact_kind, frozenset(acc.member_profiles)) for cluster_id, acc in clusters.items()
+    }
     final_clusters: dict[str, _ClusterAccumulator] = {}
     for acc in refined_clusters:
         cluster_id = profile_cluster_id(acc.artifact_kind, _cluster_profile_tokens(acc))
@@ -202,11 +204,11 @@ def collect_cluster_analysis(
     for cluster_id, acc in final_clusters.items():
         for profile_tokens in acc.member_profiles:
             membership_cluster_map[profile_cluster_id(acc.artifact_kind, profile_tokens)] = cluster_id
-    for initial_cluster_id, member_profiles in initial_cluster_profiles.items():
+    for initial_cluster_id, (artifact_kind, member_profiles) in initial_cluster_profiles.items():
         matches = [
             final_cluster_id
             for final_cluster_id, acc in final_clusters.items()
-            if member_profiles.issubset(acc.member_profiles)
+            if acc.artifact_kind == artifact_kind and member_profiles.issubset(acc.member_profiles)
         ]
         if len(matches) != 1:
             raise RuntimeError(f"Initial profile family {initial_cluster_id} maps to {len(matches)} final families")

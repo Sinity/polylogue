@@ -408,6 +408,43 @@ class TestProfileClustering:
         final_family_id = next(iter(clusters))
         assert {membership.profile_family_id for membership in memberships} == {final_family_id}
 
+    def test_profile_family_normalization_never_crosses_artifact_kinds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        profile = ("field:id", "field:content")
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": "one", "content": "a"},
+                schema_samples=[{"id": "one", "content": "a"}],
+                artifact_kind="session_document",
+                exact_structure_id="document-structure",
+                profile_tokens=profile,
+            ),
+            SchemaUnit(
+                cluster_payload={"id": "two", "content": "b"},
+                schema_samples=[{"id": "two", "content": "b"}],
+                artifact_kind="session_record_stream",
+                exact_structure_id="stream-structure",
+                profile_tokens=profile,
+            ),
+        ]
+        monkeypatch.setattr("polylogue.schemas.sampling.iter_schema_units", lambda *args, **kwargs: iter(units))
+
+        clusters, memberships, _sample_count, _artifact_counts = _collect_cluster_accumulators(
+            "chatgpt",
+            db_path=tmp_path / "unused.db",
+            max_samples=None,
+            reservoir_size=8,
+        )
+
+        assert {cluster.artifact_kind for cluster in clusters.values()} == {
+            "session_document",
+            "session_record_stream",
+        }
+        assert len({membership.profile_family_id for membership in memberships}) == 2
+
     def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(
         self,
         monkeypatch: pytest.MonkeyPatch,
