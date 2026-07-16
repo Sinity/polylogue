@@ -2754,7 +2754,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return;
       }
-      sendResponse(state.archive_state || state.status || state);
+      const statusPayload = state.archive_state || state.status || state;
+      sendResponse({
+        ...statusPayload,
+        receiver_request_id:
+          statusPayload.receiver_request_id || state.last_receiver_request_id || health.receiver_request_id || null,
+      });
       return;
     }
     if (message.type === "polylogue.capturePageFailed") {
