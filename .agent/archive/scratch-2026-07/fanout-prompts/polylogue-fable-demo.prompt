@@ -1,0 +1,44 @@
+You are lane polylogue-fable-demo of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-fable-demo. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Fable-delegation demo enablers, in order: (1) xiyv deterministic cohort/sample manifests; (2) fnm.1 NARROWED first slice — multi-field group-by + count/proportion aggregates with explicit denominator, n, and unknown/missing counts (percentiles/time buckets stay in-bead but later); (3) 212.9.1 the private descriptive Fable delegation packet, only if 1+2 land cleanly.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-xiyv [open]: Compile deterministic cohort and sample manifests
+- polylogue-fnm.1 [open]: Aggregates beyond count (sum/avg/min/max/percentiles)
+- polylogue-212.9.1 [open]: Produce the private descriptive Fable delegation packet
+
+FILE OWNERSHIP
+OWN (you may modify): polylogue/archive/query/; polylogue/insights/; tests/unit/archive/; tests/unit/insights/
+AVOID (another lane owns these; do not touch): polylogue/storage/sqlite/; polylogue/daemon/; browser-extension/; insights rigor/field contracts (rigor-contracts lane owns them; you CREATE new packet modules)
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools test tests/unit/archive tests/unit/insights -k 'aggregate or cohort or manifest' (narrow further per change)
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

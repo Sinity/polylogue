@@ -1,0 +1,2 @@
+{"isSidechain": true, "message": {"content": "Run a sidechain check for the deterministic demo lineage matrix.", "role": "user"}, "sessionId": "demo-lineage-sidechain", "timestamp": "2026-07-04T10:04:01Z", "type": "user", "uuid": "sidechain-u0"}
+{"isSidechain": true, "message": {"content": "Sidechain check complete; keep this branch typed but separate from parent links.", "role": "assistant"}, "sessionId": "demo-lineage-sidechain", "timestamp": "2026-07-04T10:04:02Z", "type": "assistant", "uuid": "sidechain-a1"}

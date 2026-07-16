@@ -1,0 +1,7 @@
+Polylogue documentation validation
+- docs-surface render: PASS
+- static Pages render: PASS
+- doc-command verification: PASS (75 documents; no stale commands)
+- rendered-site local links: PASS
+- public-doc links and claims: PASS (5 files, 48 relative links, 8 unique claims)
+- git diff --check: PASS

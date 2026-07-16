@@ -1,0 +1,45 @@
+You are lane polylogue-consolidation of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-consolidation. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Mechanical consolidation sweep (one PR): a7xr.9 helper dedup (scalar coercion quadruplet, _table_exists x40, provenance vocab x6); a7xr.15 generic from_row for payloads.py's 74 identical copy lines; a7xr.16 table-drive the hand-aligned column triplicates in archive_tiers; a7xr.11 prune zero-consumer protocols. Behavior-preserving; mypy --strict is the net.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-a7xr.9 [open]: Mechanical helper dedup sweep: scalar coercion quadruplet, _table_exists x40, provenance vocab x6, title/tags mixin
+- polylogue-a7xr.15 [open]: payloads.py: generic from_row for the 74 identical-name copy lines (keeps typed wire contract)
+- polylogue-a7xr.16 [open]: Table-drive the hand-aligned column triplicates in archive_tiers write/read hot core
+- polylogue-a7xr.11 [open]: Prune protocols.py zero-consumer protocols + dead repo kwarg query surface + cursor mapping bug
+
+FILE OWNERSHIP
+OWN (you may modify): cross-cutting textual dedup — everything, which is why this lane launches LAST in the merge train
+AVOID (another lane owns these; do not touch): any semantic change; any file another active lane has open PRs against — rebase late
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools verify --quick + testmon-affected; zero behavior diffs expected
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

@@ -1,0 +1,25 @@
+You are one lane of a parallel fanout on the Polylogue repo. Your worktree is
+your root; NEVER cd to /realm/project/polylogue. Branch: feature/fanout/basetemp-fix.
+
+SCOPE: polylogue-ra3w — [bug] devtools test basetemp escapes to host /tmp from
+worktrees. Read it fully (bd show polylogue-ra3w). Evidence from tonight's
+fanout: three lanes' devtools test runs wrote pytest temp to /tmp/polylogue-pytest
+(host 6G tmpfs, filled twice to 94-100%) despite the repo default of
+/realm/tmp/polylogue-pytest.
+
+MISSION: root-cause WHERE the basetemp default resolves differently in a linked
+worktree vs the main checkout (trace devtools test's basetemp/env plumbing —
+devtools/, tests/infra/, pytest config in pyproject.toml). You are IN a fresh
+worktree, so you can reproduce directly: run a tiny devtools test selection and
+observe where its temp lands. Fix so the /realm/tmp default holds in ANY
+checkout; add a regression that fails under the old resolution (anti-vacuity:
+name the production path your test enters and the mutation that breaks it).
+
+OWN: devtools/, tests/infra/, pyproject.toml pytest section.
+AVOID: polylogue/ runtime code, generated docs surfaces.
+
+VERIFY: reproduce before/after (temp path location); focused devtools test for
+the changed harness path; devtools verify --quick.
+Commit+push every chunk; open ONE PR (Ref polylogue-ra3w); do not merge; do not
+close beads; report per-AC status. GitHub Actions fails all jobs at init
+(account billing) — ignore that pattern.

@@ -1,0 +1,113 @@
+schema_version: 1
+states:
+- proven
+- capability
+- field_evidence
+- experimental
+- aspirational
+- retired
+claims:
+- id: polylogue.category
+  project: polylogue
+  state: capability
+  claim: Polylogue is a local flight recorder and system of record for AI work across
+    supported origins.
+  evidence:
+  - README.md
+  - docs/architecture.md
+  - deterministic demo corpus
+  caveats:
+  - Provider completeness varies by origin and capture mode.
+  - The package is pre-stable.
+- id: polylogue.structured_failure
+  project: polylogue
+  state: proven
+  claim: Polylogue can identify tool failures from structured provider outcomes rather
+    than assistant prose.
+  evidence:
+  - demo:receipts (target)
+  - current deterministic terminal-error fixture
+  - tool/action contract tests
+  caveats:
+  - Unsupported or incomplete provider structure must remain unknown.
+- id: polylogue.lineage
+  project: polylogue
+  state: capability
+  claim: Polylogue exposes separate physical and logical views for supported session
+    lineage.
+  evidence:
+  - lineage normalization tests
+  - demo lineage fixtures
+  caveats:
+  - Not every provider relationship can be inferred with equal confidence.
+- id: polylogue.memory_uplift
+  project: polylogue
+  state: experimental
+  claim: Reviewed, bounded context may improve agent resumption compared with raw
+    references alone.
+  evidence:
+  - small paired pilot described in tracked proof artifacts
+  caveats:
+  - Pilot size and process controls do not support a general efficacy claim.
+  - One stale handoff underperformed.
+- id: polylogue.sinex_backend
+  project: joint
+  state: aspirational
+  claim: In Sinex-backed mode, Sinex will store transcript material and durable Polylogue-domain
+    history while Polylogue remains the domain product.
+  evidence:
+  - sinex-4j2 target architecture
+  - docs/sinex-backend.md
+  caveats:
+  - Current bridge is metadata-thin and does not yet implement this authority model.
+- id: sinex.category
+  project: sinex
+  state: capability
+  claim: Sinex is a local evidence substrate that separates source material, interpretations,
+    projections, and generated artifacts.
+  evidence:
+  - knowledge_boundaries.md
+  - event taxonomy
+  - README.md
+  caveats:
+  - General-user deployment is pre-stable.
+- id: sinex.replay_revision
+  project: sinex
+  state: capability
+  claim: Sinex represents corrections as new interpretations and retains prior event
+    history.
+  evidence:
+  - append-only event model
+  - audit/archive lifecycle
+  - planned public replay demo
+  caveats:
+  - The complete headline demo remains planned.
+- id: sinex.production_scale
+  project: sinex
+  state: field_evidence
+  claim: A private Sinex deployment has operated at an approximately 80 million event
+    scale.
+  evidence:
+  - sinex-mhk production restore proof packet
+  caveats:
+  - Count includes a Timescale chunk estimate.
+  - The recovery intentionally purged a transport backlog and is not a losslessness
+    proof.
+- id: sinex.coverage_honesty
+  project: sinex
+  state: experimental
+  claim: Sinex is developing a standing source-level coverage-error measure rather
+    than equating silence with absence.
+  evidence:
+  - sinex-jdp first proof
+  caveats:
+  - The reported source-level rate does not estimate the fraction of lost events.
+- id: joint.resumption_uplift
+  project: joint
+  state: aspirational
+  claim: A Beads + Polylogue + Sinex Agent Work Packet improves agent resumption under
+    a fixed budget.
+  evidence:
+  - future blinded resumption duel
+  caveats:
+  - No general result exists yet.

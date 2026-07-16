@@ -1,0 +1,57 @@
+schema: legibility.incident-manifest/v1
+corpus_id: incident-1432
+frozen_at: '2026-07-10T12:00:00Z'
+privacy: public-safe-synthetic
+primary_construct: claim-versus-structural-evidence at the claim boundary
+controls:
+- prose-only anti-grep
+- later recovery
+- fresh subagent
+- source outage
+- parser replay
+files:
+- path: README.md
+  sha256: 17a67a2177adf2c944f8a8a9acd917cda2f149f74cf28d82b4b3c2204cbd76a1
+  role: source-material
+- path: materials/anti-grep.jsonl
+  sha256: 93d37fe918ed2ac26dda28a51df236ddcb85862a5409a79e2b990d41e15a1eab
+  role: source-material
+- path: materials/assertions.jsonl
+  sha256: 621f8736f3b324b537b64eba50a61d6a9cb5aa3df4979b600742d05ede03f895
+  role: source-material
+- path: materials/beads.jsonl
+  sha256: d4f1eafdc777c858e35fb3c5f8ce33c15170862fea8d6b5fc262009fd207e26b
+  role: source-material
+- path: materials/context-delivery.json
+  sha256: d95e641d2cc6d833a125cdf06e0bf830a57377939fe7d4ddb81f745d3a40a00c
+  role: source-material
+- path: materials/git.jsonl
+  sha256: 659d52d18c585f7f06e03f64b89dbfe324bd95b90dedcd3f7f00d22a55cbcc83
+  role: source-material
+- path: materials/lineage.jsonl
+  sha256: 583cef35e776c22c050f3bde4de34b33aa601ad12100eed425cd3d4d42bd593f
+  role: source-material
+- path: materials/source-health.jsonl
+  sha256: 80d73b179ac49d5ca88dc4f3e9a53d27aa743705411037cf1c9ddddfa684e185
+  role: source-material
+- path: materials/terminal.jsonl
+  sha256: d59c09d33d49adf614d8ec37cb61e5ab877ca672e9b11b1a437ae72a8cdbc70e
+  role: source-material
+- path: materials/transcript.jsonl
+  sha256: 0ab1baea16201b4ae32b49c18062b45278c7a1ac53de95d8d4c50a950fc0213c
+  role: source-material
+- path: oracle.json
+  sha256: d8fbdb9fac8b50238bf8f24092fcd7c1701ddc855bb30c685f296e107ba2f0de
+  role: oracle
+- path: parser/v1.json
+  sha256: e0319f6169840c9b741629b41c48c68d55c44bf8e8a2a622bc6e4b8298777970
+  role: source-material
+- path: parser/v2.json
+  sha256: 403540a3fa59aa1bb0791ac37d9e61f31fe25ec724ac77a4990ea457eb58f2ae
+  role: source-material
+- path: timeline.jsonl
+  sha256: 16b03ff3e2274b33f2f4711846fd1977ed16ff84af7c8eaffbe1c32a18d85c7f
+  role: source-material
+- path: verify_incident.py
+  sha256: 3131e36782e83d8780325a3292c7e6560b8b1cab0d01ec05c6d6b4d9a08abf8c
+  role: verifier

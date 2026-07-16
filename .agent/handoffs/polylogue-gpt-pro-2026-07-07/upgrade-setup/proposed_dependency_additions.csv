@@ -1,0 +1,192 @@
+issue_id,depends_on_id,type,reason,created_by
+polylogue-b5l,polylogue-1xc.8,blocks,"blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof",delivery-upgrade-gpt-5.5-pro
+polylogue-b5l,polylogue-8jg9.4,blocks,"blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof",delivery-upgrade-gpt-5.5-pro
+polylogue-b5l,polylogue-8jg9.2,blocks,"blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof",delivery-upgrade-gpt-5.5-pro
+polylogue-b5l,polylogue-4be,blocks,"blue-green rebuild must wait for throughput envelope, rebuild-safety, blob-GC safety, and restore proof",delivery-upgrade-gpt-5.5-pro
+polylogue-83u.5,polylogue-83u.4,blocks,blob compression waits until missing byte debt and acquisition coverage are classified/proven,delivery-upgrade-gpt-5.5-pro
+polylogue-83u.5,polylogue-83u.2,blocks,blob compression waits until missing byte debt and acquisition coverage are classified/proven,delivery-upgrade-gpt-5.5-pro
+polylogue-83u.5,polylogue-83u.3,blocks,blob compression waits until missing byte debt and acquisition coverage are classified/proven,delivery-upgrade-gpt-5.5-pro
+polylogue-83u.5,polylogue-83u.6,blocks,blob compression waits until missing byte debt and acquisition coverage are classified/proven,delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-rxdo.1,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-rxdo.2,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-rxdo.3,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-rxdo.4,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-4p1,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.15,polylogue-fnm.11,blocks,"evidence basket/export requires object refs, query identity, one read contract, and drift-aware citations",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-rxdo.4,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-svfj,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-9e5.28,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-9e5.29,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-9e5.30,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-cpf.5,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.16,polylogue-cpf.6,blocks,"public claims ledger requires finding assertions, citations, and evidence-honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.4,polylogue-3tl.16,blocks,"findings publishing lane requires claims ledger, basket/export, findings, and citations",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.4,polylogue-bby.15,blocks,"findings publishing lane requires claims ledger, basket/export, findings, and citations",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.4,polylogue-rxdo.4,blocks,"findings publishing lane requires claims ledger, basket/export, findings, and citations",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.4,polylogue-svfj,blocks,"findings publishing lane requires claims ledger, basket/export, findings, and citations",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.8,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.7,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.4,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.3,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.1,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.2,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.9,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.6,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-9e5.28,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-9e5.29,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-9e5.30,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-cpf.5,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-cpf.6,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-212.5,polylogue-svfj,blocks,"public demo claims must not render false numbers, weak timestamps, prose-derived facts, or uncited blocks",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-3tl.16,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-3tl.4,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-3tl.7,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-212.1,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-212.2,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-212.3,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-212.4,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.10,polylogue-212.8,blocks,"launch kit waits for refreshed proof, claims ledger, install matrix, and core demo portfolio",delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.12,polylogue-3tl.16,blocks,README de-meta pass must route factual claims through the public claims ledger,delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.6,polylogue-2qx,blocks,normalized session interchange publication requires OriginSpec and evidence refs,delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.6,polylogue-rxdo.1,blocks,normalized session interchange publication requires OriginSpec and evidence refs,delivery-upgrade-gpt-5.5-pro
+polylogue-3tl.6,polylogue-svfj,blocks,normalized session interchange publication requires OriginSpec and evidence refs,delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.2,polylogue-kwsb.1,blocks,coordination and live messaging cannot deploy on an unsafe daemon/capture surface,delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.3,polylogue-kwsb.1,blocks,coordination and live messaging cannot deploy on an unsafe daemon/capture surface,delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.5,polylogue-kwsb.1,blocks,coordination and live messaging cannot deploy on an unsafe daemon/capture surface,delivery-upgrade-gpt-5.5-pro
+polylogue-ahqd,polylogue-kwsb.1,blocks,coordination and live messaging cannot deploy on an unsafe daemon/capture surface,delivery-upgrade-gpt-5.5-pro
+polylogue-1hj,polylogue-kwsb.1,blocks,coordination and live messaging cannot deploy on an unsafe daemon/capture surface,delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.3,polylogue-37t.15,blocks,scheduler-mediated advisories require context scheduler and safe agent-write boundary,delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.5,polylogue-d1y,blocks,"two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes",delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.5,polylogue-pj8,blocks,"two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes",delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.5,polylogue-ahqd,blocks,"two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes",delivery-upgrade-gpt-5.5-pro
+polylogue-s7ae.5,polylogue-37t.15,blocks,"two-agent proof requires hooks, cookbook, write adoption, scheduler, and safe writes",delivery-upgrade-gpt-5.5-pro
+polylogue-3gd,polylogue-37t.11,blocks,activation layer must use scheduler-controlled context and discoverable hooks/prompts,delivery-upgrade-gpt-5.5-pro
+polylogue-bfv,polylogue-kwsb.1,blocks,"advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths",delivery-upgrade-gpt-5.5-pro
+polylogue-bfv,polylogue-37t.15,blocks,"advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths",delivery-upgrade-gpt-5.5-pro
+polylogue-bfv,polylogue-37t.11,blocks,"advisory hooks require security, safe writes, scheduler, hooks, and hot daemon/cache paths",delivery-upgrade-gpt-5.5-pro
+polylogue-rii.2,polylogue-2qx,blocks,materialized live events should use the declared origin contract,delivery-upgrade-gpt-5.5-pro
+polylogue-rlsb,polylogue-0v9p,blocks,"variant-aware projection/rendering requires language facts, variant storage, and source citations",delivery-upgrade-gpt-5.5-pro
+polylogue-rlsb,polylogue-svfj,blocks,"variant-aware projection/rendering requires language facts, variant storage, and source citations",delivery-upgrade-gpt-5.5-pro
+polylogue-d4zk,polylogue-0v9p,blocks,"variant UX waits for language facts, variant storage/rendering, and safe agent-created candidates",delivery-upgrade-gpt-5.5-pro
+polylogue-d4zk,polylogue-37t.15,blocks,"variant UX waits for language facts, variant storage/rendering, and safe agent-created candidates",delivery-upgrade-gpt-5.5-pro
+polylogue-1jc,polylogue-37t.12,blocks,"learned or proposed preferences should enter through candidate judgment, not silent settings changes",delivery-upgrade-gpt-5.5-pro
+polylogue-3xx,polylogue-37t.12,blocks,"learned or proposed preferences should enter through candidate judgment, not silent settings changes",delivery-upgrade-gpt-5.5-pro
+polylogue-y8w,polylogue-37t.12,blocks,"learned or proposed preferences should enter through candidate judgment, not silent settings changes",delivery-upgrade-gpt-5.5-pro
+polylogue-gjg.1,polylogue-4ts.5,blocks,compaction event/loss tables require compaction boundary/effective context columns,delivery-upgrade-gpt-5.5-pro
+polylogue-gjg.2,polylogue-d1y,blocks,pre-compaction snapshots require hook liveness/install substrate,delivery-upgrade-gpt-5.5-pro
+polylogue-gjg.3,polylogue-4ts.5,blocks,"deterministic loss forensics needs boundaries, events, and snapshots/manifests",delivery-upgrade-gpt-5.5-pro
+polylogue-gjg.4,polylogue-gjg.1,blocks,regrounding is context injection and must pass through scheduler with loss-forensics evidence,delivery-upgrade-gpt-5.5-pro
+polylogue-gjg.4,polylogue-37t.11,blocks,regrounding is context injection and must pass through scheduler with loss-forensics evidence,delivery-upgrade-gpt-5.5-pro
+polylogue-h6r,polylogue-2qx,blocks,stable agent identity must sit on declared origin identity semantics,delivery-upgrade-gpt-5.5-pro
+polylogue-ptx,polylogue-kwsb.1,blocks,"browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety",delivery-upgrade-gpt-5.5-pro
+polylogue-ptx,polylogue-83u.3,blocks,"browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety",delivery-upgrade-gpt-5.5-pro
+polylogue-ptx,polylogue-83u.4,blocks,"browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety",delivery-upgrade-gpt-5.5-pro
+polylogue-ptx,polylogue-3v1.1,blocks,"browser posting with attachments requires capture security, byte preservation, byte-debt classification, and concurrent-spool safety",delivery-upgrade-gpt-5.5-pro
+polylogue-b1n,polylogue-kwsb.1,blocks,"web-driven posting builds on safe posting channel, daemon security, and safe agent/user write boundaries",delivery-upgrade-gpt-5.5-pro
+polylogue-b1n,polylogue-37t.15,blocks,"web-driven posting builds on safe posting channel, daemon security, and safe agent/user write boundaries",delivery-upgrade-gpt-5.5-pro
+polylogue-bby.4,polylogue-20d.13,blocks,live web modes should use daemon push rather than bespoke polling,delivery-upgrade-gpt-5.5-pro
+polylogue-bby.12,polylogue-4ts.4,blocks,session replay requires transactionally consistent lineage composition,delivery-upgrade-gpt-5.5-pro
+polylogue-bby.12,polylogue-4ts.6,blocks,session replay must expose transcript completeness/truncation state,delivery-upgrade-gpt-5.5-pro
+polylogue-bby.3,polylogue-9l5.7,blocks,aggregate web analytics require the statistics/measure registry,delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-9e5.28,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-9e5.29,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-9e5.30,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-cpf.5,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-cpf.6,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-f2qv.1,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-f2qv.2,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-f2qv.3,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-f2qv.4,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.7,polylogue-f2qv.5,blocks,"measure registry waits for evidence, temporal, prose-derived, and usage/cost honesty gates",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.15,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.13,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.6,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.2,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.1,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.18,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.14,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.5,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.3,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.4,polylogue-9l5.7,blocks,"analytics output requires registered measures, evidence tiers, sample frames, and uncertainty metadata",delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.1,polylogue-1vpm,blocks,episode/delegation/tool analytics depend on work-graph unit definitions,delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.2,polylogue-1vpm,blocks,episode/delegation/tool analytics depend on work-graph unit definitions,delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.6,polylogue-1vpm,blocks,episode/delegation/tool analytics depend on work-graph unit definitions,delivery-upgrade-gpt-5.5-pro
+polylogue-9l5.13,polylogue-1vpm,blocks,episode/delegation/tool analytics depend on work-graph unit definitions,delivery-upgrade-gpt-5.5-pro
+polylogue-stc,polylogue-rxdo.2,blocks,experiment hosting requires durable query/result identity and registered measures,delivery-upgrade-gpt-5.5-pro
+polylogue-stc,polylogue-rxdo.3,blocks,experiment hosting requires durable query/result identity and registered measures,delivery-upgrade-gpt-5.5-pro
+polylogue-mhx.4,polylogue-37t.11,blocks,semantic recall in context compilation must pass through context scheduler,delivery-upgrade-gpt-5.5-pro
+polylogue-mhx.5,polylogue-9l5.7,blocks,semantic analytics require measure registry and non-claim wording,delivery-upgrade-gpt-5.5-pro
+polylogue-0cg,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-4g5,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-611,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-7aw,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-7k7,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-7xv,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-ale,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-da1,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.10,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.2,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.3,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.4,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.5,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.6,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.7,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.8,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-fs1.9,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.1,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.2,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.3,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-ox0,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-r47,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-t0p,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-tf0e,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-uiw,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-wmj,polylogue-2qx,blocks,new origins/imports/exports must route through declared OriginSpec unless explicitly exempted,delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.1,polylogue-svfj,blocks,"Polylogue export/import envelope must preserve object identity, citations, and findings",delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.1,polylogue-rxdo.1,blocks,"Polylogue export/import envelope must preserve object identity, citations, and findings",delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.1,polylogue-rxdo.4,blocks,"Polylogue export/import envelope must preserve object identity, citations, and findings",delivery-upgrade-gpt-5.5-pro
+polylogue-l4kf.3,polylogue-svfj,blocks,outbound developer citations need finding assertions and drift-aware citation anchors,delivery-upgrade-gpt-5.5-pro
+polylogue-7k7,polylogue-fs1.3,blocks,research export depends on fidelity declarations and canonical export shape,delivery-upgrade-gpt-5.5-pro
+polylogue-hiu,polylogue-b5l,blocks,"storage twin collapse should follow divergence diff, layering decision, and rebuild-safety proof",delivery-upgrade-gpt-5.5-pro
+polylogue-4822,polylogue-3tl.6,blocks,external SDK/public models require interchange schema and stable object refs,delivery-upgrade-gpt-5.5-pro
+polylogue-4822,polylogue-rxdo.1,blocks,external SDK/public models require interchange schema and stable object refs,delivery-upgrade-gpt-5.5-pro

@@ -1,0 +1,2 @@
+{"message": {"content": "Summarize the parent context before continuing the demo lineage audit.", "role": "user"}, "sessionId": "63705dcc-f3e5-4378-8118-8bc21e53bbb6", "timestamp": "2026-07-04T10:03:01Z", "type": "user", "uuid": "acompact-u0"}
+{"message": {"content": "Compacted demo lineage context: parent, branch, subagent, and caveats.", "role": "system"}, "sessionId": "63705dcc-f3e5-4378-8118-8bc21e53bbb6", "timestamp": "2026-07-04T10:03:02Z", "type": "summary", "uuid": "acompact-s1"}

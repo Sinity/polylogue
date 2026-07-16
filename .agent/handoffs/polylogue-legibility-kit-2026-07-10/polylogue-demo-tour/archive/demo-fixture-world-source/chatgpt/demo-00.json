@@ -1,0 +1,283 @@
+{
+  "blocked_urls": [],
+  "content": "synthetic-31740",
+  "conversation_id": "synthetic-51509 synthetic-51509 synt",
+  "current_node": "9908080b-a0c4-4f3d-9d85-5eca958de5ca",
+  "disabled_tool_ids": [
+    "synthetic-72987"
+  ],
+  "id": "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+  "is_archived": false,
+  "is_study_mode": true,
+  "memory_scope": "synthetic-6645",
+  "rating": "synthetic-95910",
+  "safe_urls": [],
+  "sugar_item_visible": true,
+  "user_id": "synthetic-29582",
+  "voice": "synthetic-6653",
+  "mapping": {
+    "ff8e860f-f2bd-4d77-9dc7-08b237071b53": {
+      "children": [
+        "4842c1eb-4817-48b9-b010-0db8375bb04f"
+      ],
+      "id": "ff8e860f-f2bd-4d77-9dc7-08b237071b53",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-15631"
+          },
+          "name": "synthetic-48676",
+          "role": "user"
+        },
+        "channel": "synthetic-40287",
+        "content": {
+          "computer_id": "synthetic-71500",
+          "content_type": "synthetic-46242",
+          "domain": "synthetic-21324",
+          "language": "synthetic-2089",
+          "parts": [
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs.",
+            "Our async pipeline test is flaky in CI. Locally it usually passes, but CI fails around 1 in 6 runs."
+          ],
+          "pub_timestamp": 209.105415766751,
+          "ref_id": "synthetic-14881",
+          "result": "After reviewing, I found several areas for improvement.",
+          "screenshot": {
+            "asset_pointer": "synthetic-69782",
+            "content_type": "synthetic-4588",
+            "fovea": 578,
+            "height": 162,
+            "size_bytes": 840,
+            "width": 745
+          },
+          "snippet": "synthetic-69499",
+          "source_analysis_msg_id": "69dfcf0f-97aa-4145-82b5-889bdc1c8e3b",
+          "state": {
+            "id": "synthetic-29793",
+            "installed_software": [
+              "synthetic-75812",
+              "synthetic-1948",
+              "synthetic-89292"
+            ],
+            "os_name": "synthetic-38789",
+            "os_type": "synthetic-69149",
+            "os_version": "synthetic-16164",
+            "target_type": "synthetic-77603",
+            "title": "synthetic-85918",
+            "type": "synthetic-15797",
+            "url": "synthetic-56052"
+          },
+          "tether_id": 800,
+          "text": "Here's an implementation:\n\n```python\ndef process(data):\n    return [x for x in data if x]\n```",
+          "thoughts": [],
+          "title": "synthetic-29507",
+          "url": "synthetic-20027"
+        },
+        "create_time": 1673670729.5608428,
+        "end_turn": true,
+        "id": "b30a6b16-dae6-49d6-a4ba-7803f224d89d",
+        "metadata": {},
+        "recipient": "synthetic-69686",
+        "status": "synthetic-10502",
+        "update_time": 1728008224.6072767,
+        "weight": 0.3176040515896362
+      },
+      "parent": null
+    },
+    "4842c1eb-4817-48b9-b010-0db8375bb04f": {
+      "children": [
+        "9908080b-a0c4-4f3d-9d85-5eca958de5ca"
+      ],
+      "id": "4842c1eb-4817-48b9-b010-0db8375bb04f",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-36661"
+          },
+          "name": "synthetic-77188",
+          "role": "assistant"
+        },
+        "channel": "synthetic-8851",
+        "content": {
+          "computer_id": "synthetic-78648",
+          "content_type": "synthetic-50217",
+          "domain": "synthetic-90565",
+          "language": "synthetic-37833",
+          "parts": [
+            "Start by capturing a deterministic trace: per-task IDs, queue depth, retry count, and commit boundaries.",
+            "Start by capturing a deterministic trace: per-task IDs, queue depth, retry count, and commit boundaries.",
+            "Start by capturing a deterministic trace: per-task IDs, queue depth, retry count, and commit boundaries."
+          ],
+          "pub_timestamp": 903.3353806577114,
+          "ref_id": "synthetic-6097",
+          "screenshot": {
+            "asset_pointer": "synthetic-17893",
+            "content_type": "synthetic-30473",
+            "fovea": 207,
+            "height": 548,
+            "size_bytes": 992,
+            "width": 137
+          },
+          "snippet": "synthetic-8290",
+          "source_analysis_msg_id": "eb0ea22e-69a8-49c3-a886-5ff3e00bf087",
+          "state": {
+            "id": "synthetic-23205",
+            "installed_software": [
+              "synthetic-41739",
+              "synthetic-32526",
+              "synthetic-80971"
+            ],
+            "os_name": "synthetic-41179",
+            "os_type": "synthetic-48129",
+            "os_version": "synthetic-11981",
+            "target_type": "synthetic-44932",
+            "title": "synthetic-3851",
+            "type": "synthetic-55665",
+            "url": "synthetic-6511"
+          },
+          "tether_id": 426,
+          "text": "I'll analyze the issue. Looking at the code structure...",
+          "thoughts": [
+            {
+              "chunks": [],
+              "content": "synthetic-77709",
+              "finished": false,
+              "summary": "synthetic-38676"
+            },
+            {
+              "chunks": [
+                "synthetic-85203",
+                "synthetic-27648",
+                "synthetic-61326",
+                "synthetic-87465",
+                "synthetic-31310"
+              ],
+              "content": "synthetic-61956",
+              "finished": true,
+              "summary": "synthetic-7043"
+            },
+            {
+              "chunks": [],
+              "content": "synthetic-12565",
+              "finished": false,
+              "summary": "synthetic-59000"
+            },
+            {
+              "chunks": [
+                "synthetic-63561",
+                "synthetic-42954",
+                "synthetic-65039",
+                "synthetic-58470",
+                "synthetic-60897"
+              ],
+              "content": "synthetic-82053",
+              "finished": true,
+              "summary": "synthetic-82025"
+            },
+            {
+              "chunks": [],
+              "content": "synthetic-22303",
+              "finished": false,
+              "summary": "synthetic-62483"
+            }
+          ],
+          "title": "synthetic-47728",
+          "url": "synthetic-45049"
+        },
+        "create_time": 1752405177.297675,
+        "end_turn": false,
+        "id": "4b50f4c8-58a0-44ad-ab61-f0f5df7145eb",
+        "metadata": {},
+        "recipient": "synthetic-78658",
+        "status": "synthetic-16102",
+        "update_time": 1746261957.2981718,
+        "weight": 0.7816208257495374
+      },
+      "parent": "ff8e860f-f2bd-4d77-9dc7-08b237071b53"
+    },
+    "9908080b-a0c4-4f3d-9d85-5eca958de5ca": {
+      "children": [],
+      "id": "9908080b-a0c4-4f3d-9d85-5eca958de5ca",
+      "message": {
+        "author": {
+          "metadata": {
+            "real_author": "synthetic-6654"
+          },
+          "name": "synthetic-22727",
+          "role": "user"
+        },
+        "channel": "synthetic-7762",
+        "content": {
+          "computer_id": "synthetic-88782",
+          "content": "synthetic-57316",
+          "content_type": "synthetic-18650",
+          "domain": "synthetic-75757",
+          "language": "synthetic-6652",
+          "parts": [
+            "The failure is around a race between acquisition and parse workers. We see duplicate writes occasionally.",
+            "The failure is around a race between acquisition and parse workers. We see duplicate writes occasionally.",
+            "The failure is around a race between acquisition and parse workers. We see duplicate writes occasionally."
+          ],
+          "pub_timestamp": 270.6406848522636,
+          "ref_id": "synthetic-65292",
+          "screenshot": {
+            "asset_pointer": "synthetic-41416",
+            "content_type": "synthetic-51481",
+            "fovea": 10,
+            "height": 387,
+            "size_bytes": 25,
+            "width": 692
+          },
+          "snippet": "synthetic-15993",
+          "source_analysis_msg_id": "fcecf1b4-c95d-4e94-9174-936362746c95",
+          "state": {
+            "id": "synthetic-33447",
+            "installed_software": [
+              "synthetic-48682",
+              "synthetic-30840",
+              "synthetic-60471"
+            ],
+            "os_name": "synthetic-64700",
+            "os_type": "synthetic-32811",
+            "os_version": "synthetic-97721",
+            "target_type": "synthetic-35643",
+            "title": "synthetic-65404",
+            "type": "synthetic-29354",
+            "url": "synthetic-71412"
+          },
+          "summary": "synthetic-52604",
+          "tether_id": 381,
+          "text": "After reviewing, I found several areas for improvement.",
+          "thoughts": [
+            {
+              "chunks": [
+                "synthetic-23052",
+                "synthetic-26882"
+              ],
+              "content": "synthetic-49936",
+              "finished": true,
+              "summary": "synthetic-71505"
+            }
+          ],
+          "title": "synthetic-72395",
+          "url": "synthetic-6480"
+        },
+        "create_time": 1706803675.278564,
+        "end_turn": false,
+        "id": "36071710-ad22-41d0-9366-c102787e5468",
+        "metadata": {},
+        "recipient": "synthetic-78105",
+        "status": "synthetic-57527",
+        "update_time": 1742620725.9832153,
+        "weight": 0.981174467751077
+      },
+      "parent": "4842c1eb-4817-48b9-b010-0db8375bb04f"
+    }
+  },
+  "create_time": 1746826781.6905782,
+  "update_time": 1746826901.6905782,
+  "title": "Debugging flaky async pipeline tests"
+}

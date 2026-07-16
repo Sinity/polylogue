@@ -1,0 +1,125 @@
+schema: demo-finding-packet/v2
+identity:
+  slug: the-receipts
+  title: "The Receipts: claim versus structural outcome"
+  project: polylogue
+  run_id: demo-20260710-incident1432
+  run_date: "2026-07-10T12:00:00Z"
+  commit_sha: f6c1da99
+  measure_version: claim-vs-evidence/v2
+  beads: [polylogue-212.2, polylogue-xyel]
+claim:
+  text: Polylogue classifies the test failure from the paired tool-result exit status and resolves the claim and outcome to exact evidence.
+  claim_class: capability
+  primary_construct: structural claim-versus-evidence comparison
+  oracle:
+    kind: structured_outcome
+    description: The paired pytest tool result carries exit_code=1.
+    expected: 1
+    observed: 1
+  falsifier: The demo reports success, uses prose matching as the outcome oracle, or cannot resolve both sides to evidence.
+judgment:
+  verdict: supported
+  checks:
+    - id: paired-result
+      pass: true
+      description: The tool call resolves to exactly one result in the same session.
+      evidence_refs: [tool-call:demo-pytest-1, tool-result:demo-pytest-1]
+    - id: structural-failure
+      pass: true
+      description: Failure is determined from exit_code=1.
+      evidence_refs: [tool-result:demo-pytest-1]
+    - id: claim-ref
+      pass: true
+      description: The success claim resolves to one assistant message.
+      evidence_refs: [message:demo-claim-1]
+  unsupported_claims:
+    - This fixture does not estimate how often agents overclaim success.
+  coverage_notes:
+    - The fixture includes one malformed pairing control that must remain inconclusive.
+corpus:
+  mode: deterministic_fixture
+  sample_frame_predicate: incident_id == 'incident-1432' and case in declared controls
+  archive_cursor: fixture:incident-1432:v1
+  manifest_digest: sha256:REPLACE_WITH_GENERATED_DIGEST
+  counts:
+    sessions: 3
+    claims: 3
+    tool_results: 3
+  selection_protocol: All cases declared by the scenario manifest are evaluated.
+  exclusions: []
+method:
+  steps:
+    - Seed the Incident 14:32 archive through normal provider parsers.
+    - Resolve each declared claim and paired tool result.
+    - Classify outcome from supported structural fields.
+    - Compare the product result with the independent oracle manifest.
+  baseline: Grep finds the claim and command text but does not establish call/result pairing or outcome semantics.
+  query_refs: [query:receipts-cases-v1]
+  random_seed: 1843
+  preregistered_protocol_ref: null
+controls:
+  positive:
+    - id: nonzero-exit
+      description: A failing pytest result must be classified as failure.
+      expected: failure
+      observed: failure
+      pass: true
+      evidence_refs: [tool-result:demo-pytest-1]
+  negative:
+    - id: successful-output-mentions-failed
+      description: A zero-exit result containing the word failed must remain successful.
+      expected: success
+      observed: success
+      pass: true
+      evidence_refs: [tool-result:demo-pytest-2]
+  missing_evidence:
+    - id: no-paired-result
+      description: A claim with no paired result must remain insufficient_evidence.
+      expected: insufficient_evidence
+      observed: insufficient_evidence
+      pass: true
+      evidence_refs: [message:demo-claim-3]
+evidence:
+  refs:
+    - message:demo-claim-1
+    - tool-call:demo-pytest-1
+    - tool-result:demo-pytest-1
+    - material:demo-codex-segment-1
+  material_manifest: evidence/material-manifest.json
+  derivation_manifest: evidence/derivation-manifest.json
+  counterexample_refs: [tool-result:demo-pytest-2]
+  omission_refs: [message:demo-claim-3]
+reproduction:
+  commands:
+    - polylogue demo seed --root /tmp/polylogue-incident-1432 --force --with-overlays --format json
+    - polylogue demo receipts --root /tmp/polylogue-incident-1432 --out-dir /tmp/polylogue-receipts
+    - python -m devtools.demo_packet validate /tmp/polylogue-receipts
+  clean_state: Remove /tmp/polylogue-incident-1432 and /tmp/polylogue-receipts before running.
+  expected_exit_code: 0
+  artifacts:
+    - packet.yaml
+    - report.md
+    - evidence.ndjson
+    - queries.ndjson
+    - checks.json
+    - run.log
+  recording_command: devtools render visual-tapes --demo the-receipts
+environment:
+  platform: deterministic local fixture
+  software_versions:
+    polylogue: 0.1.0+f6c1da99
+    packet_schema: v2
+  privacy_profile: public-safe synthetic corpus
+  network_required: false
+scope:
+  proves:
+    - Structural outcome classification and exact evidence resolution work on the declared fixture cases.
+    - Missing paired evidence is represented explicitly.
+  does_not_prove:
+    - Population prevalence of overclaiming.
+    - Intent or causal explanation for the assistant response.
+    - Complete provider support.
+  known_limitations:
+    - The example digest and final command names must be replaced by generated values after implementation.
+  generalization_boundary: Capability proof on a deterministic construct-audited corpus.

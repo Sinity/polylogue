@@ -1,0 +1,45 @@
+## WAVE 2 LANE — do not launch before polylogue-web-cockpit has merged (shared footprint).
+
+You are lane polylogue-webui-2 of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-webui-2. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Web workbench second slice (WAVE 2 — after polylogue-web-cockpit merges): t67b compile browser proof obligations from workflow claims; 9l5.5 ship opinionated saved views as product defaults.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-t67b [open]: Compile browser proof obligations from workflow claims
+- polylogue-9l5.5 [open]: Ship opinionated saved views as product defaults
+
+FILE OWNERSHIP
+OWN (you may modify): polylogue/daemon/web_shell_*.py; polylogue/product/workflows.py; webui/tests/
+AVOID (another lane owns these; do not touch): polylogue/storage/
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools test -k 'workflow or saved_view or proof'
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

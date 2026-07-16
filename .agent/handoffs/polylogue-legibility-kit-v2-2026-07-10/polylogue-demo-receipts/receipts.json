@@ -1,0 +1,37 @@
+{
+  "anti_grep_control": {
+    "failed_actions": 0,
+    "session_ref": "session:codex-session:demo-anti-grep",
+    "text_hits_for_error": 2
+  },
+  "archive_root": "polylogue-receipts-demo/archive",
+  "claim_ref": "block:codex-session:demo-receipts:receipts-a-claim:0",
+  "claim_text": "All tests pass. The clock fix is complete.",
+  "failed": {
+    "block_ref": "block:codex-session:demo-receipts:call-receipts-test-fail:0",
+    "command": "pytest tests/test_clock.py -q",
+    "exit_code": 1,
+    "is_error": true,
+    "output": "{\"metadata\": {\"exit_code\": 1}, \"output\": \"F  tests/test_clock.py::test_uses_monotonic_clock\\n1 failed in 0.18s\"}",
+    "semantic_type": "shell",
+    "tool_name": "exec_command"
+  },
+  "ok": true,
+  "problems": [],
+  "recovery": {
+    "block_ref": "block:codex-session:demo-receipts:call-receipts-test-pass:0",
+    "command": "pytest tests/test_clock.py -q",
+    "exit_code": 0,
+    "is_error": false,
+    "output": "{\"metadata\": {\"exit_code\": 0}, \"output\": \".  1 passed in 0.16s\"}",
+    "semantic_type": "shell",
+    "tool_name": "exec_command"
+  },
+  "seeded_for_command": true,
+  "session_ref": "session:codex-session:demo-receipts",
+  "source_material": {
+    "blob_sha256": "9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7",
+    "raw_id": "c0bcedce8ec536029fd8bb1ee0e5d5bf017dc1fadfb7c1cd3eed1eb6bece57a0"
+  },
+  "verdict": "contradicted_at_claim_time_then_repaired"
+}

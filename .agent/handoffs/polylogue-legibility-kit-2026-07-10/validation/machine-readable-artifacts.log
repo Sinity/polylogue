@@ -1,0 +1,8 @@
+YAML OK: 09-public-claims-ledger.yaml (dict)
+YAML OK: 10-public-claims-ledger.yaml (dict)
+YAML OK: 11-demo-portfolio.yaml (dict)
+YAML OK: 10-demo-packet-v2-example.yaml (dict)
+JSON schema OK: 10-demo-packet-v2.schema.json
+Demo packet example validates against schema
+CSV OK: 12-beads-launch-cut.csv (28 rows; columns=['wave', 'repo', 'bead_id', 'snapshot_status', 'priority', 'disposition', 'launch_slice', 'primary_scope'])
+CSV OK: 13-worktree-lanes.csv (16 rows; columns=['lane', 'branch', 'repo', 'exclusive_scope', 'resource_class', 'merge_wave'])

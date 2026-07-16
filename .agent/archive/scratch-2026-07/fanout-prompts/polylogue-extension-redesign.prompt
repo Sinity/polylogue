@@ -1,0 +1,45 @@
+You are lane polylogue-extension-redesign of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-extension-redesign. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Extension redesign first slice (epic polylogue-yyvg; in-page layers ys30/wvji/bj5h are follow-ups, NOT this lane). Order: r4no silent-capture P1 bug (auto-capture trigger never fires — 160 GETs, 0 POSTs) first; then popup mission-control; operator status vocabulary; 'What Polylogue did here' timeline (doing-nothing must be a logged visible event). Pixel specs: project/Polylogue Redesign.dc.html in the design dir.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-r4no [open]: Auto-capture trigger never fires: 160 archive-state GETs, zero capture POSTs
+- polylogue-bkff [open]: Popup mission-control: multi-tab list + active-conversation card
+- polylogue-r2kb [open]: Operator status vocabulary for capture states
+- polylogue-4g3n [open]: 'What Polylogue did here' per-conversation timeline
+
+FILE OWNERSHIP
+OWN (you may modify): browser-extension/
+AVOID (another lane owns these; do not touch): polylogue/; webui/
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+cd browser-extension && npm test (vitest suite; 143 tests baseline must not regress)
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.
