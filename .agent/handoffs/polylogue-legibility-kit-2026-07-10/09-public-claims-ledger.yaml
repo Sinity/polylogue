@@ -1,0 +1,282 @@
+schema: external-claims-ledger/v1
+snapshot_date: 2026-07-10
+status_vocabulary:
+  proven: A bounded artifact or verification result supports the exact wording.
+  capability: Implemented behavior exists; no outcome or prevalence claim is implied.
+  aspirational: Direction or hypothesis owned by Beads; not shipped as a factual product claim.
+  retired: Previously used wording that should no longer appear as current truth.
+evidence_classes:
+  deterministic_fixture: Private-data-free scenario with an independent expected-result contract.
+  test_contract: Executable repository tests or schema checks.
+  field_observation: Bounded observation from a private deployment; not a population estimate.
+  design_contract: Documented architecture or authority decision; implementation may be partial.
+  source_inspection: Static code/repository inspection at the named revision.
+rules:
+  - Every quantitative, comparative, benefit, readiness, or architecture-state claim must have an entry.
+  - Publication text must not be stronger than the claim field.
+  - Field observations must name corpus, date, method, and non-generalization caveat.
+  - Aspirational claims must not use present-tense implementation language.
+  - Retired wording must be linted out of public surfaces except in historical discussion.
+
+claims:
+  - id: polylogue.category.flight-recorder
+    project: polylogue
+    status: capability
+    evidence_class: source_inspection
+    claim: Polylogue is a local flight recorder and system of record for AI work.
+    publication_text: Polylogue is the local flight recorder and system of record for AI work.
+    evidence:
+      - README.md
+      - docs/architecture.md
+      - docs/proof-artifacts.md
+    scope: Category statement summarizing implemented capture, normalization, query, evidence, and context surfaces.
+    caveats:
+      - Pre-1.0 product; category wording does not imply every planned memory or coordination feature is complete.
+    owner_beads: [polylogue-3tl, polylogue-3tl.12]
+
+  - id: polylogue.demo.deterministic-corpus
+    project: polylogue
+    status: proven
+    evidence_class: deterministic_fixture
+    claim: The current deterministic private-data-free demo corpus contains 11 sessions, 43 indexed messages, 87 blocks, five origins, lineage, subagent runs, context snapshots, attachments, and user overlays.
+    publication_text: Run a private-data-free tour that exercises five origins, tool outcomes, lineage, subagents, context snapshots, attachments, and reviewed overlays.
+    evidence:
+      - docs/plans/demo-corpus-construct-audit.md
+      - docs/examples/demo-tour/report.md
+      - polylogue/demo/verify.py
+    scope: Construct coverage and normal product paths in the committed fixture world.
+    caveats:
+      - Does not prove private-archive scale, provider completeness, or real-world prevalence.
+    owner_beads: [polylogue-3tl.2, polylogue-212]
+
+  - id: polylogue.evidence.structured-outcomes
+    project: polylogue
+    status: proven
+    evidence_class: deterministic_fixture
+    claim: Polylogue can classify a tool failure from structured outcome fields such as nonzero exit code or provider is_error rather than from assistant prose alone.
+    publication_text: Audit claims against structural tool outcomes, not just plausible prose.
+    evidence:
+      - docs/proof-artifacts.md
+      - devtools/claim_vs_evidence.py
+      - tests/unit/devtools/test_claim_vs_evidence.py
+    scope: Captured and normalized tool results whose provider evidence exposes supported outcome fields.
+    caveats:
+      - Unsupported or malformed tool outcomes must return an explicit caveat rather than a guessed verdict.
+    owner_beads: [polylogue-212.2, polylogue-xyel, polylogue-cpf.4]
+
+  - id: polylogue.finding.silent-proceed-lower-bound
+    project: polylogue
+    status: proven
+    evidence_class: field_observation
+    claim: In one bounded private-archive sample of 5,000 structured failures from a frame of 42,033, 1,205 cases were classified as silent proceed on the next assistant turn, a 24.1 percent lower bound; 3,375 cases remained ambiguous.
+    publication_text: In one private archive, a bounded sample found a 24.1% lower bound for silent continuation after structured failure; most cases remained ambiguous.
+    evidence:
+      - docs/proof-artifacts.md#claim-vs-evidence-failure-follow-up
+      - .agent/demos/claim-vs-evidence
+      - devtools/claim_vs_evidence.py
+    scope: The named archive snapshot, sampling frame, detector, and date recorded by the packet.
+    caveats:
+      - Not a prevalence estimate for all models, users, providers, or tasks.
+      - The acknowledgment marker was calibrated on 50 labeled rows with reported precision and recall; ambiguous cases are not silently reassigned.
+    owner_beads: [polylogue-3tl.4, polylogue-3tl.16]
+
+  - id: polylogue.lineage.private-archive-replay-gap
+    project: polylogue
+    status: proven
+    evidence_class: field_observation
+    claim: One private archive proof recorded approximately 399.9 billion physically accounted tokens and 292.9 billion logical high-water tokens, leaving approximately 107.0 billion tokens attributable to replayed lineage under that analysis.
+    publication_text: On one large private archive, logical lineage accounting removed roughly 107B replayed tokens from a 399.9B physical total.
+    evidence:
+      - .agent/demos/agent-forensics/current/usage-headline-all.json
+      - .agent/demos/agent-forensics/current/summary.json
+    scope: One private archive and the exact logical high-water semantics used by the artifact.
+    caveats:
+      - Not a provider invoice and not a universal replay rate.
+      - Physical and logical views answer different questions; neither should be discarded.
+    owner_beads: [polylogue-4ts, polylogue-212]
+
+  - id: polylogue.mcp.surface-count
+    project: polylogue
+    status: capability
+    evidence_class: test_contract
+    claim: The snapshot MCP contract exposes 96 tools, four fixed resources, one resource template, and 12 prompts.
+    publication_text: Polylogue exposes a broad MCP evidence and memory surface for agents.
+    evidence:
+      - tests/infra/mcp.py
+      - tests/unit/mcp/test_server_surfaces.py
+    scope: Exact repository snapshot; counts may change with the contract.
+    caveats:
+      - Tool count is not a quality or usability metric.
+    owner_beads: [polylogue-pj8]
+
+  - id: polylogue.context.compiler
+    project: polylogue
+    status: capability
+    evidence_class: test_contract
+    claim: Polylogue can compile bounded context images carrying selected refs, omissions, caveats, lossiness, token estimates, and assertion policy, and can record delivery snapshots.
+    publication_text: Compile bounded, evidence-linked context and record what a later agent actually received.
+    evidence:
+      - polylogue/context/compiler.py
+      - tests/unit/context/test_compiler.py
+    scope: Implemented compiler and snapshot contracts; not a claim of task-performance uplift.
+    caveats:
+      - The complete reviewed-memory scheduler and production uplift proof remain open work.
+    owner_beads: [polylogue-37t]
+
+  - id: polylogue.memory.uplift
+    project: polylogue
+    status: aspirational
+    evidence_class: design_contract
+    claim: Reviewed Polylogue context reliably improves agent task performance.
+    publication_text: Polylogue is testing whether reviewed, evidence-linked context improves resumption; no general uplift claim is established yet.
+    evidence:
+      - .agent/demos/uplift-two-arm/current/report.md
+    scope: Roadmap hypothesis and pilot evidence only.
+    caveats:
+      - Existing pilot is small, correlated, and contains a stale-packet counterexample.
+    owner_beads: [polylogue-37t, polylogue-212.6]
+
+  - id: polylogue.sinex.backend-current
+    project: joint
+    status: aspirational
+    evidence_class: design_contract
+    claim: Sinex is currently the canonical durable backend for all Polylogue transcript and user-state evidence.
+    publication_text: "The maximal target is Sinex-backed Polylogue: Sinex stores durable transcript evidence and lifecycle while Polylogue retains AI-work semantics and product behavior."
+    evidence:
+      - sinex:sinex-4j2
+      - polylogue:polylogue-6mv
+      - polylogue:polylogue-fs1.9
+    scope: Target architecture; current bridge is metadata-thin and the full rebuild proof has not landed.
+    caveats:
+      - Any wording that says the full backend already exists is false at this snapshot.
+    owner_beads: [sinex-4j2]
+
+  - id: polylogue.positioning.ai-memory
+    project: polylogue
+    status: retired
+    evidence_class: source_inspection
+    claim: Polylogue should be positioned primarily as "Your AI memory."
+    publication_text: Do not use as the primary category. Historical design pages may discuss memory as one product function.
+    evidence:
+      - docs/site/pages.toml
+      - devtools/pages_templates.py
+    scope: Public category and landing-page copy.
+    caveats:
+      - Memory remains a real product program; the retired wording is about category anchoring, not feature removal.
+    owner_beads: [polylogue-3tl, polylogue-3tl.12]
+
+  - id: sinex.category.evidence-substrate
+    project: sinex
+    status: capability
+    evidence_class: source_inspection
+    claim: Sinex is a local evidence substrate that preserves source material, versioned interpretations, temporal semantics, replay, projections, and agent-facing evidence access.
+    publication_text: Sinex is the local evidence substrate for digital life and agent work.
+    evidence:
+      - README.md
+      - crate/sinex-primitives/docs/knowledge_boundaries.md
+      - crate/sinexd/docs/sources/evidence_lanes.md
+    scope: Category statement over implemented and documented substrate behavior.
+    caveats:
+      - Pre-1.0, trusted-single-user deployment; some authority, coverage, and product surfaces remain active work.
+    owner_beads: [sinex-pi1, sinex-ej9]
+
+  - id: sinex.demo.verify
+    project: sinex
+    status: proven
+    evidence_class: deterministic_fixture
+    claim: sinexctl ops verify --demo can seed a deterministic dataset, execute documented queries through normal surfaces, write dataset and walkthrough artifacts, and fail nonzero on unmet expectations.
+    publication_text: Run a deterministic end-to-end walkthrough that emits machine-readable and human-readable receipts.
+    evidence:
+      - crate/sinexctl/docs/demo_walkthrough.md
+      - crate/sinexctl/src/commands/verify/mod.rs
+    scope: Current smoke-query coverage only.
+    caveats:
+      - Does not yet prove the project’s strongest replay, coverage, or authority claims.
+    owner_beads: [sinex-pi1, sinex-cem]
+
+  - id: sinex.deployment.large-archive
+    project: sinex
+    status: proven
+    evidence_class: field_observation
+    claim: One production-restore proof recorded an estimated 80,872,976 Timescale events and exactly 34,782 source-material registry rows at its proof point.
+    publication_text: Sinex has been exercised on a private deployment containing tens of millions of events.
+    evidence:
+      - snapshot-analysis:sinex-overview.md
+      - beads:sinex-mhk
+    scope: One private deployment and proof packet.
+    caveats:
+      - Not a general capacity guarantee or benchmark.
+      - The same campaign records a recovery purge and therefore is not evidence of perfect losslessness.
+    owner_beads: [sinex-mhk, sinex-n23, sinex-r6d]
+
+  - id: sinex.coverage.first-proof
+    project: sinex
+    status: proven
+    evidence_class: field_observation
+    claim: The first standing coverage proof evaluated 64 source entries and found 58 with at least one identified coverage error.
+    publication_text: Sinex already surfaces uncomfortable source-coverage failures instead of treating green processes as complete evidence.
+    evidence:
+      - beads:sinex-jdp
+      - snapshot-analysis:sinex-overview.md
+    scope: Source-level error incidence in the named proof, not event-level loss rate.
+    caveats:
+      - 58 of 64 sources with an error does not mean 90.62% of all events were lost.
+    owner_beads: [sinex-jdp, sinex-r6d]
+
+  - id: sinex.mcp.readonly-count
+    project: sinex
+    status: capability
+    evidence_class: test_contract
+    claim: The snapshot Sinex MCP server exposes 68 read-only tools and intentionally omits write, deletion, raw-material, and finalization operations.
+    publication_text: Sinex exposes a bounded read-only MCP evidence surface for agents.
+    evidence:
+      - crate/sinexctl/docs/mcp_readonly_server.md
+      - crate/sinexctl/src/mcp
+    scope: Exact snapshot contract.
+    caveats:
+      - Tool count is not a usability metric; a composed Polylogue/Sinex agent surface should be much smaller.
+    owner_beads: [sinex-7z0]
+
+  - id: sinex.losslessness.universal
+    project: sinex
+    status: aspirational
+    evidence_class: design_contract
+    claim: Sinex never loses evidence under any failure mode.
+    publication_text: Sinex is building explicit receipt, settlement, coverage, and crash-recovery proofs; no universal no-loss claim is established.
+    evidence:
+      - beads:sinex-r6d
+      - beads:sinex-cem.15
+    scope: Roadmap safety objective.
+    caveats:
+      - Existing operational history includes a bounded recovery purge.
+    owner_beads: [sinex-r6d, sinex-n23]
+
+  - id: sinex.retrieval.uplift
+    project: sinex
+    status: aspirational
+    evidence_class: design_contract
+    claim: Hybrid vector retrieval improves recall or agent outcomes.
+    publication_text: Sinex will measure lexical, vector, and hybrid retrieval and retain the vector plane only if it pays rent.
+    evidence:
+      - beads:sinex-cem.5
+      - beads:sinex-cem.6
+      - beads:sinex-cem.12
+    scope: Planned evaluation.
+    caveats:
+      - No representative hit@k or outcome result is established at this snapshot.
+    owner_beads: [sinex-cem.5, sinex-cem.6]
+
+  - id: joint.category.evidence-memory-plane
+    project: joint
+    status: aspirational
+    evidence_class: design_contract
+    claim: The combined system is a complete local evidence, memory, and coordination plane for human-agent work.
+    publication_text: Polylogue and Sinex are converging on local evidence and memory infrastructure for human-agent work.
+    evidence:
+      - beads:sinex-4j2
+      - beads:polylogue-s7ae
+      - beads:polylogue-37t
+    scope: Long-term product category.
+    caveats:
+      - Full transcript backend, rebuild, coordination, and measured resumption proof remain open.
+    owner_beads: [sinex-4j2, polylogue-s7ae, polylogue-37t]

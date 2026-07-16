@@ -1,0 +1,116 @@
+You are one lane of a parallel fanout on the Polylogue repo.
+Worktree /realm/worktrees/polylogue-rxdo-language is your root; NEVER cd to
+/realm/project/polylogue. Branch: feature/fanout/rxdo-language.
+
+════════════════════════════════════════════════════════════════════════
+MISSION — analysis objects become composable and self-updating
+════════════════════════════════════════════════════════════════════════
+Two beads, in order:
+  1. polylogue-rxdo.6 — DSL reference operands: from query:/result-set:/
+     cohort: as provenance-preserving AST nodes
+  2. polylogue-rxdo.5 — StandingQueryStage: watched queries re-evaluated on
+     convergence; deltas become candidate findings
+
+DEPENDENCY REALITY — READ CAREFULLY: you depend on contracts two sibling
+lanes are building RIGHT NOW:
+  - rxdo-substrate lane (feature/fanout/rxdo-substrate): ref formats
+    (query:<hash>, result-set:<id>), user.db tables, query_runs telemetry,
+    result-set merkle identity. Its FIRST pushed commit is the ref
+    contract — poll git fetch origin && git log
+    origin/feature/fanout/rxdo-substrate before hardcoding formats.
+  - rxdo-lifecycle lane: AssertionKind.FINDING writer
+    (upsert_findings_as_assertions) that your stage emits through.
+STRATEGY: front-load the work that needs NEITHER (grammar/AST/planner
+lineage for rxdo.6; stage skeleton + fingerprint plumbing for rxdo.5)
+behind narrow internal interfaces (a RefResolver protocol, a FindingSink
+protocol with a logging default). Integrate against the sibling branches
+as they push; rebase over their merges. If blocked >30min on a missing
+contract, note the exact gap in your scratch file, post it on the PR, and
+continue on the non-blocked bead.
+
+READ FIRST: bd show for polylogue-rxdo.6, polylogue-rxdo.5, polylogue-rxdo
+(epic), plus polylogue/archive/query/expression.py (the Lark grammar +
+hand-parsed pipeline-stage splitter) and polylogue/daemon/convergence.py +
+convergence_stages.py. MANDATORY retro before touching convergence:
+docs/retro/2026-05-24-1498-cascade.md (repo rule — read before editing
+daemon/convergence_stages.py).
+
+rxdo.6 KEY DESIGN (bead wins on conflict):
+- `from query-definition:` re-evaluates; `from query-run:` uses its
+  retained relation (TYPED error if not retained); `from result-set:` uses
+  the stored relation; `from cohort:` re-evaluates (dynamic) or yields
+  members (snapshot). All usable as set-algebra operands.
+- @name STAYS macro-expansion for dynamic saved queries — do NOT overload
+  it for results (freshness surprise is the named anti-goal).
+- References lower to a typed RefOperand AST node — NEVER textual
+  expansion — so `explain` shows parent query/run/result lineage and
+  query_edges emit from the planner.
+- LALR PITFALL (from bd memory, verbatim): any new terminal containing a
+  colon must slot ABOVE FIELD_CLAUSE.4 priority or it is eaten as a field
+  clause. Pipeline stages are hand-parsed outside the grammar — check the
+  expression.py stage splitter FIRST; from-stage may need no grammar
+  change at all.
+- Grain typing: RefOperand carries the referenced relation's grain;
+  mixed-grain composition FAILS CLOSED with a suggestion (set-algebra
+  doctrine). Cycle guard: planner detects ref cycles across query_edges +
+  macro expansion depth before materialization.
+
+rxdo.5 KEY DESIGN (bead wins on conflict):
+- Fourth default convergence stage (after fts/embed/insights) using the
+  EXISTING session-scoped stage hooks — check_sessions/execute_sessions +
+  false_means_pending; the bead verified ConvergenceStage already supports
+  this with NO engine changes. Do not modify the converger engine.
+- A watched query (query_names.watch=1) re-materializes when member
+  sessions change; membership-merkle comparison emits ONE query-delta
+  FINDING candidate (never active, never inject) citing old+new
+  result-set refs.
+- Dedup by STABLE FINDING IDENTITY, not events: same content-hash → same
+  finding id → already present → a re-ingest storm is STRUCTURALLY
+  incapable of re-notifying. Baseline-then-notify. Self-trigger firewall:
+  standing queries exclude their own scope_ref and notice.* events by
+  default (recursive-loop guard).
+- Index-reset false-drift guard: cache-only result sets cannot produce
+  deltas after reset; only user.db-pinned baselines compare.
+- Findings-as-tests: a PROMOTED finding with value.expected re-runs and
+  emits a finding-drift candidate TARGETING the original on divergence —
+  drift findings are new claims awaiting judgment, never mutations of the
+  original.
+- check_sessions maps changed sessions to affected watched queries via
+  scoped predicate fingerprints — global corpus epoch first; scoped-epoch
+  fast-follow is OUT of this slice (note it as follow-up).
+
+FOOTPRINT
+OWN: polylogue/archive/query/ (expression.py grammar, planner, RefOperand,
+explain), polylogue/daemon/convergence_stages.py (additive stage),
+tests/unit/archive/query/, tests/unit/daemon/ (additive).
+AVOID: storage/sqlite/migrations + user_write.py (sibling lanes),
+storage/sqlite/queries/** + protocols.py + api/*.py signatures
+(provider-origin lane's atomic provider→origin sweep is in flight there —
+your planner work may read those modules; do not rename anything in them,
+and use origin vocabulary in all new code), MCP tools (none this wave),
+the converger ENGINE (daemon/convergence.py — stage file only).
+Generated surfaces: new modules → devtools render topology-projection +
+topology-status; grammar/help changes → devtools render all; regen in
+separate commits.
+
+VERIFICATION: expression tests (from result-set:<id> | group by model |
+count works; explain shows ref lineage; grain mismatch errors with
+suggestion; @macro unchanged; cycles rejected; colon-terminal priority
+regression), convergence-stage fixture tests (watch → ingest matching
+session → EXACTLY ONE query-delta candidate; re-ingest same content →
+zero new; reset --index then converge → zero false drift; promoted
+expected-count finding diverging → one drift candidate targeting it).
+devtools verify --quick before every push. Anti-vacuity per test.
+
+KNOWN HAZARDS: GitHub Actions all-jobs-fail-at-init (billing) — ignore.
+basetemp escape (ra3w) — override under /realm/tmp. bd auto-import noise
+(gxjh) — sequence bd calls. Pre-commit rejection → fix + NEW commit. NO
+compat shims (zero external users). The 1498-cascade retro is mandatory
+reading before convergence_stages edits — cite one sentence from it in
+your PR body as proof of reading.
+
+PROCESS: commit+push every chunk. One PR per bead preferred (Ref
+polylogue-rxdo.6 / polylogue-rxdo.5); a single two-commit-series PR
+acceptable if both finish. Do not merge; do not close beads. Per-AC
+status in PR bodies. Finish with one adversarial self-review iteration,
+then the final AC matrix.

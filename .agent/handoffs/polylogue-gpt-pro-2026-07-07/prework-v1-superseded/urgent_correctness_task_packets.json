@@ -1,0 +1,704 @@
+[
+  {
+    "id": "polylogue-s7ae.6",
+    "title": "Classify the aborted full verification run before coordination deploy",
+    "priority": "P1",
+    "lane": "release-gate",
+    "readiness": "ready-now / evidence-work",
+    "depends_on_packets": [],
+    "why_now": "The coordination commit was merged after quick/focused verification, while a full `devtools verify` run was aborted at 74%. Until each failure is classified as caused-by-coordination, pre-existing, flaky, or fixed, every coordination/deployment packet inherits unknown risk.",
+    "static_diagnosis": "This is not primarily a code bug. It is a release-gate debt packet. The static implication is that any live deployment of coordination, scheduler, hook, or MCP surfaces must wait for a fresh full verify log with a failure-classification table. Do not let later packets cite a green quick lane as deploy-clean.",
+    "files_to_touch_or_inspect": [
+      "devtools/verify*",
+      "docs/audits/ or .agent/reports/"
+    ],
+    "implementation_plan": "Create `docs/audits/coordination-full-verify-classification.md` or `.agent/reports/coordination-full-verify-classification.md` with: command, git sha, environment, start/end time, full output path, failure table, owner bead for each failure, and final deploy verdict. If a failure is coordination-caused, fix it in the same PR or file a blocker bead with a minimal repro. If it is pre-existing, cite the pre-existing bead/issue and show why coordination did not widen it.",
+    "test_plan": "No new product test is required unless full verify exposes a real regression. Add a tiny regression only for any failure fixed during the classification.",
+    "verification": "Run `devtools verify` full. Preserve the log artifact. The gate only opens when every failure has a table row and every coordination-caused failure is fixed or explicitly blocks deployment.",
+    "pitfalls": "Do not silently downgrade this to `verify --quick`. Do not close it on a partial run. The output of this packet is a release decision, not a vibes report.",
+    "order": 1,
+    "packet_file": "tasks/01_polylogue-s7ae.6.md"
+  },
+  {
+    "id": "polylogue-37t.15",
+    "title": "Force non-user assertion writes through candidate/non-injected policy",
+    "priority": "P1",
+    "lane": "agent-write-safety",
+    "readiness": "ready-now / code-local",
+    "depends_on_packets": [
+      "polylogue-s7ae.6"
+    ],
+    "why_now": "The archive is about to let agents coordinate, post messages, and contribute memory. Non-user writes must not become trusted active context by default.",
+    "static_diagnosis": "Root cause: `upsert_assertion` defaults `status=None` to `AssertionStatus.ACTIVE`, regardless of `author_kind`. `upsert_blackboard_note` passes `author_kind` through and does not provide a status, so agent-authored blackboard notes become active assertions. On conflict, `upsert_assertion` also overwrites `status` and `context_policy_json`, so a repeated non-user upsert can resurrect or re-inject a row.\n\nSource anchors: `polylogue/storage/sqlite/archive_tiers/user_write.py:31-47` defines the ACTIVE default; `:641-671` blackboard note calls `upsert_assertion`; `:901-971` normalizes status/author/context and updates status/context on conflict; `:1245+` contains candidate judgment paths that should remain terminal.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/sqlite/archive_tiers/user_write.py:31-47",
+      "polylogue/storage/sqlite/archive_tiers/user_write.py:641-671",
+      "polylogue/storage/sqlite/archive_tiers/user_write.py:901-971",
+      "polylogue/mcp/server_mutation_tools.py",
+      "polylogue/api/user_state*"
+    ],
+    "implementation_plan": "Patch the single choke point: `polylogue/storage/sqlite/archive_tiers/user_write.py::upsert_assertion`.\n\nImplementation shape:\n1. Normalize `author_kind` before resolving status/context.\n2. Add `_is_user_author(author_kind) -> bool`, initially exact normalized `\"user\"` only.\n3. Fetch existing `status` and `context_policy_json`, not only `created_at_ms`.\n4. For non-user authors:\n   - if no existing row or existing row is still unjudged, force `status=CANDIDATE`;\n   - force `context_policy.inject=false` and `context_policy.promotion_required=true`, overriding caller input;\n   - if the existing row is terminal judged (`REJECTED`, `DEFERRED`, `SUPERSEDED`, `DELETED`, and probably `ACCEPTED` unless explicitly user-updated), preserve the existing status/context and do not let agent input revive it.\n5. User-authored writes keep current behavior, including explicit active/injected assertions where caller policy allows it.\n6. Do not add separate checks in MCP or blackboard handlers; they should remain clients of the invariant.",
+    "test_plan": "Add focused storage/API tests:\n- agent `upsert_assertion(... author_kind=\"agent\")` with no status lands as `CANDIDATE`, not `ACTIVE`.\n- agent call with `status=ACTIVE` and `context_policy={\"inject\": true}` still stores candidate + non-injected.\n- `post_blackboard_note(author_kind=\"agent\")` mirrors to an assertion with candidate/non-injected policy.\n- rejected candidate re-upserted by an agent remains rejected and non-injected.\n- user-authored assertion remains active by default to avoid breaking current user-state flows.",
+    "verification": "`devtools test tests/unit/storage/test_user_state_contracts.py tests/unit/storage/test_archive_tiers_assertions.py -k 'assertion or blackboard or candidate'`",
+    "pitfalls": "Do not fix only `blackboard_post`; MCP, CLI, daemon, and future coordination messages must all inherit the policy from one place. Avoid a broad ontology change; this is a safety invariant, not a new assertion product.",
+    "order": 2,
+    "packet_file": "tasks/02_polylogue-37t.15.md"
+  },
+  {
+    "id": "polylogue-kwsb.1",
+    "title": "Daemon/capture Host, Origin, receiver-token, and spool hardening",
+    "priority": "P1",
+    "lane": "security",
+    "readiness": "ready-now / code-local with extension smoke",
+    "depends_on_packets": [
+      "polylogue-s7ae.6"
+    ],
+    "why_now": "The daemon and browser-capture receiver expose private archive data and live capture routes on localhost. Localhost is not a browser security boundary; DNS rebinding and same-host processes can reach it.",
+    "static_diagnosis": "Root causes:\n- Daemon GET dispatch has no central Host gate. `DaemonAPIHandler.do_GET` parses and dispatches directly (`polylogue/daemon/http.py:1294-1298`).\n- Daemon token fallback accepts `?access_token=` for all paths when a token is configured (`http.py:1037-1055`), even though the comment only justifies EventSource.\n- POST Origin checks are not centralized for GET, and missing Origin is accepted (`http.py:1301-1313`).\n- Browser capture accepts no token when `auth_token is None`; the default receiver config sets `auth_token=None` (`polylogue/browser_capture/receiver.py:52-65`, `polylogue/browser_capture/server.py:68+`).\n- Spool writing is bounded by filesystem success, not by receiver quota.",
+    "files_to_touch_or_inspect": [
+      "polylogue/daemon/http.py:1037-1055",
+      "polylogue/daemon/http.py:1294-1359",
+      "polylogue/browser_capture/receiver.py:52-65",
+      "polylogue/browser_capture/server.py:54-90",
+      "polylogue/browser_capture/server.py:259+",
+      "browser-extension/src/background.js"
+    ],
+    "implementation_plan": "Patch in layers:\n1. Add a central daemon request-admission helper called by GET/POST/DELETE before route dispatch. It should strip ports/brackets from `Host`, reject absent/malformed/foreign hosts, and allow only loopback/configured hostnames by default.\n2. Keep shell bootstrap unauthenticated only for loopback deployments, but still Host-gated.\n3. Restrict `access_token` query fallback to the exact SSE/EventSource route. If there is no current SSE route, remove the fallback and update tests/docs. Use `hmac.compare_digest` in token comparison.\n4. Extend GET protection: API JSON routes should require configured bearer token and always pass Host gate. Browser-origin GETs from non-loopback origins should be rejected.\n5. Browser capture: mint/load a receiver token at startup if none configured, persist it mode 0600, and require it for `/v1/browser-captures`. The extension should obtain it through the existing dev/install path, not from a public status endpoint.\n6. Add receiver spool governor fields: `max_spool_bytes`, `max_spool_files`, and possibly `max_payload_bytes`. Enforce before committing a capture envelope; return a clear 413/507-style error and do not write partial files.",
+    "test_plan": "Tests:\n- daemon GET `/api/sessions` with `Host: evil.example` is denied.\n- daemon GET with allowed Host and valid bearer works.\n- `?access_token=` is rejected for ordinary API GETs.\n- POST cross-origin remains denied; legitimate extension/web shell flows still pass.\n- browser-capture POST without token is denied by default.\n- forged token denied; valid token accepted.\n- spool quota rejects oversized/too-many captures without writing.\n- extension/dev smoke proves the real extension can still capture with token.",
+    "verification": "`devtools test tests/unit/daemon/test_daemon_http_security.py tests/unit/browser_capture -k 'host or origin or token or spool'` plus the existing browser extension smoke lane if present.",
+    "pitfalls": "Do not rely on Origin alone; simple browser GETs can omit Origin. Do not leave a public endpoint that reveals the receiver token. Avoid breaking CLI/curl workflows; missing Origin is fine for non-browser clients only after Host/auth pass.",
+    "order": 3,
+    "packet_file": "tasks/03_polylogue-kwsb.1.md"
+  },
+  {
+    "id": "polylogue-8jg9.4 + polylogue-8jg9.2",
+    "title": "Make ops-doctor orphan cleanup use the same lease/generation invariants as blob GC",
+    "priority": "P1/P2",
+    "lane": "blob-integrity",
+    "readiness": "ready-now / code-local",
+    "depends_on_packets": [
+      "polylogue-s7ae.6"
+    ],
+    "why_now": "A cleanup tool that can delete an in-flight blob is a data-loss bug. It must be fixed before any backup/blob claim is trustworthy.",
+    "static_diagnosis": "Root cause: there are two deletion paths. `run_blob_gc_report` checks reference surfaces, pending leases, minimum age, and generations (`polylogue/storage/blob_gc.py:163`, `:355+`, `MIN_AGE_S`). But `BlobStore.detect_orphans` and `cleanup_orphans` only compare disk hashes to a caller-supplied set and then unlink files (`polylogue/storage/blob_store.py:352-409`). `repair_orphaned_blobs_data` uses that unsafe path (`polylogue/storage/blob_repair.py:92+`). A blob written to disk with an active pending lease but not yet a durable reference can be seen as orphaned and deleted.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/blob_store.py:352-409",
+      "polylogue/storage/blob_repair.py:92+",
+      "polylogue/storage/blob_gc.py:163",
+      "polylogue/storage/blob_gc.py:355+",
+      "polylogue/operations/*doctor*"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Treat `BlobStore.detect_orphans` as a preview/helper, not an apply-time safety authority.\n2. Change ops-doctor / `repair_orphaned_blobs_data(... dry_run=False)` to delegate deletion to `run_blob_gc_report`, passing the archive DB path and blob root so the GC can see leases and reference surfaces.\n3. For dry-run, either call `run_blob_gc_report(... dry_run=True)` or mark the generic orphan preview as unsafe/advisory.\n4. If a public `cleanup_orphans` apply method remains, document it as low-level and ensure no ops command calls it without GC invariants.\n5. Add a dedicated race fixture from `polylogue-8jg9.2`: disk blob exists, `pending_blob_refs` lease exists, no final reference row yet, doctor cleanup apply runs; file must survive.",
+    "test_plan": "Tests:\n- pending-lease blob survives ops-doctor cleanup apply.\n- old unleased orphan is deleted by safe GC after minimum-age/generation conditions.\n- dry-run reports lease-skipped or not-deletable status.\n- a stale caller-supplied orphan set cannot delete a blob that gained a reference between detection and apply.\n- direct low-level `BlobStore.cleanup_orphans` tests may remain, but ops/doctor coverage must exercise the safe wrapper.",
+    "verification": "`devtools test tests/unit/storage/test_blob_store.py tests/unit/storage/test_blob_gc.py tests/unit/storage/test_blob_repair.py -k 'orphan or lease or gc or cleanup'`",
+    "pitfalls": "Do not reimplement half of GC inside blob_store. The store cannot know pending leases without DB context. The fix is route consolidation, not local unlink cleverness.",
+    "order": 4,
+    "packet_file": "tasks/04_polylogue-8jg9.4_plus_polylogue-8jg9.2.md"
+  },
+  {
+    "id": "polylogue-83u.4",
+    "title": "Separate source-tier referenced-blob debt from index attachment-acquisition debt",
+    "priority": "P1",
+    "lane": "blob-integrity",
+    "readiness": "ready-now / diagnostic-code",
+    "depends_on_packets": [
+      "polylogue-8jg9.4 + polylogue-8jg9.2"
+    ],
+    "why_now": "The system previously reported 39,586 missing referenced blobs. The bead notes now say current source-tier referenced blob debt appears clean, while many index attachment rows are simply unfetched with `blob_hash NULL`. Those are different states and must not be collapsed.",
+    "static_diagnosis": "Likely mechanism: blob diagnostics count attachment rows without blob hashes as missing referenced blobs. But an unfetched attachment is acquisition debt, not a broken blob reference. A true missing referenced blob means a durable table points at a non-null hash whose file is absent.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/blob_integrity.py",
+      "polylogue/operations/archive_debt.py",
+      "polylogue/storage/sqlite/archive_tiers/index.py:attachments",
+      "polylogue/storage/blob_store.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add/extend a diagnostics model with two top-level sections:\n   - `source_reference_debt`: raw/source-tier blob reference rows with non-null hashes, present/missing/recoverable/accepted.\n   - `attachment_acquisition_debt`: index attachment rows grouped by acquisition status: acquired+present, acquired+missing-file, unfetched-null-hash, unavailable, recoverable-local/zip/drive.\n2. Change backup/workload warnings to say exactly which section is bad.\n3. `blob_hash IS NULL` attachments must increment `unfetched`, not `missing_blob_ref`.\n4. Add bounded samples by source/origin/reference type. Keep live archive probes read-only (`mode=ro`).\n5. Feed the same primitives into the 83u.6 census.",
+    "test_plan": "Tests:\n- clean source DB + index attachments with `blob_hash NULL` => source missing=0, unfetched=N, no “missing referenced blob” warning.\n- acquired attachment with hash whose blob file is missing => attachment acquired_missing=N.\n- raw/source reference to missing hash => source_reference_debt missing=N.\n- diagnostic JSON has both sections and reconciles totals.",
+    "verification": "`devtools test tests/unit/storage/test_blob_integrity.py tests/unit/operations/test_archive_debt.py -k 'blob_reference_debt or attachment_acquisition or missing_blob'`",
+    "pitfalls": "Do not “fix” missing source references by inventing synthetic hashes or deleting attachment rows. This packet is classification and truthful diagnostics first; restoration is only for rows whose original bytes can be verified.",
+    "order": 5,
+    "packet_file": "tasks/05_polylogue-83u.4.md"
+  },
+  {
+    "id": "polylogue-9e5.28",
+    "title": "Make the rigor audit iterate the full insight registry, not only existing contracts",
+    "priority": "P1",
+    "lane": "evidence-honesty",
+    "readiness": "ready-now / code-local",
+    "depends_on_packets": [
+      "polylogue-s7ae.6"
+    ],
+    "why_now": "An audit that only loops declared contracts cannot find missing contracts. Product claims then look audited even when entire insight products are invisible to the audit.",
+    "static_diagnosis": "Root cause: `build_insight_rigor_audit_report` explicitly says products without registered rigor contracts are skipped and loops `for contract in list_rigor_contracts()` (`polylogue/insights/audit.py:173-201`). `_RIGOR_MATRIX` only covers a small subset of registry products (`polylogue/insights/rigor.py:85+`), while `INSIGHT_REGISTRY` is the product universe (`polylogue/insights/registry.py:294+`).",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/audit.py:173-201",
+      "polylogue/insights/rigor.py:45-85",
+      "polylogue/insights/registry.py:294+",
+      "devtools/lab or policy lane for insight-honesty"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `coverage_status` to `InsightRigorAuditEntry`: `covered`, `uncovered`, `exempt`.\n2. Add an explicit exemption map with reason strings for products that intentionally have no rigor contract.\n3. Change audit iteration to sorted registry names. For each registry product:\n   - if contract exists: run current audit, `coverage_status=covered`;\n   - if exemption exists: emit a row, `coverage_status=exempt`, with reason;\n   - else: emit a row, `coverage_status=uncovered`, with an error like `missing_rigor_contract`.\n4. Fail the `insight-honesty` policy/lab lane if any non-exempt product is uncovered.\n5. Update docs/renderers so missing-contract rows are loud and countable.",
+    "test_plan": "Tests:\n- monkeypatched registry product without contract appears as `uncovered`, not omitted.\n- exemption appears as `exempt` with reason.\n- known contract product still audits normally.\n- policy gate fails on uncovered product.\n- old “all contract names exist in registry” test remains but no longer pretends coverage completeness.",
+    "verification": "`devtools test tests/unit/insights/test_rigor_audit.py -k 'registry or uncovered or exemption or rigor'`",
+    "pitfalls": "Do not just add more entries to `_RIGOR_MATRIX`. That helps today but preserves the same blindness for the next product.",
+    "order": 6,
+    "packet_file": "tasks/06_polylogue-9e5.28.md"
+  },
+  {
+    "id": "polylogue-9e5.29",
+    "title": "Distinguish absent evidence from true numeric zero at field level",
+    "priority": "P1",
+    "lane": "evidence-honesty",
+    "readiness": "needs-small-spec then code",
+    "depends_on_packets": [
+      "polylogue-9e5.28"
+    ],
+    "why_now": "Counts, costs, rates, durations, and scores are user-visible claims. `0` must mean true zero, not “no backing rows were available.”",
+    "static_diagnosis": "Mechanism: aggregate SQL and Pydantic payloads use numeric identity values (`COALESCE(SUM(...), 0)`, default `0.0`, default count fields) without denominator/evidence metadata. Product-level rigor contracts cannot detect a specific field whose denominator is absent. Likely hot spots include usage/cost rollups in `polylogue/storage/usage.py`, archive-tier cost aggregations, and summary/forensics payloads.",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/rigor.py",
+      "polylogue/insights/audit.py",
+      "polylogue/storage/usage.py",
+      "polylogue/storage/sqlite/archive_tiers/archive.py",
+      "scripts/agent_forensics.py or promoted report surface"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `RigorFieldContract` with fields such as `field_path`, `value_kind`, `denominator_path`, `unit`, `provenance_class`, `evidence_tier`, `nullable_when_ungrounded`, and `zero_semantics`.\n2. Add `field_contracts` to `RigorContract`.\n3. Teach the rigor audit to evaluate field contracts: if denominator is absent/zero and `nullable_when_ungrounded=true`, a stored/rendered numeric `0` is a defect unless the field’s zero semantics says true zero.\n4. Convert worst public offenders first: provider/cost rollups and any forensics/report fields that can render `0.0` over empty backing rows.\n5. SQL pattern: use `CASE WHEN COUNT(backing.id)=0 THEN NULL ELSE SUM(...) END`, not blanket `COALESCE`.\n6. Render `None`/unknown as `uncovered`, `unknown`, or `not applicable`, not as zero.",
+    "test_plan": "Tests:\n- empty provider-usage backing rows produce `None`/uncovered for costs/tokens, not `0.0`.\n- a real row with zero cost/tokens still renders zero.\n- field-level audit catches a fixture product where denominator=0 but value=0.0.\n- renderer/surface test shows `uncovered` or equivalent marker.",
+    "verification": "`devtools test tests/unit/insights/test_rigor_audit.py tests/unit/storage/test_usage*.py tests/unit/cli/test_*usage* -k 'empty or zero or uncovered or field_contract'`",
+    "pitfalls": "Avoid a huge repo-wide migration in one PR. First add the contract/audit machinery and convert the highest-risk public numbers. Then file follow-ups for remaining numeric products revealed by the audit.",
+    "order": 7,
+    "packet_file": "tasks/07_polylogue-9e5.29.md"
+  },
+  {
+    "id": "polylogue-9e5.30",
+    "title": "Tag prose-mined forensic fields as text-derived",
+    "priority": "P1",
+    "lane": "evidence-honesty",
+    "readiness": "ready-now / model-and-renderer",
+    "depends_on_packets": [
+      "polylogue-9e5.28"
+    ],
+    "why_now": "The system already prevents fabricating events from prose, but still surfaces prose-mined refs and decisions as ordinary fields. Users and downstream agents need to know when a fact came from text interpretation rather than structured evidence.",
+    "static_diagnosis": "Mechanism: forensic transform models (`ForensicIndexEntry`, `ToolSummary`, `DecisionCandidate`) carry extracted refs/labels/test evidence/decisions without per-field evidence class. Source anchors: `polylogue/insights/transforms.py:140`, `:192`, `:280`, extraction functions `:1573+` and `:1923+`.",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/transforms.py:140",
+      "polylogue/insights/transforms.py:192",
+      "polylogue/insights/transforms.py:280",
+      "polylogue/insights/transforms.py:1573+",
+      "polylogue/insights/transforms.py:1923+",
+      "render/report modules that display forensic fields"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Define a small evidence-class vocabulary: `raw_evidence`, `structured_tool_result`, `text_derived`, `synthetic`.\n2. Add either explicit fields or `field_evidence: dict[str, EvidenceClass]` to `ToolSummary`, `DecisionCandidate`, and `ForensicIndexEntry`.\n3. Mark refs extracted from command/output/message prose (`commit_refs`, `pr_refs`, `issue_refs`, `test_evidence`, prose decisions) as `text_derived` unless the parser has structured provider/tool metadata.\n4. Structured tool result status/exit code can be `structured_tool_result`.\n5. Update report/render surfaces so text-derived fields get a visible caveat. Do not suppress them; label them.\n6. Add a downgrade rule: a finding backed only by text-derived fields cannot render as a hard fact without caveat.",
+    "test_plan": "Tests:\n- synthetic session with a SHA/PR/test mention in assistant prose yields extracted refs with `text_derived` evidence class.\n- structured tool-result exit status remains structured, not text-derived.\n- rendered report includes a text-derived caveat.\n- serialization remains backward-compatible for old rows where evidence class is absent, defaulting to `text_derived` for prose-mined fields.",
+    "verification": "`devtools test tests/unit/insights/test_transforms.py -k 'text_derived or prose or forensic or evidence_class'` plus renderer tests for the affected report surface.",
+    "pitfalls": "Do not treat text-derived as useless. The important invariant is label + caveat, not deletion.",
+    "order": 8,
+    "packet_file": "tasks/08_polylogue-9e5.30.md"
+  },
+  {
+    "id": "polylogue-cpf.5",
+    "title": "Propagate weakest temporal provenance through aggregates",
+    "priority": "P1",
+    "lane": "temporal-honesty",
+    "readiness": "ready-now / code-local with schema propagation",
+    "depends_on_packets": [
+      "polylogue-s7ae.6"
+    ],
+    "why_now": "Time-source laundering makes fallback or synthetic dates look like provider timestamps once they enter an aggregate. Timeline claims then look more grounded than they are.",
+    "static_diagnosis": "Root cause: `classify_aggregate_hwm_source(source_updates: list[str])` returns `provider_ts` whenever the list is non-empty, explicitly assuming every input is provider-sourced (`polylogue/insights/temporal_source.py:97-108`). Leaf classifiers also treat any non-null timestamp as `provider_ts` (`:66-81`, `:84-94`). Aggregators pass timestamp strings instead of source classes.",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/temporal_source.py:66-108",
+      "polylogue/insights/archive_summaries.py",
+      "polylogue/insights/archive_rollups.py",
+      "profile/thread/tag/day summary models"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Define a temporal-source rank lattice where weaker evidence wins. Suggested weakest-to-strongest: `fallback_date`, `materialization_ts`, `file_mtime`, `sort_key`, `hook_event_ts`, `provider_ts`.\n2. Add `weakest_temporal_source(sources: Iterable[TemporalSource]) -> TemporalSource`.\n3. Replace aggregate classifier with a source-aware helper. The old `source_updates: list[str]` signature should be deprecated or made to return the weakest safe value, not provider.\n4. Ensure profile/work/thread rows store or expose their `input_high_water_mark_source`; aggregates must collect that field.\n5. Add audit output for rows where a timestamp exists but its source class is unknown, so future materializers can be corrected.\n6. Update renderers/docs to describe “weakest source wins.”",
+    "test_plan": "Tests:\n- provider + fallback => aggregate fallback.\n- provider + file_mtime => aggregate file_mtime.\n- provider-only => provider.\n- empty => fallback.\n- materialized day/tag rollup fixture with mixed input sources stores the weakest source.\n- old timestamp-only path does not silently return provider for mixed/unknown inputs.",
+    "verification": "`devtools test tests/unit/insights/test_temporal_source_taxonomy.py tests/unit/insights/test_archive_summaries.py -k 'temporal or high_water or weakest'`",
+    "pitfalls": "Do not use lexicographic enum order; define an explicit rank. Do not fix only labels in renderer; the stored aggregate provenance must be correct.",
+    "order": 9,
+    "packet_file": "tasks/09_polylogue-cpf.5.md"
+  },
+  {
+    "id": "polylogue-cpf.6",
+    "title": "Inject clock seam for relative-date parsing and audit sort_key_ms epoch pins",
+    "priority": "P1",
+    "lane": "temporal-honesty",
+    "readiness": "ready-now / code-local plus audit artifact",
+    "depends_on_packets": [
+      "polylogue-cpf.5"
+    ],
+    "why_now": "Relative date filters and synthetic timestamp fallbacks affect which sessions appear in queries. They must be deterministic in tests and explicit when timeless rows are included.",
+    "static_diagnosis": "Root causes:\n- `parse_date` hardcodes `datetime.now(tz=timezone.utc)` as dateparser `RELATIVE_BASE` (`polylogue/core/dates.py:10-44`), so `since:yesterday` is not injectable.\n- Query lowering calls `parse_date(value)` directly (`polylogue/storage/sqlite/archive_tiers/archive.py:6966`).\n- Many read paths use `COALESCE(..., s.sort_key_ms, 0)` for ordering/window rows (`archive.py:4914+`, `5163+`, `5247+`, etc.), which can pin unknown-time rows to epoch instead of labeling them as unknown/synthetic.",
+    "files_to_touch_or_inspect": [
+      "polylogue/core/dates.py:10-44",
+      "polylogue/storage/sqlite/archive_tiers/archive.py:6966",
+      "polylogue/storage/sqlite/archive_tiers/archive.py:4914+",
+      "polylogue/storage/sqlite/archive_tiers/archive.py:5163+",
+      "polylogue/archive/query/*",
+      "polylogue/cli/archive_query.py",
+      "polylogue/daemon/http.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `polylogue/core/clock.py` with a `Clock` protocol, `SystemClock`, and `FixedClock`.\n2. Change `parse_date(date_str, *, now=None, clock=None)` and use the provided base for relative parsing.\n3. Thread clock through query-spec construction and storage lowerers; CLI/daemon pass default system clock, tests pass fixed clock.\n4. Add a small audit artifact listing each `sort_key_ms` fallback to `0`, classified as fixed, safe intentional, or needs follow-up.\n5. Replace unsafe order/window fallbacks with explicit NULL handling (`IS NULL`, `NULLS LAST` emulation) or surface `time_confidence=synthetic` where timeless rows must remain visible.\n6. For `since/until` filters, exclude truly timeless rows by default unless an explicit include-timeless flag/profile says otherwise.",
+    "test_plan": "Tests:\n- `parse_date(\"7 days ago\", now=fixed)` returns deterministic UTC.\n- CLI/daemon structured query using relative date returns stable results under a fixed clock.\n- timeless rows do not match `since` solely due to `0` fallback.\n- ordering places timeless rows deterministically without pretending they occurred in 1970.\n- grep/lint test prevents direct `datetime.now()` in query date parsing.",
+    "verification": "`devtools test tests/unit/core/test_dates.py tests/unit/archive/test_query_dates.py -k 'relative or clock or sort_key or timeless'` plus audit artifact review.",
+    "pitfalls": "Do not make tests monkeypatch global datetime. The point is a clean seam. Do not delete timeless rows from reads; classify/exclude/include deliberately.",
+    "order": 10,
+    "packet_file": "tasks/10_polylogue-cpf.6.md"
+  },
+  {
+    "id": "polylogue-f2qv.2",
+    "title": "Normalize Codex/Claude token lanes into disjoint uncached/cache/reasoning/completion fields",
+    "priority": "P2",
+    "lane": "usage-cost-correctness",
+    "readiness": "ready-now / parser+tests",
+    "depends_on_packets": [],
+    "why_now": "Codex/Claude token accounting underpins usage reports, cost reports, and public forensics. Double-counting cached or reasoning tokens creates order-of-magnitude false claims.",
+    "static_diagnosis": "Mechanism from bead: Codex `input` includes cached tokens and `output` includes reasoning tokens; naive input+output inflated cost by 7.69x in a prior fix. Static source anchor: `polylogue/sources/parsers/codex.py` has token_count/cached/reasoning logic around `:161-193` and `:278+`, but the invariant is not locked.",
+    "files_to_touch_or_inspect": [
+      "polylogue/sources/parsers/codex.py:161-193",
+      "polylogue/sources/parsers/codex.py:278+",
+      "polylogue/sources/parsers/claude/code_parser.py",
+      "polylogue/storage/sqlite/archive_tiers/write.py:provider_usage writer",
+      "polylogue/storage/usage.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Create/centralize a provider usage normalizer returning disjoint lanes: `input_uncached`, `cache_read`, `cache_write`, `output_completion`, `output_reasoning`.\n2. For Codex: derive uncached input as reported input minus cached input, reasoning as a separate output sublane, completion output as reported output minus reasoning. Clamp/report inconsistencies loudly; do not silently negative-clamp without diagnostics.\n3. For Claude: map cache creation/read lanes and output/reasoning fields into the same disjoint schema.\n4. Add a helper that asserts lane sum equals provider-reported total where the provider reports a total.\n5. Ensure `session_provider_usage_events` writer stores lanes separately and downstream rollups consume those lanes, not raw input/output totals.",
+    "test_plan": "Tests:\n- synthetic Codex payload where cached is 96% of input: disjoint lanes sum to reported total; naive input+output would fail the regression guard.\n- synthetic output with reasoning: completion+reasoning equals reported output.\n- Claude cache_creation/cache_read payload maps to cache_write/cache_read.\n- malformed payload with inconsistent totals is reported/classified, not silently accepted.\n- optional live scratch cross-check against `state_5.sqlite` if available.",
+    "verification": "`devtools test tests/unit/sources/test_codex*.py tests/unit/storage/test_provider_usage*.py -k 'token_count or cache or reasoning or disjoint'`",
+    "pitfalls": "Do not change cost formulas before the lane invariant is locked. Cost packets should depend on this packet.",
+    "order": 11,
+    "packet_file": "tasks/11_polylogue-f2qv.2.md"
+  },
+  {
+    "id": "polylogue-f2qv.1",
+    "title": "Make per-model rollups partition usage events instead of duplicating session totals",
+    "priority": "P2",
+    "lane": "usage-cost-correctness",
+    "readiness": "ready-now / storage-rollup",
+    "depends_on_packets": [
+      "polylogue-f2qv.2"
+    ],
+    "why_now": "Per-model charts and reports become false when a multi-model session contributes its whole total to every model row it touched.",
+    "static_diagnosis": "Mechanism from bead: a session’s token totals are attributed under each model row it touched. Correct behavior: per-model totals are sums of provider usage events whose model equals that model; sum(per-model) == session total. Static anchors: `session_model_usage` materialization in `polylogue/storage/sqlite/archive_tiers/write.py:618`, table/rollup logic around `:2696+`, `:2904+`, `:2953+`.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/sqlite/archive_tiers/write.py:618",
+      "polylogue/storage/sqlite/archive_tiers/write.py:2696+",
+      "polylogue/storage/sqlite/archive_tiers/write.py:2904+",
+      "polylogue/storage/usage.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Locate the builder that groups `session_provider_usage_events` into `session_model_usage`.\n2. Change grouping to `GROUP BY session_id, model` over event rows; each event contributes only to its own model.\n3. Preserve session-grain totals separately if needed; do not copy them into every model row.\n4. Add a rollup invariant helper used by tests: for each session, sum(model rows lanes) equals sum(provider event lanes) within integer exactness/tolerance.\n5. Add a live-diagnostics query that reports any sessions where per-model > session total.",
+    "test_plan": "Tests:\n- one session with two model events: model A gets only A event tokens, model B gets only B event tokens, sum equals session total.\n- mixed cache/reasoning lanes partition independently.\n- regression named with GH #2472 or bead id.\n- existing single-model session behavior unchanged.",
+    "verification": "`devtools test tests/unit/storage/test_provider_usage*.py tests/unit/storage/test_session_model_usage*.py -k 'partition or multi_model or f2qv'`",
+    "pitfalls": "Do this after the disjoint lane normalizer, so the partition invariant is defined over the right token fields.",
+    "order": 12,
+    "packet_file": "tasks/12_polylogue-f2qv.1.md"
+  },
+  {
+    "id": "polylogue-f2qv.4",
+    "title": "Use one LiteLLM-backed pricing resolver and remove tokencost/second maps",
+    "priority": "P2",
+    "lane": "usage-cost-correctness",
+    "readiness": "ready-now / grep-and-contract",
+    "depends_on_packets": [
+      "polylogue-f2qv.2"
+    ],
+    "why_now": "Two pricing catalogs drift. Cost outputs must say one authoritative API-equivalent price source or labelled unknown.",
+    "static_diagnosis": "Mechanism from bead: a LiteLLM catalog exists, but tokencost/hardcoded maps may remain. Model ids can be vendor-prefixed, so resolver must match the last path segment rather than failing or resolving a parent path.",
+    "files_to_touch_or_inspect": [
+      "pyproject.toml",
+      "polylogue/**/pricing*.py",
+      "polylogue/storage/usage.py",
+      "scripts/agent_forensics.py or promoted report",
+      "LiteLLM catalog module"
+    ],
+    "implementation_plan": "Implementation shape:\n1. `rg 'tokencost|PRICE|pricing|cost_per'` across `polylogue`, `scripts`, `pyproject.toml`.\n2. Remove `tokencost` dependency/imports.\n3. Create exactly one resolver module/function. It should normalize model ids by exact id first, then last path segment, then aliases if declared.\n4. Resolver result should be a structured object: rate fields + source/catalog version + `unknown` reason.\n5. Update all cost surfaces to call the resolver. Do not leave emergency hardcoded maps in report scripts.\n6. Add a test that greps or introspects for forbidden second-table symbols/imports.",
+    "test_plan": "Tests:\n- `vendor/family/model-name` resolves via last segment when catalog contains `model-name`.\n- observed live-archive model ids either resolve or become labelled unknown.\n- no `tokencost` import/dependency remains.\n- a fake second map in a fixture/test helper is caught by the no-second-price-table test.",
+    "verification": "`devtools test tests/unit/usage tests/unit/storage -k 'pricing or litellm or cost'` plus `rg tokencost pyproject.toml polylogue scripts` returns no production hits.",
+    "pitfalls": "Do not mix this with subscription-credit math. This packet owns API-list-equivalent price lookup only.",
+    "order": 13,
+    "packet_file": "tasks/13_polylogue-f2qv.4.md"
+  },
+  {
+    "id": "polylogue-f2qv.3",
+    "title": "Report API-equivalent dollars and subscription credits as separate fields",
+    "priority": "P2",
+    "lane": "usage-cost-correctness",
+    "readiness": "ready-now after lanes/pricing",
+    "depends_on_packets": [
+      "polylogue-f2qv.2",
+      "polylogue-f2qv.4"
+    ],
+    "why_now": "A single `cost_usd` field conflates API list-equivalent value with actual subscription metering. That produces persuasive but misleading financial claims.",
+    "static_diagnosis": "Mechanism from bead: cache reads dominate token volume, but subscription plans may meter cache reads differently or not at all. Prior memory also records a 5x output credit-rate bug. Correct reports need two accounting regimes, not one blended number.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/usage.py",
+      "polylogue/storage/sqlite/archive_tiers/write.py",
+      "polylogue/cli usage/analyze surfaces",
+      "MCP cost tools",
+      "scripts/agent_forensics.py or report surface"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add fields such as `api_equivalent_usd`, `api_price_source`, `subscription_credit_estimate`, `subscription_credit_source`, and `cost_view_caveat` to session/day/origin cost surfaces.\n2. API-equivalent view uses the LiteLLM resolver from f2qv.4 and disjoint token lanes from f2qv.2.\n3. Subscription-credit view zeroes/free-prices lanes according to declared plan assumptions; cache-read treatment must be explicit.\n4. Correct the output credit rate bug and lock it with a fixture.\n5. Render both fields side by side. Never label subscription credits as dollars unless converted by a separate plan-capacity model.\n6. Keep unknown models/unknown plan assumptions as labelled unknown/partial, not zero.",
+    "test_plan": "Tests:\n- cache-heavy session has `subscription_credit_estimate < api_equivalent_usd` under Claude Max assumptions.\n- output credit-rate fixture catches the old 5x bug.\n- unknown model leaves API field unknown/partial rather than false zero.\n- JSON schemas/docs show both views.",
+    "verification": "`devtools test tests/unit/storage/test_usage*.py tests/unit/cli/test_usage*.py -k 'subscription or api_equivalent or credit or cache'`",
+    "pitfalls": "Do not remove the old cost field abruptly without compatibility plan; either deprecate it or make it a wrapper with a caveat. Do not pair all-provider token totals with priced-only dollars.",
+    "order": 14,
+    "packet_file": "tasks/14_polylogue-f2qv.3.md"
+  },
+  {
+    "id": "polylogue-f2qv.5",
+    "title": "Version-gate provider-usage projection so stale rollups self-heal",
+    "priority": "P2",
+    "lane": "usage-cost-correctness",
+    "readiness": "ready-now / convergence-path",
+    "depends_on_packets": [
+      "polylogue-f2qv.1",
+      "polylogue-f2qv.2"
+    ],
+    "why_now": "Usage/cost fixes do not help existing archives if stale `session_model_usage` rows never rederive. Manual full index rebuilds are the wrong maintenance model for derived read-model staleness.",
+    "static_diagnosis": "Root cause from bead and source anchors: provider usage rows are written during ingest (`polylogue/storage/sqlite/archive_tiers/write.py:618`) but are not in the session insight rebuild/convergence path. The status gate covers profiles/logical/work/threads, not provider usage. Archive debt can only recommend manual rebuild (`polylogue/operations/archive_debt.py:854+`, zero-token rows `:899+`).",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/sqlite/archive_tiers/write.py:618",
+      "polylogue/storage/insights/session/status.py",
+      "polylogue/storage/insights/session/rebuild.py",
+      "polylogue/insights/registry.py",
+      "polylogue/operations/archive_debt.py:854+"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add a materializer version for provider-usage/session-model-usage projection.\n2. Store that version in an existing insight materialization table or a new lightweight table keyed by session id.\n3. Extend session-insight status/staleness detection to include provider usage.\n4. Extend the periodic convergence loop to refresh stale provider usage rows for sessions whose source blocks carry usage.\n5. Archive-debt should report stale provider usage as drainable by convergence, not only full rebuild.\n6. Add a version bump fixture: seed old-version rows, run convergence/drain, assert new rows derived.",
+    "test_plan": "Tests:\n- old-version `session_model_usage` row becomes stale.\n- daemon/convergence drain refreshes it without `maintenance rebuild-index`.\n- zero-token debt over sessions with source usage drains to zero after convergence.\n- archive_debt message changes from manual-only to convergence-drainable.",
+    "verification": "`devtools test tests/unit/storage/insights tests/unit/operations/test_archive_debt.py -k 'provider_usage or materializer_version or stale'`",
+    "pitfalls": "Do not put this in a one-off repair command only. The acceptance condition is automagic convergence on daemon run.",
+    "order": 15,
+    "packet_file": "tasks/15_polylogue-f2qv.5.md"
+  },
+  {
+    "id": "polylogue-20d.4",
+    "title": "Mirror daemon structured-query routing in CLI so non-FTS filters skip the FTS readiness gate",
+    "priority": "P2",
+    "lane": "query-correctness",
+    "readiness": "ready-now / code-local",
+    "depends_on_packets": [],
+    "why_now": "Structured-only queries should work even when full-text-search is stale or rebuilding. Paying the FTS gate for origin/date/path filters is both slow and incorrect.",
+    "static_diagnosis": "Mechanism from bead: daemon route discriminates structured-only vs FTS queries, while CLI search calls the search path unconditionally. Static source confirms daemon has a route split in `polylogue/daemon/http.py`; archive query/lowering uses `SessionQuerySpec` and query terms.",
+    "files_to_touch_or_inspect": [
+      "polylogue/cli/archive_query.py",
+      "polylogue/archive/query/*",
+      "polylogue/daemon/http.py",
+      "polylogue/storage/sqlite/archive_tiers/archive.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Inspect the single CLI archive search/list execution site, likely in `polylogue/cli/archive_query.py`.\n2. Construct `SessionQuerySpec` exactly once.\n3. Branch like daemon: if `spec.query_terms` or `spec.contains_terms` or semantic/similar text is present, use search/FTS/vector path; otherwise use list/facade structured path.\n4. Keep output rendering identical so users do not see a behavior split except the missing FTS gate.\n5. Add a helper shared with daemon if duplication is small enough; otherwise add a comment tying both discriminators together.",
+    "test_plan": "Tests:\n- archive with deliberately absent/stale FTS still answers `--origin X --since DATE` or equivalent structured-only CLI query.\n- query with text terms still uses FTS readiness and fails/repairs as before.\n- daemon and CLI return same session ids for the same structured filter fixture.\n- regression name references `#1860`/bead id.",
+    "verification": "`devtools test tests/unit/cli/test_archive_query*.py tests/unit/daemon/test_daemon_http*.py -k 'structured or fts or query_routing'`",
+    "pitfalls": "Verify current v23 shape first; recent freshness work may have moved the discriminator. Do not make structured queries accidentally bypass semantic/vector queries.",
+    "order": 16,
+    "packet_file": "tasks/16_polylogue-20d.4.md"
+  },
+  {
+    "id": "polylogue-1xc.12",
+    "title": "Add FTS drift gauges and metamorphic trigger-coherence tests with rowid-reuse protection",
+    "priority": "P2",
+    "lane": "search-integrity",
+    "readiness": "spec-first then code",
+    "depends_on_packets": [],
+    "why_now": "FTS readiness as a boolean hides whether drift is 1 row or catastrophic. Count agreement is not enough when rowids can be reused.",
+    "static_diagnosis": "Mechanism from bead: `messages_fts.rowid == blocks.rowid == docsize.id` is the keystone identity, but SQLite rowid reuse can make a ghost FTS row bind to a different block. Existing readiness checks are count/boolean-oriented; exact reconciliation must compare rowid plus block identity, and a ledger can itself drift.",
+    "files_to_touch_or_inspect": [
+      "polylogue/storage/sqlite/archive_tiers/index.py",
+      "polylogue/daemon/fts_startup.py",
+      "polylogue/storage/archive_readiness.py",
+      "polylogue/storage/sqlite/archive_tiers/archive.py:8112+",
+      "ops.db metrics/telemetry modules"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Inspect `polylogue/storage/sqlite/archive_tiers/index.py` FTS trigger DDL and the current readiness checks in `polylogue/storage/archive_readiness.py` and `polylogue/daemon/fts_startup.py`.\n2. Define drift classes: missing FTS row, ghost/excess row, mismatched identity, empty-text transition drift, ledger-vs-exact disagreement.\n3. Add O(1) gauges from an `fts_freshness_state`/similar ledger where available; do not count full FTS tables on metrics scrape.\n4. Add periodic exact reconciliation that samples or runs bounded full checks outside hot scrape paths.\n5. Add `ops.db` drift sample history with retention.\n6. Add Hypothesis/stateful tests that apply arbitrary insert/update/delete sequences through real triggers and assert exact convergence.\n7. Add a rowid-reuse regression that fails unless identity is checked beyond count equality.",
+    "test_plan": "Tests:\n- rowid reuse scenario creates equal counts but mismatched identity and the check catches it.\n- Hypothesis op sequences over blocks/search text converge to zero drift.\n- metrics endpoint emits gauges without table scans.\n- exact reconciliation can repair or at least classify ledger drift.",
+    "verification": "`devtools test tests/unit/storage/test_fts*.py tests/unit/daemon/test_*metrics*.py -k 'fts or rowid or drift or metamorphic'`",
+    "pitfalls": "Contentless FTS cannot be checked by selecting text back. Use docsize/rowid plus block identity or a ledger. Keep heavy reconciliation out of the scrape path.",
+    "order": 17,
+    "packet_file": "tasks/17_polylogue-1xc.12.md"
+  },
+  {
+    "id": "polylogue-83u.3",
+    "title": "Acquire uploaded attachment bytes in live browser capture",
+    "priority": "P1",
+    "lane": "attachment-integrity",
+    "readiness": "needs-architecture-note then code",
+    "depends_on_packets": [
+      "polylogue-kwsb.1",
+      "polylogue-83u.4"
+    ],
+    "why_now": "The DOM adapter currently captures attachment chips but not bytes. For live browser capture, this is the last moment when bytes or authenticated provider handles may still be available.",
+    "static_diagnosis": "Static mechanism:\n- Browser capture schema already has byte-carrying fields: `inline_base64`, `content_base64`, `data` (`polylogue/browser_capture/models.py:22-35`).\n- Parser already converts those fields to `ParsedAttachment.inline_bytes` (`polylogue/sources/parsers/browser_capture.py:83-132`).\n- ChatGPT DOM adapter currently records only name/url/provider_meta (`browser-extension/src/content/chatgpt.js:98-108`), no inline bytes.\nSo the storage path exists; the missing piece is extension-side acquisition.",
+    "files_to_touch_or_inspect": [
+      "browser-extension/src/content/chatgpt.js:98-108",
+      "browser-extension/src/background.js",
+      "polylogue/browser_capture/models.py:22-35",
+      "polylogue/sources/parsers/browser_capture.py:83-132",
+      "polylogue/browser_capture/server.py",
+      "polylogue/storage/blob_store.py"
+    ],
+    "implementation_plan": "Implementation shape:\n1. First document the MV3 architecture choice in the PR: service-worker lifecycle, content-script/main-world access, permissions, receiver contract, payload size limits.\n2. Prefer an extension-side acquisition path. Receiver-side refetch lacks page cookies/session unless the extension supplies bytes or an authenticated fetch result.\n3. For uploaded local files, prototype a content/main-world hook on file input/change and/or fetch/FormData submission that captures File bytes into an in-memory bounded cache keyed by name/size/lastModified/provider id.\n4. When a turn attachment chip is captured, attach `inline_base64`, `size_bytes`, `mime_type`, and `sha256`/provider_meta acquisition details if a cached file matches.\n5. Bump receiver schema version and validate max payload/attachment sizes.\n6. Reuse the existing parser `inline_bytes -> blob` path; do not widen content hashing or invent synthetic hashes.\n7. If upload-body interception is impossible for a provider, classify as `unfetched` with reason and file a provider-specific follow-up.",
+    "test_plan": "Tests:\n- JS/unit or browser smoke: synthetic File upload leads to capture payload with inline_base64 and size.\n- receiver/model accepts versioned payload and rejects oversized inline content.\n- parser turns payload into `ParsedAttachment.inline_bytes` and stored blob has true SHA-256 and nonzero byte_count.\n- legacy payload without bytes still parses as unfetched/metadata-only.",
+    "verification": "`devtools test tests/unit/sources/test_browser_capture*.py tests/unit/browser_capture -k 'attachment or inline_base64 or blob'` plus browser-extension smoke for capture-with-attachment.",
+    "pitfalls": "Do not choose receiver-side refetch without proving cookies/auth can flow safely. Do not put raw bytes into durable transcript JSON beyond the existing transport-only inline path.",
+    "order": 18,
+    "packet_file": "tasks/18_polylogue-83u.3.md"
+  },
+  {
+    "id": "polylogue-83u.2",
+    "title": "Acquire bytes for non-inline sources while live handles are open",
+    "priority": "P2",
+    "lane": "attachment-integrity",
+    "readiness": "ready-now after census/classification",
+    "depends_on_packets": [
+      "polylogue-83u.4"
+    ],
+    "why_now": "Some attachment bytes still exist at source time but are currently bypassed. Those are capture/parser bugs, not irrecoverable gaps.",
+    "static_diagnosis": "Bead design identifies three live-handle boundaries: Drive downloads inside iterator scope, export-zip members while zipfile is open, and local paths guarded by a source-root allowlist. Existing parser model already supports `ParsedAttachment.inline_bytes`.",
+    "files_to_touch_or_inspect": [
+      "polylogue/sources/parsers/drive*.py",
+      "polylogue/sources/parsers/drive_support_attachments.py",
+      "polylogue/sources/parsers/base_models.py:179-212",
+      "source client / zip importer modules",
+      "blob write path `_acquire_attachment_blob`"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Drive: restore/download asset bytes with `DriveSourceClient.download_bytes` inside the iterator/lifetime of the source handle.\n2. Export ZIP: resolve attachment member and read it while the `ZipFile` is still open; attach as inline bytes.\n3. Local path: accept a transport-only `local_source_path`, canonicalize with `realpath`, require it to stay under declared source-root allowlist, reject symlink/`..` escapes before opening.\n4. Non-live handles remain `unfetched` with `source_url/source_path`; no synthetic hash.\n5. Assert acquired attachment blob hash equals true SHA-256 of bytes and session content hash remains stable for otherwise-identical content.",
+    "test_plan": "Tests:\n- Drive fixture downloads inside iterator and stores true blob.\n- ZIP fixture stores member bytes before close.\n- local allowlisted file stores true blob.\n- local path escape is rejected and no read happens.\n- closed/non-live handle stays unfetched.\n- ingest idempotency/content hash unchanged except attachment acquisition state.",
+    "verification": "`devtools test tests/unit/sources/ -k 'attachment and (drive or zip or local or inline_bytes)'`",
+    "pitfalls": "Do not let source-local paths become arbitrary file read. The allowlist/realpath check is part of the feature, not a hardening add-on.",
+    "order": 19,
+    "packet_file": "tasks/19_polylogue-83u.2.md"
+  },
+  {
+    "id": "polylogue-83u.6",
+    "title": "Run read-only attachment acquisition census by origin/status/bytes",
+    "priority": "P2",
+    "lane": "attachment-integrity",
+    "readiness": "ready-now / read-only artifact",
+    "depends_on_packets": [
+      "polylogue-83u.4"
+    ],
+    "why_now": "Before claiming attachments are preserved or deciding which acquisition work matters, the project needs a byte-backed census grouped by origin and acquisition class.",
+    "static_diagnosis": "The bead already gives a strong design: read source.db/index.db/blob store read-only; group by origin and acquisition_status; reconcile against blob-reference-debt diagnostics. Baseline numbers in the bead: 7,226 attachment rows, 958 acquired with non-null hash and 0 missing acquired blobs, 6,268 unfetched with NULL hash.",
+    "files_to_touch_or_inspect": [
+      "new diagnostics command",
+      "polylogue/storage/blob_store.py",
+      "polylogue/storage/blob_integrity.py",
+      "polylogue/operations/archive_debt.py",
+      "index.db attachments read path"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add a devtools or ops diagnostic command that opens archive DBs using SQLite `mode=ro`.\n2. Resolve blob paths through `BlobStore` without mutating.\n3. Group rows by `(origin, acquisition_status)` and emit counts, declared byte sum, acquired blob count, bytes on disk, unfetched, unavailable, missing acquired blob refs, top source_ref classes, and bounded samples.\n4. Write JSON + Markdown under `.agent/scratch/research/` or a demo shelf.\n5. Store baseline now, then rerun after 83u.2/83u.3 to measure delta.",
+    "test_plan": "Tests:\n- command refuses or is proven not to open write connections against a fixture/live path.\n- fixture totals reconcile with blob-reference-debt primitive.\n- missing acquired blob and unfetched NULL hash are separated.\n- sample list is bounded.",
+    "verification": "`devtools test tests/unit/operations/test_attachment_census*.py -k 'read_only or acquisition or census'` and one read-only run against a copy/live archive as operator evidence.",
+    "pitfalls": "This packet should not mutate the archive. It is evidence acquisition about evidence acquisition.",
+    "order": 20,
+    "packet_file": "tasks/20_polylogue-83u.6.md"
+  },
+  {
+    "id": "polylogue-peo",
+    "title": "Add daemon crash forensics, heartbeat sentinel, and restart evidence",
+    "priority": "P2",
+    "lane": "operational-resilience",
+    "readiness": "ready-now / lifecycle module",
+    "depends_on_packets": [],
+    "why_now": "A daemon that silently dies leaves the web UI and operator believing stale states. Crash/death evidence is an operational correctness requirement.",
+    "static_diagnosis": "Bead mechanism: under read-only serving flags the daemon terminated twice; logs stopped without traceback; exit code 144 was ambiguous. Current running checks may rely on pid/process rather than fresh heartbeat.",
+    "files_to_touch_or_inspect": [
+      "polylogue/daemon/cli.py",
+      "polylogue/daemon/http.py health routes",
+      "polylogue/daemon/status.py",
+      "ops.db helpers",
+      "sinnix module for polylogued if available"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `polylogue/daemon/lifecycle.py` to own run id, heartbeat row, signal logging, and stack dumps.\n2. At daemon start: enable `faulthandler`, create `ops.db daemon_lifecycle` table if absent, insert `started` row.\n3. Periodic loop writes heartbeat timestamp each tick.\n4. SIGTERM/SIGINT handlers log signal, active thread stack dump, heartbeat age, and lifecycle row before exiting/chain-calling.\n5. `atexit` writes clean stop; missing clean stop plus stale heartbeat means vanish.\n6. `/healthz` and bare `polylogue` status should report heartbeat age and not claim running from pid alone.\n7. Check/patch Sinnix systemd unit for `Restart=on-failure` with backoff; if outside repo, record exact sinnix patch prompt.\n8. Web banner can be a follow-up/linked bby.1 if not in same PR, but API status must expose daemon-unreachable/stale-heartbeat data.",
+    "test_plan": "Tests:\n- direct lifecycle unit tests for start/heartbeat/clean stop rows.\n- subprocess integration: start daemon fixture, send SIGTERM, assert signal row + stack log.\n- stale heartbeat makes status/healthz report stale/down.\n- clean shutdown distinct from vanish.",
+    "verification": "`devtools test tests/unit/daemon/test_daemon_lifecycle*.py tests/unit/daemon/test_health*.py -k 'heartbeat or lifecycle or signal'` plus a manual/subprocess SIGTERM proof.",
+    "pitfalls": "Do not do heavy SQLite work inside an unsafe low-level handler outside Python’s normal signal-dispatch context. Keep stack dumps bounded so a death does not create huge logs.",
+    "order": 21,
+    "packet_file": "tasks/21_polylogue-peo.md"
+  },
+  {
+    "id": "polylogue-4be",
+    "title": "Create a real restore drill for backup proof",
+    "priority": "P2",
+    "lane": "backup-integrity",
+    "readiness": "ready-now / devtools+ops artifact",
+    "depends_on_packets": [],
+    "why_now": "A backup that has not been restored is not evidence. Polylogue’s archive is irreplaceable enough that restore proof is critical path.",
+    "static_diagnosis": "The bead states there are multiple backup layers but no restore test. The restore drill should prove latest backup set can produce an archive that passes integrity checks and basic user queries within expected lag.",
+    "files_to_touch_or_inspect": [
+      "polylogue/operations/backup*",
+      "polylogue/daemon/backup*",
+      "devtools/*",
+      "archive tier path helpers",
+      "Sinnix timer module"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `polylogue ops restore-drill` or `devtools restore-drill`.\n2. Locate latest configured backup set; restore to a scratch root, never over live archive.\n3. Run `PRAGMA integrity_check` for each SQLite tier.\n4. Run a 10-query battery: session count, message count, blob-reference debt, one `find`, one `read`, one insight/profile read, one attachment lookup, one usage/cost summary, one tag/user-state read, one health/status command.\n5. Compare counts to live archive with an expected-lag tolerance and record differences.\n6. Emit JSON + Markdown ops artifact with timing, backup source, restored root, counts, query results, and failure reasons.\n7. Add a corruption fixture that fails loudly.\n8. Wire Sinnix quarterly timer or emit exact downstream patch instructions.",
+    "test_plan": "Tests:\n- synthetic backup restored to scratch and query battery passes.\n- corrupted DB/file fails with clear failure.\n- drill refuses to write into live archive path.\n- count-lag tolerance behaves as declared.",
+    "verification": "`devtools test tests/unit/operations/test_restore_drill*.py -k 'restore or backup or corruption'` plus one real restore drill artifact.",
+    "pitfalls": "Do not close on “backup command ran.” The acceptance condition is a restored scratch archive that answers queries.",
+    "order": 22,
+    "packet_file": "tasks/22_polylogue-4be.md"
+  },
+  {
+    "id": "polylogue-4ts.3",
+    "title": "Separate subagent auto-compaction from main-session compaction in lineage",
+    "priority": "P2",
+    "lane": "lineage-truth",
+    "readiness": "needs-source-confirmation then parser patch",
+    "depends_on_packets": [],
+    "why_now": "Compaction events affect what context was available. Subagent auto-compaction should not be represented as a main-session compaction boundary.",
+    "static_diagnosis": "Bead hints point to Claude parser behavior around `agent-acompact-*` parent assignment. Static next step is to inspect parser code with `rg 'agent-acompact|acompact|compaction|parent' polylogue/sources/parsers` and find where parent/lineage kind is assigned.",
+    "files_to_touch_or_inspect": [
+      "polylogue/sources/parsers/claude/*",
+      "polylogue/lineage or session lineage modules",
+      "lineage composition/render tests"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Locate parser branch that classifies Claude Code auto-compaction/session ids.\n2. Add an explicit lineage event kind or flag: `main_compaction`, `subagent_auto_compaction`, `subagent_spawn`, etc.\n3. Parent assignment: a subagent auto-compact event should attach to the subagent/session tree, not become a main-session compaction boundary.\n4. Downstream lineage/composed-session renderers should show subagent compaction separately and not truncate/restart main session effective context.\n5. Migration/backfill: old parsed rows may need a derived-lineage rebuild, not source mutation.",
+    "test_plan": "Tests:\n- fixture with main session + subagent `agent-acompact-*`: main compaction count remains zero or unchanged; subagent compaction count increments.\n- composed lineage tree renders subagent compaction under subagent.\n- existing main compaction fixture still works.\n- aggregate counts distinguish both classes.",
+    "verification": "`devtools test tests/unit/sources/test_claude* tests/unit/lineage -k 'acompact or compaction or subagent'`",
+    "pitfalls": "Do not key solely on id string if structured provider metadata exists; prefer provider event shape first and id prefix as fallback.",
+    "order": 23,
+    "packet_file": "tasks/23_polylogue-4ts.3.md"
+  },
+  {
+    "id": "polylogue-4ts.4",
+    "title": "Read lineage composition from one transaction/snapshot",
+    "priority": "P2",
+    "lane": "lineage-truth",
+    "readiness": "needs-source-confirmation then storage patch",
+    "depends_on_packets": [],
+    "why_now": "Composed session reads that stitch sessions, edges, messages, compactions, and shared prefixes must not mix rows from different write moments.",
+    "static_diagnosis": "Likely mechanism from bead title: lineage composition performs multiple separate reads/connection steps, so concurrent ingest/refresh can produce an impossible graph. This is especially dangerous for branch/shared-prefix accounting and compaction context.",
+    "files_to_touch_or_inspect": [
+      "polylogue/lineage*",
+      "polylogue/storage/sqlite/archive_tiers/* lineage/read helpers",
+      "composition renderers"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Locate lineage composition entrypoint and list every DB read it performs.\n2. Ensure the public composition call opens one read connection and begins a read transaction/snapshot before the first query.\n3. Pass that connection through lower helpers instead of helpers reopening connections.\n4. If both source and index tiers are needed, document consistency model; prefer a single tier/projection for composition or record cross-tier snapshot caveat.\n5. Add optional `composition_read_id` or `snapshot_started_at_ms` in debug output for diagnostics.",
+    "test_plan": "Tests:\n- two-connection fixture: begin composition read, mutate lineage/messages on another connection, finish composition; result reflects one consistent before/after state, not mixed.\n- helper tests assert no lower function opens a new connection when a connection is supplied.\n- existing lineage composition tests still pass.",
+    "verification": "`devtools test tests/unit/lineage tests/unit/storage -k 'composition or transaction or snapshot or lineage'`",
+    "pitfalls": "Do not serialize writers globally to hide this. The read path needs a coherent snapshot; normal ingest concurrency should continue.",
+    "order": 24,
+    "packet_file": "tasks/24_polylogue-4ts.4.md"
+  },
+  {
+    "id": "polylogue-4ts.6",
+    "title": "Expose transcript completeness instead of silently reading truncated sessions",
+    "priority": "P2",
+    "lane": "lineage-truth",
+    "readiness": "needs-source-confirmation then model patch",
+    "depends_on_packets": [],
+    "why_now": "A transcript reader that returns a partial session without saying so creates false context packs and misleading evidence.",
+    "static_diagnosis": "Bead title says silently truncated transcripts need a completeness signal. Likely sources: provider export truncation, partial file capture, continuation branches, max-message reads, or parser fallback. The exact current code path needs `rg 'truncated|complete|partial|max_messages|limit' polylogue/sources polylogue/storage polylogue/read` before patching.",
+    "files_to_touch_or_inspect": [
+      "polylogue/sources/parsers/*",
+      "polylogue/archive/read*",
+      "polylogue/daemon/http.py read routes",
+      "profile/session models",
+      "context pack renderers"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Identify all parser/read paths that can return partial sessions: provider export flags, capture payload bounds, read limits, branch-local raw logs, and daemon read pagination.\n2. Add a `transcript_completeness` enum or structured field: `complete`, `partial_export`, `parser_partial`, `read_limited`, `unknown`, with reason/source.\n3. Store completeness in session/profile/read payloads.\n4. Context packs and reports must show the signal and avoid strong claims over partial sessions.\n5. Parser fixtures should set completeness from provider metadata where available; read-limit completeness is render-time, not stored source truth.",
+    "test_plan": "Tests:\n- parser fixture with known truncated export stores partial reason.\n- daemon/CLI read with `limit` says read-limited while source remains complete.\n- context pack includes completeness caveat.\n- complete sessions remain uncluttered/complete.",
+    "verification": "`devtools test tests/unit/sources tests/unit/read tests/unit/daemon -k 'complete or completeness or truncated or partial'`",
+    "pitfalls": "Keep source completeness separate from projection/read-limit completeness. A user selecting first 100 messages did not make the source incomplete.",
+    "order": 25,
+    "packet_file": "tasks/25_polylogue-4ts.6.md"
+  },
+  {
+    "id": "polylogue-b0b",
+    "title": "Replace keyword-only outcome/pathology heuristics with structural evidence where available",
+    "priority": "P2",
+    "lane": "evidence-honesty",
+    "readiness": "spec-first then targeted code",
+    "depends_on_packets": [
+      "polylogue-9e5.30"
+    ],
+    "why_now": "Behavioral analytics over agent work should not infer outcomes purely from words when structured tool/test/exit data exists.",
+    "static_diagnosis": "Bead design says keyword outcome/pathology heuristics should be replaced by structural evidence. Static source likely contains regex/keyword classifiers in insight transforms/forensics/report scripts. These are useful as fallback, not as primary evidence.",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/transforms.py",
+      "scripts/agent_forensics.py or promoted forensics surface",
+      "work-event/outcome classifiers",
+      "report renderers"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Inventory outcome/pathology fields and their current evidence source: tool result exit code, test runner structured status, command result, PR/commit state, assistant prose, keyword heuristic.\n2. Define evidence precedence: structured tool/test status > persisted action outcome > explicit user/agent annotation > text-derived prose > keyword fallback.\n3. Add evidence_class/source fields to outcome/pathology records.\n4. Convert the highest-impact classifiers first: failed tool call, test failure, silent proceed, retry loop, abandonment/resume.\n5. Keep keyword fallback but mark `text_derived`/`heuristic` and exclude it from strong numeric claims unless caveated.",
+    "test_plan": "Tests:\n- structured failed test beats optimistic prose.\n- success prose does not override nonzero exit status.\n- keyword-only case still produces fallback but labelled heuristic/text-derived.\n- aggregate report footnotes counts by evidence tier.",
+    "verification": "`devtools test tests/unit/insights tests/unit/archive -k 'outcome or pathology or tool_result or evidence_class'`",
+    "pitfalls": "Coordinate with 9e5.30 so prose-derived fields share the same evidence-class vocabulary.",
+    "order": 26,
+    "packet_file": "tasks/26_polylogue-b0b.md"
+  },
+  {
+    "id": "polylogue-9e5.3",
+    "title": "Column-honesty census for nullable/zero/default public fields",
+    "priority": "P2",
+    "lane": "evidence-honesty",
+    "readiness": "ready-now / audit-artifact",
+    "depends_on_packets": [
+      "polylogue-9e5.29"
+    ],
+    "why_now": "Before fixing every dishonest field, produce a field census that shows where null/zero/default semantics are unclear.",
+    "static_diagnosis": "This is a read-only audit packet. It supports 9e5.29 by finding numeric/default columns whose meaning is ambiguous, especially across insight products, usage, attachments, and lineage.",
+    "files_to_touch_or_inspect": [
+      "polylogue/insights/* models",
+      "polylogue/storage/sqlite/archive_tiers/index.py",
+      "polylogue/storage/usage.py",
+      "report/model schema emitters"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Generate a table of public payload fields/DB columns with type, nullable, default, sample null density, sample zero density, and known evidence source.\n2. Classify each as true-zero-safe, unknown-when-absent, not-applicable, text-derived, or needs-contract.\n3. Emit JSON + Markdown artifact under docs/audits or `.agent/reports`.\n4. File follow-up beads only for confirmed high-risk fields.",
+    "test_plan": "Tests are optional unless adding tooling. If adding a command, test on a small fixture schema/payload set and assert classifications render.",
+    "verification": "Run the census command/artifact generation on the active fixture/live copy read-only. Review artifact against 9e5.29 field-contract work.",
+    "pitfalls": "Do not mutate product code beyond a small audit tool. The goal is a map for follow-up patches.",
+    "order": 27,
+    "packet_file": "tasks/27_polylogue-9e5.3.md"
+  },
+  {
+    "id": "polylogue-9e5.4",
+    "title": "Static get-modify-put race-window audit of shared SQLite writer paths",
+    "priority": "P2",
+    "lane": "storage-correctness",
+    "readiness": "ready-now / audit-artifact",
+    "depends_on_packets": [],
+    "why_now": "Some correctness failures require two actors. Before filing random race bugs, classify which read-modify-write paths are actually split across transactions and which are safe.",
+    "static_diagnosis": "Bead notes give the method: static sweep for SELECT-then-UPDATE/INSERT, manual upsert emulation, status transitions, shared writer APIs, and connection boundaries. Named candidates include write effects, blob GC, daemon cursors, embeddings, FTS readiness, MCP mutation handlers, and CLI ops writers.",
+    "files_to_touch_or_inspect": [
+      "polylogue/archive/write_effects.py",
+      "polylogue/storage/blob_gc.py",
+      "polylogue/daemon/cursor*",
+      "polylogue/storage/embeddings/*",
+      "polylogue/storage/archive_readiness.py",
+      "polylogue/mcp/server_mutation_tools.py",
+      "CLI ops writers"
+    ],
+    "implementation_plan": "Implementation shape:\n1. `rg` for read-then-write patterns and connection open boundaries.\n2. For each candidate, record file:function, invariant, connection/transaction boundary, interleaving, expected consequence, and verdict: safe-by-single-transaction, safe-by-unique/upsert, needs-harness, or confirmed-bug.\n3. Only create implementation bug beads for confirmed windows with concrete two-connection repro sketches.\n4. Document refuted windows as safe with reason so agents do not re-triage them.",
+    "test_plan": "No broad product tests unless a confirmed race is found. For top 1-2 confirmed windows, add a minimal two-connection repro test in the follow-up bug, not this audit packet.",
+    "verification": "Review committed `race-window-table.md/json`. Optional: `devtools test -k <new_race_test>` only for confirmed follow-up.",
+    "pitfalls": "Do not file “maybe race” beads. A race bug needs a concrete interleaving and observable lost/stale effect.",
+    "order": 28,
+    "packet_file": "tasks/28_polylogue-9e5.4.md"
+  },
+  {
+    "id": "polylogue-9e5.19",
+    "title": "Storage-layer correctness scenario family in devtools lab",
+    "priority": "P2",
+    "lane": "storage-correctness",
+    "readiness": "ready-now after focused bugs",
+    "depends_on_packets": [
+      "polylogue-8jg9.4 + polylogue-8jg9.2",
+      "polylogue-1xc.12",
+      "polylogue-4ts.4"
+    ],
+    "why_now": "Several storage correctness invariants are spread across tests. A scenario lane gives future agents one place to prove split-tier/idempotency/FTS/blob/lineage basics.",
+    "static_diagnosis": "Bead design: create scenario family covering split-tier writes, content-hash idempotency, FTS trigger integrity, blob-lease GC, and lineage composition against seeded archives.",
+    "files_to_touch_or_inspect": [
+      "devtools/lab*",
+      "scenario-coverage.yaml",
+      "tests/fixtures archive builders",
+      "FTS/blob/lineage tests"
+    ],
+    "implementation_plan": "Implementation shape:\n1. Add `storage-correctness` to scenario-coverage configuration, referencing this bead.\n2. Build seeded archive fixtures for: idempotent re-ingest, split-tier write/read, FTS mutation drift, leased blob GC, lineage composition snapshot.\n3. Wire into devtools lab/projections lanes.\n4. The scenario should aggregate existing focused tests where possible rather than duplicate all logic.\n5. Emit a compact scenario report with pass/fail and fixture paths.",
+    "test_plan": "Tests are the scenario: it must fail if one invariant is intentionally broken in fixture/code. Unit test the scenario registration if devtools has registry tests.",
+    "verification": "`devtools lab projections --scenario storage-correctness` or the project’s current lab command; exact command should be documented in the PR.",
+    "pitfalls": "Do this after the highest-risk concrete fixes so the scenario lane locks corrected behavior instead of snapshotting known-bad behavior.",
+    "order": 29,
+    "packet_file": "tasks/29_polylogue-9e5.19.md"
+  }
+]

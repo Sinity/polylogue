@@ -1,0 +1,45 @@
+You are lane polylogue-annotation-judgment of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-annotation-judgment. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Close the assertion flywheel loop: mrxt first assertion row via auto-mark/auto-promote; 37t.12 operator bulk judgment queue; p5g `polylogue judge` interactive terminal triage; rxdo.4 AssertionKind.FINDING reusing the candidate->judge lifecycle verbatim. Substrate (rxdo.7 schemas/batches, kmts joins) is merged — build on it, do not extend it.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-mrxt [open]: Write a first assertion row: auto-mark/auto-promote mechanism for the empty assertions flywheel
+- polylogue-37t.12 [open]: Judgment queue: operator bulk review/accept/reject of candidate assertions
+- polylogue-p5g [open]: polylogue judge: interactive candidate triage in the terminal
+- polylogue-rxdo.4 [open]: AssertionKind.FINDING: claims with evidence, reusing the candidate->judge lifecycle verbatim
+
+FILE OWNERSHIP
+OWN (you may modify): polylogue/storage/sqlite/archive_tiers/user*; polylogue/cli/judge*; polylogue/mcp/ (assertion tools); tests/unit/user/
+AVOID (another lane owns these; do not touch): polylogue/archive/query/
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools test -k 'assertion or judge or annotation' + user_audit every-kind invariant
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

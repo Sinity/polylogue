@@ -1,0 +1,55 @@
+{
+  "domain": "D03_content_variants",
+  "summary": "The 4smp variant epic is unusually mature for a day-old P1: its four children (arso substrate, 0v9p language facts, rlsb projection/query/render, d4zk UX) cleanly cover the four transform kinds, alignment edges, and source-vs-variant labeling, and every named dependency (4p1, jnj.1, fnm.2/6/10, s7ae.3, pj8, bby.11, 90y, 37t.1) actually exists. The two real problems are priority inversion (the P1 epic is predicated on the read-algebra substrate — 4p1 P3 decision unmade, fnm.* P2, jnj.1 P3 — all lower priority and unbuilt) and coordination gaps with the read-algebra render tasks in this same domain (ap7/1lm), plus the epic's committed demo asset having no clear child owner.",
+  "underspecified": [
+    {
+      "id": "polylogue-arso",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "ADDITIVE: append concrete verify commands to the existing acceptance. e.g. `devtools test tests/unit/storage` and a new `tests/unit/storage/test_content_variants.py` proving: (a) a session-level complete variant resolves to all declared child message/block refs; (b) a partial variant is labeled `partial` not silently completed; (c) a summary VariantAlignment maps N source nodes -> 1 variant node with relation `summarizes` and no positional hack; (d) `variant:<id>`/`variant-node:<id>` resolve through the public ref resolver and a translated `assertion:<id>` stays a variant of that assertion. Plus `devtools render all --check` green after schema/DDL/docs refresh, and `devtools lab policy schema-versioning` classifying the new tables (durable user/agent artifacts vs rebuildable detections) correctly.",
+      "why": "arso is the spine (L, labeled 'spine') and gates rlsb+d4zk. Its acceptance says 'Tests prove...' and 'Generated schemas/docs are refreshed' but names no runnable verify command, which the execution-grade contract requires for a P1 ready-frontier bead. The design is otherwise strong; this is an additive gap, not a rewrite."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Content-variant demo asset: annotated session translated with transcript + assertion variants and clickable alignment",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-4smp",
+      "why": "Epic 4smp AC explicitly requires 'A demo or fixture shows a heavily annotated session translated with transcript variants plus variants of selected assertion annotations, with clickable alignment back to original source and original assertions.' No child commits this as a deliverable: d4zk AC only covers 'demo fixtures cover translate heavily annotated session' and 'a coordination message containing clickable refs' — it does not commit the clickable-alignment-back-to-source-and-assertion demo asset. Compare ap7, which explicitly commits 'a before/after recording ... committed as the demo asset (3tl.5 machinery).' The variant epic's headline demo AC is currently ownerless. Alternative to a new child: strengthen d4zk acceptance to name this exact asset.",
+      "design": "Reuse the deterministic demo archive (polylogue demo seed) + the 3tl.5 recording/asset machinery. Seed a session that carries several assertion annotations, produce a translation ContentVariant of the transcript plus variants of selected assertion bodies, render through the dual/interleaved variant render profile (rlsb), and capture a committed asset (web recording or rendered HTML/markdown fixture) demonstrating clickable alignment edges from variant nodes back to (a) original source blocks and (b) original assertions. Wire under the existing demo/proof lane rather than a bespoke script.",
+      "acceptance": "A committed demo asset (fixture + optional recording) shows: transcript variant with per-node alignment back to source blocks; at least one assertion-annotation variant aligned back to its original assertion:<id>; a lossy summary node honestly labeled; source vs variant visually distinguished. Reproducible via a single `devtools workspace ...`/`polylogue demo ...` command and referenced from the epic. Serves the 3tl external-legibility goal.",
+      "deps": ["polylogue-arso", "polylogue-rlsb", "polylogue-d4zk", "polylogue-ap7"]
+    }
+  ],
+  "inconsistencies": [],
+  "dep_priority": [
+    {
+      "id": "polylogue-4smp",
+      "issue": "priority-violation",
+      "detail": "4smp (P1 epic) and all four P1 children are predicated on the read algebra: the epic AC says variants are 'rendered through the existing Query x Projection x Render algebra' and rlsb relates-to 4p1/jnj.1/fnm.2/fnm.6/fnm.10. But that substrate is lower priority and unbuilt: 4p1 (the 'one read algebra' DECISION) is P3 and still open (undecided), jnj.1 is P3, and fnm.2/fnm.6/fnm.10 are P2. A P1 spine epic cannot land coherently ahead of the P3 decision that defines its render/query contract.",
+      "proposed": "Either (a) lift the load-bearing read-algebra deps to P1 as explicit hard blockers of 4smp — at minimum make the 4p1 decision and the fnm terminal-stage/projection work (fnm.6/fnm.10) blockers, not mere relates-to — or (b) resequence 4smp so arso/0v9p (substrate, which need no read-algebra) proceed at P1 while rlsb/d4zk are gated behind the read-algebra frontier. Do not leave a P1 epic whose render/query AC depends on an unmade P3 decision."
+    },
+    {
+      "id": "polylogue-rlsb",
+      "issue": "missing-dep",
+      "detail": "rlsb defines variant render profiles (original-only / variant-only / dual / interleaved / hover-source) as RenderSpec layout and its own design warns 'no duplicated new variant-layout abstraction.' But ap7 (this domain: 'shared CLI/web renderer registry', RenderSpec layout profiles) and 1lm (selector x transform x budget algebra over ProjectionSpec) are exactly the shared render/projection machinery those profiles must plug into — and rlsb links neither. Building variant layouts without coordinating ap7's renderer registry re-opens the duplication rlsb explicitly forbids.",
+      "proposed": "Add relates-to edges rlsb -> polylogue-ap7 and rlsb -> polylogue-1lm (and mention them in the rlsb design's 'Coordinate with ...' list, which currently names fnm.2/6/10, jnj.1, bby.11, 4p1 but omits ap7/1lm). Variant dual/interleaved layouts should be render profiles in ap7's registry, not a new silo."
+    },
+    {
+      "id": "polylogue-rlsb",
+      "issue": "missing-dep",
+      "detail": "rlsb hard-blocks on 0v9p (language facts). rlsb's core deliverable — request variants through ProjectionSpec, label source-vs-variant, render dual/interleaved — does not require language detection; 0v9p only informs projection DEFAULTS such as 'translate-if-source-not-preferred.' Treating 0v9p as a hard blocker over-serializes the epic.",
+      "proposed": "Consider downgrading the rlsb depends_on 0v9p edge from 'blocks' to 'relates-to' so rlsb's variant projection/render can proceed in parallel with language-fact work; keep the hard block only on arso (the substrate rlsb genuinely needs)."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-ap7",
+      "change": "reparent",
+      "from": "(none)",
+      "to": "polylogue-fnm",
+      "rationale": "ap7 and 1lm are standalone parentless P2 read-algebra tasks, yet both explicitly extend the same substrate: 1lm 'Extend ProjectionSpec (jnj.1) ... 4p1's Projection axis, deepened'; ap7 'Layout profiles ... RenderSpec presets per 4p1.' fnm ('Query DSL: one grammar owns query semantics') and jnj ('Product surface algebra') are the read-algebra epics. Parenting ap7 (and 1lm) under the read-algebra epic makes the program that 4smp depends on visible as one deliverable rather than three floating tasks. Low confidence — they may be intentionally standalone; if so, at minimum link them under 4p1/fnm so the read-algebra frontier is auditable as a unit."
+    }
+  ]
+}

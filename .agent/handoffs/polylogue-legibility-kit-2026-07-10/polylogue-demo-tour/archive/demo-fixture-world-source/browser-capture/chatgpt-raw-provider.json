@@ -1,0 +1,86 @@
+{
+  "capture_id": "chatgpt:dc13ca54-0bba-4298-a38f-09068c2ef2c5:raw-provider",
+  "polylogue_capture_kind": "browser_llm_session",
+  "provenance": {
+    "adapter_name": "chatgpt-browser-native-v1",
+    "capture_mode": "snapshot",
+    "captured_at": "2026-07-04T09:54:00Z",
+    "page_title": "ChatGPT - Debugging flaky async pipeline tests",
+    "source_url": "https://chatgpt.com/c/dc13ca54-0bba-4298-a38f-09068c2ef2c5"
+  },
+  "raw_provider_payload": {
+    "conversation_id": "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+    "create_time": 1783158840.0,
+    "current_node": "assistant-node",
+    "mapping": {
+      "assistant-node": {
+        "children": [],
+        "id": "assistant-node",
+        "message": {
+          "author": {
+            "role": "assistant"
+          },
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "The canonical session coalesces with the direct ChatGPT export."
+            ]
+          },
+          "create_time": 1783158842.0,
+          "id": "browser-native-a1",
+          "metadata": {
+            "model_slug": "gpt-5-demo"
+          }
+        },
+        "parent": "user-node"
+      },
+      "root": {
+        "children": [
+          "user-node"
+        ],
+        "id": "root",
+        "message": null,
+        "parent": null
+      },
+      "user-node": {
+        "children": [
+          "assistant-node"
+        ],
+        "id": "user-node",
+        "message": {
+          "author": {
+            "role": "user"
+          },
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Browser capture preserved the native ChatGPT payload."
+            ]
+          },
+          "create_time": 1783158841.0,
+          "id": "browser-native-u0",
+          "metadata": {}
+        },
+        "parent": "root"
+      }
+    },
+    "title": "Debugging flaky async pipeline tests",
+    "update_time": 1783158844.0
+  },
+  "schema_version": 1,
+  "session": {
+    "model": "gpt-5-demo",
+    "provider": "chatgpt",
+    "provider_session_id": "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
+    "title": "Debugging flaky async pipeline tests",
+    "turns": [
+      {
+        "ordinal": 0,
+        "provider_turn_id": "browser-native-placeholder-u0",
+        "role": "user",
+        "text": "Native payload is present; this DOM turn should not define the parsed transcript."
+      }
+    ],
+    "updated_at": "2026-07-04T09:54:00Z"
+  }
+}

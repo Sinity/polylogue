@@ -1,0 +1,128 @@
+[
+  {
+    "blocker": "polylogue-20d.1",
+    "blocks": "polylogue-bfv",
+    "type": "blocks",
+    "evidence": "bfv design: 'Deps: hooks install (wiring), 20d.1 (fast path), 20d.12 (cache)' — advisory lookup must be <20ms, served from the daemon fast-path socket (20d.1). Live graph only has d1y as bfv's dep; 20d.1 is missing."
+  },
+  {
+    "blocker": "polylogue-20d.12",
+    "blocks": "polylogue-bfv",
+    "type": "blocks",
+    "evidence": "bfv design: 'Deps: ... 20d.12 (cache)' — advisory lookup served 'against the cache (20d.12)'. Live graph only has d1y as bfv's dep; 20d.12 is missing."
+  },
+  {
+    "blocker": "polylogue-37t.12",
+    "blocks": "polylogue-37t.10",
+    "type": "blocks",
+    "evidence": "37t.10 design: '(3) Review surface: the existing judgment queue lists setup candidates alongside memory candidates'; 37t.12 (judgment queue) design confirms '37t.10 design already assumes the existing judgment queue lists setup candidates'. 37t.10's judged-candidate flow needs the judge queue built by 37t.12."
+  },
+  {
+    "blocker": "polylogue-jnj.1",
+    "blocks": "polylogue-1lm",
+    "type": "blocks",
+    "evidence": "1lm design: '(1) Extend ProjectionSpec (jnj.1) with typed selector predicates ... compile_context and renderers consume the same spec'. 1lm extends the ProjectionSpec/RenderSpec algebra that jnj.1 collapses/defines."
+  },
+  {
+    "blocker": "polylogue-3tl.1",
+    "blocks": "polylogue-3tl.8",
+    "type": "blocks",
+    "evidence": "3tl.8 design: 'repo description = the one-liner from the positioning analysis ... Sequence: after 3tl.1 (one-liner) exists; before any announcement'. 3tl.8 consumes the one-liner produced by 3tl.1."
+  },
+  {
+    "blocker": "polylogue-t46",
+    "blocks": "polylogue-o21",
+    "type": "relates-to",
+    "evidence": "o21 design: 'Relates t46 (contracts own surfaces — this is the authoring-side complement)'. Soft coordination, not a hard prerequisite."
+  },
+  {
+    "blocker": "polylogue-utf",
+    "blocks": "polylogue-o21",
+    "type": "relates-to",
+    "evidence": "o21 design: '... and utf (devtools catalog lint rides the same declaration)'. Shared declaration machinery — soft relation."
+  },
+  {
+    "blocker": "polylogue-fs1.2",
+    "blocks": "polylogue-fs1.7",
+    "type": "relates-to",
+    "evidence": "fs1.7 design: 'The Polylogue side then rides fs1.2 (span import) ... Keep the upstream contribution decoupled from Polylogue release cadence'. Reuse but explicitly decoupled — soft."
+  },
+  {
+    "blocker": "polylogue-611",
+    "blocks": "polylogue-uiw",
+    "type": "relates-to",
+    "evidence": "uiw design: 'Grok importer (polylogue-611, fixture-blocked) is part of this set'. 611 is a member of uiw's target origin set — coordination, not a blocker."
+  },
+  {
+    "blocker": "polylogue-cpf",
+    "blocks": "polylogue-3tl.4",
+    "type": "relates-to",
+    "evidence": "3tl.4 design: 'The stanza schema is defined once and shared with cpf ... do not couple the ship of 3tl.4 to cpf's full doctrine landing'. Shared schema, explicitly non-coupled — soft."
+  },
+  {
+    "blocker": "polylogue-3tl.4",
+    "blocks": "polylogue-3tl.8",
+    "type": "relates-to",
+    "evidence": "3tl.8 design: 'pin the two published finding artifacts on the profile/repo once 3tl.4 lands'. Partial feature (pinning findings) depends on 3tl.4 — soft."
+  },
+  {
+    "blocker": "polylogue-37t.10",
+    "blocks": "polylogue-1jc",
+    "type": "relates-to",
+    "evidence": "1jc design: '(2) PROPOSAL: emits candidate assertions ... reuse setup_improvement machinery from 37t.10 if the shapes align'. Conditional machinery reuse — soft."
+  },
+  {
+    "blocker": "polylogue-37t.12",
+    "blocks": "polylogue-1jc",
+    "type": "relates-to",
+    "evidence": "1jc design: '(3) JUDGMENT: appears in polylogue judge like any candidate'. 1jc's proposals surface through the judge queue (37t.12) — soft consume relation (detection/emit can proceed independently)."
+  },
+  {
+    "blocker": "polylogue-83u.2",
+    "blocks": "polylogue-83u.6",
+    "type": "relates-to",
+    "evidence": "83u.6 (attachment census) design: 're-run as after once 83u.2/83u.3 acquisition beads land'. The census 'before' baseline runs independently; the 'after' comparison relates to 83u.2 — soft."
+  },
+  {
+    "blocker": "polylogue-83u.3",
+    "blocks": "polylogue-83u.6",
+    "type": "relates-to",
+    "evidence": "83u.6 design: 're-run as after once 83u.2/83u.3 acquisition beads land'. Same as 83u.2 — the after-run measures 83u.3's effect; soft."
+  },
+  {
+    "blocker": "polylogue-1lm",
+    "blocks": "polylogue-y8w",
+    "type": "relates-to",
+    "evidence": "y8w design: 'fold budgets -> 1lm preset selection'. y8w ships keys+resolution first, surface consumption (1lm presets) second — soft."
+  },
+  {
+    "blocker": "polylogue-4pm",
+    "blocks": "polylogue-y8w",
+    "type": "relates-to",
+    "evidence": "y8w design: 'default view -> read view resolution (after 4pm fixes defaults)'. The default-view pref's surface consumption follows 4pm — soft (bead ships in two PRs, keys first)."
+  },
+  {
+    "blocker": "polylogue-x7d",
+    "blocks": "polylogue-y8w",
+    "type": "relates-to",
+    "evidence": "y8w design: 'columns -> x7d row contract'. The columns pref consumes the x7d row contract — soft surface reuse."
+  },
+  {
+    "blocker": "polylogue-fnm.1",
+    "blocks": "polylogue-bby.3",
+    "type": "relates-to",
+    "evidence": "bby.3 design: 'Depends on DSL aggregates for the richer panels; the rollup-backed ones can ship first'. Only the richer panels need fnm.1 aggregates; bead partially ships without it — soft."
+  },
+  {
+    "blocker": "polylogue-37t.1",
+    "blocks": "polylogue-4smp",
+    "type": "relates-to",
+    "evidence": "4smp design: 'Extant bead anchors: polylogue-37t.1 for assertion lifecycle boundaries'. Variants reuse assertion lifecycle concepts (4p1 anchor already wired as blocks); this anchor is soft reuse."
+  },
+  {
+    "blocker": "polylogue-jnj.1",
+    "blocks": "polylogue-4smp",
+    "type": "relates-to",
+    "evidence": "4smp design: 'Extant bead anchors: ... polylogue-4p1 and polylogue-jnj.1 for read algebra'. 4p1 anchor already exists as a blocks edge; jnj.1 read-algebra reuse is the missing soft counterpart."
+  }
+]

@@ -1,0 +1,102 @@
+{
+  "domain": "D04_query_dsl",
+  "summary": "The fnm epic is coherent and code-grounded: the grammar is already Lark-backed (expression.py:96,697) with pipeline stages hand-parsed outside it (:1635), so no bead mistakes it for a to-build 'floor grammar' — the focus-hint stale pattern is absent. Children cover typed AST, lowerers, unit metadata, cross-surface completions, and user macros; fnm.4/fnm.11 correctly introspect shared registries rather than parallel field lists. The dominant weakness is that five ready-frontier P2 children (fnm.1/2/4/6/10) carry rich design but null acceptance_criteria, plus missing sequencing deps (fnm.1<-fnm.11, fnm.9<-fnm.1/7, 6kh<-fnm.12) and an epic with no AC to check child coverage against.",
+  "underspecified": [
+    {
+      "id": "polylogue-fnm.1",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "On the live archive: `... | group by tool | agg count, avg:duration_ms, p90:duration_ms` returns per-group rows with each named metric column; sum/avg/min/max lower to native SQLite aggregate functions and percentiles compute via nearest-rank in Python over grouped rows; multi-field group-by (`group by tool, session.origin`) and time bucketing (`group by bucket:day(time)`) reuse the temporal read-view bucket functions; unsupported agg names/fields error naming the unit, the metric, and the supported set (the fnm.11 group-by error pattern); `explain_query_expression` and openapi/cli-output-schemas/cli-reference regens show the new aggregate list; the QueryUnitPipelineStageSpec `aggregate: Literal['count']` union is widened and round-trips through to_payload.",
+      "why": "Priority-2 ready-frontier bead with an execution-grade design (exact touchpoint chain, metadata.py aggregate_metrics, percentile pattern) but acceptance_criteria=null. Doctrine requires ready-frontier P2 to have a checkable done-state + verify command. Design references concrete verb `agg` and stages that need an acceptance gate."
+    },
+    {
+      "id": "polylogue-fnm.4",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "A registry-diff snapshot test asserts that every grammar-reachable field/unit/pipeline-stage/read-view name (enumerated from metadata.py descriptors, read_view_registry, and operations.action_contracts.ACTION_CONTRACTS) appears in the completion payload, so new DSL work cannot silently miss completions; completions for pipeline stages, operators, and read-view names are sourced from those same registries (no second vocabulary — completions.py already imports query_unit_descriptor/terminal_query_pipeline_stage_infos/ACTION_CONTRACTS); archive-backed value providers (origins, repos, tags) return under a latency cap; `polylogue config completions --shell` and the query_completions MCP tool both resolve pipeline-stage and read-view completions.",
+      "why": "P2 bead whose own description states the acceptance target ('a completion snapshot test asserts every grammar-reachable field/unit/stage/view appears in the completion payload') but the acceptance_criteria field is null. Promote that sentence into a checkable criterion; verified completions.py already introspects the shared registries (completions.py:14-32) so the registry-diff gate is buildable as stated."
+    },
+    {
+      "id": "polylogue-fnm.10",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`messages where session.repo:polylogue AND text:timeout | fields text, occurred_at, session.title, session.repo` returns generic dict-shaped rows keyed by requested field name, emitted alongside (not replacing) the typed MessageQueryRowPayload; requested parent fields resolve through the already-paid sessions join; field names are validated against the unit's field registry + the session.* scoped family (metadata.py) and an unknown field errors listing supported fields; typed default consumers are unchanged (payloads.py MessageQueryRowPayload frozen shape preserved); render openapi + cli-output-schemas emit the new generic payload model; the QueryUnitTransformStage reservation (expression.py:377) is now actually produced by the parser for the `fields`/`select` keyword.",
+      "why": "P2 bead, acceptance_criteria=null despite an execution-grade design that names the exact reservation it fills (QueryUnitTransformStage at expression.py:376-386, confirmed present at :377) and the payload files to touch. Needs a done-state gate distinguishing it from fnm.2 (attached-unit field selection, which already landed)."
+    },
+    {
+      "id": "polylogue-fnm.6",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`sessions where ... | read view:temporal`, `messages where ... | limit 40 | context-image budget:4000`, and `... | bundle:handoff` execute end-to-end: the terminal stage dispatches through an executor registry to the existing compile_context / read_view_registry compilers; the terminal's output replaces the row payload with a typed projection-artifact envelope per terminal kind; unknown terminal keywords/args error naming the terminal and supported kinds; explain shows the terminal stage via to_payload; completions offer the terminal keywords and their read-view/bundle argument values from the same registries as fnm.4.",
+      "why": "P2 bead with null acceptance. Design cites the reserved terminal-args slot (expression.py:397-407, confirmed the QueryUnitTransformStage/terminal machinery exists) but gives no checkable end-state for the three named terminal forms."
+    },
+    {
+      "id": "polylogue-fnm.2",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`... with messages[role:user, last:20]` parses per-unit bracket predicates/windows in the hand-parsed with-stage region and lowers onto the existing exact-session-id fetch in attached_units.py (respecting _MAX_ROWS_PER_SESSION cap, extending the landed field-selection payload rather than forking it); a new render/layout pipeline stage binds a read-package/render profile to the result and is picked up by explain via to_payload; the Lark grammar file is unchanged (stages stay hand-parsed); openapi/cli-output-schemas/cli-reference regens pass render all --check.",
+      "why": "P2 bead, acceptance_criteria=null. Design is execution-grade (names WITH_PROJECTION_SUPPORTED_UNITS enforcement region and attached_units.py caps) but has no done-state gate; the two layers (attached-unit predicates vs render/layout stage) each need an explicit acceptance line."
+    },
+    {
+      "id": "polylogue-6il",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Add `--json` and `--check` to the devloop-integration lane so it emits a machine-readable contract carrying branch role, ahead count, stale-ledger state, replay branches, and PR URLs; devloop-review consumes that JSON instead of re-deriving integration state. Mirror the existing devloop-status/readiness JSON envelope shape so review has one parser.",
+      "proposed_acceptance": "`devloop-integration --json` emits a stable schema with branch role, ahead count, stale ledger, replay branches, and PR URLs; `--check` exits non-zero on a failing integration invariant; devloop-review reads the JSON and no longer computes branch role itself.",
+      "why": "P2 standalone bead with design=null and acceptance=null; the description names the exact fields the JSON must carry, so an execution-grade spec is directly recoverable and required for a ready P2."
+    },
+    {
+      "id": "polylogue-avg",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Add a claim-guard section to `polylogue ops status`/readiness deriving 'what you may claim' (archive openable / converged / search-ready / perf-measurable) from the same signals the devloop scripts already use: schema-version match => openable-not-converged, raw-materialization debt zero/classified => converged, FTS freshness => search-ready, live_performance_proof_blocked gate => perf-measurable. Then have devloop-status consume the product surface instead of recomputing it (silo collapse).",
+      "proposed_acceptance": "`polylogue ops status --json` exposes a claim-guard block with the four claim states derived from the documented signals; a session that is openable-but-not-converged reports converged=false with the raw-materialization reason; devloop-status calls the product surface and stops computing its own claim vocabulary; a test asserts parity between the script's old computation and the product output.",
+      "why": "P2 standalone bead, design=null and acceptance=null; the description already enumerates the four claim states and their source signals, so the spec is recoverable and needed for ready-frontier P2."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Single-compiler parity gate: CLI/MCP/API/daemon route identical query strings through one grammar",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-fnm",
+      "why": "The epic thesis is 'one grammar owns query semantics ... not a second parser' (fnm epic + fnm.4 description), and MCP already exposes explain_query_expression as the shared compiler entry, but no child asserts that a given query string produces the same typed AST / same lowered SessionQuerySpec across CLI find, MCP search/explain, the Python API, and the daemon/web query route. fnm.4 gates completion coverage and fnm.11 gates the docs matrix, but neither gates surface-execution parity — a regression could reintroduce per-surface parsing divergence silently. Operator memory repeatedly flags cross-surface parity as a live concern.",
+      "design": "A parametrized parity test feeds a corpus of representative query strings (bare find, unit-where, pipeline with group by|count, with-projection, SEQ) through each surface's public entry and asserts the resulting QueryExpression/SessionQuerySpec (or to_payload) is byte-identical. Guardrail assertion: grep/import-lint that no surface module constructs a Lark parser or hand-rolls query parsing except polylogue/archive/query/expression.py. Wire into render all --check or devtools verify layering.",
+      "acceptance": "The parity test covers >=1 query per grammar entry shape and asserts identical AST/spec across CLI/MCP/API/daemon; a second parser or divergent parse in any surface module fails the gate; explain_query_expression output matches the CLI-compiled spec for the corpus.",
+      "deps": ["polylogue-fnm.4"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-fnm",
+      "kind": "other",
+      "evidence": "Epic fnm has design=null and acceptance_criteria=null (domain file lines 210-211). It is a live P2 epic with 13 children spanning aggregates, transforms, terminals, macros, and cross-surface parity, but carries no acceptance criteria of its own.",
+      "fix": "Add an epic-level AC that its children are measured against, e.g.: 'The Lark grammar in expression.py remains the single query language for CLI/MCP/API/daemon/web (no second parser); aggregates beyond count, field projection, terminal projections, and user macros all extend it in place; every new field/unit/stage is reachable from completions and the generated support matrix.' This lets an auditor verify child coverage of the epic (currently there is no AC to check coverage against)."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-fnm.1",
+      "issue": "missing-dep",
+      "detail": "fnm.11's design states 'Feeds fnm.1 (aggregates) — do the matrix first so fnm.1 lands against known gaps' (domain file line 53). fnm.1 has only a parent-child dep on fnm; there is no ordering dep on fnm.11, so the intended sequencing (build the support matrix/gap list before aggregates) is not encoded.",
+      "proposed": "Add dependency: fnm.1 depends_on fnm.11 (type blocks/depends). The matrix generator doubles as the gap list fnm.1 targets."
+    },
+    {
+      "id": "polylogue-fnm.9",
+      "issue": "missing-dep",
+      "detail": "fnm.9 (pipeline-as-subquery, P4) description: 'defer until aggregates + child-count predicates prove the demand shape' (domain file line 340). It depends only on the epic; the two prerequisites it names (fnm.1 aggregates, fnm.7 child-count predicates) are not encoded as deps.",
+      "proposed": "Add dependencies: fnm.9 depends_on fnm.1 and fnm.9 depends_on fnm.7. Priority P4 already reflects the deferral; make the sequencing explicit."
+    },
+    {
+      "id": "polylogue-6kh",
+      "issue": "missing-dep",
+      "detail": "6kh design: 'Implemented as an implicit macro layer: the resolved prefs compile to a predicate group prepended to bare queries (the fnm.12 expansion machinery — visible in explain as implicit-scope)' (domain file line 368). 6kh currently depends only on y4c (settings registry); it also structurally depends on fnm.12's macro-expansion/provenance machinery to render implicit-scope in explain.",
+      "proposed": "Add dependency: 6kh depends_on fnm.12 (or at minimum on the shared expansion/provenance layer). Otherwise 6kh must build its own expansion path, contradicting its stated reuse of fnm.12."
+    },
+    {
+      "id": "polylogue-fnm.7",
+      "issue": "missing-dep",
+      "detail": "fnm.7 design: 'This is the query form of outcome-conditioned analytics — coordinate with the analytics program bead so they share the relation' (domain file line 263). The shared relation is the actions/child aggregation surface that fnm.1 aggregates also lower onto, but no dep or explicit cross-link to fnm.1 exists.",
+      "proposed": "Add a relates-to link fnm.7 <-> fnm.1 (or a soft dep) so the correlated-aggregate-subquery relation is built once and shared, not forked between child-count predicates and the aggregate pipeline."
+    }
+  ],
+  "reorg": []
+}

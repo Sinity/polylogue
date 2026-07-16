@@ -1,0 +1,79 @@
+{
+  "domain": "D05_storage_evidence",
+  "summary": "Both P1 epics (4ts lineage, 83u attachments) are well-anchored in the design doc and their closed children (4ts.1/.2, 9p0y, 83u.1) are genuinely done with live-archive evidence. The main weakness is under-specification of open children: every open 4ts child (.3/.4/.5) and most 83u children lack acceptance_criteria, the epic-closing census bead 83u.6 has neither design nor acceptance, and 83u.4's acceptance still demands classifying '39,586 missing blobs' its own refreshed description says are 0 on the active archive. gjg is epic-sized work filed as a single parentless task and overlaps 4ts.5; ivsc directly owns a 38x seed finding but is not linked from 38x.",
+  "underspecified": [
+    {
+      "id": "polylogue-83u.6",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Add a read-only census (devtools workspace command or `polylogue ops maintenance` sub-report) over the active index.db that groups attachments by (origin, acquisition_status) with row counts and summed byte_count, joins the blob store to report acquired-with-present-blob vs acquired-missing vs unfetched vs unavailable, and emits a stable JSON + table artifact. Reuse the blob-reference-debt / diagnostics-workload primitives. Baseline the current archive (per 83u.4 evidence: 7,226 attachment rows = 958 acquired w/ non-null hash + 0 missing acquired blobs, 6,268 unfetched blob_hash NULL) as 'before'; re-run after 83u.1/.2/.3 acquisition beads as 'after'.",
+      "proposed_acceptance": "A committed census artifact reports attachments by origin and acquisition_status with byte volumes and blob presence, distinguishing genuinely-unfetchable from re-acquirable; a before/after pair is captured (baseline now, post-acquisition later) and is the exact artifact on which epic 83u closes. Verify: census command runs read-only against /home/sinity/.local/share/polylogue and its JSON matches the epic's before/after claim.",
+      "why": "83u epic AC says 'Epic closes on a census artifact showing the before/after' — 83u.6 IS that closing gate but is fully unspecified (design=null, acceptance=null). It is also the sizing input the other acquisition beads depend on."
+    },
+    {
+      "id": "polylogue-83u.2",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Un-bypass acquisition at each live-handle boundary: (a) Drive — call DriveSourceClient.download_bytes inside the iterator scope so bytes are read before the source closes (restore the del'd download_assets path); (b) export-zip — resolve and read the member while the zipfile is still open; (c) local paths — a transport-only local_source_path resolved under a source-root allowlist with a realpath-escape check. Deposit bytes on ParsedAttachment.inline_bytes and reuse the shipped true-SHA-256 blob write (_acquire_attachment_blob path). Non-live handles stay honest-unfetched with source_url/path preserved for re-acquisition.",
+      "proposed_acceptance": "For each source class (Drive, export-zip member, local path) a seeded fixture ingests attachments whose bytes are live and asserts acquisition_status=acquired with a blob file present at the true SHA-256; a path outside the allowlist is rejected via realpath-escape check; unfetchable handles remain unfetched with preserved source metadata. Verify: `devtools test tests/unit/sources/...` passes; live re-ingest increases acquired-attachment count measured via the 83u.6 census.",
+      "why": "P2 ready-frontier feature: the description carries the intent but design=null and acceptance=null. The transport-only inline_bytes contract and allowlist/realpath escape check are load-bearing security details that belong in design/acceptance, not just a one-line description."
+    },
+    {
+      "id": "polylogue-4ts.5",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "session_events gains boundary_start_position/boundary_end_position/boundary_message_id (index-tier schema bump + rebuild plan stated in PR body, batched with other pending index bumps per fresh-first doctrine); the parser populates them for Codex `compacted` records and Claude inline/`agent-acompact-*` boundaries; get_effective_context(session, at_position) returns [summary]+post-boundary messages and a fixture asserts it differs from the full-composed prefix at the boundary; a `read --view effective_context` surface auto-registers via read_view_registry across CLI/MCP/daemon; the stale_context pathology consumes the precise replaced-range signal. Verify: focused parser + read-view tests pass; live re-ingest shows boundary rows populated for known compaction sessions.",
+      "why": "P2 feature with a strong code-grounded design but acceptance_criteria=null; the schema-bump + surface auto-registration + pathology consumer are concrete checkable done-states that should be pinned."
+    },
+    {
+      "id": "polylogue-4ts.4",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Both the sync (read_archive_session_envelope) and async (get_messages, plus batch/paginated paths) composition paths hold one deferred read transaction across the full inheritance recursion. A regression test interleaves a parent full-replace between the edge-read and the parent-read (via hook/monkeypatch) and asserts the composed transcript is wholly old-consistent or wholly new-consistent, never mixed — asserted on BOTH paths (twin-path trap). Verify: `devtools test tests/unit/storage/...` passes.",
+      "why": "P2 bug; design already names the fix and a test sketch but acceptance_criteria=null. The both-paths (sync+async) requirement is the trap that must be an explicit checkable done-state."
+    },
+    {
+      "id": "polylogue-4ts.3",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Regression fixtures cover (a) a true main-session agent-acompact-* whose prefix content/UUIDs are members of the main session and (b) a subagent self-compaction (<90% overlap, modeled on 1796b263's '12-commit testing overhaul' subagent); the classifier assigns parent=main only in (a) and sidechain/no-inherited-prefix in (b); a composed read of the (b) session never prepends the main transcript. Verify: focused Claude-parser tests pass; live re-ingest of the ~39 mismatched files reduces mis-parented subagent-acompacts to zero (probe count).",
+      "why": "The acceptance sentence is buried inside the design field ('Acceptance: composition never prepends...') while acceptance_criteria=null; extract and make it a checkable done-state with the fixture pair and the live ~39-file probe count."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-83u.4",
+      "kind": "acc-mismatch",
+      "evidence": "Title: 'Classify the 39,586 missing referenced blobs'. Acceptance: 'Every one of the 39,586 missing referenced blobs classified... direct-file-recoverable subset restored via blob-reference-restore-direct with SHA-256 verification.' But the bead's own refreshed description states: 'source-tier referenced blob debt is clean: ... 0 missing; diagnostics workload reports missing_referenced_blobs=0 ... The historical 39,586 warning is therefore not reproducible against the active archive and should be treated as stale/different-backup evidence unless the original backup directory/report is supplied.'",
+      "fix": "Rewrite the acceptance to match the refreshed evidence: acceptance should require EITHER (a) the operator supplies the original backup directory/report and its missing refs are classified+restored where SHA-verifiable, OR (b) record the accept decision that the active archive has 0 missing referenced blobs and pivot the deliverable to making source-tier backup debt and index-tier attachment acquisition debt separately and explicitly reported. Drop the hard '39,586' figure from the title or reframe it as 'historical backup warning'."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-38x",
+      "issue": "missing-dep",
+      "detail": "38x's seed findings include 'Codex FORK vs RESUME conflation' and 'Codex token lane normalizer divergence' — exactly the residual that ivsc ('Classify Codex state_5 token drift outside lineage replay') was split out to own (from closed 4ts.2). 38x currently has relates-to edges to 4ts and 83u (confirmed via bd show) but NOT to ivsc, and ivsc has zero dependencies.",
+      "proposed": "Add a relates-to edge 38x -> ivsc so the Codex-token-drift seed finding is explicitly linked to its owning executable bead. Separately, 38x's seed 'child usage rollups counting inherited prefix' is already FIXED by the CLOSED 4ts.2 and should be recorded as fixed (cite 4ts.2 close reason) in 38x's reconciliation table rather than re-triaged."
+    },
+    {
+      "id": "polylogue-gjg",
+      "issue": "missing-dep",
+      "detail": "gjg's FORENSICS part diffs a pre-compaction snapshot against the post-compact continuation's early context using 'the exact assembled context'. 4ts.5 delivers session_events boundary_start/end_position + boundary_message_id + get_effective_context(session, at_position) — the effective-context substrate gjg's loss measure needs to know what the model actually saw vs the full composed prefix. They overlap on compaction context derivation.",
+      "proposed": "Add a dependency gjg (forensics) -> 4ts.5 (compaction boundary columns / effective-context), or explicitly note in both beads that 4ts.5 provides the effective-context primitive gjg's loss forensics consumes, to avoid two divergent compaction-boundary models."
+    },
+    {
+      "id": "polylogue-4ts",
+      "issue": "epic-ac-gap",
+      "detail": "Epic AC terminal state includes 'composed correctly (read paths serve full logical transcripts across the branch-point matrix)'. Open children fix specific composition bugs (4ts.3 subagent-acompact, 4ts.4 read-txn atomicity) but no bead asserts a full composition-correctness matrix across all edge types (fork / resume / subagent / acompact / inline-compact / spawned-fresh). The closed 4ts.1 gate samples only prefix-sharing children through the composed read path.",
+      "proposed": "Either extend the 4ts.1 lineage-validation gate to assert composed-read correctness across every branch-point edge type (not just prefix-sharing sampling), or add a small child that runs a branch-point-matrix composition test on the live archive; make it the citable proof of the 'composed correctly across the branch-point matrix' criterion before the epic closes."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-gjg",
+      "change": "new-epic",
+      "from": "task (parent=null)",
+      "to": "epic under polylogue-s7ae with children",
+      "rationale": "gjg is typed 'task' with parent=null but its design carries four epic-sized workstreams (PreCompact snapshot capture, corpus-wide compaction-loss forensics measure, opt-in re-grounding SessionStart lane armable as an ExperimentSpec, and the 37t handoff-triad documentation) and it is already dep-linked to s7ae via d1y and references the 37t epic. Promote to an epic (or at minimum reparent under s7ae) and decompose into children so each part becomes independently ready/verifiable rather than one unschedulable mega-task."
+    }
+  ]
+}

@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Internals — Polylogue</title>
+    <style>
+
+        :root {
+            --bg-primary: #0B0E14;
+            --bg-secondary: #13171F;
+            --bg-tertiary: #1A1F2A;
+            --text-primary: #E6E8EC;
+            --text-secondary: #8B919A;
+            --text-tertiary: #555B63;
+            --accent: #3B82F6;
+            --accent-hover: #2563EB;
+            --border: #1E2430;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --green: #22C55E;
+            --yellow: #EAB308;
+            --red: #EF4444;
+            --provider-claude-code: #D97706;
+            --provider-codex: #3B82F6;
+            --provider-chatgpt: #10B981;
+            --provider-gemini: #8B5CF6;
+            --provider-claude-ai: #F59E0B;
+            --header-height: 56px;
+            --nav-width: 240px;
+            --content-max-width: 720px;
+            --footer-height: 40px;
+            --font-body: &#39;Inter&#39;, system-ui, -apple-system, sans-serif;
+            --font-code: &#39;JetBrains Mono&#39;, &#39;Fira Code&#39;, monospace;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-primary: #FAFAFA;
+                --bg-secondary: #FFFFFF;
+                --bg-tertiary: #F3F4F6;
+                --text-primary: #111827;
+                --text-secondary: #6B7280;
+                --text-tertiary: #9CA3AF;
+                --border: #E5E7EB;
+                --shadow: rgba(0, 0, 0, 0.08);
+            }
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { font-size: 15px; }
+        body {
+            font-family: var(--font-body);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .site-header {
+            position: sticky; top: 0; z-index: 10;
+            height: var(--header-height);
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 1.5rem; gap: 1rem;
+        }
+        .site-header .logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); text-decoration: none; white-space: nowrap; }
+        .site-header .logo span { color: var(--accent); }
+        .site-header .search-bar { flex: 1; max-width: 400px; margin: 0 auto; }
+        .site-header .search-bar input {
+            width: 100%; padding: 0.4rem 0.75rem; border-radius: 6px;
+            border: 1px solid var(--border); background-color: var(--bg-tertiary);
+            color: var(--text-primary); font-family: var(--font-body); font-size: 0.9rem;
+        }
+        .site-header .theme-toggle {
+            background: none; border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.3rem 0.6rem; cursor: pointer; color: var(--text-secondary); font-size: 0.9rem;
+        }
+        .page-layout { display: flex; min-height: calc(100vh - var(--header-height)); }
+        .site-nav {
+            width: var(--nav-width); flex-shrink: 0; padding: 2rem 1.5rem;
+            background-color: var(--bg-primary); border-right: 1px solid var(--border);
+            overflow-y: auto; position: sticky; top: var(--header-height);
+            height: calc(100vh - var(--header-height));
+        }
+        .site-nav .nav-section { margin-bottom: 1.5rem; }
+        .site-nav .nav-section-title { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); margin-bottom: 0.5rem; }
+        .site-nav a { display: block; padding: 0.3rem 0; color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .site-nav a:hover { color: var(--text-primary); }
+        .site-nav a.active { color: var(--accent); font-weight: 500; }
+        .content { flex: 1; max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 2rem 4rem; width: 100%; }
+        h1 { font-size: 1.87rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 1rem; }
+        h1:first-child { margin-top: 0; }
+        h2 { font-size: 1.47rem; font-weight: 600; line-height: 1.3; margin: 2rem 0 0.75rem; }
+        h3 { font-size: 1.2rem; font-weight: 600; line-height: 1.4; margin: 1.5rem 0 0.5rem; }
+        p { margin-bottom: 1rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); }
+        code { font-family: var(--font-code); font-size: 0.87rem; background-color: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px; }
+        pre { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; font-size: 0.87rem; line-height: 1.5; }
+        pre code { background: none; padding: 0; font-size: inherit; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; font-size: 0.9rem; }
+        th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+        .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background-color: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; text-align: center; }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+        .stat-card .stat-label { font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+        .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .badge-green { background-color: rgba(34, 197, 94, 0.15); color: var(--green); }
+        .badge-yellow { background-color: rgba(234, 179, 8, 0.15); color: var(--yellow); }
+        .badge-red { background-color: rgba(239, 68, 68, 0.15); color: var(--red); }
+        .site-footer { height: var(--footer-height); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-tertiary); }
+        .site-footer a { color: var(--text-secondary); }
+        .home-hero { text-align: center; padding: 4rem 0 3rem; }
+        .home-hero .eyebrow { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 0.8rem; }
+        .home-hero h1 { font-size: clamp(2.4rem, 7vw, 4.5rem); line-height: 1.03; max-width: 820px; margin: 0 auto 1rem; letter-spacing: -0.04em; }
+        .home-hero .tagline { font-size: 1.18rem; color: var(--text-secondary); max-width: 760px; margin: 0 auto 1.3rem; }
+        .hero-command { margin: 0 auto 1rem; }
+        .hero-command code { display: inline-block; padding: 0.65rem 0.9rem; border: 1px solid var(--border); background: var(--bg-secondary); box-shadow: 0 10px 30px var(--shadow); }
+        .hero-stats { display: flex; justify-content: center; flex-wrap: wrap; gap: 0.45rem 1.2rem; margin: 0 auto 1.7rem; color: var(--text-tertiary); font-size: 0.8rem; }
+        .hero-stats strong { color: var(--text-primary); font-size: 0.92rem; margin-right: 0.18rem; }
+        .proof-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 2rem; text-align: left; }
+        .proof-card { background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem; min-height: 155px; }
+        .proof-card strong { display: block; font-size: 1rem; margin: 0.35rem 0 0.5rem; }
+        .proof-card p { color: var(--text-secondary); font-size: 0.9rem; margin: 0; }
+        .proof-label { color: var(--accent); font-size: 0.73rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+        .home-hero .hero-search { max-width: 500px; margin: 0 auto 3rem; }
+        .home-hero .hero-search input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--border); background-color: var(--bg-secondary); color: var(--text-primary); font-family: var(--font-body); font-size: 1rem; }
+        .home-links { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }
+        .home-links a { display: inline-block; padding: 0.6rem 1.5rem; border-radius: 6px; background-color: var(--bg-secondary); border: 1px solid var(--border); font-weight: 500; }
+        .home-links a:hover { background-color: var(--bg-tertiary); border-color: var(--accent); }
+        @media (max-width: 768px) {
+            .site-nav { display: none; }
+            .content { padding: 1.5rem 1rem; }
+            .home-hero h1 { font-size: 2.35rem; }
+            .proof-grid { grid-template-columns: 1fr; }
+        }
+        @media print {
+            .site-header, .site-nav, .site-footer { display: none; }
+            .content { max-width: none; padding: 0; }
+            body { background: white; color: black; }
+        }
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.highlight .hll { background-color: #49483e }
+.highlight { background: #272822; color: #F8F8F2 }
+.highlight .c { color: #959077 } /* Comment */
+.highlight .err { color: #ED007E; background-color: #1E0010 } /* Error */
+.highlight .esc { color: #F8F8F2 } /* Escape */
+.highlight .g { color: #F8F8F2 } /* Generic */
+.highlight .k { color: #66D9EF } /* Keyword */
+.highlight .l { color: #AE81FF } /* Literal */
+.highlight .n { color: #F8F8F2 } /* Name */
+.highlight .o { color: #FF4689 } /* Operator */
+.highlight .x { color: #F8F8F2 } /* Other */
+.highlight .p { color: #F8F8F2 } /* Punctuation */
+.highlight .ch { color: #959077 } /* Comment.Hashbang */
+.highlight .cm { color: #959077 } /* Comment.Multiline */
+.highlight .cp { color: #959077 } /* Comment.Preproc */
+.highlight .cpf { color: #959077 } /* Comment.PreprocFile */
+.highlight .c1 { color: #959077 } /* Comment.Single */
+.highlight .cs { color: #959077 } /* Comment.Special */
+.highlight .gd { color: #FF4689 } /* Generic.Deleted */
+.highlight .ge { color: #F8F8F2; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #F8F8F2; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #F8F8F2 } /* Generic.Error */
+.highlight .gh { color: #F8F8F2 } /* Generic.Heading */
+.highlight .gi { color: #A6E22E } /* Generic.Inserted */
+.highlight .go { color: #66D9EF } /* Generic.Output */
+.highlight .gp { color: #FF4689; font-weight: bold } /* Generic.Prompt */
+.highlight .gs { color: #F8F8F2; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #959077 } /* Generic.Subheading */
+.highlight .gt { color: #F8F8F2 } /* Generic.Traceback */
+.highlight .kc { color: #66D9EF } /* Keyword.Constant */
+.highlight .kd { color: #66D9EF } /* Keyword.Declaration */
+.highlight .kn { color: #FF4689 } /* Keyword.Namespace */
+.highlight .kp { color: #66D9EF } /* Keyword.Pseudo */
+.highlight .kr { color: #66D9EF } /* Keyword.Reserved */
+.highlight .kt { color: #66D9EF } /* Keyword.Type */
+.highlight .ld { color: #E6DB74 } /* Literal.Date */
+.highlight .m { color: #AE81FF } /* Literal.Number */
+.highlight .s { color: #E6DB74 } /* Literal.String */
+.highlight .na { color: #A6E22E } /* Name.Attribute */
+.highlight .nb { color: #F8F8F2 } /* Name.Builtin */
+.highlight .nc { color: #A6E22E } /* Name.Class */
+.highlight .no { color: #66D9EF } /* Name.Constant */
+.highlight .nd { color: #A6E22E } /* Name.Decorator */
+.highlight .ni { color: #F8F8F2 } /* Name.Entity */
+.highlight .ne { color: #A6E22E } /* Name.Exception */
+.highlight .nf { color: #A6E22E } /* Name.Function */
+.highlight .nl { color: #F8F8F2 } /* Name.Label */
+.highlight .nn { color: #F8F8F2 } /* Name.Namespace */
+.highlight .nx { color: #A6E22E } /* Name.Other */
+.highlight .py { color: #F8F8F2 } /* Name.Property */
+.highlight .nt { color: #FF4689 } /* Name.Tag */
+.highlight .nv { color: #F8F8F2 } /* Name.Variable */
+.highlight .ow { color: #FF4689 } /* Operator.Word */
+.highlight .pm { color: #F8F8F2 } /* Punctuation.Marker */
+.highlight .w { color: #F8F8F2 } /* Text.Whitespace */
+.highlight .mb { color: #AE81FF } /* Literal.Number.Bin */
+.highlight .mf { color: #AE81FF } /* Literal.Number.Float */
+.highlight .mh { color: #AE81FF } /* Literal.Number.Hex */
+.highlight .mi { color: #AE81FF } /* Literal.Number.Integer */
+.highlight .mo { color: #AE81FF } /* Literal.Number.Oct */
+.highlight .sa { color: #E6DB74 } /* Literal.String.Affix */
+.highlight .sb { color: #E6DB74 } /* Literal.String.Backtick */
+.highlight .sc { color: #E6DB74 } /* Literal.String.Char */
+.highlight .dl { color: #E6DB74 } /* Literal.String.Delimiter */
+.highlight .sd { color: #E6DB74 } /* Literal.String.Doc */
+.highlight .s2 { color: #E6DB74 } /* Literal.String.Double */
+.highlight .se { color: #AE81FF } /* Literal.String.Escape */
+.highlight .sh { color: #E6DB74 } /* Literal.String.Heredoc */
+.highlight .si { color: #E6DB74 } /* Literal.String.Interpol */
+.highlight .sx { color: #E6DB74 } /* Literal.String.Other */
+.highlight .sr { color: #E6DB74 } /* Literal.String.Regex */
+.highlight .s1 { color: #E6DB74 } /* Literal.String.Single */
+.highlight .ss { color: #E6DB74 } /* Literal.String.Symbol */
+.highlight .bp { color: #F8F8F2 } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #A6E22E } /* Name.Function.Magic */
+.highlight .vc { color: #F8F8F2 } /* Name.Variable.Class */
+.highlight .vg { color: #F8F8F2 } /* Name.Variable.Global */
+.highlight .vi { color: #F8F8F2 } /* Name.Variable.Instance */
+.highlight .vm { color: #F8F8F2 } /* Name.Variable.Magic */
+.highlight .il { color: #AE81FF } /* Literal.Number.Integer.Long */
+    </style>
+    
+</head>
+<body>
+    <header class="site-header">
+        <a href="../../" class="logo">poly<span>logue</span></a>
+        <div class="search-bar">
+            <input type="search" placeholder="Search docs..." id="search-input">
+        </div>
+        <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+            <span class="light-icon">☀</span>
+            <span class="dark-icon">☾</span>
+        </button>
+    </header>
+    <div class="page-layout">
+        <nav class="site-nav" id="site-nav">
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Start Here</div>
+                
+                <a href="../../demos/" >
+                    Demos
+                </a>
+                
+                <a href="../../findings/claim-vs-evidence/" >
+                    Finding: Structured Failure
+                </a>
+                
+                <a href="../../proof/" >
+                    Proof Artifacts
+                </a>
+                
+                <a href="../sinex/" >
+                    Polylogue on Sinex
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Documentation</div>
+                
+                <a href="../../docs/getting-started/" >
+                    Getting Started
+                </a>
+                
+                <a href="../../docs/search/" >
+                    Search
+                </a>
+                
+                <a href="../../docs/providers/" >
+                    Providers
+                </a>
+                
+                <a href="../../docs/insights/" >
+                    Insights
+                </a>
+                
+                <a href="../../docs/export/" >
+                    Export
+                </a>
+                
+                <a href="../../docs/daemon/" >
+                    Daemon
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Reference</div>
+                
+                <a href="../../reference/cli/" >
+                    CLI
+                </a>
+                
+                <a href="../../reference/mcp/" >
+                    MCP
+                </a>
+                
+                <a href="../../reference/api/" >
+                    API
+                </a>
+                
+                <a href="../../reference/config/" >
+                    Config
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Architecture</div>
+                
+                <a href="../rings/" >
+                    Rings
+                </a>
+                
+                <a href="./" class="active">
+                    Internals
+                </a>
+                
+                <a href="../schema/" >
+                    Schema
+                </a>
+                
+                <a href="../contributing/" >
+                    Contributing
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Verifiability</div>
+                
+                <a href="../../verifiability/coverage/" >
+                    Coverage
+                </a>
+                
+                <a href="../../verifiability/mutation/" >
+                    Mutation
+                </a>
+                
+                <a href="../../verifiability/freshness/" >
+                    Freshness
+                </a>
+                
+                <a href="../../verifiability/drift/" >
+                    Drift
+                </a>
+                
+            </div>
+            
+            <div class="nav-section">
+                <div class="nav-section-title">Design</div>
+                
+                <a href="../../design/second-brain/" >
+                    Second Brain
+                </a>
+                
+                <a href="../../design/time-machine/" >
+                    Time Machine
+                </a>
+                
+                <a href="../../design/project-memory/" >
+                    Project Memory
+                </a>
+                
+                <a href="../../design/agent-first-mcp/" >
+                    Agent-First MCP
+                </a>
+                
+                <a href="../../design/archive-storytelling/" >
+                    Archive Storytelling
+                </a>
+                
+                <a href="../../design/whole-product/" >
+                    Whole Product
+                </a>
+                
+            </div>
+            
+        </nav>
+        <main class="content">
+            
+<h1>Internals Reference</h1>
+<p>Working map of the live codebase: invariants, hot files, extension points, and
+debugging landmarks. For the conceptual system shape, see
+<a href="../rings/">architecture.md</a>.</p>
+<h2>Key Invariants</h2>
+<table>
+<thead>
+<tr>
+<th>Invariant</th>
+<th>Enforced in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Archive writes are idempotent by content hash</td>
+<td><code>pipeline/ids.py</code>, <code>pipeline/services/ingest_batch/_core.py</code></td>
+</tr>
+<tr>
+<td>Content hash excludes user metadata (tags, summaries)</td>
+<td><code>pipeline/ids.py:session_content_hash()</code></td>
+</tr>
+<tr>
+<td>Content hash uses NFC normalization</td>
+<td><code>core/hashing.py:hash_text()</code></td>
+</tr>
+<tr>
+<td>Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths</td>
+<td><code>storage/sqlite/async_sqlite.py</code>, <code>storage/sqlite/connection.py</code>, <code>pipeline/services/ingest_batch/_core.py</code></td>
+</tr>
+<tr>
+<td>SQLite read/write tuning is profile-driven, not backend-local</td>
+<td><code>storage/sqlite/connection_profile.py</code></td>
+</tr>
+<tr>
+<td>FTS tokenizer is <code>unicode61</code> (no porter stemmer)</td>
+<td><code>storage/sqlite/archive_tiers/index.py</code></td>
+</tr>
+<tr>
+<td>Schema bootstrap branching is shared across sync and async backends</td>
+<td><code>storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()</code></td>
+</tr>
+</tbody>
+</table>
+<h2>Hot Files</h2>
+<h3>Entry Points</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>polylogue/api/__init__.py</code></td>
+<td>Async library API</td>
+</tr>
+<tr>
+<td><code>polylogue/config.py</code></td>
+<td>Runtime configuration and XDG resolution</td>
+</tr>
+<tr>
+<td><code>polylogue/cli/click_app.py</code></td>
+<td>Root query-first CLI dispatch</td>
+</tr>
+<tr>
+<td><code>polylogue/cli/command_inventory.py</code></td>
+<td>CLI command inventory</td>
+</tr>
+<tr>
+<td><code>polylogue/operations/archive.py</code></td>
+<td>High-level archive operations</td>
+</tr>
+</tbody>
+</table>
+<h3>Storage</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>storage/sqlite/archive_tiers/</code></td>
+<td>Current split archive DDL and tier versions</td>
+</tr>
+<tr>
+<td><code>storage/sqlite/schema.py</code></td>
+<td>Shared sync/async fresh-init, version guard, and extension application</td>
+</tr>
+<tr>
+<td><code>storage/sqlite/schema_bootstrap.py</code></td>
+<td>Shared schema snapshot, bootstrap branching, and extension planning</td>
+</tr>
+<tr>
+<td><code>storage/sqlite/connection_profile.py</code></td>
+<td>Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles</td>
+</tr>
+<tr>
+<td><code>storage/repository/__init__.py</code></td>
+<td>Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology)</td>
+</tr>
+<tr>
+<td><code>storage/search_providers/fts5.py</code></td>
+<td>Lexical search</td>
+</tr>
+<tr>
+<td><code>storage/search_providers/hybrid.py</code></td>
+<td>Hybrid retrieval (RRF fusion)</td>
+</tr>
+</tbody>
+</table>
+<h3>Sources and Pipeline</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sources/dispatch.py</code></td>
+<td>Provider detection and parser routing</td>
+</tr>
+<tr>
+<td><code>sources/parsers/*.py</code></td>
+<td>Per-provider parsing</td>
+</tr>
+<tr>
+<td><code>pipeline/ingest_support.py</code></td>
+<td>Ingest stage definitions and source selection helpers</td>
+</tr>
+<tr>
+<td><code>pipeline/ids.py</code></td>
+<td>Content hashing and ID generation</td>
+</tr>
+<tr>
+<td><code>pipeline/services/ingest_batch/_core.py</code></td>
+<td>Batch ingest (largest pipeline file)</td>
+</tr>
+</tbody>
+</table>
+<h2>Extension Points</h2>
+<p><strong>Adding a provider</strong>: Start at <code>sources/dispatch.py:detect_provider()</code>. Add a
+<code>looks_like()</code> function in a new parser under <code>sources/parsers/</code>. Add a
+<code>Provider</code> enum variant in <code>core/enums.py</code>. Add a provider schema bundle under
+<code>schemas/providers/</code>. Dispatch is generally strict-before-loose for record-path
+and Pydantic-validated checks, but <code>sources/dispatch.py</code> runs some structural
+sequence detectors before loose code/dict probes. Insert the new check at the
+tightness level it deserves or an earlier parser will claim its records first.</p>
+<p><strong>Adding a filter</strong>: Filter chain: <code>archive/filter/filters.py</code>. If the filter
+needs a stats-table join, update <code>_needs_stats_join()</code> in
+<code>storage/sqlite/connection.py</code>. Add the corresponding CLI flag in
+<code>cli/query.py</code> and MCP parameter in <code>mcp/</code>.</p>
+<p><strong>Adding a CLI command</strong>: Register in <code>cli/command_inventory.py</code>. Implementation
+goes in <code>cli/commands/</code>. The CLI shows fast daemon status on bare invocation
+and falls back to archive summary when the daemon is not running.</p>
+<p><strong>Adding a session insight</strong>: Define the insight model in <code>insights/</code>. Add
+storage in <code>storage/insights/session/</code>. Wire rebuild logic and register in
+<code>insights/registry.py</code>.</p>
+<p><strong>Adding a devtools command</strong>: Add a <code>CommandSpec</code> to
+<code>devtools/command_catalog.py</code>. Implementation goes in <code>devtools/&lt;name&gt;.py</code>.
+Run <code>devtools render all</code> to update the generated catalog in
+<code>docs/devtools.md</code>.</p>
+<p><strong>Adding any new module/file under <code>polylogue/</code></strong>: regenerate the topology
+projection or <code>verify topology</code> and <code>render all --check</code> will fail on the new
+path. Run <code>devtools render topology-projection &amp;&amp; devtools render topology-status</code>
+and commit the updated <code>docs/plans/topology-target.yaml</code> and
+<code>docs/topology-status.md</code> alongside the code.</p>
+<h2>Schema Versioning Model</h2>
+<p>Polylogue has two schema-evolution regimes, keyed by tier durability.</p>
+<ul>
+<li>
+<p>Tier version constants under <code>storage/sqlite/archive_tiers/</code> are the
+authority. The canonical fresh schema is described directly by each tier DDL.</p>
+</li>
+<li>
+<p><strong>Durable tiers</strong> (<code>source.db</code>, <code>user.db</code>) may use explicit additive
+migrations. Migration SQL lives under
+<code>storage/sqlite/migrations/{source,user}/NNN_name.sql</code>, advances
+<code>PRAGMA user_version</code> one step at a time, and requires a verified backup
+manifest containing the affected tier before it runs. Additive means
+<code>CREATE TABLE</code>, <code>CREATE INDEX</code>, <code>ADD COLUMN</code>, and bounded backfills.
+Destructive durable-tier changes require a copy-forward design and explicit
+operator consent.</p>
+</li>
+<li>
+<p><strong>Derived tiers</strong> (<code>index.db</code>, <code>embeddings.db</code>) do not have in-place migration
+chains. They are rebuildable products over durable source/user evidence:
+schema mismatches are handled by rebuilding or blue-green replacing the
+affected derived tier from source, preserving durable tiers.</p>
+</li>
+<li>
+<p><strong>Disposable tiers</strong> (<code>ops.db</code>) may keep narrow bootstrap-time <code>ALTER TABLE</code>
+helpers for daemon telemetry because the tier is disposable.</p>
+</li>
+<li>
+<p>On startup the on-disk <code>PRAGMA user_version</code> is compared against the tier
+constant:</p>
+<ul>
+<li><strong>Empty file</strong> (<code>user_version == 0</code>): bootstrap fresh.</li>
+<li><strong>Version match</strong>: open as-is.</li>
+<li><strong>Older durable tier</strong>: refuse ordinary open and require explicit migration
+with a backup manifest.</li>
+<li><strong>Derived mismatch or newer durable tier</strong>: reject and require rebuild or a
+newer runtime as appropriate.</li>
+</ul>
+</li>
+<li>
+<p>During development, schema changes are triaged before reset/reingest:
+metadata-only, index-only, additive-derived, additive-durable, or
+semantic-reparse-required. Same-tier schema changes from ready Beads should be
+batched before a live rebuild so the active archive is not reset repeatedly.</p>
+</li>
+<li>
+<p><code>devtools lab policy schema-versioning</code> enforces the boundary: durable SQL
+migrations are allowed only under the numbered migration resource roots, while
+derived-tier upgrade helpers remain forbidden.</p>
+</li>
+<li>
+<p>User schema version 4 adds <code>user_settings</code>, a durable key/value table for
+workspace/settings state that is not an epistemic assertion. Existing v3
+user tiers migrate additively after a verified backup manifest; fresh user
+tiers create the table directly.</p>
+</li>
+<li>
+<p>Source schema version 3 drops <code>pending_blob_refs</code> (polylogue-v7e0). The
+table backed a blob-GC lease mechanism (<code>acquire_blob_leases</code>/
+<code>release_operation_leases</code>) that a race-window audit found no production
+ingest caller ever populated — the table was provably empty in every real
+deployment (zero writers anywhere in the write path) — see &quot;GC concurrency
+model&quot; below for the current, lease-free contract. Existing v2 source
+tiers migrate via
+<code>storage/sqlite/migrations/source/003_drop_pending_blob_refs.sql</code> after a
+verified backup manifest; fresh source tiers never create the table.</p>
+</li>
+<li>
+<p>Index schema version 28 adds the <code>delegations</code> VIEW, derived from
+<code>session_links</code> (<code>link_type='subagent'</code>) LEFT JOIN'd to the parent's Task
+dispatch <code>actions</code> row and both sessions' <code>session_profiles</code> — no
+convergence stage needed, matching the <code>actions</code> view's own derived-tier
+precedent. <code>result_status</code> (<code>ok</code>/<code>error</code>/<code>unknown</code>) is derived only from
+<code>actions.is_error</code>/<code>exit_code</code>, never guessed.</p>
+</li>
+<li>
+<p>Index schema version 27 adds <code>session_profiles.primary_model_name</code> and
+<code>primary_model_family</code>, the dominant model per session by assistant
+OUTPUT-token share, backing the <code>delegations</code> view above.</p>
+</li>
+<li>
+<p>Index schema version 26 rewrites the <code>actions</code> view to pair <code>tool_use</code>/
+<code>tool_result</code> blocks by transcript rank within <code>(session_id, tool_id)</code>
+instead of a plain <code>tool_id</code> equality join, which fanned out N*M when a
+provider re-emitted the same <code>tool_id</code> on distinct messages.</p>
+</li>
+<li>
+<p>Index schema version 25 adds <code>blocks.content_hash</code>, a SHA-256 over
+canonical block evidence (type, text, tool_name, canonical tool_input,
+semantic/media/language, is_error, exit_code — excluding
+session_id/message_id/position/tool_id) so a stored block citation anchor
+survives fork-position shift, re-ingest renumbering, and provider tool-id
+regeneration. See <code>polylogue/storage/block_anchor.py</code>.</p>
+</li>
+<li>
+<p>Index schema version 24 admits <code>capture_gap</code> rows in <code>session_events</code>. These
+are narrow lifecycle evidence events emitted when ingest rejects a lower-
+precedence DOM browser-capture fallback because a richer source row already
+owns the session. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 23 adds <code>idx_blocks_search_text_populated</code>, a partial
+index over text-bearing <code>blocks</code> rows, and makes <code>fts_freshness_state</code> part of
+the canonical fresh index tier. Message search readiness compares that source
+set with <code>messages_fts_docsize</code> and consults the durable freshness marker
+before running user FTS queries; without the partial index and ledger, large
+archives can spend the query budget scanning <code>blocks</code> merely to decide whether
+<code>polylogue find hermes</code> is allowed to run. Existing index tiers must be
+rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 22 adds <code>idx_blocks_tool_result_outcome</code>, a partial
+index over structured <code>tool_result</code> outcome fields. Claim-vs-evidence and
+action-outcome reads anchor on provider-reported <code>is_error</code> / non-zero
+<code>exit_code</code> rather than assistant prose; without an outcome-leading index,
+large archives must scan the whole tool-result block set before pairing
+actions. Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 21 adds <code>idx_messages_embedding_prose</code>, a partial
+covering index for authored prose messages eligible for paid embeddings:
+standard <code>message</code> rows from <code>user</code>/<code>assistant</code> roles, with
+<code>human_authored</code>/<code>assistant_authored</code> material origin and positive word
+count. Embedding preflight, status detail, and archive-session embedding
+reads use this index when present so cost windows do not scan unrelated tool,
+protocol, context-pack, or runtime rows in large archives. Existing index
+tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 20 adds <code>idx_blocks_type_tool</code>, an expression index on
+<code>(block_type, COALESCE(NULLIF(LOWER(tool_name), ''), 'unknown'))</code>, so tool
+family rollups can resolve exact tool names and MCP-server prefixes without
+scanning every <code>tool_use</code> block in large archives. The <code>analyze tools</code>
+lowerers use range predicates for MCP prefixes to match the index expression.
+Existing index tiers must be rebuilt from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 19 adds expression indexes for materialized
+<code>session_observed_events</code> tool outcome payload fields. The terminal query DSL
+can now ask questions such as
+<code>observed-events where kind:tool_finished | group by handler | count</code>; on
+large archives the v18 shape filtered by <code>kind</code> and then built temporary
+B-trees over JSON-extracted <code>tool_name</code>, <code>handler_kind</code>, or <code>status</code> values.
+The v19 indexes key <code>(kind, COALESCE(NULLIF(json_extract(payload_json, '$.&lt;field&gt;'), ''), 'unknown'))</code> for <code>tool_name</code>, <code>handler_kind</code>, and
+<code>status</code>, matching the SQL lowerer's group expressions. Existing index tiers
+must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 16 captures structured tool-result outcomes (the
+&quot;keystone&quot;). <code>blocks</code> gains <code>tool_result_is_error</code> (0/1, nullable) and
+<code>tool_result_exit_code</code> (nullable INTEGER); the <code>actions</code> view exposes them
+as <code>is_error</code> / <code>exit_code</code> alongside the paired tool_use row. Previously the
+source's own outcome fields (Claude <code>is_error</code> on tool_result content, Codex
+<code>function_call_output.metadata.exit_code</code>) were dropped at parse, forcing
+in-session outcomes (&quot;tests passed&quot;, &quot;command failed&quot;) to be regex-guessed
+from result text. Now they are read from structure: NULL means unknown
+(default), never a fabricated positive. This is additive — existing rows
+read NULL until rebuilt. Rebuild from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 15 makes <code>idx_messages_session_sortkey</code> an expression
+index — <code>(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)</code>
+(#2475 perf audit). The keyset/paginated message reads order by
+<code>(occurred_at_ms IS NULL), occurred_at_ms, message_id</code> so NULL-timestamp rows
+sort last; the v14 plain <code>(session_id, occurred_at_ms, message_id)</code> index could
+not satisfy that leading <code>IS NULL</code> expression, so the planner fell back to
+<code>USE TEMP B-TREE FOR ORDER BY</code> and sorted the whole session per chunk
+(expensive on multi-thousand-message sessions). The expression index matches
+the ORDER BY exactly and plans as a covering-index scan with no temp sort
+(verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
+(<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 14 hardens lineage normalization (#2467 audit).
+<code>session_links.branch_point_message_id</code> is no longer a FK with <code>ON DELETE SET NULL</code>: a parent's full-replace re-ingest (<code>DELETE FROM messages</code> then re-INSERT)
+would otherwise null the child's branch point during the DELETE step and
+permanently break the child's composition. <code>message_id</code> is deterministic, so the
+plain-TEXT reference survives the re-create; reads bail to the child's own tail
+if a branch point ever dangles. Also adds <code>idx_messages_session_sortkey</code> so the
+keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
+from source evidence.</p>
+</li>
+<li>
+<p>Index schema version 13 makes attachment bytes honest (#2468). <code>attachments.blob_hash</code>
+is now nullable and holds the <strong>true SHA-256 of the stored bytes</strong> when acquired
+(previously a synthetic hash of the attachment id was written with no blob ever
+stored — 0 blobs for 8,425 rows). A new <code>acquisition_status</code>
+(<code>acquired</code> / <code>unavailable</code> / <code>unfetched</code>) records whether the bytes were
+fetched. Inline export bytes (e.g. Gemini base64) are written to the
+content-addressed blob store at ingest; other sources stay <code>unfetched</code> with the
+source ref preserved for later re-acquisition. Rebuild from source evidence.</p>
+</li>
+<li>
+<p>Index schema version 12 normalizes prefix-sharing lineage (#2467). A fork,
+resume, spawned subagent, or auto-compaction copy physically replays the
+parent's leading context; the writer now drops that inherited prefix and keeps
+only the child's divergent tail, recording the relationship on <code>session_links</code>
+via two new columns: <code>branch_point_message_id</code> (the last inherited parent
+message) and <code>inheritance</code> (<code>prefix-sharing</code> vs <code>spawned-fresh</code>). Reads
+(<code>get_messages</code>, <code>read_archive_session_envelope</code>) compose the parent transcript
+up to the branch point + the child's own tail, so each real message is stored
+once while the full logical transcript is still served. Existing index tiers
+must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>); <code>source.db</code> is untouched, so this is a derived-index rebuild
+with no user-data impact. (The matching parser detection of Codex
+<code>forked_from_id</code>/<code>thread_spawn</code> and Claude <code>agent-acompact-*</code> shipped
+alongside.)</p>
+</li>
+<li>
+<p>Index schema version 11 materializes the run projection into three derived
+read-model tables — <code>session_runs</code>, <code>session_observed_events</code>, and
+<code>session_context_snapshots</code> — recomputed by the session-insight materializer
+(<code>compile_session_digest(...).run_projection</code>) exactly like <code>session_profiles</code>.
+They are derived/rebuildable enrichments, not the only query substrate:
+terminal <code>run</code> / <code>observed-event</code> / <code>context-snapshot</code> queries also synthesize
+cheap local rows directly from <code>sessions</code> and <code>blocks</code> (main runs,
+<code>session_started</code>, tool-finished outcomes, and session-start context
+snapshots). The durable evidence stays <code>session_events</code> + <code>messages</code> +
+<code>session_links</code>, and materialized rows are retained only where they encode
+richer non-local projections that are not cheap to lower directly. Existing
+index tiers must be rebuilt from source evidence (<code>polylogue ops reset --index &amp;&amp; polylogued run</code>).</p>
+</li>
+<li>
+<p>Index schema version 10 adds a role-leading <code>idx_messages_role</code> index so
+daemon <code>/api/facets</code> can compute global role counts without scanning the
+session-role compound index and spilling to a temp B-tree. Existing index
+tiers must be rebuilt from source evidence or explicitly operator-patched by
+adding the index to a backed-up archive before moving that archive to version
+10 with the matching deployed package.</p>
+</li>
+<li>
+<p>Index schema version 9 adds typed <code>sessions.session_kind</code> for standard vs
+temporary sessions. Existing index tiers must be rebuilt from source evidence
+or explicitly operator-patched so temporary ChatGPT/Claude/browser-capture
+sessions become schema state instead of only parser auto-tags.</p>
+</li>
+<li>
+<p>Index schema version 8 added <code>web_content_constructs</code> for provider-native
+web/export constructs such as citations, source references, canvas/artifact
+revisions, asset pointers, token-budget rows, and task/search records.</p>
+</li>
+<li>
+<p>Index schema version 7 added JSON-object checks for <code>blocks.tool_input</code>
+and <code>session_provider_usage_events.payload_json</code>. Existing index tiers must
+be rebuilt from source evidence so the canonical read model is recreated with
+the stricter JSON contract.</p>
+</li>
+<li>
+<p>Provider usage accounting is audited as a source-derived read model: exact
+event rows (<code>session_provider_usage_events</code>), text-only estimates, unsupported
+origins, source rows acquired but not materialized, and stale
+<code>session_model_usage</code> rollups are distinct diagnostic states. Cache read/write
+token lanes remain labelled and are not merged into generic input/output.</p>
+</li>
+<li>
+<p>Index schema version 6 added <code>session_provider_usage_events</code> for
+provider-reported token usage events and single-model rollup repair from
+those events. Existing index tiers must be rebuilt from source evidence so
+Codex <code>token_count</code> records materialize into durable provider usage rows
+instead of disappearing after parse.</p>
+</li>
+<li>
+<p>Index schema version 5 added <code>messages.material_origin</code> plus authored-user
+aggregate columns on <code>sessions</code>. Existing index tiers must be rebuilt from
+source evidence so Claude Code <code>role=user</code> protocol/context/generated-pack
+rows move out of authored-user accounting while provider-role counts remain
+available.</p>
+</li>
+<li>
+<p>Provider schemas (the parsing/validation surface, distinct from the
+storage schema) are still regenerated fresh via
+<code>devtools lab schema generate</code> and promoted via <code>devtools lab schema promote</code>.</p>
+</li>
+</ul>
+<p>For <strong>derived tiers</strong> (<code>index.db</code>, <code>embeddings.db</code>) this design intentionally
+rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse
+upgrade scripts, no partially-applied upgrade states, no
+<code>_apply_version_upgrade_plan</code> rollback windows): a derived-tier schema mismatch
+rebuilds or blue-green-replaces the tier from durable source/user evidence.
+Files that are not configured archive paths are not classified or handled by
+the archive runtime.</p>
+<p>For <strong>durable tiers</strong> (<code>source.db</code>, <code>user.db</code>) the boundary is different, because
+<code>user.db</code> holds irreplaceable human assertions that cannot be rebuilt from
+source. These tiers use explicit <em>additive</em> numbered SQL migrations under
+<code>storage/sqlite/migrations/{source,user}/NNN_*.sql</code>, applied one <code>PRAGMA user_version</code> step at a time by <code>migration_runner.py</code> behind a <strong>verified backup
+manifest</strong> for the affected tier. Additive means <code>CREATE TABLE</code>/<code>CREATE INDEX</code>/
+<code>ADD COLUMN</code>/bounded backfill; destructive durable-tier changes require a
+copy-forward design and explicit operator consent, never a routine migration.</p>
+<p><code>ops.db</code> (disposable daemon telemetry) may additionally use narrowly scoped
+<code>ALTER TABLE ... ADD COLUMN</code> bootstrap helpers in
+<code>storage/sqlite/archive_tiers/bootstrap.py</code>
+(ingest-cursor runtime fields, cursor-lag rollups). The
+<code>devtools lab policy schema-versioning</code> lint enforces the whole boundary:
+numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
+forbidden.</p>
+<h2>Archive Activation</h2>
+<p>The archive file set is split by durability class:</p>
+<ul>
+<li><code>source.db</code> stores raw acquisition rows and source evidence that
+rebuildable projections depend on.</li>
+<li><code>index.db</code> stores the parsed session/message/block tree, FTS/search
+indexes, graph/topology rows, and derived insight read models.</li>
+<li><code>embeddings.db</code> stores vector rows, embedding status, and embedding
+catch-up metadata; it is rebuildable, but expensive.</li>
+<li><code>user.db</code> stores irreplaceable human input as assertion rows: marks,
+annotations, corrections, user tags, metadata keys, saved views,
+recall packs, workspaces, blackboard notes, candidates, and judgments.</li>
+<li><code>ops.db</code> stores disposable daemon telemetry such as ingest cursors,
+attempts, convergence debt, stage events, embedding catch-up runs,
+and OTLP spans.</li>
+</ul>
+<p>The operator flow is explicit:</p>
+<pre><code class="language-bash">polylogue ops maintenance archive-plan
+polylogue ops maintenance archive-init --yes
+polylogued run
+polylogue ops maintenance archive-read --limit 20
+</code></pre>
+<p><code>archive-init</code> bootstraps the archive file set. The daemon and explicit
+ingest paths populate <code>source.db</code> and <code>index.db</code> directly from source
+artifacts. Root query commands use the active <code>index.db</code>.</p>
+<p>Source schema version 2 removes the old unique <code>(origin, native_id)</code> raw-row
+constraint. A native session can have multiple durable source observations
+(direct export, browser native capture, DOM fallback, historical ZIPs) while
+still coalescing to one canonical indexed session; source evidence must not be
+replaced merely because two captures describe the same provider-native id.</p>
+<h2>Topology Edges (#1258)</h2>
+<p>The <code>session_links</code> table (index tier) persists every parent reference asserted
+by a parser as a typed row, including references whose parent has not yet been
+ingested (out-of-order ingestion) or has been hard-deleted. The pre-existing
+fast path (<code>sessions.parent_session_id</code> set when the parent is in the prepare
+cache) is unchanged; <code>session_links</code> is an additional durable record that always
+carries the original provider-native parent id. The same table also carries the
+#2467 prefix-sharing lineage columns (<code>branch_point_message_id</code>, <code>inheritance</code>).</p>
+<ul>
+<li><strong>Identity:</strong> primary key
+<code>(src_session_id, dst_origin, dst_native_id, link_type)</code>.
+Re-ingesting the same child is idempotent.</li>
+<li><strong>Closed enums:</strong> <code>polylogue/core/enums.py</code> owns <code>LinkType</code>
+(continuation / sidechain / subagent / branch / fork / resume / repaired),
+re-exported as <code>TopologyEdgeType</code> from
+<code>polylogue/archive/topology/edge.py</code>, and <code>TopologyEdgeStatus</code>
+(unresolved / resolved / repaired / quarantined). <code>quarantined</code> marks a link
+the topology reducer dropped to break a cycle.</li>
+<li><strong>Resolve:</strong> every session save runs <code>resolve_session_links_for_session</code>
+(<code>polylogue/storage/sqlite/queries/session_links.py</code>) so that an out-of-order
+child's edge flips to <code>resolved</code> the moment its parent's native id appears in
+<code>sessions</code>.</li>
+<li><strong>Hash boundary:</strong> these links are derived per ingest and are NOT part
+of <code>sessions.content_hash</code> — mirrors the same boundary as user correction
+assertions (#1131).</li>
+</ul>
+<h2>Logical Session Identity (#866)</h2>
+<p><code>session_profiles.logical_session_id</code> materializes the resolved root of a
+session's parent chain. For a root session it equals
+<code>session_id</code>; for continuations, forks, sidechains, and subagents it points
+at the root session that represents the logical work session.</p>
+<p>Day summaries and tag rollups retain <code>session_count</code> as the physical
+session count and add <code>logical_session_count</code> plus
+<code>logical_session_ids_json</code> so weekly and cross-provider reducers can count
+logical sessions without re-walking parent pointers. The Python API exposes
+<code>get_logical_session(session_id)</code> as the compact read-pull envelope for
+agents and MCP callers; <code>get_session_topology</code> remains the full graph view.</p>
+<h2>Learning Corrections (Feedback Loop)</h2>
+<p>User corrections live outside the content-hash boundary by construction
+(#1131). In the split archive they are <code>AssertionKind.CORRECTION</code> rows in the
+unified <code>user.db</code> <code>assertions</code> table; a legacy <code>user_corrections</code> table is still
+read for pre-split single-file archives (<code>storage/insights/feedback/</code>):</p>
+<ul>
+<li>Keyed by session and correction kind — at most one correction of
+each kind per session, so deterministic rebuilds always produce the
+same merged insight output.</li>
+<li>Recognized kinds (closed <code>CorrectionKind</code> enum):
+<code>tag_reject</code>, <code>tag_accept</code>, <code>summary_override</code>. New kinds are an
+explicit code change.</li>
+<li>Recording or removing a correction never touches
+<code>sessions.content_hash</code>. The hash invariant is asserted by
+<code>tests/unit/insights/test_feedback.py</code>.</li>
+<li>Insight materialization paths consult corrections after computing
+heuristic suggestions. Auto-tag and summary merge helpers live in
+<code>polylogue/insights/feedback.py</code>.</li>
+<li>Surfaces:
+<ul>
+<li>MCP: <code>record_correction</code>, <code>list_corrections</code>, <code>clear_corrections</code>.</li>
+<li>Library: <code>Polylogue.record_correction(...)</code>,
+<code>Polylogue.list_corrections(...)</code>,
+<code>Polylogue.delete_correction(...)</code>, <code>Polylogue.clear_corrections(...)</code>.</li>
+</ul>
+</li>
+<li>Storage backed by <code>polylogue/storage/sqlite/archive_tiers/archive.py</code>
+(<code>ArchiveStore.record_correction</code> / <code>list_corrections</code> /
+<code>delete_correction</code> / <code>clear_corrections</code>) and
+<code>polylogue/storage/insights/feedback/</code> (async SQL helpers).</li>
+</ul>
+<h2>Text Handling Contracts</h2>
+<p>Polylogue exposes several text-processing boundaries. Each declares one of
+three contracts per edge case; the matrix in
+<code>tests/property/test_encoding_boundary_matrix.py</code> (#1305) is the executable
+record of which contract applies where.</p>
+<table>
+<thead>
+<tr>
+<th>Boundary</th>
+<th>Module</th>
+<th>Contract for edge cases</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JSON byte decoding</td>
+<td><code>polylogue/sources/decoder_json.py:decode_json_bytes</code></td>
+<td>UTF-8 BOM and BOM-bearing UTF-16 are decoded and the BOM is stripped; raw UTF-16 without a BOM is unsupported by design.</td>
+</tr>
+<tr>
+<td>Content hash</td>
+<td><code>polylogue/core/hashing.py:hash_text</code>, <code>polylogue/pipeline/ids.py</code></td>
+<td>NFC normalization is applied to text fields (title, message text) before hashing, so NFC and NFD inputs produce identical <code>content_hash</code>. Lone surrogates raise <code>UnicodeEncodeError</code> (typed rejection — not silent corruption).</td>
+</tr>
+<tr>
+<td>FTS5 indexing</td>
+<td><code>polylogue/storage/sqlite/archive_tiers/index.py</code> (<code>messages_fts</code>, unicode61)</td>
+<td>Block search text is stored and indexed unchanged. RTL scripts (Arabic, Hebrew) and Latin-with-diacritics are word-tokenized; CJK runs index as a single token (substring queries against CJK are not supported). Zero-width and bidi characters pass through without crashing indexing.</td>
+</tr>
+<tr>
+<td>FTS5 query escaping</td>
+<td><code>polylogue/storage/search/query_support.py:escape_fts5_query</code></td>
+<td>Every edge-case input produces a <code>MATCH</code>-safe query — bidi, zero-width, RTL, CJK, surrogate-pair emoji never raise <code>OperationalError</code>.</td>
+</tr>
+<tr>
+<td>Terminal output</td>
+<td>UTF-8 <code>TextIOWrapper</code></td>
+<td>All matrix strings pass through unchanged; lone surrogates raise <code>UnicodeEncodeError</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Edge cases covered: UTF-8/UTF-16 BOM, NFC/NFD equivalence, combining marks,
+RTL (Arabic, Hebrew), bidi overrides, zero-width joiners and ZWNJ/ZWSP,
+non-BMP characters (CJK extension B), ZWJ emoji sequences with skin-tone
+modifiers, and unpaired surrogates.</p>
+<h2>WAL Management</h2>
+<p>SQLite WAL behavior for the archive database (see also
+<code>polylogue/storage/sqlite/connection_profile.py</code>):</p>
+<ul>
+<li><strong>Journal mode</strong>: WAL on the write profile. Set once per database
+the first time a writer opens it; persists in the file header.</li>
+<li><strong>Connection cache profiles</strong>: high-throughput ingest writes use the
+full write profile (<code>128 MiB</code> SQLite cache, <code>1 GiB</code> mmap allowance).
+Long-running daemon/ops writes use the daemon write profile (<code>16 MiB</code>
+cache, <code>64 MiB</code> mmap allowance) so small telemetry, cursor, heartbeat,
+OTLP, and maintenance writes do not keep batch-sized SQLite page-cache
+pressure charged to <code>polylogued.service</code>. Read-only daemon probes use
+the read profile (<code>query_only=ON</code>) instead of opening write connections.</li>
+<li><strong>Autocheckpoint threshold</strong>: <code>WAL_AUTOCHECKPOINT_PAGES = 10000</code> =
+40 MiB. When the WAL crosses this, SQLite runs a PASSIVE checkpoint
+inline with the next commit.</li>
+<li><strong>Size cap</strong> (#1614): <code>WAL_JOURNAL_SIZE_LIMIT_BYTES = 160 MiB</code> (4x
+the autocheckpoint threshold). Set via <code>PRAGMA journal_size_limit</code>
+on the write profile. When a TRUNCATE checkpoint succeeds (no
+readers blocking), SQLite truncates the WAL file down to the cap.
+A reader-blocked WAL still grows past the cap during the blocked
+window; the first successful TRUNCATE after the reader closes
+shrinks it back.</li>
+<li><strong>Read profile</strong> (#1614): the canonical read profile sets
+<code>PRAGMA query_only = ON</code>. Read connections opened via
+<code>open_readonly_connection</code> already use the <code>mode=ro</code> URI flag for
+file-level read-only enforcement; the pragma additionally rejects
+accidental writes at SQL parse time instead of contending for the
+write lock and timing out.</li>
+</ul>
+<h3>Relationship to #1602 (autocheckpoint revert)</h3>
+<p>A previous PR (3c5cc1a0) lowered the autocheckpoint threshold to 4 MB
+to shrink the symptom of unbounded WAL growth under reader-blocked
+TRUNCATE checkpoints. That tightening was reverted in #1602 once the
+real fix landed: the autocheckpoint threshold is back to 40 MB
+(<code>WAL_AUTOCHECKPOINT_PAGES = 10000</code>), and the new
+<code>journal_size_limit</code> cap from #1614 is what bounds WAL growth
+without paying the per-commit cost of a tighter autocheckpoint
+threshold. The two work together — autocheckpoint is the routine
+trim, journal_size_limit is the post-blocked-window shrink.</p>
+<h3>Daemon-side periodic checkpoint</h3>
+<p>The daemon runs <code>maybe_checkpoint_wal()</code> every 5 minutes via the
+periodic loop. This explicit TRUNCATE pass is the primary mechanism
+that exercises the <code>journal_size_limit</code> cap in production — once the
+reader contention clears, the next periodic pass shrinks the WAL.</p>
+<h2>Content Hash Model</h2>
+<p>Archive writes are idempotent by content hash:</p>
+<ul>
+<li>SHA-256 over NFC-normalized (Unicode Normalization Form C) session
+payload</li>
+<li>Hashed fields: title, timestamps, messages, attachments, content blocks</li>
+<li>Excluded from hash: user metadata (tags, summaries, notes) — editing these
+does not trigger re-import</li>
+<li>Hash is computed in <code>pipeline/ids.py:session_content_hash()</code> and stored
+as <code>content_hash</code> on sessions</li>
+<li>On re-ingest, if the content hash matches, the session is skipped
+(idempotency). If it differs, the session is updated and dependent
+insights are rebuilt.</li>
+</ul>
+<h2>FTS5 Model</h2>
+<p>Full-text search uses SQLite FTS5:</p>
+<ul>
+<li><strong>Tokenizer</strong>: <code>unicode61</code> (no porter stemmer — this SQLite build doesn't
+include it). Case-insensitive for ASCII. Unicode-aware tokenization.</li>
+<li><strong>Contentless, not external-content</strong>: <code>messages_fts</code> is declared
+<code>content=''</code> with <code>contentless_delete=1</code> — it does NOT sync against a
+<code>messages</code> (or any other) source table by re-reading it. The indexed text
+is <code>blocks.search_text</code>, a <code>VIRTUAL</code> generated column (<code>trim(text || ' ' || tool_name || ' ' || tool_input.command/file_path/path)</code>), supplied
+explicitly at insert time by three rowid-keyed triggers
+(<code>messages_fts_ai</code>/<code>_ad</code>/<code>_au</code>) on <code>blocks</code>, not read back from any content
+table. Practical consequence: <code>snippet()</code>/<code>highlight()</code> return <code>NULL</code>
+(contentless tables have no stored text for FTS5 to slice), so every read
+path that needs the actual text joins <code>blocks</code> by <code>rowid</code> and uses
+<code>b.search_text</code> directly instead.</li>
+<li><strong>No trigger-suspension/rebuild loop</strong>: an earlier design (#1242) dropped
+the FTS triggers during bulk writes and rebuilt the index afterward
+(<code>INSERT INTO messages_fts(messages_fts) VALUES('rebuild')</code>); that
+auto-restore loop has been removed — it guarded a mid-batch state that
+never actually landed as committed drift (SQLite DDL is transactional, so
+a SIGKILL mid-batch always rolled back to the triggers-present state
+anyway). The real net today is the freshness/repair machinery: the
+<code>fts_freshness_state</code> durable marker plus the <code>idx_blocks_search_text_populated</code>
+partial index, which message-search readiness consults against
+<code>messages_fts_docsize</code> before running a user FTS query (index schema
+version 23, see the schema-version-history note above), and the
+per-session repair path (#1851) that reconciles a specific session's FTS
+rows against <code>blocks.search_text</code> on demand.</li>
+<li><strong>Query syntax</strong>: FTS5 boolean operators (AND/OR/NOT), phrase search
+(<code>&quot;exact phrase&quot;</code>), prefix search (<code>prefix*</code>). Column filters are not
+directly exposed; use CLI/MCP filters instead.</li>
+</ul>
+<h2>Blob Store Model</h2>
+<p>Content-addressed blob storage for large binary data:</p>
+<ul>
+<li><strong>Content addressing</strong>: SHA-256 hash over raw bytes. The hash IS the address.
+Identical content → identical hash → automatic deduplication.</li>
+<li><strong>Prefix sharding</strong>: 256 subdirectories (<code>blob/00/</code> through <code>blob/ff/</code>),
+each containing blobs keyed by the remaining 62 hex characters of the hash.</li>
+<li><strong>Linking</strong>: <code>raw_artifacts.link_group_key</code> groups related blobs
+(e.g., all blobs belonging to one session). The blob store itself
+(<code>polylogue/storage/blob_store.py</code>) is a pure content-addressed store with
+no notion of grouping; session-to-blob association is recorded as
+rows in <code>raw_artifacts</code> keyed by <code>raw_id</code> with a shared
+<code>link_group_key</code>. (There is no separate <code>blob_links</code> table; the name is a
+historical alias for this row-group view of <code>raw_artifacts</code>.)</li>
+<li><strong>Operations</strong>: Blobs are write-once, read-many. No in-place modification.
+GC identifies unreferenced blobs via a snapshot reference check plus an
+age floor (see GC concurrency model below), not simple link counting.</li>
+</ul>
+<h3>GC concurrency model — snapshot reference check plus age floor</h3>
+<p><code>run_blob_gc</code> deletes orphan blob files using two independent safety
+invariants combined:</p>
+<ol>
+<li><strong>DB reference check</strong> — <code>_still_referenced</code> queries <code>raw_sessions</code> for
+the blob's <code>raw_id</code>. If a raw record points at the blob, GC skips it.
+This is the snapshot/mark-and-sweep view of &quot;this blob is in active use
+right now.&quot; It only sees <em>committed</em> rows: a blob whose referencing
+ingest has written the bytes to disk but not yet committed the row is,
+by SQLite's isolation, indistinguishable from a true orphan to this
+check alone.</li>
+<li><strong>Age floor</strong> — a candidate must be older than
+<code>max(MIN_AGE_S, now - prev_generation.completed_at)</code>
+(<code>polylogue/storage/blob_gc.py:run_blob_gc_report</code>). <code>MIN_AGE_S</code> is 60
+seconds; <code>gc_generations</code> tracks the high-water mark of completed GC
+runs so a blob created during the same window as the previous pass is
+never reclaimed before its eventual reference can land. With no prior
+generation recorded, the static <code>MIN_AGE_S</code> floor applies on its own.</li>
+</ol>
+<p><strong>This age floor is the SOLE defense</strong> against the race the reference check
+cannot see: blob written to disk at T0, referencing row commits at T1, GC
+runs somewhere in <code>(T0, T1)</code>. A prior revision of this module carried a
+second invariant — a lease mechanism (<code>pending_blob_refs</code>,
+<code>acquire_blob_leases</code>/<code>release_operation_leases</code>) meant to make that window
+explicit rather than relying on a timing heuristic. It was fully
+implemented and unit-tested but <strong>never reachable in production</strong>: the only
+call site that could have populated the lease payload keys
+(<code>commit_archive_write_effects</code>'s <code>_blob_hashes</code>/<code>_operation_id</code>) was never
+given them by any real ingest caller (<code>_commit_sync_ingest_side_effects</code>
+built its payload without them). A race-window audit
+(<code>docs/audits/2026-07-09-race-window-audit.md</code>, rows 1a/1b) confirmed zero
+production callers across the whole write path, so <code>has_lease</code> was always
+<code>False</code> and the acquire/release calls never ran. The mechanism was removed
+rather than left as dead code implying a protection that did not exist
+(polylogue-v7e0).</p>
+<p><strong>Why <code>MIN_AGE_S = 60</code> is judged sufficient today</strong>: it must outlast the
+span from blob-write-to-disk to referencing-row-commit for one ingest
+operation. Ordinary ingest batches clear this comfortably — parse,
+materialize, and FTS repair for a normal session count run in low hundreds
+of milliseconds to a few seconds (<code>commit_archive_write_effects</code> only logs
+<code>slow_archive_write_effects</code> above 1.0s total). The known risk class is the
+memory-bounded streaming path for multi-GiB Claude Code JSONL
+(<code>sources/dispatch.py</code>), where a single session's parse+materialize could
+plausibly exceed 60s. <strong>The residual exposure</strong>: an operator who runs
+<code>polylogue maintenance blob-gc --yes</code> manually, concurrently with such a
+long-running ingest, inside that window, could still race a genuinely
+in-flight write. There is currently no lease-based (or other exact) closure
+of that window — the mitigation is operational (avoid running blob-gc
+manually during a large corpus import) rather than mechanical. Re-closing
+this precisely would require acquiring a lease at blob-write time (inside
+<code>acquisition_records.py</code>/<code>source_acquisition_components.py</code>/attachment
+writes), not merely at the end of an ingest batch just before commit — a
+lease acquired that late provides no additional coverage over what the age
+floor already gives, since the row is about to become visible anyway.
+Any future attempt at a real per-write lease should account for this,
+and for the fact that acquire and materialize can be separated across
+daemon batching/quiet-window deferral, not just within one call stack.</p>
+<ul>
+<li><strong>Known issues</strong>: GC has bugs with orphan detection and integrity
+verification (<a href="https://github.com/Sinity/polylogue/issues/818">#818</a>)
+— independent of the lease design audited above.</li>
+</ul>
+<h2>Daemon Convergence Evidence</h2>
+<p><code>polylogue ops diagnostics workload</code> produces a stable, JSON-serializable
+snapshot of daemon-relevant state read directly from the archive SQLite
+database. The probe is read-only and does not talk to the running daemon.</p>
+<p>Raw acquisition, index materialization, and FTS readiness are treated as one
+auditable convergence contract. A <code>source.db.raw_sessions</code> row that is not
+explicitly skipped and has no matching <code>index.db.sessions</code> row is
+<code>raw-materialization</code> archive debt; daemon status exposes it through
+<code>component_readiness.raw_materialization</code> and
+<code>raw_materialization_readiness</code> instead of reporting the archive as simply
+healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+cache: stale or untrusted recorded counts make search readiness non-ready until
+the index is demonstrably current.</p>
+<p>Session insights are the same class of daemon-enforced derived-model
+invariant, alongside FTS and embeddings. Missing or stale session profiles,
+work events, phases, threads, and run projections remain convergence debt until
+the insights stage has rebuilt them; a bounded false result is retried like the
+other derived-model stages rather than becoming an operator-maintenance task.
+The rebuild is idempotent by session id and materializer version, and the
+daemon records the stage timing and debt evidence through the normal convergence
+attempt path.</p>
+<p>Insight rebuilds deliberately stay out of the ingest write transaction even
+though they are automatic. They can hydrate and summarize large sessions, so
+the materializer commits per message-budget chunk to keep WAL and write-lock
+scope bounded. They also batch hot, still-changing source files until a quiet
+window, avoiding repeated expensive rebuilds while Codex or Claude continues to
+append to a session. Finally, the materializer has its own versioned rebuild
+contract: changing the derived insight algorithm should refresh the rebuildable
+read model without changing the durable source/index write boundary.</p>
+<p>For #845-style before/after convergence evidence snapshots:</p>
+<pre><code class="language-bash">polylogue ops diagnostics workload --json &gt; before.json
+# ...run convergence work (e.g. polylogued runs, ingest, debt drain)...
+polylogue ops diagnostics workload --json &gt; after.json
+polylogue ops diagnostics workload --compare before.json after.json
+polylogue ops diagnostics workload --compare before.json after.json --json &gt; diff.json
+</code></pre>
+<p>The report has a stable top-level shape carrying its <code>report_version</code>,
+<code>captured_at</code>, and structured sections that compare diffs arithmetically:</p>
+<ul>
+<li><code>attempt_counts</code> — total/running/completed/failed <code>live_ingest_attempt</code>
+rows plus <code>stale_cursor_writes</code> and overlapping running source paths.</li>
+<li><code>recent_attempts</code> — most recent attempts with read amplification,
+parse/convergence timings, and source-path bundles.</li>
+<li><code>convergence_stage_timings</code> — min/max/sum/mean parse/convergence/read-
+amplification stats over completed attempts.</li>
+<li><code>boundary_table_counts</code> — mixed cheap evidence for the tables in
+<code>_BOUNDARY_TABLES</code>/<code>_OPS_BOUNDARY_TABLES</code>
+(<code>devtools/daemon_workload_probe.py</code>, non-exhaustive here): exact counts for
+small/core archive cardinality tables and maintained rollups such as
+<code>sessions</code>, <code>raw_sessions</code>, <code>messages</code>, and <code>session_profiles</code>;
+planner-estimated counts only where exact counting would scan large derived
+tables (<code>blocks</code>, <code>messages_fts_docsize</code>, <code>message_embeddings</code>,
+<code>session_events</code>, <code>session_links</code>, <code>repos</code>, <code>session_repos</code>,
+<code>session_commits</code>, <code>live_ingest_attempt</code>, <code>convergence_debt</code>).
+Missing tables surface as <code>-1</code> and expensive tables without SQLite planner
+statistics surface as <code>-2</code> rather than crashing the probe. Pass
+<code>--exact-derived-counts</code> when a before/after evidence run needs exact
+arithmetic and the archive can afford the scans. The companion
+<code>boundary_table_count_precision</code> map labels each value as <code>exact</code>,
+<code>estimate</code>, <code>unavailable</code>, or <code>missing</code>.</li>
+<li><code>archive_tiers</code> — archive inventory for <code>source.db</code>,
+<code>index.db</code>, <code>embeddings.db</code>, <code>user.db</code>, and <code>ops.db</code>: file presence,
+durability/backup policy, <code>PRAGMA user_version</code>, missing backup-required
+tiers, and the same mixed cheap/exact table counts per tier with a
+<code>table_count_precision</code> map for each tier. It does not run SQLite
+<code>PRAGMA quick_check</code> by default because that is a full-file integrity scan
+on large archives; pass <code>--integrity-check</code> when the workload snapshot should
+include that expensive evidence. It also avoids exact generated-text
+reconciliation by default; pass <code>--exact-derived-counts</code> when diagnosing
+FTS/source-row drift and the archive can afford the scan.</li>
+<li><code>blob_reference_debt</code> — skipped by default so routine workload snapshots do
+not stat every referenced blob path on large archives. Pass
+<code>--blob-reference-debt</code> when diagnosing backup/integrity incidents; the
+section then reports the exact missing referenced-blob count, bounded hash
+sample, reference-source counts, and source/index DB path used.
+For recovery planning, run
+<code>polylogue ops maintenance blob-reference-debt --output-format json</code>; that
+read-only classifier groups missing blob refs by table, ref type, origin,
+raw-row joinability, validation/parse state, and source-path availability.
+During daemon convergence, direct source files whose current bytes still hash
+to a missing blob address are restored automatically before raw
+materialization replay. Container/member paths such as
+<code>export.zip:conversations.json</code> remain source re-acquisition work because the
+referenced blob may be an extracted record inside the member, not the member
+file itself.</li>
+<li><code>gc_state</code> — high-water <code>gc_generations</code> row, <code>last_completed_at</code>,
+total generation count.</li>
+<li><code>fts_trigger_state</code> — the three expected FTS sync triggers
+(<code>messages_fts_a{i,d,u}</code>) with
+<code>present</code>, <code>missing</code>, and <code>all_present</code> fields. A missing trigger means
+FTS index drift risk (suspended during bulk operations and not
+restored, for example).</li>
+<li><code>daemon_resource_signal</code> — RSS / cgroup memory / worker-progress fields
+pulled from the most recent <code>live_ingest_attempt</code> row (these are the
+only daemon-RSS signals readable without IPC).</li>
+<li><code>source_path_churn</code>, <code>convergence_debt</code>, <code>query_plans</code> — source-path
+churn/read amplification, debt-by-stage, and hot-query EXPLAIN evidence.
+On archives, churn is read across <code>source.db.raw_sessions</code>
+and <code>index.db.sessions</code> so full-vs-append raw rows and unmaterialized raw
+payloads stay visible without requiring <code>raw_sessions</code> in <code>index.db</code>.</li>
+</ul>
+<p>The compare mode refuses incompatible <code>report_version</code> inputs loudly and
+requires both inputs to be <code>ok: True</code>.  Numeric fields produce
+<code>{before, after, delta}</code> triples; the FTS trigger section reports
+<code>regressed</code> (newly missing) and <code>restored</code> separately so trigger drift is
+attributable to a specific convergence cycle.</p>
+<h2>Daemon Metrics Endpoint (#1321)</h2>
+<p><code>GET /metrics</code> returns the Prometheus text exposition format
+(<code>text/plain; version=0.0.4</code>). Implementation lives in
+<code>polylogue/daemon/metrics.py</code>; the route is wired in
+<code>polylogue/daemon/http.py</code> alongside <code>/healthz/*</code> so all three scrape
+surfaces share the same unauthenticated posture (Prometheus and
+kubernetes/docker healthchecks cannot supply credentials, and the
+daemon binds to loopback by default).</p>
+<p>Series are derived from existing daemon state tables via
+<code>open_readonly_connection</code> — <code>live_ingest_attempt</code> (totals by status,
+in-flight gauge, recent-attempt duration min/mean/max), unresolved
+<code>live_convergence_debt</code> grouped by stage, and the expected FTS sync triggers
+from <code>active_fts_triggers_sync</code>. The same scrape also exposes embedding
+backlog counts and the latest <code>embedding_catchup_runs</code> progress row so
+semantic-search catch-up is visible in normal daemon dashboards without
+running an operator CLI command. Missing tables degrade to zero samples
+rather than 5xx-ing, so a fresh archive still emits the discovery
+skeleton.</p>
+<p>Archive layout observability is emitted on the same scrape. The
+<code>polylogue_archive_storage_layout</code> gauge mirrors <code>polylogue config paths</code>
+with bounded labels for <code>archive_missing</code>, <code>archive_partial</code>, and
+<code>archive_complete</code>; <code>polylogue_archive_tier_count</code> and
+<code>polylogue_archive_blocker_count</code> provide compact alerting
+totals; the per-tier, per-blocker, and <code>active_tier_role</code> gauges give
+the drilldown needed to tell whether the daemon is anchored on the
+normal <code>index.db</code> path and which split-file tier is missing or stale.</p>
+<p>Polylogue does not depend on <code>prometheus_client</code>; the exposition format
+is hand-rolled. The OTLP HTTP receiver from #1224's ambitious-move
+section is intentionally deferred and tracked under the same issue.</p>
+<h2>Debugging Landmarks</h2>
+<p>Cross-check adjacent surfaces after changes:</p>
+<ul>
+<li>query: <code>cli/query*.py</code> ↔ <code>archive/filter/filters.py</code> ↔ <code>storage/search*.py</code></li>
+<li>pipeline: <code>daemon/</code> ↔ <code>pipeline/</code> ↔ <code>storage/</code> ↔ <code>insights/</code></li>
+<li>maintenance: <code>cli/commands/check.py</code> ↔ <code>storage/repair.py</code> ↔ <code>health.py</code></li>
+<li>publication: <code>rendering/</code> ↔ <code>site/</code> ↔ <code>devtools/</code></li>
+<li>schema: <code>schemas/</code> ↔ <code>sources/providers/</code> ↔ <code>pipeline/services/validation_*</code></li>
+</ul>
+<p>Drift check:</p>
+<pre><code class="language-bash">devtools render all --check
+devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
+</code></pre>
+<h2>Local State</h2>
+<ul>
+<li><code>.cache/</code>: disposable caches (hypothesis, pytest, mypy, ruff)</li>
+<li><code>.local/</code>: untracked outputs (campaigns, demo artifacts, build artifacts)</li>
+<li><code>.local/result</code>: out-link for <code>devtools release build-package</code></li>
+</ul>
+
+<hr style="margin: 3rem 0 1rem; border-color: var(--border);">
+<nav style="display: flex; justify-content: space-between; font-size: 0.9rem;">
+    <a href="../rings/">← Architecture</a>
+    <a href="../schema/">Schema →</a>
+</nav>
+
+        </main>
+    </div>
+    <footer class="site-footer">
+        <span>Polylogue — the flight recorder for AI work</span>
+        <a href="https://github.com/Sinity/polylogue">GitHub</a>
+    </footer>
+    <script>
+        function toggleTheme() {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme');
+            html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+            localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+        }
+        (function() {
+            var saved = localStorage.getItem('theme');
+            if (saved) document.documentElement.setAttribute('data-theme', saved);
+        })();
+    </script>
+    
+</body>
+</html>

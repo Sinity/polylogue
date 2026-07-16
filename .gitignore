@@ -80,9 +80,13 @@ dist/
 !.agent/archive/**
 !.agent/reports/
 !.agent/reports/**
+!.agent/handoffs/
+!.agent/handoffs/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md
+!.agent/scratch/archive/
+!.agent/scratch/archive/**
 
 # Build metadata embedded into release artifacts
 polylogue/_build_info.py

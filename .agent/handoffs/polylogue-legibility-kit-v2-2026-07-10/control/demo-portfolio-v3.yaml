@@ -1,0 +1,102 @@
+schema: polylogue-sinex-demo-portfolio/v3
+doctrine:
+  unit: One construct per primary demo; one independent oracle; one falsifier; explicit non-claims.
+  shared_world: incident-1432
+  publication_rule: A demo may be impressive only because its receipts survive skeptical inspection.
+demos:
+- id: polylogue-receipts-contract
+  stage: implemented
+  project: polylogue
+  construct: Structural tool evidence can contradict an assistant success claim.
+  oracle: Incident 14:32 declared transcript/tool-result records and exit codes.
+  controls:
+  - "prose mentions \u201Cerror\u201D without an action"
+  - later verified repair
+  falsifier: The verdict changes when only prose wording changes or fails to change when structural exit status
+    changes.
+  not_proven:
+  - provider completeness
+  - general model reliability
+  - real-project field validity
+  mission: PLG-72-01
+- id: polylogue-receipts-field
+  stage: planned
+  project: polylogue
+  construct: A real merged change can be reconstructed from AI-work evidence and independently verified repository
+    outcomes.
+  oracle: Frozen Git objects, CI result, and merged change metadata not authored by the narrative renderer.
+  controls:
+  - unmerged attempt
+  - claim made before verification
+  falsifier: The packet cannot resolve the claimed change or its verification independently of transcript prose.
+  not_proven:
+  - all providers
+  - causal attribution of success to Polylogue
+  mission: PLG-7D-02
+- id: polylogue-count-once
+  stage: planned
+  project: polylogue
+  construct: Physical evidence is preserved while copied lineage is excluded from logical unique-work totals.
+  oracle: Declared message identity graph and token lanes in Incident 14:32.
+  controls:
+  - fresh subagent remains unique
+  - unrelated identical text does not deduplicate
+  falsifier: Logical totals subtract fresh work or physical totals omit an inspectable artifact.
+  not_proven:
+  - provider billing accuracy
+  - universal replay rate
+  mission: PLG-7D-03
+- id: sinex-missing-source
+  stage: planned
+  project: sinex
+  construct: An unavailable source is not reported as an empty interval.
+  oracle: Independent source-health and continuity records.
+  controls:
+  - known-observed empty interval
+  - unobserved interval
+  falsifier: Both intervals render as the same ordinary empty result.
+  not_proven:
+  - zero loss outside evaluated sources
+  mission: SNX-30-01
+- id: sinex-changes-mind
+  stage: planned
+  project: sinex
+  construct: Reinterpretation preserves old semantics and promotes the new one explicitly.
+  oracle: Two frozen parser outputs over identical material with stable domain identity.
+  controls:
+  - same occurrence imported twice
+  - new interpretation event UUID
+  falsifier: Old interpretation disappears or the occurrence duplicates silently.
+  not_proven:
+  - all replay migrations are safe
+  mission: SNX-30-02
+- id: joint-world-around-claim
+  stage: planned
+  project: joint
+  construct: One agent claim can be surrounded with transcript, terminal, Git, task, verification, and source-coverage
+    evidence without collapsing authority.
+  oracle: Incident 14:32 cross-domain timeline and material hashes.
+  controls:
+  - missing browser leg
+  - unverified pre-repair claim
+  falsifier: The product invents a missing leg, hides source unavailability, or treats narrative text as the machine
+    outcome.
+  not_proven:
+  - full causal reconstruction
+  - team/federated deployment
+  mission: JNT-30-04
+- id: joint-resume-under-oath
+  stage: planned
+  project: joint
+  construct: Reviewed evidence-backed context improves checkpoint reconstruction without amplifying stale assertions.
+  oracle: Frozen checkpoint answers and an evaluator blind to arm labels.
+  controls:
+  - raw references
+  - generated summary
+  - reviewed context
+  - stale-memory trap
+  falsifier: Reviewed context does not outperform or introduces more high-confidence false state.
+  not_proven:
+  - general agent productivity uplift
+  - all task classes
+  mission: EXP-30-01

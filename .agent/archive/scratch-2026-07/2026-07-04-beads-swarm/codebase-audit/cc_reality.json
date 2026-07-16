@@ -1,0 +1,16 @@
+{
+  "close_candidates": [
+    {
+      "id": "polylogue-z7rv",
+      "evidence": "schema-evolution-v2 durable-tier migration framework fully shipped and satisfies every AC clause. (AC1 backup-gate + one-step-advance covered by test) tests/unit/storage/test_durable_migrations.py exercises the runner: test_user_tier_v3_migrates_to_v4_with_backup_manifest and test_source_tier_v1_migrates_to_v2 assert PRAGMA user_version advances one step; test_user_tier_migration_requires_manifest_with_target_tier asserts MigrationError when the backup manifest omits the target tier; test_derived_tiers_do_not_use_migration_runner asserts derived tiers refuse in-place migration. migration_runner.py exposes migrate_archive_tier(...) with the backup-manifest gate, and migrations/source/002_raw_capture_multimap.sql + migrations/user/004_user_settings.sql exist. (AC2 docs reconciled to two-regime model) docs/architecture-spine.md:34 has a '### Schema versioning: two regimes keyed by tier durability' section (durable tiers advance user_version one step behind a verified backup manifest; derived tiers have no in-place chains); docs/internals.md:89 '两 schema-evolution regimes' section matches. No unreconciled 'no in-place upgrade chains' contradiction remains (internals.md:277 is scoped to rejecting Alembic-style full upgrade-chain complexity, with durable additive migrations as the documented carve-out). (AC3 policy lint green) `devtools lab policy schema-versioning` exits 0: 'derived-tier upgrade helpers found: 0 / invalid durable migration resources found: 0 / Schema evolution policy intact.' Full acceptance demonstrably met; bead has no owning-work residual.",
+      "commit_or_file": "commit 5b28e91b9 feat(storage): add durable tier migrations; polylogue/storage/sqlite/migration_runner.py; polylogue/storage/sqlite/migrations/{source/002_raw_capture_multimap.sql,user/004_user_settings.sql}; tests/unit/storage/test_durable_migrations.py; docs/architecture-spine.md:34; docs/internals.md:89"
+    }
+  ],
+  "narrow_candidates": [
+    {
+      "id": "polylogue-1xc.2",
+      "shipped_part": "AC2 (the re-materialize-from-source path) is shipped: `polylogue ops maintenance rebuild-index` exists (polylogue/cli/commands/maintenance.py:1406 rebuild_index_command -> :1349 _rebuild_index_from_source) and reconstructs index.db sessions from source.db raw rows without touching live source files; reset.py:294/356 direct the operator to it. source-side session enumeration via _archive_session_ids_from_source (ATTACH source.db) also exists.",
+      "residual": "AC1 and AC3 are NOT met. reset --database STILL deletes source.db by default: source.db remains in _REBUILDABLE_ARCHIVE_DATABASES (polylogue/cli/commands/reset.py:33-38) and _archive_database_targets includes it, so the default `reset --database` deletion set still drops the durable acquired copy. AC3 has no implementation: the deletion confirmation (reset.py ~:330 generic file-list confirm) does not block or double-confirm source.db deletion when unresolvable raw rows exist, and reports no at-risk session count. Narrow the design to: (1) exclude source.db from the default reset --database deletion set (require an explicit opt-in like the existing --include-user-db), and (2) add the unresolvable-raw-row guard / at-risk-count double-confirm before any explicit source.db deletion."
+    }
+  ]
+}

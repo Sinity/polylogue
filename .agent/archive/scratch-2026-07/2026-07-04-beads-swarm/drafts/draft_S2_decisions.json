@@ -1,0 +1,45 @@
+{
+  "domain": "S2-decisions",
+  "summary": "Exactly 4 decision-type beads exist (jgp, 6mv, lnd, f94); no jnj-area decision beads. All 4 are resolved-but-open. f94 is mistyped (a KILL decision with a full execution plan = an actionable task); jgp is pure adopted doctrine (close-as-recorded, no residual); 6mv and lnd are adopted doctrine each with one concrete residual future-work item that should be spun out before the decision bead closes.",
+  "closures": [
+    {
+      "id": "polylogue-jgp",
+      "close_reason": "Decision recorded and adopted: any agent-facing feature must be default-on / ambient / injected (restrained volume, indices+refs over dumps); a feature that requires the operator to remember to invoke it will not get used. Applied as the tie-breaker for CLI-vs-interactive-vs-TUI, what-to-inject, and which-knobs-to-expose decisions across the context-loop, web, and CLI surfaces. Pure doctrine with no residual task; closing as the durable decision record."
+    },
+    {
+      "id": "polylogue-6mv",
+      "close_reason": "Decision recorded and adopted as working doctrine: Polylogue owns raw AI-session evidence (transcripts, tool calls, reasoning, costs); Sinex consumes only derived, privacy-preserving events (agent.session.active/llm_request.observed/tool_call.observed/failure_pattern.detected/session.indexed/artifact.changed) anchored by polylogue://session/<id> or content-hash; Sinex must NOT ingest raw transcripts. Residual Sinex-side emitter is the only remaining work and is spun out as 'Polylogue->Sinex derived agent-trace event emitter' (gated on the rii write-leg and Sinex production restore). Closing the decision; the emitter carries the future work."
+    },
+    {
+      "id": "polylogue-lnd",
+      "close_reason": "Decision recorded and adopted as working doctrine: task/dependency/scheduling state -> beads; knowledge, provenance, and anything feeding agent context -> assertions. Three seams documented (closed-bead close-reason is a CLAIM verifiable as claim-vs-evidence; bd memories vs NOTE/LESSON assertion kinds; do not rebuild a task tracker inside assertions and do not put evidence-linked knowledge in bead descriptions beyond pointers). The 'revisit when beads ingestion lands' clause is spun out as a follow-up gated on polylogue-7fj. Closing the decision; the revisit bead carries the future work."
+    }
+  ],
+  "retypes": [
+    {
+      "id": "polylogue-f94",
+      "to_type": "task",
+      "to_priority": 3
+    }
+  ],
+  "residual_beads": [
+    {
+      "title": "Polylogue->Sinex derived agent-trace event emitter",
+      "type": "feature",
+      "priority": 3,
+      "parent": "polylogue-fs1",
+      "design": "Implements the polylogue-6mv boundary: Polylogue emits derived, privacy-preserving events onto the Sinex event stream instead of Sinex ingesting raw transcripts. Event kinds: agent.session.active, agent.llm_request.observed, agent.tool_call.observed, agent.failure_pattern.detected, agent.session.indexed, agent.artifact.changed. Each event carries timing, provenance, privacy tier, source health, causal relation, and derived facts only, anchored by polylogue://session/<id> or content-hash. No raw message text or tool I/O crosses the boundary. Wiring: new emitter module under polylogue that fires on ingest/index convergence, hooked into the daemon post-ingest path (mirror the embedding catch-up drain pattern in polylogue/daemon so emission is bounded and resumable). Gated on the rii live-substrate write-leg being live and on Sinex production restore (external). Pitfall: never populate a raw-text field on any emitted event; enforce with a schema/contract test that asserts only anchor + derived-fact fields are present.",
+      "acceptance": "Emitter produces each of the six declared event kinds with only anchor + derived-fact fields, proven by a contract test that fails if any raw-text field is populated; a local emit->consume round-trip test shows events land on the Sinex stream and correlate via polylogue://session/<id>; emission is a no-op (no error) when Sinex is unreachable; `devtools verify` passes. Not started until polylogue-rii is closed.",
+      "deps": ["polylogue-rii"]
+    },
+    {
+      "title": "Revisit beads<->assertions boundary once beads-history ingestion (7fj) lands",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-37t",
+      "design": "Re-examine the polylogue-lnd boundary once polylogue-7fj ingests beads issue history as a Polylogue evidence source. For each of the three seams from lnd, record whether the boundary held or needs adjustment: (1) a closed bead's close-reason becomes a CLAIM that can be verified against archive evidence (claim-vs-evidence composition, see devtools workspace claim-vs-evidence) -- decide whether close-reasons should materialize as candidate assertions; (2) bd memories vs NOTE/LESSON assertion kinds -- confirm the split (bd memories = repo-operational lore surfaced at bd prime; assertions = archive-linked knowledge with evidence_refs) still holds when beads are queryable evidence; (3) confirm no task tracker is rebuilt inside assertions and no evidence-linked knowledge leaks into bead descriptions beyond pointers. Touch points: assertion/correction kinds (polylogue/insights/feedback.py, polylogue/storage/insights/feedback), claim-vs-evidence composition (devtools workspace claim-vs-evidence).",
+      "acceptance": "A short decision note (comment on this bead or a new decision bead) records, per seam, whether the lnd boundary held or was adjusted after 7fj landed; if close-reason->candidate-assertion composition is adopted, it is captured as its own execution-grade bead rather than done ad hoc. No code change is required if the boundary holds. Blocked on polylogue-7fj.",
+      "deps": ["polylogue-7fj"]
+    }
+  ]
+}

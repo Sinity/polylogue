@@ -1,0 +1,89 @@
+{
+  "domain": "D10_surface_algebra",
+  "summary": "The jnj surface-algebra program is well-decomposed and correctly sits low (P3, surface hygiene) except for two genuinely higher-value children (jnj.5 security bug, x7d rendering) already lifted to P2. The main weaknesses are missing acceptance criteria on every P2-tier item (x7d, jnj.5, dmp, epic t46), an absent settings-classification taxonomy in the config bead the operator flagged (jnj.9), and uncoordinated alias-deletion overlap between t46 (P2, deletes parallel surfaces) and jnj.1/jnj.3 (P3, removes aliases) that should be sequenced. Stale-ref hygiene is clean: jnj.8/jnj.9 correctly say the GH thread is 'input not authority' and neither references dropped #1807.",
+  "underspecified": [
+    {
+      "id": "polylogue-jnj.5",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Grounded in reset.py:260-277 (audit confirmed): the `if conv_id:` and `if source_path:` branches call _tombstone_archive_sessions(...) then return BEFORE the preview (lines 327-328) and --yes gate (lines 331-337). AC: (1) `polylogue ops reset --session <ref>` with no --yes prints a dry-run listing exact target rows (origin, native_id, suppression/archive-row counts) and mutates NOTHING; a typo'd/no-match ref yields a zero-target dry-run and zero mutation. (2) mutation occurs only with --yes. (3) both dry-run and mutation emit the same stable JSON envelope as other destructive ops under --format json. (4) same contract applies to --source PATH. (5) regression test asserts no suppression/tombstone row is written on the no--yes path.",
+      "why": "P2 bug with area:security; design is execution-grade but acceptance is null, so 'done' is not checkable. Claim verified against reset.py:260-277."
+    },
+    {
+      "id": "polylogue-x7d",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) archive_query (_summary_payload/_hit_payload/_summary_line/_hit_line), cli.query_output (format_summary_list/format_search_hit_list), and cli.select (select_row_from_result) all obtain title/snippet bounds from ONE shared projection helper/value object; grep shows no residual per-surface truncation constant. (2) title budget (<=96 or table budget) and snippet budget (<=320) plus single-line normalization are enforced identically on all three surfaces. (3) parity test feeds one giant multiline title + one giant search hit and asserts all three surfaces emit bounded single-line output. (4) existing JSON schemas for list/search/select are byte-unchanged except for overlong-value truncation; schema snapshot tests pass.",
+      "why": "P2 task, ready-frontier, has a concrete design naming the three duplicated paths but acceptance is null; the 'collapse onto one contract' claim needs a checkable no-duplication assertion."
+    },
+    {
+      "id": "polylogue-dmp",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "AC: (1) `polylogue note \"...\"` writes exactly one candidate NOTE assertion (default kind=note) via the same candidate writer used by MCP. (2) --ref <session-ref|last> attaches evidence refs; `last` resolves to the most recent archived session for cwd/repo; a bare note with no ref lands but carries an 'unanchored' flag queryable via polylogue judge. (3) --kind note|claim|correction|lesson selects CorrectionKind/assertion kind; all land as candidate, none auto-judged. (4) --stdin ingests piped content with a size cap (reject over cap with a clear error). (5) CLI-written and MCP-written notes are indistinguishable in the candidate queue (identical payload shape) once 27p lands. (6) optional zsh widget snippet documented, not required. Verify: `polylogue note ... && polylogue judge --list` shows the candidate with correct anchor/kind.",
+      "why": "P2 feature with rich design but null acceptance; also states 'Same verb over MCP already exists once 27p lands' which implies a hard dependency (see dep_priority)."
+    },
+    {
+      "id": "polylogue-t46",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Epic-level done-state AC: (1) each named audit slice (config aliases daemon_host/daemon_port + top-level observability; historical CLI aliases find_help/-n/--full/demo-shelf --bundle; status JSON compatibility aliases; origin->provider output projection bridges; browser-capture synthetic-ID recovery) is either landed-as-a-child-PR or explicitly deferred with a linked bead. (2) for every landed slice, the contract (DSL/registry/generated schema) is the sole owner and the parallel hand-written surface is deleted in the SAME PR (grep shows the alias/bridge gone). (3) render surfaces (openapi, cli-output-schemas, cli-reference) regenerated after each slice and drift-clean. (4) no compatibility front remains for any completed slice.",
+      "why": "P2 epic with a concrete slice design but null acceptance; the 'replacement-first, delete in same PR' rule is the load-bearing invariant and needs a checkable per-slice gate."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Config bead: classify every setting by governance role (startup/policy/user-pref/provider-cost/presentation/ops)",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-jnj",
+      "why": "Operator doctrine requires the config surface to classify settings by role, but jnj.9's scope statement only covers 'ownership per layer, effective-value inspection, recovery from invalid config' — it never enumerates the settings taxonomy. Without the classification, 'one coherent config surface' cannot decide which layer owns which knob. This is additive design that jnj.9 currently lacks (design=null); fold into jnj.9 rather than a separate bead if preferred.",
+      "design": "Enumerate every runtime setting and tag it with a governance role: startup (bind host/port, archive root), policy (retention, GC thresholds, embedding cost caps), user-pref (color, default view, format), provider-cost (voyage key, model, cost cap), presentation (themes, layout profiles), ops (daemon telemetry, cursor tuning). The role determines the authoritative owning layer (NixOS/HM vs user polylogue.toml vs CLI flag vs env). `polylogue config` effective-value inspection reports value + winning layer + role for each key. Recovery: invalid config in one role must not brick unrelated roles.",
+      "acceptance": "Every setting appears in a role-tagged registry; `polylogue config` (or config show --effective) prints role + owning layer + effective value per key; a doc table maps role->authoritative layer; an invalid value in one role is reported without preventing startup of surfaces that do not depend on it.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-jnj",
+      "kind": "other",
+      "evidence": "Epic jnj is priority 3 (surface hygiene, correctly tier-4 in the frame) yet directly parents priority-2 children: x7d (rendering contract) and jnj.5 (bug, area:security). An epic sitting below its highest-value children understates the program's real top-of-frame item.",
+      "fix": "Either raise the epic to P2 to reflect that it contains correctness/security work, or (cleaner, see reorg) lift jnj.5 out of the hygiene epic so the epic stays honestly P3 and the security bug is tracked at its true priority independent of surface polish."
+    },
+    {
+      "id": "polylogue-jnj.13",
+      "kind": "scope-conflict",
+      "evidence": "jnj.13 redefines the no-arg TTY default ('status PLUS the five most recent sessions with one-key open'). jnj.8 also owns bare-invocation/reader-launcher coherence ('tutorial currently prints five status lines on a configured install' / 'reader launcher'). Both beads change what bare `polylogue` does on a TTY.",
+      "fix": "Make jnj.13 the concrete implementation slice of the bare-invocation default and mark jnj.8 as the umbrella onboarding-coherence bead that owns the decision, or add a dependency (jnj.13 depends on jnj.8's default-experience decision) so the two do not land conflicting no-arg behaviors."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-dmp",
+      "issue": "missing-dep",
+      "detail": "dmp design: 'Same verb over MCP already exists once 27p lands (candidate writer) — keep payload shapes identical.' polylogue-27p (write-capable MCP / candidate writer) is a real bead (present in beads_index). dmp requires the candidate-writer substrate to land first, but no dependency edge exists.",
+      "proposed": "Add dep: polylogue-dmp depends-on polylogue-27p (blocks). At minimum the shared candidate-writer/payload contract from 27p must exist before dmp can guarantee CLI/MCP note indistinguishability."
+    },
+    {
+      "id": "polylogue-jnj.3",
+      "issue": "priority-violation",
+      "detail": "jnj.3 (P3, 'Output dialect normalization ... remove aliases not buying value') and jnj.1 (P3, 'remove the aliases' after extending the spec algebra) both delete CLI aliases. t46 (P2 epic) explicitly owns alias deletion via named slices ('historical CLI aliases find_help/-n/--full/demo-shelf --bundle', 'status JSON compatibility aliases', 'config aliases'). Two epics assert ownership of the same 'delete parallel/alias surface' doctrine at different priorities with no sequencing.",
+      "proposed": "Sequence t46 (P2, replacement-first alias/bridge deletion) ahead of jnj.1/jnj.3 (P3), and partition the alias inventory: t46 owns historical/compat/config aliases; jnj owns per-view-flag and output-dialect aliases that only exist once the ProjectionSpec/RenderSpec algebra is extended. Add a relates-to/depends-on edge between jnj.3 and t46 so the same alias is not deleted twice or left orphaned."
+    },
+    {
+      "id": "polylogue-jnj",
+      "issue": "epic-ac-gap",
+      "detail": "The epic claims 'agents and users should be able to infer one rule for output format, destination, projection, and mutation safety' and 'Absorbs gh#2317 and gh#2309', but has no acceptance criteria defining that end-state, and no way to tell when the four 'one rule per concern' invariants are satisfied.",
+      "proposed": "Add epic AC: (1) exactly one output-format mechanism, one destination mechanism, one projection algebra, and one destructive-mutation contract remain across CLI/MCP; (2) gh#2317 scope (root onboarding/facets — jnj.2, jnj.8) and gh#2309 scope (config — jnj.9) each have a covering child that is closed; (3) a CLI-surface-audit test asserts no verb carries a boolean-mode mux or a per-view flag that duplicates the spec algebra."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-jnj.5",
+      "change": "reparent",
+      "from": "polylogue-jnj",
+      "to": "(standalone P2 correctness bug, or a security/mutation-safety bead)",
+      "rationale": "jnj is a surface-hygiene program (correctly P3 in the priority frame). jnj.5 is a P2 area:security bug where `ops reset --session/--source` tombstones before any confirmation (reset.py:260-277). Nesting live correctness/security work under a hygiene epic makes the epic's priority ambiguous and risks the bug inheriting hygiene-tier deprioritization. Track it at its true priority independent of the polish program (keep a relates-to link to jnj for the shared mutation-contract theme)."
+    }
+  ]
+}

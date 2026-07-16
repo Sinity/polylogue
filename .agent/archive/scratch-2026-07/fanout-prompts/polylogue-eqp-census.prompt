@@ -1,0 +1,42 @@
+You are lane polylogue-eqp-census of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-eqp-census. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+READ-ONLY analysis lane: EQP sweep + dbstat census against the live archive opened strictly read-only (file:...index.db?mode=ro URI; never set POLYLOGUE_ARCHIVE_ROOT to the live root for write commands). Deliverables: a report in your worktree .agent/reports/eqp-census-2026-07.md ranking missing-index/scan hotspots with measured timings, plus follow-up bead proposals (list them in the PR body; do NOT create beads yourself). Note the archive may transition v32->v35 mid-run; record which generation you measured.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-20d.7 [open]: EQP sweep + dbstat census on a live-archive copy
+
+FILE OWNERSHIP
+OWN (you may modify): .agent/reports/ (new file in your worktree only)
+AVOID (another lane owns these; do not touch): ALL code; this lane ships a report PR only
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+every claim in the report carries the exact query + timing; no code changes to test
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

@@ -1,0 +1,314 @@
+[
+{
+"id": "polylogue-0ns",
+"priority": 2,
+"type": "task",
+"title": "Bound archive embedding work within large sessions",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-dmp",
+"priority": 2,
+"type": "feature",
+"title": "polylogue note: zero-friction memory capture from the terminal",
+"design": "(1) 'polylogue note \"WAL contention was the real cause, not cache size\"' writes a candidate NOTE assertion. Anchoring: --ref <session-ref|last> attaches evidence refs ('last' = most recent archived session for the current repo/cwd \u2014 the common case after finishing work); --repo/--topic add scope refs; bare note with no ref is allowed but flagged unanchored. (2) Kind selection: --kind note|claim|correction|lesson (default note); everything lands as candidate, judged later via polylogue judge \u2014 capture and judgment deliberately decoupled (capture must be instant; judgment can batch). (3) stdin mode for piping ('git diff | polylogue note --stdin --ref last --kind lesson' style flows) with a size cap. (4) Same verb over MCP already exists once 27p lands (candidate writer) \u2014 keep payload shapes identical so CLI and MCP notes are indistinguishable in the queue. (5) Shell ergonomics: a tiny zsh widget (bindkey) that prefills 'polylogue note' with the last command + exit code as context is the ambient cherry \u2014 ship as an optional snippet in docs, not a hard dependency.",
+"notes": ""
+},
+{
+"id": "polylogue-3tl.9",
+"priority": 2,
+"type": "task",
+"title": "Docs-and-visuals ownership: coverage lint + regenerable visuals as a standing devloop gate",
+"design": "(1) COVERAGE LINT (devtools verify docs-coverage): every public CLI command/verb, MCP tool, config key, and daemon route must be reachable from the docs tree (generated inventories make this a set diff, same pattern as the topology gate); new-surface-without-docs fails the lane with the exact missing entry named (actionable-error discipline from o21). (2) VISUAL FRESHNESS: every committed screenshot/GIF must be a visual-tapes artifact with a spec (3tl.5 machinery) \u2014 a render pass regenerates them against the seeded corpus; drift = the regen diff exceeds a perceptual threshold -> flagged for re-record. No hand-shot images in docs. (3) DEVLOOP GATE: the conductor End Gate gains a docs item \u2014 a slice that changed public surfaces is not closeable until docs-coverage passes (RUNBOOK/PROCESS edit + this bead). (4) Docs IA pass rides the atlas (y0b) + README (3tl.1); this bead is the ENFORCEMENT layer that keeps them true afterward. Extends 6bu (site link/cache checks) rather than replacing it \u2014 6bu is transport health, this is content coverage.",
+"notes": ""
+},
+{
+"id": "polylogue-3tl.7",
+"priority": 2,
+"type": "task",
+"title": "Release is a decision: proven install matrix across package managers and OSes",
+"design": "(1) INSTALL-MATRIX CI (scheduled weekly + pre-release, not per-PR): fresh-environment jobs for uvx/pipx from PyPI, brew tap, docker run from GHCR, nix run \u2014 on ubuntu + macos runners (arm+x86 where available); each job runs the same smoke: install -> polylogue demo seed -> one find -> one read -> version check. The demo corpus makes this stranger-equivalent. (2) WINDOWS: decide and STATE the story (native is untested; document WSL2 as the supported path honestly in README install section) \u2014 an honest 'WSL2 only' beats a broken native promise. (3) ARTIFACT HYGIENE: signed tags already; add sigstore/attestations for wheels + images if cheap; devtools release verify-distribution already checks entrypoints \u2014 wire it into the matrix. (4) VERSION SURFACES: polylogue --version correct on every lane (git-hash dev builds vs tagged releases). (5) AUR/extra distros: explicitly OUT until demand exists \u2014 the matrix file documents the supported set; adding a lane later is one job. Acceptance: matrix green two consecutive weekly runs; release checklist doc reduced to 'merge the release PR'.",
+"notes": ""
+},
+{
+"id": "polylogue-mhx",
+"priority": 2,
+"type": "epic",
+"title": "Embedding substrate: provider-general, honest lifecycle, retrieval that earns its cost",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-peo",
+"priority": 2,
+"type": "bug",
+"title": "Daemon death leaves no trace: crash forensics + heartbeat sentinel + restart policy",
+"design": "(1) faulthandler.enable() + SIGTERM/SIGINT handlers that log signal + active thread stacks to the run log AND an ops.db daemon_lifecycle row (started/stopped/signal/last_heartbeat) before exit; an atexit sentinel distinguishes clean stop from vanish. (2) Startup writes a heartbeat row every periodic-loop tick; `polylogue` bare status and /healthz report heartbeat age, so 'daemon: running' claims are backed by a fresh heartbeat, not a pid file (bare status said 'Daemon: running' while it served a rebuild \u2014 verify what that check reads). (3) systemd unit: Restart=on-failure with backoff if not already set (check sinnix module). (4) Web SPA: liveness probe with visible 'daemon unreachable since T, retrying' banner instead of per-widget fetch failures (lands with bby.1). Postmortem for the two observed deaths belongs in the fix PR: reproduce serving + convergence under the same flags and capture what 144 actually was.",
+"notes": ""
+},
+{
+"id": "polylogue-37t.8",
+"priority": 2,
+"type": "feature",
+"title": "Resume routing: map a session to the harness invocation that reopens it",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-ptx",
+"priority": 2,
+"type": "feature",
+"title": "Browser-capture posting channel: un-gate, with attachments",
+"design": "The channel exists on the worktree branch (worktree-agent-aa5375b510cb4aa5d era work): extension->receiver POSTING path, previously operator-gated OFF. To ship: rebase/land the branch, flip the gate default for the agent-private profile, add attachment upload (multipart through the receiver -> provider web upload flows; store posted attachments as acquired blobs so the archive keeps what was sent), and cover with the deterministic capture smoke pattern. Verify the 0mu freshness fix (newest-wins) is in place first so posted-then-captured sessions do not get clobbered by DOM fallback.",
+"notes": ""
+},
+{
+"id": "polylogue-20d.10",
+"priority": 2,
+"type": "task",
+"title": "Runtime post-filter efficiency: memoize semantic facts; lower matchers onto the actions view",
+"design": "Minimal fix: memoize facts per session within a filter pass (functools cache keyed per pass, or attach _semantic_facts to the Session object). Real fix: all three matchers' predicates (action category, affected path, sequence) are answerable from actions-view rows \u2014 fetch once per candidate set with a single WHERE session_id IN (...) query, group in Python, drop hydration entirely for candidates failing cheap predicates. The keystone columns (v16) and idx_blocks_type_tool (v20) exist for exactly this shape. Also push cheap structured clauses into SQL before hydration. SEQ span capture (DSL bead) builds on the same relation \u2014 coordinate.",
+"notes": ""
+},
+{
+"id": "polylogue-37t.6",
+"priority": 2,
+"type": "feature",
+"title": "Session-aware devshell entry: surface what the last agent session left behind",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-kph",
+"priority": 2,
+"type": "feature",
+"title": "Provenance-carrying PRs: attach the authoring session's postmortem bundle",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-1ty",
+"priority": 2,
+"type": "bug",
+"title": "fts_freshness_state declared twice: reconcile with schema policy",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-tsk",
+"priority": 2,
+"type": "bug",
+"title": "Resume ranking keys on workflow shapes the classifier never emits",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-bby",
+"priority": 2,
+"type": "epic",
+"title": "Web workbench: from result list to evidence cockpit",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-9l5",
+"priority": 2,
+"type": "epic",
+"title": "Outcome-grounded analytics: the archive answers 'so what' questions",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-212.4",
+"priority": 2,
+"type": "task",
+"title": "D4 'Behavioral archaeology': six DSL queries, rapid fire",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-212.3",
+"priority": 2,
+"type": "task",
+"title": "D2 'Where did the money actually go': cost by outcome",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-212.1",
+"priority": 2,
+"type": "task",
+"title": "Post-hoc forensic Q&A demo: questions a tracer cannot answer",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-212.2",
+"priority": 2,
+"type": "task",
+"title": "D1 'The receipts': claim-vs-evidence on a real PR",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-lio",
+"priority": 2,
+"type": "task",
+"title": "Align cross-repo devloop contract on beads (Sinex parity)",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-xgw",
+"priority": 2,
+"type": "task",
+"title": "Archive schema hygiene for evidence-cockpit read paths",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-t46",
+"priority": 2,
+"type": "epic",
+"title": "Contracts own surfaces: delete parallel dispatch and the QA middle layer",
+"design": "First slices (read-only audit 2026-07-02, Herschel): config aliases (daemon_host/daemon_port, top-level observability), hidden/help + historical CLI aliases (find_help, -n, --full, demo-shelf --bundle), status JSON compatibility aliases, origin->provider projection bridges in outputs, browser-capture old synthetic-ID recovery. Rule per slice: the contract (DSL/registry/generated schema) becomes the owner, the parallel surface is deleted in the same PR \u2014 replacement-first, no compatibility fronts. Regenerate render surfaces after each (openapi, cli-output-schemas, cli-reference).",
+"notes": ""
+},
+{
+"id": "polylogue-jnj.5",
+"priority": 2,
+"type": "bug",
+"title": "Route ops reset --session/--source through the mutation contract",
+"design": "Audit-confirmed: ops reset --session/--source tombstones BEFORE the preview/confirmation branch in the reset command implementation (cli/commands/ reset path). Fix: route identity resets through the same mutation contract as other destructive ops \u2014 dry-run prints exact target rows (origin/native_id, counts), mutation requires --yes, stable JSON envelope for both. Test: typo'd session ref produces zero-target dry-run and no mutation; real ref mutates only with --yes.",
+"notes": ""
+},
+{
+"id": "polylogue-20d.4",
+"priority": 2,
+"type": "bug",
+"title": "CLI structured-query routing parity with daemon (#1860): no FTS gate for non-FTS queries",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-20d.5",
+"priority": 2,
+"type": "task",
+"title": "Finish streaming reads: composed transcripts, messages --full writer, origin-filtered pagination SQL",
+"design": "Three eager fallbacks to close (prior-audit evidence, re-locate): (1) lineage-composed transcript streaming falls back to the eager path \u2014 extend the streaming writer landed in a9dc3f274 to composed (parent-prefix + tail) reads; (2) read --view messages --full --to file lacks a true writer/iterator renderer \u2014 same pattern; (3) material-origin-filtered message pagination hydrates eagerly until SQL owns the predicate \u2014 push material_origin into the repository pagination SQL (pattern: a17e3af95 routed ordinary paginated reads through repository pagination). Verify each with a live-archive file export timing + RSS bound, plus focused unit tests on the streaming/pagination modules.",
+"notes": ""
+},
+{
+"id": "polylogue-fnm",
+"priority": 2,
+"type": "epic",
+"title": "Query DSL: one grammar owns query semantics; compose instead of multiplying verbs",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-83u.3",
+"priority": 2,
+"type": "feature",
+"title": "Preserve uploaded attachment bytes in live browser capture",
+"design": "Capture-side: the DOM adapter cannot see upload bytes (they live on provider servers). Options to evaluate in the extension/receiver: (a) intercept the upload request body at capture time (webRequest/fetch hook) and spool alongside the DOM capture; (b) re-fetch provider attachment URLs while the authenticated session is live, before spooling. Either way bytes join the capture payload as inline attachment content and flow through the same ParsedAttachment.inline_bytes -> blob path as the embedded-payload bead. VERIFY extension architecture constraints (MV3 service worker, receiver contract) before choosing; keep the receiver contract versioned.",
+"notes": ""
+},
+{
+"id": "polylogue-rii",
+"priority": 2,
+"type": "epic",
+"title": "Live substrate intake: agents write work-events; evidence materializes in-loop",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-rii.1",
+"priority": 2,
+"type": "feature",
+"title": "Agent work-event write-leg -> session_events -> materialized read-models",
+"design": "Route through the existing idempotent ingest seam (write_raw_and_parsed / the daemon ingest path) \u2014 no parallel writer (gh#2459 body is code-grounded here). Surface: MCP tools record_work_event/emit_decision (mutation role) accepting typed events (tool run, subagent spawn, decision, artifact change) with evidence/session refs; land in session_events; run-projection read models pick them up through the normal materializer. MCP registration trap: EXPECTED_TOOL_NAMES + TOOL_CONTRACT + role gating + render openapi/cli-output-schemas regen (see bd memories). Acceptance: an agent posts a work event mid-session; it is queryable via observed-events within one convergence cycle; re-posting is idempotent.",
+"notes": ""
+},
+{
+"id": "polylogue-fs1",
+"priority": 2,
+"type": "epic",
+"title": "Hermes bridge: state.db + runtime spans -> canonical evidence -> forensics/eval export",
+"design": "",
+"notes": ""
+},
+{
+"id": "polylogue-pj8",
+"priority": 1,
+"type": "feature",
+"title": "Agent query cookbook: MCP prompts + skill recipes as the discoverability layer",
+"design": "Three thin layers over existing capability, no new query machinery: (1) MCP prompts: register ~6 intent-named prompts (resume-context, postmortem-last, decisions-about, unacknowledged-failures, sessions-touching-file, cost-of) that expand to the right tool-call sequences with cwd/repo prefilled \u2014 prompts are the MCP-native discoverability channel. (2) A 'polylogue' harness skill (dots/claude/skills + codex overlay, sinnix-side) with the same recipes in agent-readable form plus the two rules agents get wrong (archive root env var; refs over dumps). (3) The SessionStart preamble (37t.4) ends with a one-line affordance index pointing at those prompts \u2014 injection makes the surface ambient. Acceptance: affordance-usage report shows tool diversity rising in agent sessions (baseline: today's usage is dominated by search/get_session). Keep total prompt count small \u2014 the cookbook is a curation, not another catalog.",
+"notes": "Coordination program update 2026-07-04: pj8 is now part of polylogue-s7ae. Its MCP prompts/skill recipes should include agent coordination intents over the shared envelope: agent_status, agent_self, work_item/current packet, coordination_hazards, addressed_messages, and handoff. Keep prompts curated and intent-named; do not expose a giant catalog. Complete MCP prompt/tool code and generated contracts before any deployment batch is requested; if only deployment remains, record that explicitly and move on."
+},
+{
+"id": "polylogue-k8k",
+"priority": 2,
+"type": "bug",
+"title": "Investigate Sinnix scope wrapper latency for lightweight Polylogue CLI reads",
+"design": "",
+"notes": "Executable upgrade (2026-07-04 sidecar):\nProduct question: is the 45s wrapper latency a transient host/systemd issue or a durable wrapper-policy bug that makes lightweight Polylogue reads unusable from the devshell?\nLikely files/modules/repos: /realm/project/sinnix/scripts/sinnix-direnvrc, sinnix-scope wrappers, Polylogue devshell wrapper generation, and the polylogue CLI entrypoint only for timing comparison. This may require a Sinnix-side fix; keep Polylogue bead as the evidence/coordination record and create a Sinnix follow-up if the root cause lives there.\nMeasurement matrix: run each command at least 3 warm times and record wall/user/sys: (1) python -m polylogue --help or a cheap read, (2) uv run polylogue equivalent if applicable, (3) devshell polylogue wrapper, (4) sinnix-scope background -- polylogue equivalent, (5) systemd-run/sinnix-scope trivial command such as true. Capture current host pressure once with sinnix-observe or systemd/cgroup evidence if latency reproduces.\nArtifact shape: short table with median/min/max, wrapper path resolved with command -v/type -a, scope unit/journal evidence for one slow run, and classification: systemd startup, active host pressure, wrapper policy, or Polylogue import floor.\nAcceptance detail: before/after timing shows lightweight reads bypass or materially reduce scope overhead while heavy import/rebuild/db scans remain contained; if no durable bug reproduces, close with the timing artifact and root-cause classification rather than changing policy.\nVerification command: rerun the timing matrix after any Sinnix/devshell change, plus a heavy-command smoke showing the containment wrapper still applies where intended."
+},
+{
+"id": "polylogue-p5g",
+"priority": 2,
+"type": "feature",
+"title": "polylogue judge: interactive candidate triage in the terminal",
+"design": "(1) 'polylogue judge' opens the pending-candidate queue in the established fzf pattern (jnj.11 machinery): list shows kind, age, source session, first line; preview pane renders the full candidate + its evidence refs (resolved excerpts, not bare ids). Keys: accept / reject / edit-then-accept (opens $EDITOR on the body) / skip / open-evidence (jump to read view). (2) Batch affordances: accept-all-of-kind for a filtered view ('all tag_reject candidates from session X'), and a --since filter for daily triage. (3) Every judgment writes the normal assertion lifecycle rows (author=operator, judged_at) \u2014 no new storage, this is pure surface over the existing promotion flow (37t.1 owns lifecycle semantics; this bead owns the human ergonomics). (4) Non-interactive twin for scripts/agents: 'polylogue judge --list/--accept <id>/--reject <id> --format json' \u2014 same verbs, no TUI. (5) Exit summary: N accepted / M rejected / K pending, and what the accepted ones now inject into (which preamble scopes). Bare-invocation triage (jnj.13) should mention pending-candidate count so the queue is discoverable ambiently.",
+"notes": "JUDGMENT BUDGET (2026-07-03 doctrine pass): the queue is the system's one human tax \u2014 design to a budget: expected items/day surfaced in the queue header, auto-expiry of candidates unjudged after 60d (expiry is itself information, recorded), a queue-age health line in bare status, and per-kind caps already present in the proposers (1jc, 37t.10). If judging exceeds ~5 min/day at full instrumentation, the proposers are too chatty \u2014 tune them, not the judge."
+},
+{
+"id": "polylogue-o21",
+"priority": 2,
+"type": "feature",
+"title": "Extension-point ergonomics: declare-once registries, scaffolds, actionable completeness errors",
+"design": "Three legs, applied per extension point (MCP tool, CLI verb/command, DSL unit/stage, insight, origin, assertion kind, devtools command, workflow): (1) DECLARE-ONCE: each point gets a single declaration object carrying ALL metadata the parallel sites currently hold (name, contract, role gating, schema, docs blurb, owning surface) \u2014 the parallel lists become derivations: EXPECTED_TOOL_NAMES is generated FROM tool declarations, REQUIRED_WORKFLOW_IDS from workflow specs, render inputs read the declarations. Where a hard second site must remain (generated OpenAPI), the deriver owns it. (2) ACTIONABLE ERRORS: every registration validator, when it fails, names the missing step and the command that fixes it ('assertion kind X has no surface entry: add to user_audit surface map at <path>; then run devtools render openapi') \u2014 turn the four opaque failures into one checklist error. The registration-traps bd memory becomes obsolete BY CONSTRUCTION, which is the acceptance test: a new agent adds a tool end-to-end without the memory. (3) SCAFFOLDS: devtools new tool|origin|insight|command generates the declaration + stub + test skeleton in the right places (repo already generates surfaces; generating starting points is the same machinery pointed forward). Sequencing: pilot on ONE extension point (MCP tools \u2014 highest trap density), extract the pattern, then sweep the rest one per PR. Relates t46 (contracts own surfaces \u2014 this is the authoring-side complement) and utf (devtools catalog lint rides the same declaration).",
+"notes": "CONTRACT-FIRST SPLIT (pace, 2026-07-03): dependents need the DeclarationSpec SHAPE, not the full sweep. Slice 1 (size:S, unblocks everything): define the declaration dataclass + registry protocol + one pilot extension point (MCP tools), publish the pattern doc. Slices 2..n: per-extension-point sweeps, parallelizable, non-blocking. Dependents may build against the protocol from slice 1 day one."
+},
+{
+"id": "polylogue-da1",
+"priority": 2,
+"type": "feature",
+"title": "Provider format-drift sentinel: detect upstream export-shape changes from live ingest",
+"design": "Reuse the existing schema-inference machinery (schemas/ shape signatures) rather than building a new detector: at ingest, count records whose shape does not match the committed provider schema package, keyed by (origin, element kind, unseen-key signature), into ops.db telemetry (the ops tier explicitly allows additive columns \u2014 no schema bump). Daemon health check + 'polylogue ops status' line: 'origin X: N% of records since <date> carry unseen shapes', with bounded example native_ids. The follow-up action stays 'devtools lab schema generate/promote' \u2014 the sentinel only detects and points. Pitfalls: (1) never fail or skip ingest on drift \u2014 raw payloads are stored, so parsing is always redoable after a parser update; that is the payoff of the fresh-first doctrine. (2) distinguish 'new optional payload field' (benign, common) from 'known field disappeared / type changed' (parser regression risk) \u2014 alert thresholds should differ. (3) rate must be windowed since-date, not lifetime, or old archives dilute the signal.",
+"notes": "HIBERNATION FLOOR (2026-07-03): the sentinel + capture spooling are the two components engineered above product reliability \u2014 they are what makes six months of neglect safe (EVIDENCE-ONLY rung of the degraded-modes doctrine: raw bytes keep landing even when parsers break). Sentinel alerting must not depend on the daemon's healthy operation for its own delivery path (last-resort: a status-line marker the operator sees on any polylogue invocation). Pair with capture-completeness (3uw) \u2014 shape drift here, volume drift there."
+},
+{
+"id": "polylogue-x7d",
+"priority": 2,
+"type": "task",
+"title": "Unify root query row rendering contracts",
+"design": "Target shape: define a small shared row projection helper or value object for session list rows and search-hit rows, with explicit budgets (title 96 or table budget, snippet 320), single-line normalization, and separate full-read expansion. archive_query._summary_payload/_hit_payload/_summary_line/_hit_line, cli.query_output format_summary_list/format_search_hit_list, and cli.select select_row_from_result should call that shared contract rather than each carrying its own truncation rules. Preserve existing JSON schemas; change only overlong values. Add parity tests proving the three surfaces produce bounded titles/snippets for the same giant title/search hit.",
+"notes": "Informativeness spec (2026-07-03 CLI UX pass): unified result rows should carry, beyond title/origin/date: outcome badge (from structural terminal state: completed/failed/abandoned/unknown), cost (when priced provenance exists), relative time (2h ago), repo/cwd basename, and message count \u2014 the columns that let an operator triage without opening anything. Display-title synthesis (30h) feeds the title cell. Column set consistent across find results, read --all listings, and select pickers; --format json carries the same fields under the same names (schema-checked)."
+},
+{
+"id": "polylogue-37t.7",
+"priority": 2,
+"type": "feature",
+"title": "Close the failure loop: verify postmortem -> next session's context seed",
+"design": "",
+"notes": "Raw-log 06-28 addition: session-cut recovery DRILLS as the test discipline \u2014 deliberately kill sessions mid-work (chaos-lane style, yeq) and measure whether the next session recovers unprompted from injected context alone. Recovery rate under drills is the loop's honest KPI and generates uplift-experiment subjects for free."
+},
+{
+"id": "polylogue-x4s",
+"priority": 2,
+"type": "task",
+"title": "Express devloop state in Polylogue substrate (dogfood target)",
+"design": "The full argument (fables devloop reading): the conductor's own memory is the silo it is fighting \u2014 ACTIVE-LOOP.md, OPERATING-LOG.md, HANDOFF-LATEST.md, EVENTS.jsonl live outside the archive while the product has the native home sitting unwired: handoff and run_state assertion kinds exist in the enum with NO writer (user_write.py has no helper for them), blackboard has an unresolved filter, and get_resume_brief/compose_context_preamble already do provenance-cited handoffs. Target: conductor-on-assertions \u2014 active-loop state, handoffs, and focus transitions written as assertions in user.db, recovered at session start through the product's own context compilation instead of 'read these 11 files in order'. The post-compaction discipline exists because agent context is lossy \u2014 that is the product's founding problem, currently solved with markdown instead of the product. Sequence: (1) first writers for handoff/run_state kinds (dual-write from devloop-handoff/devloop-focus, markdown stays authoritative), (2) a conductor context profile in compile_context, (3) flip authority once recovery quality is proven, keeping markdown as a rendered VIEW of the assertions rather than the source. Coordinate with the beads split: beads owns task state; assertions own narrative/handoff/decision state (see the beads-vs-assertions decision bead).",
+"notes": "Migration ladder (2026-07-03, operator: migrate from bespoke devloop gradually to native ways): rung 1 \u2014 beads-native work loop (session<->bead links bead) replaces ACTIVE-LOOP.md's 'what am I doing' with bd claims + archive evidence; rung 2 \u2014 OPERATING-LOG.md entries become work-event/assertion writes (rii.1 write leg + 37t.2 notation) rendered back as a log view, file retired when the view is strictly better; rung 3 \u2014 DEMO-RADAR/handoff packets become read-packages + resume briefs (yps freshness metadata already landed); rung 4 \u2014 devloop-status becomes a polylogue status profile + bd ready join (the script already shells to both; the join moves substrate-side). Each rung retires its file in the same PR that ships the replacement (surgical renewal, no deprecation theater). The .agent/ scripts shrink to thin aliases and eventually to docs."
+},
+{
+"id": "polylogue-20d.6",
+"priority": 2,
+"type": "task",
+"title": "Live full-ingest catch-up latency + WAL shape",
+"design": "Live evidence (gh#2391): full-ingest chunks ~0.2 files/s; 50 small files -> parse_s ~274s while convergence <2s; WAL ballooned during a 50-file chunk. Recent daemon backoff commits changed the shape \u2014 RE-MEASURE first (bounded catch-up + stage timings + ops diagnostics workload before/after). Related invariant to keep verified: full-replace re-ingest rewrites all messages in one transaction (correct for idempotency) \u2014 for live-tailed long sessions the append path (sources/live/append_ingest.py) must stay the hot route; run devtools bench ingest-amplification on real tails as a scheduled check, since append-vs-full-replace regressions multiply WAL churn. Suspects if still slow after re-measure: per-file parse overhead, per-file commit cadence, prepare-cache misses.",
+"notes": "SLO framing (2026-07-03): the user-facing contract for this work is ingest-to-searchable latency \u2014 a session appears in find/webui within ~10s of the JSONL write (budget owned by the interactive SLO tier, 20d.14). That chain is hook/watcher debounce -> parse -> store -> FTS -> cache invalidation (20d.12) -> SSE announce (20d.13); measure end-to-end with a synthetic session write on the seeded corpus, not just parse_s in isolation. The 0.2 files/s figure is the batch-catchup lane; the live single-session lane is the one that must feel instant."
+}
+]
