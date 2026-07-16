@@ -259,6 +259,31 @@ def _duplicate_alias_siblings(conn: sqlite3.Connection, row: dict[str, object]) 
     return tuple(str(sibling[0]) for sibling in siblings if str(sibling[0]) == expected_canonical)
 
 
+def _has_open_reacquisition_obligation(conn: sqlite3.Connection, raw_id: str) -> bool:
+    """Return whether this raw must re-prove bytes before leaving missing state."""
+    return (
+        conn.execute(
+            """
+            SELECT 1
+            FROM raw_authority_blockers AS b
+            JOIN raw_authority_plans AS p ON p.plan_id = b.plan_id
+            WHERE b.resolved_at_ms IS NULL
+              AND json_extract(p.authority_witness_json, '$.schema') =
+                  'polylogue.raw-authority-frontier-plan.v1'
+              AND json_extract(p.authority_witness_json, '$.state') =
+                  'missing_bytes_reacquire'
+              AND EXISTS (
+                  SELECT 1 FROM json_each(p.input_raw_ids_json)
+                  WHERE json_each.value = ?
+              )
+            LIMIT 1
+            """,
+            (raw_id,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _item(
     *,
     state: RawAuthorityFrontierState,
@@ -352,12 +377,14 @@ def _classify_frontier(
             reason="accepted head raw is absent from the durable source tier",
         )
     blob_hash = str(row["blob_hash"]).lower()
-    if not blob_store.exists(blob_hash):
+    blob_exists = blob_store.exists(blob_hash)
+    reacquisition_proven = not _has_open_reacquisition_obligation(conn, raw_id) or blob_store.verify(blob_hash)
+    if not blob_exists or not reacquisition_proven:
         return _item(
             state=RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
             actuator=RawAuthorityActuator.REACQUIRE,
             row=row,
-            reason="accepted head raw bytes are absent from the content-addressed store",
+            reason="accepted head raw bytes do not prove the expected content-addressed digest",
         )
     if row.get("session_id") is None or row.get("session_origin") is None:
         return _item(
@@ -782,70 +809,127 @@ def _preview_plan_ids(root: Path, census_id: str) -> set[str]:
 def _apply_strategy(
     config: Config,
     item: RawAuthorityFrontierItem,
-    *,
-    receipt_path: Path,
 ) -> JSONDocument:
+    from polylogue.storage.index_generation import RebuildLease
     from polylogue.storage.repair import (
-        repair_browser_capture_origin_mismatches,
-        repair_duplicate_raw_identity,
-        repair_quarantined_accepted_raws,
+        _apply_browser_origin_repair_item,
+        _apply_duplicate_raw_identity_repair,
+        _attach_repair_index,
+        _cas_refine_quarantined_accepted_raw,
+        _inspect_browser_capture_origin_mismatch,
+        _inspect_duplicate_raw_identity,
+        _inspect_quarantined_accepted_raw,
+        _stage_browser_origin_copy_forward_source,
+        _stage_quarantined_census_cohort,
+        _validate_quarantined_raw_repair_blob_budget,
+        _verify_browser_origin_copy_forward_source_stage,
     )
+
+    root = _archive_root(config)
+    source_db = root / "source.db"
+    index_db = root / "index.db"
 
     if item.actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS:
         canonical_ids = tuple(raw_id for raw_id in item.input_raw_ids if raw_id != item.raw_id)
         if len(canonical_ids) != 1:
             raise RuntimeError("duplicate-alias plan does not identify exactly one canonical twin")
-        duplicate_preview = repair_duplicate_raw_identity(config, [(item.raw_id, canonical_ids[0])])
-        duplicate_applied = repair_duplicate_raw_identity(
-            config,
-            [(item.raw_id, canonical_ids[0])],
-            apply=True,
-            receipt_path=receipt_path,
-            proof_digest=duplicate_preview.proof_digest,
-        )
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                duplicate_locked = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0])
+                if duplicate_locked.status == "eligible":
+                    _apply_duplicate_raw_identity_repair(conn, duplicate_locked)
+                elif duplicate_locked.status != "already_repaired":
+                    raise RuntimeError(f"duplicate strategy lost its exact proof: {duplicate_locked.reason}")
+                after = _inspect_duplicate_raw_identity(conn, root, item.raw_id, canonical_ids[0])
+                if after.status != "already_repaired":
+                    raise RuntimeError("duplicate strategy did not reach its typed terminal postcondition")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         return json_document(
             {
                 "strategy": item.actuator.value,
-                "strategy_proof_digest": duplicate_preview.proof_digest,
-                "strategy_receipt_path": str(receipt_path),
-                "repaired_count": duplicate_applied.repaired_count,
-                "already_repaired_count": duplicate_applied.already_repaired_count,
+                "repaired_count": int(duplicate_locked.status == "eligible"),
+                "already_repaired_count": int(duplicate_locked.status == "already_repaired"),
             }
         )
     if item.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN:
-        browser_preview = repair_browser_capture_origin_mismatches(config, [item.raw_id])
-        browser_applied = repair_browser_capture_origin_mismatches(
-            config,
-            [item.raw_id],
-            apply=True,
-            receipt_path=receipt_path,
-            proof_digest=browser_preview.proof_digest,
-        )
+        from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+        with RebuildLease(root), exclude_archive_blob_publishers(source_db):
+            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
+                proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                preview = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=proof_conn)
+            if preview.status == "eligible" and preview.repair_strategy == "copy_forward":
+                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                    source_conn.execute("PRAGMA foreign_keys = ON")
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        if not preview.copy_forward_source_complete:
+                            _verify_browser_origin_copy_forward_source_stage(root, source_conn, preview)
+                            _stage_browser_origin_copy_forward_source(source_conn, preview)
+                        source_conn.commit()
+                    except Exception:
+                        source_conn.rollback()
+                        raise
+            elif preview.status != "already_repaired":
+                raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
+            with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    browser_locked = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=conn)
+                    if browser_locked.status == "eligible":
+                        _apply_browser_origin_repair_item(conn, browser_locked)
+                    elif browser_locked.status != "already_repaired":
+                        raise RuntimeError(f"browser-origin strategy lost its locked proof: {browser_locked.reason}")
+                    browser_after = _inspect_browser_capture_origin_mismatch(root, item.raw_id, conn=conn)
+                    if browser_after.status != "already_repaired":
+                        raise RuntimeError("browser-origin strategy did not reach its typed terminal postcondition")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
         return json_document(
             {
                 "strategy": item.actuator.value,
-                "strategy_proof_digest": browser_preview.proof_digest,
-                "strategy_receipt_path": str(receipt_path),
-                "repaired_count": browser_applied.repaired_count,
-                "already_repaired_count": browser_applied.already_repaired_count,
+                "repaired_count": int(preview.status == "eligible"),
+                "already_repaired_count": int(preview.status == "already_repaired"),
             }
         )
     if item.actuator is RawAuthorityActuator.REFINE_QUARANTINE:
-        quarantine_preview = repair_quarantined_accepted_raws(config, [item.raw_id])
-        quarantine_applied = repair_quarantined_accepted_raws(
-            config,
-            [item.raw_id],
-            apply=True,
-            receipt_path=receipt_path,
-            proof_digest=quarantine_preview.proof_digest,
-        )
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+            source_conn.execute("PRAGMA foreign_keys = ON")
+            _attach_repair_index(source_conn, index_db)
+            source_conn.execute("BEGIN IMMEDIATE")
+            try:
+                _validate_quarantined_raw_repair_blob_budget(source_conn, [item.raw_id])
+                quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                if quarantine_locked.status == "eligible" and quarantine_locked.census_stage_raw_ids:
+                    _stage_quarantined_census_cohort(source_conn, quarantine_locked)
+                    quarantine_locked = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                if quarantine_locked.status == "eligible":
+                    _cas_refine_quarantined_accepted_raw(source_conn, quarantine_locked)
+                elif quarantine_locked.status != "already_repaired":
+                    raise RuntimeError(f"quarantine strategy lost its exact proof: {quarantine_locked.reason}")
+                quarantine_after = _inspect_quarantined_accepted_raw(root, item.raw_id, conn=source_conn)
+                if quarantine_after.status != "already_repaired":
+                    raise RuntimeError("quarantine strategy did not reach its typed terminal postcondition")
+                source_conn.commit()
+            except Exception:
+                source_conn.rollback()
+                raise
         return json_document(
             {
                 "strategy": item.actuator.value,
-                "strategy_proof_digest": quarantine_preview.proof_digest,
-                "strategy_receipt_path": str(receipt_path),
-                "repaired_count": quarantine_applied.repaired_count,
-                "already_repaired_count": quarantine_applied.already_repaired_count,
+                "repaired_count": int(quarantine_locked.status == "eligible"),
+                "already_repaired_count": int(quarantine_locked.status == "already_repaired"),
             }
         )
     raise RuntimeError(f"raw authority plan actuator is not automatically executable: {item.actuator.value}")
@@ -856,7 +940,6 @@ def apply_raw_authority_frontier(
     *,
     preview_census_id: str,
     selected_plan_ids: tuple[str, ...],
-    receipt_dir: Path,
 ) -> RawAuthorityFrontierApplyReport:
     """Authorize, apply, receipt, and postflight exact plans through one contract."""
     if not selected_plan_ids or len(set(selected_plan_ids)) != len(selected_plan_ids):
@@ -894,17 +977,12 @@ def apply_raw_authority_frontier(
         },
         residual=_residual(state_counts),
     )
-    receipt_dir.mkdir(parents=True, exist_ok=True)
     executed = 0
     retryable = 0
     outcome_refs: list[str] = []
     for item in selected_items:
-        receipt_path = (
-            receipt_dir
-            / f"{apply_receipt.sequence_no:06d}-{item.actuator.value}-{item.plan_id.rsplit(':', 1)[-1]}.jsonl"
-        )
         try:
-            strategy_receipt = _apply_strategy(config, item, receipt_path=receipt_path)
+            strategy_receipt = _apply_strategy(config, item)
             outcome = RawReplayPlanOutcome(
                 plan_id=item.plan_id,
                 input_raw_ids=item.input_raw_ids,
@@ -939,7 +1017,6 @@ def apply_raw_authority_frontier(
                         "schema": "polylogue.raw-authority-frontier-application.v1",
                         "preview_census_id": preview_census_id,
                         "frontier_evidence_digest": item.evidence_digest,
-                        "strategy_receipt_path": str(receipt_path),
                     }
                 ),
             )
@@ -980,6 +1057,21 @@ def recover_interrupted_raw_authority_frontier(config: Config) -> tuple[str, ...
         return ()
     with closing(sqlite3.connect(source_db)) as conn:
         conn.row_factory = sqlite3.Row
+        census_ids = [
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT census_id
+                FROM raw_authority_censuses
+                WHERE lifecycle_status = 'planned'
+                  AND json_extract(scope_json, '$.schema') =
+                      'polylogue.raw-authority-frontier-scope.v1'
+                ORDER BY sequence_no
+                """
+            )
+        ]
+        if not census_ids:
+            return ()
         rows = conn.execute(
             """
             SELECT c.census_id, p.*
@@ -993,16 +1085,11 @@ def recover_interrupted_raw_authority_frontier(config: Config) -> tuple[str, ...
             ORDER BY c.sequence_no, cp.ordinal
             """
         ).fetchall()
-    if not rows:
-        return ()
     current_items, _head_count, _superseded_count = _frontier_items(config)
     current_by_plan = {item.plan_id: item for item in current_items}
     recovered: list[str] = []
-    census_ids: list[str] = []
     for row in rows:
         census_id = str(row["census_id"])
-        if census_id not in census_ids:
-            census_ids.append(census_id)
         plan = RawReplayPlan(
             plan_id=str(row["plan_id"]),
             input_digest=str(row["input_digest"]),

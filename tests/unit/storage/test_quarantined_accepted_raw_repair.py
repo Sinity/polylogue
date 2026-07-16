@@ -19,6 +19,7 @@ from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
+    apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.repair import repair_quarantined_accepted_raws
@@ -296,6 +297,39 @@ def test_quarantined_accepted_raw_repair_roundtrip_is_receipted_and_idempotent(
     )
     assert reapplied.repaired_count == 0
     assert receipt_path.read_text().count("\n") == 2
+
+
+def test_unified_frontier_applies_quarantine_refinement_without_incident_receipt(tmp_path: Path) -> None:
+    raw_id = _seed_invalid_head(tmp_path, typed_quarantined=True)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('unified-artifact-witness', ?, 'chatgpt-export', 'repair-one.json', 0,
+                      'session', 'supported_parseable', 'witness', 1, 1, 0, 1, 2)
+            """,
+            (raw_id,),
+        )
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id)
+
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(selected.plan_id,),
+    )
+
+    assert report.executed_plan_count == 1
+    assert report.retryable_plan_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT revision_authority, baseline_raw_id FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("byte_proven", raw_id)
+    assert not (tmp_path / "recovery").exists()
 
 
 @pytest.mark.parametrize(

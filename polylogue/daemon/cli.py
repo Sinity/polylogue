@@ -660,7 +660,6 @@ def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
         config,
         preview_census_id=census.census_id,
         selected_plan_ids=executable,
-        receipt_dir=config.archive_root / "recovery" / "raw-authority",
     )
     if report.retryable_plan_count:
         logger.warning(

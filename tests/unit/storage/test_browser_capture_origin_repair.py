@@ -25,6 +25,7 @@ from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
+    apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.repair import (
@@ -674,6 +675,24 @@ def test_browser_capture_origin_copy_forward_preserves_old_evidence_and_is_idemp
     )
     assert reapplied.repaired_count == 0
     assert receipt.read_text().count("\n") == 2
+
+
+def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id)
+
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(selected.plan_id,),
+    )
+
+    assert report.executed_plan_count == 1
+    assert report.retryable_plan_count == 0
+    postflight = inspect_raw_authority_frontier(_config(tmp_path))
+    assert all(item.raw_id != raw_id or item.state is RawAuthorityFrontierState.SUPERSEDED for item in postflight.items)
+    assert not (tmp_path / "recovery").exists()
 
 
 def test_browser_origin_repair_resumes_prelegacy_planned_receipt(tmp_path: Path) -> None:

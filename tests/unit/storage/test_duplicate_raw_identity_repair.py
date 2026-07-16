@@ -25,7 +25,7 @@ from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
-from polylogue.storage.raw_authority import record_raw_replay_outcome
+from polylogue.storage.raw_authority import finalize_raw_authority_census, record_raw_replay_outcome
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
@@ -219,9 +219,15 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     refs = readiness["raw_authority_frontier_remediation_refs"]
     assert isinstance(refs, list) and refs[0]["plan_id"] == missing.plan_id
 
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(b"wrong bytes at the expected content-addressed path")
+    still_missing = inspect_raw_authority_frontier(_config(tmp_path))
+    wrong_bytes = next(item for item in still_missing.items if item.raw_id == stale_raw_id)
+    assert wrong_bytes.state is RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE
+    assert "do not prove" in wrong_bytes.reason
+
     reacquired = json.dumps({"marker": "duplicate-raw-fixture", "legacy_native_id": "legacy-native-id-1"}).encode()
     assert hashlib.sha256(reacquired).digest() == blob_hash
-    blob_path.parent.mkdir(parents=True, exist_ok=True)
     blob_path.write_bytes(reacquired)
     advanced = inspect_raw_authority_frontier(_config(tmp_path))
     assert (
@@ -244,7 +250,6 @@ def test_unified_frontier_apply_drives_duplicate_strategy_and_postflight(tmp_pat
         _config(tmp_path),
         preview_census_id=preview.census_id,
         selected_plan_ids=(selected.plan_id,),
-        receipt_dir=tmp_path / "unified-receipts",
     )
 
     assert report.success is True
@@ -289,7 +294,6 @@ def test_unified_frontier_recovers_crash_after_strategy_commit(
             _config(tmp_path),
             preview_census_id=preview.census_id,
             selected_plan_ids=(selected.plan_id,),
-            receipt_dir=tmp_path / "crash-receipts",
         )
     monkeypatch.setattr("polylogue.storage.raw_reconciler.record_raw_replay_outcome", record_raw_replay_outcome)
 
@@ -301,6 +305,47 @@ def test_unified_frontier_recovers_crash_after_strategy_commit(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
             (logical_key,),
         ).fetchone() == (canonical_raw_id,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"
+        ).fetchone() == ("interrupted",)
+
+
+def test_unified_frontier_recovers_crash_after_outcome_before_postflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == stale_raw_id)
+
+    def crash_before_postflight(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected crash after durable outcome")
+
+    monkeypatch.setattr("polylogue.storage.raw_reconciler.finalize_raw_authority_census", crash_before_postflight)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        apply_raw_authority_frontier(
+            _config(tmp_path),
+            preview_census_id=preview.census_id,
+            selected_plan_ids=(selected.plan_id,),
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT lifecycle_status, outcome_recorded
+            FROM raw_authority_censuses AS c
+            JOIN raw_authority_census_plans AS cp USING (census_id)
+            WHERE c.mode = 'apply' ORDER BY c.sequence_no DESC LIMIT 1
+            """
+        ).fetchone() == ("planned", 1)
+
+    monkeypatch.setattr(
+        "polylogue.storage.raw_reconciler.finalize_raw_authority_census",
+        finalize_raw_authority_census,
+    )
+    recovered = recover_interrupted_raw_authority_frontier(_config(tmp_path))
+
+    assert recovered == ()
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
             "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"

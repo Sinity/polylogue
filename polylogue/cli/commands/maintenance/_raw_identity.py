@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import click
 
@@ -15,7 +14,6 @@ from polylogue.paths import archive_root, render_root
 @click.command("raw-authority-frontier")
 @click.option("--apply-plan", "plan_ids", multiple=True, help="Exact immutable plan id; repeatable.")
 @click.option("--preview-census", default=None, help="Completed dry-run census authorizing --apply-plan.")
-@click.option("--receipt-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--yes", "confirmed", is_flag=True, help="Confirm the selected break-glass application.")
 @click.option(
     "--output-format",
@@ -28,7 +26,6 @@ def raw_authority_frontier_command(
     env: AppEnv,
     plan_ids: tuple[str, ...],
     preview_census: str | None,
-    receipt_dir: Path | None,
     confirmed: bool,
     output_format: str,
 ) -> None:
@@ -51,10 +48,9 @@ def raw_authority_frontier_command(
                 config,
                 preview_census_id=preview_census,
                 selected_plan_ids=plan_ids,
-                receipt_dir=receipt_dir or root / "recovery" / "raw-authority",
             ).to_dict()
         else:
-            if preview_census is not None or receipt_dir is not None or confirmed:
+            if preview_census is not None or confirmed:
                 raise click.ClickException("apply options require at least one --apply-plan")
             payload = inspect_raw_authority_frontier(config).to_dict()
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
