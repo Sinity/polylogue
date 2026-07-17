@@ -1647,14 +1647,27 @@ def test_raw_materialization_blocks_oversized_actual_replay(
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
     result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        first_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0])
+        parser_fingerprint = str(
+            conn.execute(
+                "SELECT parser_fingerprint FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+            ).fetchone()[0]
+        )
+    repeated = repair_mod.repair_raw_materialization(config, dry_run=False)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        repeated_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0])
 
     assert result.success is False
     assert result.repaired_count == 0
-    assert "planning paused" in result.detail
+    assert "replay candidate(s) remain" in result.detail
     assert result.metrics["raw_materialization_oversized_count"] == 1.0
     assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
     assert result.metrics["raw_materialization_executed_count"] == 0.0
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
+    assert parser_fingerprint.endswith(":resource-blocked:1073741824")
+    assert repeated.success is True
+    assert repeated_census_count == first_census_count
 
 
 def test_raw_materialization_classifies_oversized_stream_record_replay(
@@ -1831,8 +1844,10 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
     assert result.success is False
     assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
     assert len(result.plan_outcomes) == 1
-    assert result.plan_outcomes[0].status.value == "retryable"
-    assert result.plan_outcomes[0].plan_id == repeated.plan_outcomes[0].plan_id
+    assert result.plan_outcomes[0].status.value == "deferred"
+    assert repeated.success is True
+    assert repeated.plan_outcomes == ()
+    assert "unchanged plan(s) remain deferred" in repeated.detail
     assert "aggregate payload exceeds 1.0 GiB" in result.detail
 
 
@@ -1920,7 +1935,7 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
     )
 
     first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
-    assert first.plan_outcomes[0].status.value == "retryable"
+    assert first.plan_outcomes[0].status.value == "deferred"
     (tmp_path / "ops.db").unlink()
 
     second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)

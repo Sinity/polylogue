@@ -65,7 +65,17 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
 
 
-def uncensused_historical_revision_raw_ids(archive_root: Path, raw_ids: list[str]) -> tuple[str, ...]:
+def _resource_blocked_parser_fingerprint(max_payload_bytes: int) -> str:
+    """Return the durable admission identity for one bounded census envelope."""
+    return f"revision-membership-v1:resource-blocked:{max_payload_bytes}"
+
+
+def uncensused_historical_revision_raw_ids(
+    archive_root: Path,
+    raw_ids: list[str],
+    *,
+    max_payload_bytes: int | None = None,
+) -> tuple[str, ...]:
     """Return inputs whose current parser identity has not been persisted.
 
     The dedicated receipt proves that the current parser actually observed
@@ -76,6 +86,9 @@ def uncensused_historical_revision_raw_ids(archive_root: Path, raw_ids: list[str
     if not raw_ids:
         return ()
     placeholders = ",".join("?" for _ in raw_ids)
+    resource_blocked_fingerprint = (
+        _resource_blocked_parser_fingerprint(max_payload_bytes) if max_payload_bytes is not None else None
+    )
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
         rows = conn.execute(
             f"""
@@ -88,11 +101,56 @@ def uncensused_historical_revision_raw_ids(archive_root: Path, raw_ids: list[str
                   AND c.status = 'complete',
                   0
               )
+              AND NOT COALESCE(
+                  c.parser_fingerprint = ?
+                  AND c.status = 'failed',
+                  0
+              )
             ORDER BY r.raw_id
             """,
-            raw_ids,
+            [*raw_ids, resource_blocked_fingerprint],
         ).fetchall()
     return tuple(str(row[0]) for row in rows)
+
+
+def record_resource_blocked_revision_census(
+    archive_root: Path,
+    raw_ids: tuple[str, ...],
+    *,
+    max_payload_bytes: int,
+    total_payload_bytes: int,
+) -> None:
+    """Persist a non-terminal no-retry receipt for immutable oversized bytes.
+
+    ``failed`` is deliberately truthful: the current parser has not inspected
+    the payload.  The fingerprint binds that fact to the exact admission
+    envelope, so increasing the envelope (or changing the parser identity)
+    re-admits the raw without a timer-driven retry storm.
+    """
+    if not raw_ids:
+        return
+    fingerprint = _resource_blocked_parser_fingerprint(max_payload_bytes)
+    detail = (
+        "current parser census deferred before blob open: "
+        f"component payload {total_payload_bytes} exceeds envelope {max_payload_bytes}"
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn, conn:
+        for raw_id in raw_ids:
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census (
+                    raw_id, parser_fingerprint, status, logical_keys_json,
+                    detail, censused_at_ms
+                ) VALUES (?, ?, 'failed', '[]', ?, 0)
+                ON CONFLICT(raw_id) DO UPDATE SET
+                    parser_fingerprint = excluded.parser_fingerprint,
+                    status = excluded.status,
+                    logical_keys_json = excluded.logical_keys_json,
+                    detail = excluded.detail,
+                    censused_at_ms = excluded.censused_at_ms
+                """,
+                (raw_id, fingerprint, detail),
+            )
 
 
 def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, ...]) -> None:
@@ -539,5 +597,7 @@ __all__ = [
     "RevisionCensusResult",
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
+    "record_resource_blocked_revision_census",
+    "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]
