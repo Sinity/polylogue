@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
+from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_scale_proof import (
+    JULY_15_COMPONENTS,
+    JULY_15_DIRECT_CANDIDATES,
+    JULY_15_EXPANDED_MEMBERS,
     ProcessSample,
     RawAuthorityScaleScenario,
+    main,
     run_raw_authority_scale_proof,
 )
 from polylogue.config import Config
@@ -24,7 +29,7 @@ def test_raw_authority_scale_proof_reaches_two_matching_quiescent_censuses(tmp_p
         tmp_path,
         components=3,
         raws=5,
-        pass_limit=2,
+        pass_limit=3,
         max_io_full_avg10=None,
         max_memory_full_avg10=None,
     )
@@ -34,7 +39,7 @@ def test_raw_authority_scale_proof_reaches_two_matching_quiescent_censuses(tmp_p
         "direct_candidates": 5,
         "expanded_candidates": 5,
         "total_payload_bytes": 5120,
-        "pass_limit": 2,
+        "pass_limit": 3,
     }
     digests = cast(list[str], payload["fixed_point_digests"])
     passes = cast(list[dict[str, object]], payload["passes"])
@@ -94,24 +99,48 @@ def test_raw_authority_scale_proof_rechecks_pressure_during_generation(
         )
 
 
-def test_raw_authority_scale_proof_rechecks_pressure_during_replay(
+def test_raw_authority_scale_proof_rechecks_pressure_around_census_and_replay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    samples = iter(
-        (
-            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
-            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
-            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
-            ProcessSample(1, 1, 0, 0, 0, 0, 2.1, 0.0),
-        )
-    )
-    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", lambda: next(samples))
+    replay_finished = False
+    original_repair = cast(Any, repair.repair_raw_materialization)
+
+    def sample() -> ProcessSample:
+        return ProcessSample(1, 1, 0, 0, 0, 0, 2.1 if replay_finished else 0.0, 0.0)
+
+    def record_replay(*args: object, **kwargs: object) -> object:
+        nonlocal replay_finished
+        result = original_repair(*args, **kwargs)
+        if kwargs.get("dry_run") is False:
+            replay_finished = True
+        return result
+
+    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", sample)
+    monkeypatch.setattr(repair, "repair_raw_materialization", record_replay)
 
     with pytest.raises(RuntimeError, match="I/O pressure gate"):
         run_raw_authority_scale_proof(tmp_path, components=1, raws=1, max_io_full_avg10=2.0, max_memory_full_avg10=None)
+    assert replay_finished is True
 
 
-def test_raw_authority_scale_proof_rejects_unsuccessful_production_pass(
+def test_raw_authority_scale_proof_rechecks_pressure_after_census(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = 0
+
+    def sample() -> ProcessSample:
+        nonlocal calls
+        calls += 1
+        return ProcessSample(1, 1, 0, 0, 0, 0, 2.1 if calls == 7 else 0.0, 0.0)
+
+    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", sample)
+
+    with pytest.raises(RuntimeError, match="I/O pressure gate"):
+        run_raw_authority_scale_proof(tmp_path, components=1, raws=1, max_io_full_avg10=2.0, max_memory_full_avg10=None)
+    assert calls == 7
+
+
+def test_raw_authority_scale_proof_rejects_every_unsuccessful_production_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -122,13 +151,13 @@ def test_raw_authority_scale_proof_rejects_unsuccessful_production_pass(
             (),
             {
                 "success": False,
-                "detail": "conservation mismatch",
-                "metrics": {"raw_materialization_plan_conservation_error_count": 1},
+                "detail": "silent repair failure",
+                "metrics": {},
             },
         )(),
     )
 
-    with pytest.raises(RuntimeError, match="repair pass failed: conservation mismatch"):
+    with pytest.raises(RuntimeError, match="repair pass failed: silent repair failure"):
         run_raw_authority_scale_proof(
             tmp_path, components=1, raws=1, max_io_full_avg10=None, max_memory_full_avg10=None
         )
@@ -139,7 +168,7 @@ def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_i
         tmp_path / "first",
         components=3,
         raws=5,
-        pass_limit=2,
+        pass_limit=3,
         keep=True,
         max_io_full_avg10=None,
         max_memory_full_avg10=None,
@@ -148,7 +177,7 @@ def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_i
         tmp_path / "second",
         components=3,
         raws=5,
-        pass_limit=2,
+        pass_limit=3,
         keep=True,
         max_io_full_avg10=None,
         max_memory_full_avg10=None,
@@ -332,8 +361,8 @@ def test_raw_authority_scale_proof_converges_with_explicit_deferred_cohort(tmp_p
     assert digests[0] == digests[1]
 
 
-def test_raw_authority_scale_proof_reaches_fixed_point_with_resource_deferred_residual(tmp_path: Path) -> None:
-    """A bounded envelope may leave durable debt without preventing quiescence."""
+def test_raw_authority_scale_proof_rejects_resource_deferred_residual(tmp_path: Path) -> None:
+    """A residual that cannot execute is evidence of an incomplete workload, not success."""
     scenario = RawAuthorityScaleScenario(
         components=2,
         direct_candidates=3,
@@ -343,23 +372,16 @@ def test_raw_authority_scale_proof_reaches_fixed_point_with_resource_deferred_re
         component_byte_cohorts=((1, 1, 2_048, 1), (3, 2, 8_192, 1)),
     )
 
-    payload = run_raw_authority_scale_proof(
-        tmp_path,
-        scenario=scenario,
-        pass_limit=2,
-        keep=True,
-        max_payload_bytes=4_096,
-        max_io_full_avg10=None,
-        max_memory_full_avg10=None,
-    )
-
-    passes = cast(list[dict[str, object]], payload["passes"])
-    assert passes[-1]["candidate_count"] == 2
-    assert passes[-1]["executable_candidate_count"] == 0
-    assert any(item["executable_candidate_count"] == 1 for item in passes)
-    assert all(item["executable_candidate_count"] == 0 for item in passes[-3:])
-    digests = cast(list[str], payload["fixed_point_digests"])
-    assert digests[0] == digests[1]
+    with pytest.raises(RuntimeError, match="repair pass failed"):
+        run_raw_authority_scale_proof(
+            tmp_path,
+            scenario=scenario,
+            pass_limit=2,
+            keep=True,
+            max_payload_bytes=4_096,
+            max_io_full_avg10=None,
+            max_memory_full_avg10=None,
+        )
 
 
 def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp_path: Path) -> None:
@@ -439,3 +461,77 @@ def test_explicit_cohorts_stream_bounded_payloads_without_allocating_full_bytes(
 
     achieved = cast(dict[str, object], payload["achieved_shape"])
     assert achieved["expanded_total_blob_bytes"] == 2_048
+
+
+def test_raw_authority_scale_proof_checks_admission_before_generating_each_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    samples = iter(
+        (
+            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
+            ProcessSample(1, 1, 0, 0, 0, 0, 2.1, 0.0),
+        )
+    )
+    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", lambda: next(samples))
+
+    with pytest.raises(RuntimeError, match="I/O pressure gate"):
+        run_raw_authority_scale_proof(
+            tmp_path,
+            components=1,
+            raws=1,
+            prepare_only=True,
+            max_io_full_avg10=2.0,
+            max_memory_full_avg10=None,
+        )
+
+
+def test_raw_authority_scale_proof_rejects_an_undersized_generated_workload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        repair,
+        "raw_materialization_scale_profile",
+        lambda _config: {
+            "candidate_count": 0,
+            "expanded_candidate_count": 0,
+            "authority_component_count": 0,
+            "expanded_total_blob_bytes": 0,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="undersized or mismatched workload"):
+        run_raw_authority_scale_proof(
+            tmp_path,
+            components=1,
+            raws=1,
+            prepare_only=True,
+            max_io_full_avg10=None,
+            max_memory_full_avg10=None,
+        )
+
+
+def test_raw_authority_scale_proof_cli_and_catalog_default_to_july_topology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def record_call(workdir: Path, **kwargs: object) -> dict[str, object]:
+        captured["workdir"] = workdir
+        captured.update(kwargs)
+        return {"archive_root": str(tmp_path), "prepared_only": True}
+
+    monkeypatch.setattr("devtools.raw_authority_scale_proof.run_raw_authority_scale_proof", record_call)
+
+    assert main(["--prepare-only", "--workdir", str(tmp_path)]) == 0
+    assert captured["components"] == JULY_15_COMPONENTS == 10_163
+    assert captured["raws"] == JULY_15_DIRECT_CANDIDATES == 15_264
+    assert captured["expanded_raws"] == JULY_15_EXPANDED_MEMBERS == 21_398
+    assert captured["pass_limit"] == JULY_15_DIRECT_CANDIDATES
+    command = COMMANDS["workspace raw-authority-scale-proof"]
+    assert command.use_when is not None
+    assert "15,264 direct candidates" in command.use_when
+    assert "21,398 expanded memberships" in command.use_when
+    assert command.examples[-1] == (
+        "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 "
+        "--expanded-raws 21398 --pass-limit 15264 --keep --json"
+    )

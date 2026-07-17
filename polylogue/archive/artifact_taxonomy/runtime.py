@@ -36,7 +36,21 @@ def classify_artifact_path(
     if not normalized:
         return None
 
+    # Import lazily: ``sources`` imports decoder helpers which in turn depend
+    # on this taxonomy during package bootstrap.  Classification happens after
+    # that bootstrap, while OriginSpec remains the owner of the actual rules.
+    from polylogue.sources.origin_specs import artifact_rule_for_path
+
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
+    if rule := artifact_rule_for_path(provider_token, normalized):
+        return ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind(rule.kind),
+            parse_as_session=rule.parse_policy == "session",
+            schema_eligible=rule.parse_policy == "session",
+            default_priority=120 if rule.parse_policy == "session" else 80,
+            reason=f"OriginSpec Claude artifact rule: {rule.coverage_role}",
+        )
     if provider_token is Provider.HERMES and inner_name in {
         "verification_evidence.db",
         "verification_evidence.sqlite",

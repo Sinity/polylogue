@@ -3562,27 +3562,36 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
 
-        from polylogue.archive.query.execution_control import (
-            QueryExecutionContext,
-            QueryTimeoutError,
-            classify_unit_expression_workload,
-            execute_archive_read_sync,
-        )
+        from polylogue.archive.query.execution_control import QueryTimeoutError, classify_unit_expression_workload
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
         # The handler thread is dedicated, so the read runs in place; the
         # execution context supplies the deadline and shares the process-wide
         # admission controller with the async surfaces (polylogue-z9gh.1).
-        ctx = QueryExecutionContext.create(
-            query_text=expression,
+        transaction = QueryTransaction(
+            archive_root,
+            QueryTransactionRequest(
+                operation="query_units",
+                arguments={
+                    "expression": expression,
+                    "session_filters": dict(request.session_filters or {}),
+                },
+                page_size=limit,
+                offset=offset,
+                projection="terminal-unit-envelope",
+                stable_order="canonical",
+            ),
             workload_class=classify_unit_expression_workload(expression),
-            owner_ref="http.query_units",
+            read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
         )
         try:
-            payload = execute_archive_read_sync(
-                archive_root,
-                lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
-                ctx=ctx,
-                read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
+            payload = transaction.run_sync(
+                lambda archive: query_unit_envelope(
+                    archive,
+                    request,
+                    execution_context=transaction.context,
+                    transaction_request=transaction.request,
+                )
             )
         except QueryTimeoutError:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")

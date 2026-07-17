@@ -39,6 +39,21 @@ BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI})
 GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS})
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
+# The explicit record-shape branch order below remains the production
+# implementation during the OriginSpec migration.  OriginSpec validates its
+# declared detector tightness against this projection so a new declaration
+# cannot silently contradict a stronger existing detector.
+RECORD_DETECTOR_PROVIDER_ORDER = (
+    Provider.GEMINI_CLI,
+    Provider.HERMES,
+    Provider.ANTIGRAVITY,
+    Provider.BEADS,
+    Provider.CODEX,
+    Provider.CLAUDE_CODE,
+    Provider.CHATGPT,
+    Provider.CLAUDE_AI,
+    Provider.GEMINI,
+)
 _MAX_PARSE_DEPTH = 10
 _NO_LOOKAHEAD = object()
 

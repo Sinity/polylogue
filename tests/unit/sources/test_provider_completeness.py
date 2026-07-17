@@ -5,7 +5,9 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
+from polylogue.core.enums import Origin
 from polylogue.sources import provider_completeness as module
+from polylogue.sources.origin_specs import ORIGIN_SPECS
 from polylogue.sources.provider_completeness import (
     accepted_blockers,
     provider_package_completeness,
@@ -20,6 +22,7 @@ def test_provider_completeness_reports_representative_modes() -> None:
     chatgpt = by_ref["provider-package:chatgpt-export/takeout-json@v1"]
     browser = by_ref["provider-package:browser-capture/live-receiver@v1"]
     hermes = by_ref["provider-package:hermes-session/state-db@v1"]
+    grok = by_ref["provider-package:grok-export/reserved@v1"]
 
     assert codex.origin == "codex-session"
     assert codex.capture_mode == "session-jsonl"
@@ -37,6 +40,17 @@ def test_provider_completeness_reports_representative_modes() -> None:
 
     assert hermes.schema_package.owner_path == ("polylogue/schemas/providers/hermes/state_db_v16.contract.json")
     assert hermes.schema_package.status == "complete"
+    assert grok.maturity == "reserved"
+    assert grok.status == "reserved"
+
+
+def test_provider_completeness_is_a_projection_of_every_origin_spec() -> None:
+    report = provider_package_completeness()
+
+    assert {Origin.from_string(row.origin) for row in report.rows} == set(Origin)
+    assert {(origin, mode.package_ref) for origin, mode in module.PACKAGE_MODE_SPECS} == {
+        (spec.origin, mode.package_ref) for spec in ORIGIN_SPECS for mode in spec.completeness_modes
+    }
 
 
 def test_provider_completeness_origin_filter_accepts_origin_and_provider() -> None:

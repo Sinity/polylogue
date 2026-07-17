@@ -897,6 +897,66 @@ def test_raw_materialization_replays_complete_governed_bundle_membership_after_i
     assert candidates.authority_quarantined == 1
 
 
+def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path: Path) -> None:
+    """A complete durable census governs replay; it never substitutes for index rows."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    def conversation(session_id: str) -> dict[str, object]:
+        return {
+            "id": session_id,
+            "title": session_id,
+            "create_time": 1,
+            "update_time": 2,
+            "mapping": {
+                "message-1": {
+                    "id": "message-1",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "message-1",
+                        "author": {"role": "user"},
+                        "create_time": 2,
+                        "content": {"content_type": "text", "parts": [f"durable {session_id}"]},
+                    },
+                }
+            },
+            "current_node": "message-1",
+        }
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps([conversation("bundle-one"), conversation("bundle-two")]).encode(),
+            source_path="bundle.json",
+            acquired_at_ms=1,
+        )
+
+    first = repair_mod.repair_raw_materialization(_config(tmp_path))
+    assert first.success is True
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "complete",
+        )
+        assert conn.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("complete",)
+
+    # Model the normal derived-tier reset: source authority and its already
+    # complete parser census survive while every index projection is rebuilt.
+    (tmp_path / "index.db").unlink()
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+
+    replay = repair_mod.repair_raw_materialization(_config(tmp_path))
+
+    assert replay.success is True
+    assert replay.repaired_count == 2
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (2,)
+
+
 def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
@@ -1897,6 +1957,34 @@ def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path
     assert repeated.success is True
     assert repeated.census_receipt is not None
     assert repeated.census_receipt.census_id == first.census_receipt.census_id
+
+
+def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path: Path) -> None:
+    """A bounded dry run must describe the envelope that governed its plan."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    max_payload_bytes = 100
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"custom-envelope"}}\n',
+            source_path="custom-envelope.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?", (max_payload_bytes + 1, raw_id))
+        conn.commit()
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True, max_payload_bytes=max_payload_bytes)
+
+    assert result.success is False
+    assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(max_payload_bytes)
+    assert "100 B" in result.detail
+    assert "1.0 GiB" not in result.detail
 
 
 def test_raw_materialization_processes_independent_components_across_bounded_passes(tmp_path: Path) -> None:

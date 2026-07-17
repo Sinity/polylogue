@@ -8,6 +8,10 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import MaterialOrigin, Role
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
+from polylogue.sources.parsers.claude.orchestration import (
+    inventory_claude_orchestration_artifacts,
+    parse_claude_orchestration_artifact,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -170,6 +174,95 @@ def test_parse_code_preserves_tool_result_reclassification_material_origin() -> 
 
     assert result.messages[0].role is Role.TOOL
     assert result.messages[0].material_origin is MaterialOrigin.TOOL_RESULT
+
+
+def test_claude_workflow_artifact_parser_retains_native_facts_and_coverage_gaps() -> None:
+    run = parse_claude_orchestration_artifact(
+        "/tmp/.claude/projects/x/workflows/wf-54.json",
+        json.dumps({"runId": "wf-54", "taskId": "task-7", "resumeFromRunId": "wf-53", "scriptHash": "abc"}),
+    )
+    journal = parse_claude_orchestration_artifact(
+        "/tmp/.claude/projects/x/subagents/workflows/wf-54/journal.jsonl",
+        json.dumps({"contentKey": "call-1", "agentId": "agent-a", "structuredResult": {"ok": True}}) + "\n",
+    )
+
+    assert run is not None and run.facts[0].run_id == "wf-54"
+    assert run.facts[0].payload["resumeFromRunId"] == "wf-53"
+    assert journal is not None and journal.facts[0].content_key == "call-1"
+    assert journal.facts[0].payload["structuredResult"] == {"ok": True}
+
+    coverage = inventory_claude_orchestration_artifacts(
+        (
+            "/tmp/.claude/projects/x/workflows/wf-54.json",
+            "/tmp/.claude/projects/x/subagents/workflows/wf-54/journal.jsonl",
+            "/tmp/.claude/projects/x/subagents/agent-a.jsonl",
+            "/tmp/.claude/projects/x/subagents/agent-b.meta.json",
+            "/tmp/.claude/projects/x/jobs/session-a/adopt.json",
+        )
+    )
+    assert coverage.artifact_counts == {
+        "adopt_manifest": 1,
+        "agent_sidecar_meta": 1,
+        "agent_transcript": 1,
+        "workflow_journal": 1,
+        "workflow_run_snapshot": 1,
+    }
+    assert coverage.gaps == (
+        "missing agent metadata for transcript agent-a",
+        "missing agent transcript for metadata agent-b",
+    )
+
+
+def test_claude_agent_prompt_needs_positive_human_provenance() -> None:
+    generated = parse_code(
+        [{"type": "user", "uuid": "u1", "sessionId": "agent-session", "message": {"role": "user", "content": "work"}}],
+        "agent-a",
+    )
+    direct = parse_code(
+        [{"type": "user", "uuid": "u2", "sessionId": "direct-session", "message": {"role": "user", "content": "work"}}],
+        "direct-session",
+    )
+
+    assert generated.messages[0].material_origin is MaterialOrigin.GENERATED_CONTEXT_PACK
+    assert direct.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+
+def test_claude_coordinator_workflow_tool_use_preserves_invocation_evidence() -> None:
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "workflow-tool-use",
+                "sessionId": "coordinator",
+                "timestamp": 1704067200,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "workflow-1",
+                            "name": "Workflow",
+                            "input": {
+                                "runId": "wf-54",
+                                "taskId": "task-7",
+                                "resumeFromRunId": "wf-53",
+                                "scriptHash": "abc",
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "coordinator",
+    )
+
+    assert [(event.event_type, event.source_message_provider_id, event.payload) for event in parsed.session_events] == [
+        (
+            "claude_workflow_invocation",
+            "workflow-tool-use",
+            {"runId": "wf-54", "taskId": "task-7", "resumeFromRunId": "wf-53", "scriptHash": "abc"},
+        )
+    ]
 
 
 def _background_task_records() -> list[object]:

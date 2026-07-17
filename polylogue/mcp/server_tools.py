@@ -16,7 +16,6 @@ from polylogue.coordination.payloads import AgentCoordinationPayload
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.mcp.archive_support import (
     archive_message_page_payload,
-    archive_query_unit_payload,
     archive_search_payload,
     archive_session_list_payload,
     archive_summary_payload,
@@ -302,6 +301,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             from polylogue.archive.query.execution_control import classify_unit_expression_workload
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
             from polylogue.archive.query.transaction import QueryContinuation, QueryTransaction, QueryTransactionRequest
+            from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 
             config = hooks.get_config()
             effective_expression = requested_expression
@@ -339,48 +339,50 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
             try:
-                replay_arguments = {
-                    "expression": effective_expression,
-                    "limit": hooks.clamp_limit(effective_limit),
-                    "offset": max(0, effective_offset),
-                    "origin": origin,
-                    "exclude_origin": exclude_origin,
-                    "tag": tag,
-                    "exclude_tag": exclude_tag,
-                    "repo": repo,
-                    "project": project,
-                    "has_type": has_type,
-                    "referenced_path": referenced_path,
-                    "cwd_prefix": cwd_prefix,
-                    "action": action,
-                    "exclude_action": exclude_action,
-                    "action_sequence": action_sequence,
-                    "action_text": action_text,
-                    "tool": tool,
-                    "exclude_tool": exclude_tool,
-                    "title": title,
-                    "since": since,
-                    "until": until,
-                    "has_tool_use": has_tool_use,
-                    "has_thinking": has_thinking,
-                    "has_paste_evidence": has_paste_evidence,
-                    "typed_only": typed_only,
-                    "min_messages": min_messages,
-                    "max_messages": max_messages,
-                    "min_words": min_words,
-                    "max_words": max_words,
-                    "message_type": message_type,
-                }
-                replay_arguments = {
-                    key: value for key, value in replay_arguments.items() if value not in (None, False, ())
-                }
                 clamped_limit = hooks.clamp_limit(effective_limit)
                 clamped_offset = max(0, effective_offset)
+                unit_request = query_unit_request(
+                    expression=effective_expression,
+                    limit=clamped_limit,
+                    offset=clamped_offset,
+                    session_filters=session_filters,
+                    origin=origin,
+                    exclude_origin=exclude_origin,
+                    tag=tag,
+                    exclude_tag=exclude_tag,
+                    repo=repo,
+                    project=project,
+                    has_type=has_type,
+                    referenced_path=referenced_path,
+                    cwd_prefix=cwd_prefix,
+                    action=action,
+                    exclude_action=exclude_action,
+                    action_sequence=action_sequence,
+                    action_text=action_text,
+                    tool=tool,
+                    exclude_tool=exclude_tool,
+                    title=title,
+                    since=since,
+                    until=until,
+                    has_tool_use=has_tool_use,
+                    has_thinking=has_thinking,
+                    has_paste=has_paste_evidence,
+                    typed_only=typed_only,
+                    min_messages=min_messages,
+                    max_messages=max_messages,
+                    min_words=min_words,
+                    max_words=max_words,
+                    message_type=message_type,
+                )
+                canonical_arguments = {
+                    "expression": effective_expression,
+                    "session_filters": dict(unit_request.session_filters or {}),
+                }
                 transaction = QueryTransaction(
                     mcp_archive_root(config),
                     QueryTransactionRequest(
                         operation="query_units",
-                        arguments=replay_arguments,
+                        arguments=canonical_arguments,
                         page_size=clamped_limit,
                         offset=clamped_offset,
                         projection="terminal-unit-envelope",
@@ -388,43 +390,14 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                     ),
                     workload_class=classify_unit_expression_workload(effective_expression),
                 )
-                with hooks.response_context("query_units", replay_arguments):
+                with hooks.response_context("query_units", canonical_arguments):
                     return hooks.json_payload(
                         await transaction.run(
-                            lambda archive: archive_query_unit_payload(
+                            lambda archive: query_unit_envelope(
                                 archive,
-                                expression=effective_expression,
-                                limit=clamped_limit,
-                                offset=clamped_offset,
+                                unit_request,
                                 execution_context=transaction.context,
-                                origin=origin,
-                                exclude_origin=exclude_origin,
-                                tag=tag,
-                                exclude_tag=exclude_tag,
-                                repo=repo,
-                                project=project,
-                                has_type=has_type,
-                                referenced_path=referenced_path,
-                                cwd_prefix=cwd_prefix,
-                                action=action,
-                                exclude_action=exclude_action,
-                                action_sequence=action_sequence,
-                                action_text=action_text,
-                                tool=tool,
-                                exclude_tool=exclude_tool,
-                                title=title,
-                                since=since,
-                                until=until,
-                                has_tool_use=has_tool_use,
-                                has_thinking=has_thinking,
-                                has_paste=has_paste_evidence,
-                                typed_only=typed_only,
-                                min_messages=min_messages,
-                                max_messages=max_messages,
-                                min_words=min_words,
-                                max_words=max_words,
-                                message_type=message_type,
-                                session_filters=session_filters,
+                                transaction_request=transaction.request,
                             ),
                         )
                     )

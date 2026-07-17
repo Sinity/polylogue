@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_pathology_findings_as_assertions,
     upsert_transform_candidate_assertions,
 )
+from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -1438,6 +1440,149 @@ def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_p
         }
         assert "durable-user-decision" not in {row.candidate.assertion_id for row in reviews}
         assert all(row.latest_judgment is not None for row in reviews)
+    finally:
+        conn.close()
+
+
+class _PauseAfterCandidateLookup:
+    """Exercise the production upsert through a second real SQLite connection."""
+
+    def __init__(self, conn: sqlite3.Connection, looked_up: threading.Event, release: threading.Event) -> None:
+        self._conn = conn
+        self._looked_up = looked_up
+        self._release = release
+
+    def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
+        cursor = self._conn.execute(sql, parameters)
+        if "SELECT created_at_ms, status FROM assertions" in sql:
+            self._looked_up.set()
+            assert self._release.wait(timeout=5), "test did not release detector replay"
+        return cursor
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path) -> None:
+    """An immediate transaction serializes detector replay before operator acceptance."""
+
+    db_path = tmp_path / "user.db"
+    setup = open_connection(db_path)
+    initialize_archive_tier(setup, ArchiveTier.USER)
+    try:
+        candidate = upsert_assertion(
+            setup,
+            assertion_id="concurrent-candidate",
+            target_ref="session:concurrent",
+            kind=AssertionKind.DECISION,
+            body_text="detector candidate",
+            author_kind="detector",
+            now_ms=1,
+        )
+        setup.commit()
+    finally:
+        setup.close()
+
+    conflict = open_connection(db_path)
+    looked_up = threading.Event()
+    release_detector = threading.Event()
+    operator_done = threading.Event()
+    detector_errors: list[BaseException] = []
+    operator_errors: list[BaseException] = []
+    try:
+        assert conflict.execute("PRAGMA busy_timeout").fetchone()[0] == WRITE_CONNECTION_PROFILE.busy_timeout_ms
+
+        def replay_detector() -> None:
+            detector = open_connection(db_path)
+            try:
+                assert detector.execute("PRAGMA busy_timeout").fetchone()[0] == WRITE_CONNECTION_PROFILE.busy_timeout_ms
+                upsert_assertion(
+                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    assertion_id=candidate.assertion_id,
+                    target_ref=candidate.target_ref,
+                    kind=candidate.kind,
+                    body_text="detector replay",
+                    author_kind="detector",
+                    now_ms=2,
+                )
+                detector.commit()
+            except BaseException as exc:  # pragma: no cover - asserted by the parent thread
+                detector_errors.append(exc)
+            finally:
+                detector.close()
+
+        def accept_candidate() -> None:
+            operator = open_connection(db_path)
+            try:
+                assert operator.execute("PRAGMA busy_timeout").fetchone()[0] == WRITE_CONNECTION_PROFILE.busy_timeout_ms
+                judge_assertion_candidate(
+                    operator,
+                    candidate_ref=f"assertion:{candidate.assertion_id}",
+                    decision="accept",
+                    actor_ref="user:operator",
+                    now_ms=3,
+                )
+                operator.commit()
+            except BaseException as exc:  # pragma: no cover - asserted by the parent thread
+                operator_errors.append(exc)
+            finally:
+                operator.close()
+                operator_done.set()
+
+        detector_thread = threading.Thread(target=replay_detector)
+        detector_thread.start()
+        assert looked_up.wait(timeout=5)
+
+        operator_thread = threading.Thread(target=accept_candidate)
+        operator_thread.start()
+        assert not operator_done.wait(timeout=0.15), "operator bypassed the detector's immediate transaction"
+        release_detector.set()
+        detector_thread.join(timeout=5)
+        operator_thread.join(timeout=5)
+        assert not detector_thread.is_alive()
+        assert not operator_thread.is_alive()
+        assert detector_errors == []
+        assert operator_errors == []
+
+        final = read_assertion_envelope(conflict, candidate.assertion_id)
+        assert final is not None
+        assert final.status is AssertionStatus.ACCEPTED
+        with pytest.raises(ValueError, match="conflicting prior judgment"):
+            judge_assertion_candidate(
+                conflict,
+                candidate_ref=f"assertion:{candidate.assertion_id}",
+                decision="reject",
+                actor_ref="user:second-operator",
+            )
+        conflict.rollback()
+    finally:
+        release_detector.set()
+        conflict.close()
+
+
+def test_assertion_upsert_rolls_back_its_immediate_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "user.db"
+    conn = open_connection(db_path)
+    initialize_archive_tier(conn, ArchiveTier.USER)
+    original = user_write.read_assertion_envelope
+
+    def fail_after_insert(connection: sqlite3.Connection, assertion_id: str) -> object:
+        if assertion_id == "rollback-candidate":
+            raise RuntimeError("simulated envelope failure")
+        return original(connection, assertion_id)
+
+    try:
+        monkeypatch.setattr(user_write, "read_assertion_envelope", fail_after_insert)
+        with pytest.raises(RuntimeError, match="simulated envelope failure"):
+            upsert_assertion(
+                conn,
+                assertion_id="rollback-candidate",
+                target_ref="session:rollback",
+                kind=AssertionKind.DECISION,
+                author_kind="detector",
+            )
+        assert not conn.in_transaction
+        assert original(conn, "rollback-candidate") is None
     finally:
         conn.close()
 

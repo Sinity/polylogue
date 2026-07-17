@@ -14,6 +14,7 @@ from polylogue.storage.sqlite.queries import (
     session_insight_timeline_writes,
     sessions,
     stats,
+    work_evidence,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "session_insight_timeline_reads",
     "session_insight_timeline_writes",
     "stats",
+    "work_evidence",
 ]

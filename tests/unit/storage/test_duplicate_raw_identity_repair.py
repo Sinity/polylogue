@@ -346,6 +346,12 @@ def test_unified_frontier_recovers_crash_after_strategy_commit(
         assert conn.execute(
             "SELECT lifecycle_status FROM raw_authority_censuses WHERE mode = 'apply' ORDER BY sequence_no DESC LIMIT 1"
         ).fetchone() == ("interrupted",)
+        assert conn.execute(
+            "SELECT outcome_status FROM raw_authority_census_plans WHERE selected = 1 ORDER BY ordinal DESC LIMIT 1"
+        ).fetchone() == ("rejected_stale",)
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone() == (
+            1,
+        )
 
 
 def test_unified_frontier_recovers_crash_after_outcome_before_postflight(

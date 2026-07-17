@@ -5966,8 +5966,7 @@ def repair_raw_materialization(
             detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
         if oversized_raw_ids:
             detail += (
-                f"; {len(oversized_raw_ids):,} raw rows exceed replay size advisory "
-                f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+                f"; {len(oversized_raw_ids):,} raw rows exceed replay size advisory {_format_bytes(max_payload_bytes)}"
             )
         if oversized_stream_safe_raw_ids:
             detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows are stream-capable"
@@ -6244,17 +6243,17 @@ def repair_raw_materialization(
     if all_blocked_component_raw_ids and expanded_component_blocked:
         detail += (
             f"; {len(all_blocked_component_raw_ids):,} raw row(s) belong to authority components whose aggregate "
-            f"payload exceeds {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            f"payload exceeds {_format_bytes(max_payload_bytes)}"
         )
     elif oversized_raw_ids:
         detail += (
             f"; {len(oversized_raw_ids):,} non-stream-safe raw row(s) exceed execution limit "
-            f"{_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            f"{_format_bytes(max_payload_bytes)}"
         )
     elif all_blocked_component_raw_ids:
         detail += (
             f"; {len(all_blocked_component_raw_ids):,} raw row(s) belong to authority components whose aggregate "
-            f"payload exceeds {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+            f"payload exceeds {_format_bytes(max_payload_bytes)}"
         )
     if remaining.missing_blobs:
         detail += f"; {_raw_materialization_missing_blob_detail(remaining, final=True)}"

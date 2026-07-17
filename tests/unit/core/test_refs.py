@@ -3,14 +3,54 @@ from __future__ import annotations
 import pytest
 
 from polylogue.core.refs import (
+    ActorRef,
     EvidenceRef,
+    ExecutionContextRef,
     ObjectRef,
+    WorkerProfileRef,
     delegation_edge_object_id,
     normalize_object_ref_text,
     normalize_public_ref_text,
     parse_delegation_edge_object_id,
     parse_public_ref,
 )
+
+
+def test_actor_and_context_identity_are_separate_and_content_addressed() -> None:
+    actor = ActorRef.parse("agent:claude-sonnet-5")
+    context_a = ExecutionContextRef.from_observation(
+        {"harness": "claude-code@1", "prompt_ref": "assertion:prompt-a", "tools": ["mcp"]}
+    )
+    context_b = ExecutionContextRef.from_observation(
+        {"harness": "claude-code@1", "prompt_ref": "assertion:prompt-b", "tools": ["mcp"]}
+    )
+
+    assert actor.format() == "agent:claude-sonnet-5"
+    assert context_a.context_id.startswith("sha256:")
+    assert context_a.context_id != context_b.context_id
+    assert (
+        WorkerProfileRef(actor=actor, execution_context=context_a, role="reviewer").profile_id
+        != WorkerProfileRef(actor=actor, execution_context=context_b, role="reviewer").profile_id
+    )
+
+
+def test_execution_context_reports_unknown_fields_without_fabricating_completeness() -> None:
+    context = ExecutionContextRef.from_observation({"harness": "codex@1"}, unknown_fields=("prompt_ref", "permissions"))
+
+    assert context.known_fields == ("harness",)
+    assert context.unknown_fields == ("permissions", "prompt_ref")
+    assert context.unknown_fraction == 2 / 3
+    assert not context.is_complete
+
+
+def test_execution_context_requires_observed_shape_for_new_ids_and_marks_legacy_ids() -> None:
+    legacy = ExecutionContextRef.from_legacy_id("ctx-old")
+
+    assert legacy.context_id == "ctx-old"
+    assert not legacy.content_addressed
+    assert legacy.unknown_fraction == 1.0
+    with pytest.raises(ValueError, match="sha256"):
+        ExecutionContextRef(context_id="prompt-only")
 
 
 @pytest.mark.parametrize(

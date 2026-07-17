@@ -503,8 +503,15 @@ def query_unit_envelope(
     request: QueryUnitRequest,
     *,
     execution_context: QueryExecutionContext | None = None,
+    transaction_request: QueryTransactionRequest | None = None,
 ) -> QueryUnitResultEnvelope:
-    """Execute a compiled terminal query-unit request."""
+    """Execute a compiled terminal query-unit request.
+
+    Callers that already own a :class:`QueryTransaction` pass its canonical
+    request so the page, receipt, and continuation share one identity.  The
+    optional argument retains the established direct-storage API for callers
+    that do not cross a transaction boundary.
+    """
     envelope = query_unit_rows(
         archive,
         request.source,
@@ -514,7 +521,7 @@ def query_unit_envelope(
         session_filters=request.session_filters,
         execution_context=execution_context,
     )
-    transaction_request = QueryTransactionRequest(
+    canonical_request = transaction_request or QueryTransactionRequest(
         operation="query_units",
         arguments={
             "expression": request.expression,
@@ -523,11 +530,13 @@ def query_unit_envelope(
         page_size=request.limit,
         offset=request.offset,
     )
-    result_ref = "result:" + transaction_request.query_ref.removeprefix("query:")
+    if canonical_request.operation != "query_units":
+        raise ValueError("query-unit envelope requires a query_units transaction")
+    result_ref = "result:" + canonical_request.query_ref.removeprefix("query:")
     next_offset = getattr(envelope, "next_offset", None)
     continuation = (
         QueryContinuation(
-            request=transaction_request.next(offset=next_offset),
+            request=canonical_request.next(offset=next_offset),
             result_ref=result_ref,
         ).encode()
         if next_offset is not None
@@ -535,7 +544,7 @@ def query_unit_envelope(
     )
     return envelope.model_copy(
         update={
-            "query_ref": transaction_request.query_ref,
+            "query_ref": canonical_request.query_ref,
             "result_ref": result_ref,
             "continuation": continuation,
         }

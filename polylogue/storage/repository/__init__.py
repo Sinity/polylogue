@@ -37,6 +37,7 @@ from polylogue.storage.repository.insight.timeline_reads import (
 from polylogue.storage.repository.insight.topology_reads import (
     RepositoryInsightTopologyReadMixin,
 )
+from polylogue.storage.repository.insight.work_evidence import RepositoryWorkEvidenceMixin
 from polylogue.storage.repository.raw.repository_raw import RepositoryRawMixin
 from polylogue.storage.repository.vectors.repository_vectors import RepositoryVectorMixin
 
@@ -45,6 +46,7 @@ class SessionRepository(
     RepositoryArchiveReadMixin,
     RepositoryInsightProfileReadMixin,
     RepositoryInsightRunProjectionReadMixin,
+    RepositoryWorkEvidenceMixin,
     RepositoryInsightTimelineReadMixin,
     RepositoryInsightThreadReadMixin,
     RepositoryInsightSummaryReadMixin,

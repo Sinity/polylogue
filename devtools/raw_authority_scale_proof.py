@@ -20,6 +20,7 @@ import sqlite3
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
@@ -39,6 +40,11 @@ from polylogue.storage.raw_authority import RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
+
+JULY_15_COMPONENTS = 10_163
+JULY_15_DIRECT_CANDIDATES = 15_264
+JULY_15_EXPANDED_MEMBERS = 21_398
+_PUBLISH_BATCH_SIZE = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,17 +452,83 @@ def _assert_admission(
         )
 
 
-def _generated_archive_id(rows: list[tuple[str, int, str]]) -> str:
-    """Bind the receipt to corpus content rather than its temporary directory."""
-    manifest = {
-        "format": "raw-authority-scale-proof-v1",
-        "rows": [
-            {"blob_hash": blob_hash, "native_id": native_id, "revision": revision}
-            for native_id, revision, blob_hash in rows
-        ],
+class _GeneratedArchiveId:
+    """Incrementally bind a generated corpus without retaining every row."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256(b"raw-authority-scale-proof-v1\n")
+
+    def add(self, *, native_id: str, revision: int, blob_hash: str) -> None:
+        row = json.dumps(
+            {"blob_hash": blob_hash, "native_id": native_id, "revision": revision},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        self._digest.update(row)
+        self._digest.update(b"\n")
+
+    def value(self) -> str:
+        return f"raw-authority-scale:{self._digest.hexdigest()}"
+
+
+def _require_requested_scale(scenario: RawAuthorityScaleScenario, achieved_shape: dict[str, object]) -> None:
+    """Reject a receipt candidate unless the generated corpus matches its claim."""
+    exact = {
+        "expanded_candidate_count": scenario.expanded_candidates,
+        "authority_component_count": scenario.components,
+        "expanded_total_blob_bytes": scenario.total_payload_bytes,
     }
-    encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-    return f"raw-authority-scale:{hashlib.sha256(encoded).hexdigest()}"
+    candidate_count = achieved_shape.get("candidate_count")
+    if (
+        not isinstance(candidate_count, int)
+        or isinstance(candidate_count, bool)
+        or candidate_count < scenario.direct_candidates
+    ):
+        raise RuntimeError(
+            "raw-authority scale proof generated an undersized or mismatched workload: "
+            f"candidate_count={candidate_count!r}, expected at least {scenario.direct_candidates}"
+        )
+    for name, expected_value in exact.items():
+        actual = achieved_shape.get(name)
+        if actual != expected_value:
+            raise RuntimeError(
+                "raw-authority scale proof generated an undersized or mismatched workload: "
+                f"{name}={actual!r}, expected {expected_value}"
+            )
+
+
+def _prepare_replay_census(
+    *,
+    config: Config,
+    component_limit: int,
+    max_payload_bytes: int,
+    check_admission: Callable[[], None],
+    maximum_passes: int,
+) -> None:
+    """Complete the prerequisite parser census before receipt-bearing replay.
+
+    The repair API reports a deliberately unsuccessful result while this
+    preparatory census still has durable work.  Those preparatory results are
+    not proof passes and are never included in the receipt.
+    """
+    for _ in range(maximum_passes):
+        check_admission()
+        result = repair.repair_raw_materialization(
+            config,
+            raw_artifact_limit=component_limit,
+            max_payload_bytes=max_payload_bytes,
+            dry_run=True,
+        )
+        check_admission()
+        incomplete = result.metrics.get("raw_materialization_census_incomplete_raw_count", 0)
+        if incomplete < 0 or not float(incomplete).is_integer():
+            raise RuntimeError("raw-authority scale proof requires an integral preparatory census count")
+        if incomplete == 0:
+            return
+        if result.census_receipt is None:
+            raise RuntimeError("raw-authority scale proof census preparation produced no durable receipt")
+    raise RuntimeError("raw-authority scale proof did not complete preparatory parser census")
 
 
 def _requested_shape(scenario: RawAuthorityScaleScenario, *, pass_limit: int) -> dict[str, object]:
@@ -499,8 +571,10 @@ def _record_repair_pass(
     config: Config,
     pass_limit: int,
     max_payload_bytes: int,
+    check_admission: Callable[[], None],
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
+    check_admission()
     before = _process_sample()
     started = time.perf_counter()
     result = repair.repair_raw_materialization(
@@ -511,12 +585,9 @@ def _record_repair_pass(
     )
     wall_ms = int((time.perf_counter() - started) * 1000)
     after = _process_sample()
+    check_admission()
     metrics = result.metrics
-    hard_failure_metrics = (
-        "raw_materialization_plan_conservation_error_count",
-        "raw_materialization_unresolved_blocker_count",
-    )
-    if not result.success and any(float(metrics.get(key, 0)) > 0 for key in hard_failure_metrics):
+    if not result.success:
         raise RuntimeError(f"raw-authority scale proof repair pass failed: {result.detail}")
     candidate_value = metrics.get("raw_materialization_candidate_count")
     executable_candidate_value = metrics.get("raw_materialization_executable_candidate_count", candidate_value)
@@ -654,7 +725,7 @@ def run_raw_authority_scale_proof(
         if publisher is None:
             raise RuntimeError("raw-authority scale proof requires a writable blob publisher")
         source_conn = archive._ensure_source_conn()
-        generated_rows: list[tuple[str, int, str]] = []
+        generated_archive_id = _GeneratedArchiveId()
         pending_rows: list[tuple[str, str, str, int, bool, int]] = []
         acquired_at_ms = 0
         staging = root / "payload-staging"
@@ -669,6 +740,7 @@ def run_raw_authority_scale_proof(
                 row_kinds = [False] * direct_count + [True] * sibling_count
                 previous: Path | None = None
                 for member, (row_size, terminalized) in enumerate(zip(row_sizes, row_kinds, strict=True)):
+                    check_generation_pressure()
                     source_label = f"scale-{component:05d}-member-{member:05d}"
                     row_native_id = (
                         session_native_id
@@ -685,11 +757,12 @@ def run_raw_authority_scale_proof(
                     )
                     blob_hash, blob_size = publisher.write_from_path(payload_path)
                     payload_path.unlink()
+                    check_generation_pressure()
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
                     pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))
-                    generated_rows.append((source_label, member, blob_hash))
-                    if len(pending_rows) < 128:
+                    generated_archive_id.add(native_id=source_label, revision=member, blob_hash=blob_hash)
+                    if len(pending_rows) < _PUBLISH_BATCH_SIZE:
                         continue
                     publisher.flush()
                     check_generation_pressure()
@@ -791,9 +864,12 @@ def run_raw_authority_scale_proof(
                         acquired_at_ms += 1
                 check_generation_pressure()
         staging.rmdir()
-    archive_id = _generated_archive_id(generated_rows)
+    archive_id = generated_archive_id.value()
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
+    check_replay_pressure()
     achieved_shape = repair.raw_materialization_scale_profile(config)
+    check_replay_pressure()
+    _require_requested_scale(scenario, achieved_shape)
     if prepare_only:
         prepared_report: dict[str, object] = {
             "archive_root": str(root),
@@ -814,32 +890,41 @@ def run_raw_authority_scale_proof(
             "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
             "use prepare_only to inspect its exact topology until those outcome variants are implemented"
         )
+    _prepare_replay_census(
+        config=config,
+        component_limit=pass_limit,
+        max_payload_bytes=max_payload_bytes,
+        check_admission=check_replay_pressure,
+        maximum_passes=(scenario.components * 3) + 4,
+    )
     pass_receipts: list[RawAuthorityScalePass] = []
     for number in range(1, (scenario.components * 3) + 4):
-        check_replay_pressure()
         pass_receipt, _digest = _record_repair_pass(
             number=number,
             mode="apply",
             config=config,
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
+            check_admission=check_replay_pressure,
         )
         pass_receipts.append(pass_receipt)
-        if pass_receipt.executable_candidate_count == 0:
+        if pass_receipt.candidate_count == 0:
             break
+        if pass_receipt.executable_candidate_count == 0:
+            raise RuntimeError("raw-authority scale proof left unexecuted candidate work after bounded replay")
     else:
         raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
     fixed_point_digests: list[str] = []
     for _ in range(2):
-        check_replay_pressure()
         pass_receipt, digest = _record_repair_pass(
             number=len(pass_receipts) + 1,
             mode="dry_run",
             config=config,
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
+            check_admission=check_replay_pressure,
         )
-        if pass_receipt.executable_candidate_count != 0:
+        if pass_receipt.candidate_count != 0:
             raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
         pass_receipts.append(pass_receipt)
         fixed_point_digests.append(digest)
@@ -917,13 +1002,13 @@ def run_raw_authority_scale_proof(
 def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workdir", type=Path, default=Path(".cache") / "raw-authority-scale-proof")
-    parser.add_argument("--components", type=int, default=16)
-    parser.add_argument("--raws", type=int, default=24)
+    parser.add_argument("--components", type=int, default=JULY_15_COMPONENTS)
+    parser.add_argument("--raws", type=int, default=JULY_15_DIRECT_CANDIDATES)
     parser.add_argument(
         "--expanded-raws",
         type=int,
-        default=None,
-        help="Exact expanded authority candidates; defaults to --raws when omitted.",
+        default=JULY_15_EXPANDED_MEMBERS,
+        help="Exact expanded authority memberships; defaults to the July-15-shaped 21,398 members.",
     )
     parser.add_argument(
         "--scenario-profile",
@@ -931,7 +1016,12 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         default=None,
         help="Read an aggregate scale profile produced by --capture-profile and generate that synthetic shape.",
     )
-    parser.add_argument("--pass-limit", type=int, default=4)
+    parser.add_argument(
+        "--pass-limit",
+        type=int,
+        default=JULY_15_DIRECT_CANDIDATES,
+        help="Maximum components in a receipt-bearing replay; defaults to the full July direct workload.",
+    )
     parser.add_argument(
         "--max-payload-bytes",
         type=int,

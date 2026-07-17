@@ -1012,6 +1012,57 @@ class TestArchiveGenericToolSurfaces:
         assert [item["session_id"] for item in payload["items"]] == [kept_id]
 
     @pytest.mark.asyncio
+    async def test_agent_query_discovery_and_action_pages_share_one_registered_transaction(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        """Exercise the registered MCP discovery resource and advancing action route.
+
+        Production dependencies: FastMCP resource/tool registration, the
+        query transaction, and the SQLite action relation. Removing the
+        transaction identity makes this route's refs and continuation diverge.
+        """
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root) as archive:
+            _write_archive_session(
+                archive,
+                native_id="tool-query-units-actions",
+                blocks=[
+                    {"type": "tool_use", "tool_name": "Workflow", "tool_id": "workflow-1", "input": {}},
+                    {"type": "tool_use", "tool_name": "Workflow", "tool_id": "workflow-2", "input": {}},
+                ],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("registered query route must not use archive operations")
+            discovery = invoke_surface(mcp_server._resource_manager._resources["polylogue://capabilities/query"].fn)
+            first = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="actions where tool:Workflow",
+                limit=1,
+            )
+            first_payload = json.loads(first)
+            second = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="actions where tool:ignored",
+                continuation=first_payload["continuation"],
+            )
+
+        discovery_payload = json.loads(discovery)
+        second_payload = json.loads(second)
+        assert "action" in discovery_payload["grammar"]["terminal_sources"]
+        assert first_payload["query_ref"] == second_payload["query_ref"]
+        assert first_payload["result_ref"] == second_payload["result_ref"]
+        assert first_payload["continuation"] is not None
+        assert first_payload["items"][0]["tool_use_block_id"] != second_payload["items"][0]["tool_use_block_id"]
+
+    @pytest.mark.asyncio
     async def test_query_units_tool_rejects_session_expression(self: object, mcp_server: MCPServerUnderTest) -> None:
         result = await invoke_surface_async(
             mcp_server._tool_manager._tools["query_units"].fn,

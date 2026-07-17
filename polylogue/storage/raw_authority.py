@@ -779,9 +779,12 @@ def record_raw_authority_census(
     residual_json = _canonical_json(residual)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         # A frontier preview authorizes an immutable execution exactly once.
-        # This runs in the census INSERT transaction, so two offline callers
-        # cannot both turn one unchanged preview into execution receipts.
+        # Reserve the write transaction before reading existing claims.  A
+        # deferred transaction would let two callers both observe no claim,
+        # then serialize only their INSERTs and mint duplicate EXECUTED
+        # receipts for the same immutable preview plan.
         if mode == "apply" and scope.get("schema") == "polylogue.raw-authority-frontier-scope.v1":
+            conn.execute("BEGIN IMMEDIATE")
             preview_census_id = scope.get("preview_census_id")
             if isinstance(preview_census_id, str) and preview_census_id and selected_plan_ids:
                 placeholders = ",".join("?" for _ in selected_plan_ids)
