@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-05",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "provider": "chatgpt-pro",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "artifact": {
+    "filename": "beads-05-semantic-transcript-r01(1).zip",
+    "sha256": "f5cb4b9126df7f7694b7a2a03270ce633d0a7bdb5064a4445975064bac9e57a7",
+    "size_bytes": 69996,
+    "custody_path": "/realm/inbox/download/beads-05-semantic-transcript-r01(1).zip"
+  },
+  "validation": [
+    "ZIP member listing confirms HANDOFF.md, PATCH.diff, TESTS.md, and EVIDENCE.md",
+    "PATCH.diff contains 7,265 lines including generated topology artifacts",
+    "current-master reconciliation added the missing result-before-use ordering fixture before admission",
+    "focused renderer, CLI, reader, lineage, and ChatGPT parser route suite: 232 passed",
+    "Ruff, strict Mypy, and devtools verify --quick passed before merge",
+    "the ZIP does not attest a provider turn, capture reference, or exact dispatched-prompt hash; those fields remain unknown rather than inferred from the current campaign prompt"
+  ],
+  "bead": "polylogue-ap7.1",
+  "related_bead": "polylogue-395j",
+  "merge_commit": "fc770dbd9a16227037a51a6882dc5cca9ef4eda1",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3016",
+  "admission": "The r02 semantic-transcript.v1 slice is merged. It supplies the shared ordered semantic stream for CLI and web reader, explicit fallback coverage for normalized families/origins, structural result pairing, bounded lineage/attachment provenance, recipient-addressed ChatGPT tool preservation, and compact typed empty-thinking notices. The requested live private-export manual visual inspection remains deliberately open on the owning Beads."
+}
