@@ -46,6 +46,10 @@ docs/topology-status.md linguist-generated -diff
 # composition. Keep their ordinary diffs unless a narrower rule above applies.
 .agent/** linguist-detectable=false
 
+# Immutable external result patches are acquired evidence, not working-source
+# diffs. Preserve their exact bytes (including whitespace) for later review.
+.agent/handoffs/external-agent-campaigns/**/results/**/raw/PATCH.diff -text -diff
+
 # Fixtures / captured payloads — not first-party code (keep diffs: they're edited).
 **/representatives/*.json linguist-vendored
 tests/data/** linguist-vendored
