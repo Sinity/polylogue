@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from polylogue.archive.blackboard import BlackboardNote
+    from polylogue.archive.query.execution_control import QueryExecutionContext
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
     from polylogue.config import Config
@@ -516,6 +517,7 @@ def archive_query_unit_payload(
     limit: int,
     offset: int,
     session_filters: Mapping[str, object] | None = None,
+    execution_context: QueryExecutionContext | None = None,
     **filter_params: object,
 ) -> QueryUnitResultEnvelope:
     """Build the shared terminal query-unit envelope from an archive."""
@@ -528,7 +530,7 @@ def archive_query_unit_payload(
         session_filters=session_filters,
         **filter_params,
     )
-    return query_unit_envelope(archive, request)
+    return query_unit_envelope(archive, request, execution_context=execution_context)
 
 
 def archive_messages_payload(

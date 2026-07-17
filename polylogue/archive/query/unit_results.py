@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from polylogue.archive.query.expression import (
     ExpressionCompileError,
@@ -35,6 +34,9 @@ from polylogue.surfaces.payloads import (
     build_query_unit_aggregate_envelope,
     build_query_unit_envelope,
 )
+
+if TYPE_CHECKING:
+    from polylogue.archive.query.execution_control import QueryExecutionContext
 
 
 def _pipeline_stage_payloads(pipeline: QueryUnitPipeline) -> tuple[dict[str, object], ...]:
@@ -204,80 +206,28 @@ class TerminalExecutionContext:
     caller_offset: int
     fetch_limit: int
     session_filters: Mapping[str, object] | None
+    execution_context: QueryExecutionContext | None = None
 
 
 TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
 
 
-_AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
-    "message": {"role": "role", "type": "message_type", "session.origin": "origin"},
-    "action": {
-        "tool": "tool_name",
-        "action": "semantic_type",
-        "type": "semantic_type",
-        "is_error": "is_error",
-        "exit_code": "exit_code",
-        "followup_class": "followup_class",
-        "session.origin": "origin",
-    },
-    "block": {"type": "block_type", "tool": "tool_name", "action": "semantic_type", "session.origin": "origin"},
-    "file": {"path": "path", "session.origin": "origin"},
-    "delegation": {
-        "basis": "instruction_tool_use_block_id",
-        "mapping_state": "mapping_state",
-        "result_status": "result_status",
-        "requested_model": "requested_model",
-        "dispatch_model": "dispatch_turn_model",
-        "child_model": "child_session_dominant_model",
-        "session.origin": "parent_origin",
-    },
-}
-_MISSING_GROUP_KEY = "[missing]"
-
-
 def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
-    return () if group_by is None else tuple(group_by.split(","))
+    return () if group_by is None else tuple(field.strip() for field in group_by.split(",") if field.strip())
 
 
-def _aggregate_value(unit: str, field: str, row: Any) -> str | None:
-    attribute = _AGGREGATE_ROW_FIELDS.get(unit, {}).get(field)
-    if attribute is None:
-        supported = ", ".join(sorted(_AGGREGATE_ROW_FIELDS.get(unit, {})))
-        raise ExpressionCompileError(
-            f"pipeline `group by {field}` cannot stream {unit} rows; supported fields: {supported}", field=field
+def _record_result_page(
+    ctx: TerminalExecutionContext,
+    envelope: QueryUnitResultEnvelope,
+    *,
+    selected_rows_exact: int | None = None,
+) -> QueryUnitResultEnvelope:
+    if ctx.execution_context is not None:
+        ctx.execution_context.record_result_page(
+            emitted_rows=len(envelope.items),
+            selected_rows_exact=selected_rows_exact,
         )
-    value = getattr(row, attribute)
-    if field == "basis":
-        return "action" if value is not None else "edge"
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return str(value).lower()
-    return str(value)
-
-
-def _all_aggregate_rows(ctx: TerminalExecutionContext) -> list[Any]:
-    method_name = ctx.descriptor.sql_query_method
-    if method_name is None:
-        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
-    query_method = cast(Any, getattr(ctx.archive, method_name))
-    rows: list[Any] = []
-    page_size = 1000
-    offset = 0
-    while True:
-        page = cast(
-            Sequence[Any],
-            query_method(
-                ctx.source.predicate,
-                limit=page_size,
-                offset=offset,
-                session_filters=ctx.session_filters,
-            ),
-        )
-        rows.extend(page)
-        if len(page) < page_size:
-            return rows
-        offset += len(page)
+    return envelope
 
 
 def _aggregate_pipeline_payload(
@@ -285,8 +235,8 @@ def _aggregate_pipeline_payload(
     *,
     group_fields: tuple[str, ...],
     denominator: int,
-    missing_counts: Counter[str],
-    unknown_counts: Counter[str],
+    missing_counts: Mapping[str, int],
+    unknown_counts: Mapping[str, int],
     groups: Sequence[tuple[tuple[str, ...], int]],
 ) -> dict[str, object]:
     payload = pipeline.to_payload()
@@ -338,39 +288,32 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
             offset=ctx.offset,
             session_filters=ctx.session_filters,
         )
-        return build_query_unit_aggregate_envelope(
-            tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
-            unit=ctx.source.unit,
-            query=ctx.query,
-            limit=ctx.limit,
-            offset=ctx.caller_offset,
-            has_next=len(aggregate_rows) > ctx.limit,
-            pipeline=pipeline.to_payload(),
-            pipeline_stages=_pipeline_stage_payloads(pipeline),
+        return _record_result_page(
+            ctx,
+            build_query_unit_aggregate_envelope(
+                tuple(QueryUnitAggregateRowPayload.from_row(row) for row in aggregate_rows[: ctx.limit]),
+                unit=ctx.source.unit,
+                query=ctx.query,
+                limit=ctx.limit,
+                offset=ctx.caller_offset,
+                has_next=len(aggregate_rows) > ctx.limit,
+                pipeline=pipeline.to_payload(),
+                pipeline_stages=_pipeline_stage_payloads(pipeline),
+            ),
         )
-    rows = _all_aggregate_rows(ctx)
-    missing_counts: Counter[str] = Counter()
-    unknown_counts: Counter[str] = Counter()
-    counts: Counter[tuple[str, ...]] = Counter()
-    for row in rows:
-        values: list[str] = []
-        for field in group_fields:
-            value = _aggregate_value(ctx.source.unit, field, row)
-            if value is None:
-                missing_counts[field] += 1
-                value = _MISSING_GROUP_KEY
-            elif value.lower() == "unknown":
-                unknown_counts[field] += 1
-            values.append(value)
-        counts[tuple(values)] += 1
-    if not group_fields:
-        counts[()] = len(rows)
-    ordered_groups = list(counts.items())
-    if aggregate_sort == "key":
-        ordered_groups.sort(key=lambda item: item[0], reverse=aggregate_sort_direction == "desc")
-    else:
-        ordered_groups.sort(key=lambda item: (item[1], item[0]), reverse=aggregate_sort_direction == "desc")
-    page_groups = ordered_groups[ctx.offset : ctx.offset + ctx.fetch_limit]
+    aggregate_page = ctx.archive.query_unit_multi_counts(
+        pipeline.source_unit,
+        pipeline.predicate,
+        group_by=group_fields,
+        sort=aggregate_sort,
+        sort_direction=aggregate_sort_direction,
+        limit=ctx.fetch_limit,
+        offset=ctx.offset,
+        session_filters=ctx.session_filters,
+    )
+    page_groups = [(row.group_values, row.count) for row in aggregate_page.rows]
+    missing_counts = dict(zip(group_fields, aggregate_page.missing_counts, strict=True))
+    unknown_counts = dict(zip(group_fields, aggregate_page.unknown_counts, strict=True))
     group_by = pipeline.group_by
     aggregate_payload_rows = tuple(
         QueryUnitAggregateRowPayload(
@@ -385,22 +328,26 @@ def _execute_count_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnv
         )
         for values, count in page_groups[: ctx.limit]
     )
-    return build_query_unit_aggregate_envelope(
-        aggregate_payload_rows,
-        unit=ctx.source.unit,
-        query=ctx.query,
-        limit=ctx.limit,
-        offset=ctx.caller_offset,
-        has_next=len(page_groups) > ctx.limit,
-        pipeline=_aggregate_pipeline_payload(
-            pipeline,
-            group_fields=group_fields,
-            denominator=len(rows),
-            missing_counts=missing_counts,
-            unknown_counts=unknown_counts,
-            groups=page_groups[: ctx.limit],
+    return _record_result_page(
+        ctx,
+        build_query_unit_aggregate_envelope(
+            aggregate_payload_rows,
+            unit=ctx.source.unit,
+            query=ctx.query,
+            limit=ctx.limit,
+            offset=ctx.caller_offset,
+            has_next=len(page_groups) > ctx.limit,
+            pipeline=_aggregate_pipeline_payload(
+                pipeline,
+                group_fields=group_fields,
+                denominator=aggregate_page.denominator,
+                missing_counts=missing_counts,
+                unknown_counts=unknown_counts,
+                groups=page_groups[: ctx.limit],
+            ),
+            pipeline_stages=_pipeline_stage_payloads(pipeline),
         ),
-        pipeline_stages=_pipeline_stage_payloads(pipeline),
+        selected_rows_exact=aggregate_page.denominator,
     )
 
 
@@ -426,15 +373,18 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
             sort_direction=sort_direction,
         ),
     )
-    return build_query_unit_envelope(
-        tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
-        unit=ctx.source.unit,
-        query=ctx.query,
-        limit=ctx.limit,
-        offset=ctx.caller_offset,
-        has_next=len(rows) > ctx.limit,
-        pipeline=pipeline.to_payload(),
-        pipeline_stages=_pipeline_stage_payloads(pipeline),
+    return _record_result_page(
+        ctx,
+        build_query_unit_envelope(
+            tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
+            unit=ctx.source.unit,
+            query=ctx.query,
+            limit=ctx.limit,
+            offset=ctx.caller_offset,
+            has_next=len(rows) > ctx.limit,
+            pipeline=pipeline.to_payload(),
+            pipeline_stages=_pipeline_stage_payloads(pipeline),
+        ),
     )
 
 
@@ -459,6 +409,7 @@ def _build_sql_envelope(
     caller_offset: int,
     fetch_limit: int,
     session_filters: Mapping[str, object] | None,
+    execution_context: QueryExecutionContext | None,
 ) -> QueryUnitResultEnvelope:
     pipeline = source.pipeline
     action = pipeline.terminal.action
@@ -480,6 +431,7 @@ def _build_sql_envelope(
             caller_offset=caller_offset,
             fetch_limit=fetch_limit,
             session_filters=session_filters,
+            execution_context=execution_context,
         )
     )
 
@@ -492,6 +444,7 @@ def query_unit_rows(
     limit: int,
     offset: int = 0,
     session_filters: Mapping[str, object] | None = None,
+    execution_context: QueryExecutionContext | None = None,
 ) -> QueryUnitResultEnvelope:
     """Execute an explicit unit-source query."""
 
@@ -515,10 +468,16 @@ def query_unit_rows(
         caller_offset=caller_offset,
         fetch_limit=fetch_limit,
         session_filters=session_filters,
+        execution_context=execution_context,
     )
 
 
-def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> QueryUnitResultEnvelope:
+def query_unit_envelope(
+    archive: ArchiveStore,
+    request: QueryUnitRequest,
+    *,
+    execution_context: QueryExecutionContext | None = None,
+) -> QueryUnitResultEnvelope:
     """Execute a compiled terminal query-unit request."""
 
     return query_unit_rows(
@@ -528,6 +487,7 @@ def query_unit_envelope(archive: ArchiveStore, request: QueryUnitRequest) -> Que
         limit=request.limit,
         offset=request.offset,
         session_filters=request.session_filters,
+        execution_context=execution_context,
     )
 
 
