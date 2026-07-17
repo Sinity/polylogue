@@ -101,6 +101,7 @@ def test_raw_authority_scale_proof_rechecks_pressure_during_replay(
         (
             ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
             ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
+            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
             ProcessSample(1, 1, 0, 0, 0, 0, 2.1, 0.0),
         )
     )

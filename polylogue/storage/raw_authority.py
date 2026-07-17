@@ -1393,8 +1393,8 @@ def recover_interrupted_raw_authority_censuses(
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE c.lifecycle_status = 'planned'
               AND cp.selected = 1 AND cp.outcome_recorded = 0
-              AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
-                  'polylogue.raw-authority-frontier-plan.v1'
+              AND COALESCE(json_extract(c.scope_json, '$.schema'), '') !=
+                  'polylogue.raw-authority-frontier-scope.v1'
             ORDER BY c.sequence_no, cp.ordinal
             """
         ).fetchall()
