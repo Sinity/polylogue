@@ -29,7 +29,7 @@
    "bytes": 781283,
    "checked_at": "2026-07-17T10:56:00+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "status": "recovered_incomplete_package",
+   "status": "subsumed_foundation_retained",
    "patch_applies": true,
    "problems": [
     "missing required HANDOFF.md",
@@ -37,10 +37,10 @@
     "missing required EVIDENCE.md",
     "no provider result ZIP or verified conversation export"
    ],
-   "integration": "MCP algebra foundation candidate; must be reconciled with beads-03/04 on current master",
+   "integration": "Current-master reconciliation found the recovered standalone diff is the same declaration/registration foundation now landed in PR #3004 / ed44be18f. It conflicts on the existing registry, adapters, generated equivalence, and server registration paths. Retain it as historical/proof input to polylogue-t46.8.2; it does not complete default-profile collapse, read-tool retirement, or bounded transaction adoption.",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "verified"
+   "state": "subsumed_foundation_retained"
   },
   {
    "job": "beads-03",

@@ -5,7 +5,7 @@
   "job_id": "beads-02",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "verified",
+  "state": "subsumed_foundation_retained",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -22,14 +22,19 @@
       "polylogue_attachment_ref": null
     }
   ],
-  "triage": "locally inspected and checksum-validated",
-  "beads": [],
+  "triage": "current-master reconciliation found the recovered standalone diff is the same MCP declaration/registration foundation that PR #3004 landed; it no longer applies because it overlaps that implementation",
+  "beads": [
+    "polylogue-t46.8",
+    "polylogue-t46.8.2"
+  ],
   "worktree": null,
   "agent_handle": null,
   "commits": [
     "ed44be18f448c31f9fa5b9289c75da7eee99b131"
   ],
   "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
-  "verification_receipts": [],
-  "notes": "incomplete package; its bounded MCP foundation was integrated as PR #3004"
+  "verification_receipts": [
+    "fresh origin/master at e673da994: recovered beads-02 diff conflicts on existing declaration, adapter, generated-equivalence, and registration paths already supplied by PR #3004"
+  ],
+  "notes": "The missing cohesive package remains a delivery limitation, but the standalone diff is retained as positive historical/proof input. Its declaration/registration foundation is materially subsumed by PR #3004 / ed44be18f. Do not repeat the obsolete kernel or claim it completed the requested 10-15 tool default surface, semantic read-tool retirement, cold-model discovery, URI resources/prompts, or bounded shared transaction adoption; those remain under polylogue-t46.8.2."
 }
