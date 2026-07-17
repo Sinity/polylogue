@@ -10,7 +10,7 @@ from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
     write_archive_workload_profile,
 )
-from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
+from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
 from polylogue.schemas.observation import PROVIDERS
@@ -58,6 +58,7 @@ def generate_provider_schema(
     max_samples: int | None = None,
     privacy_config: SchemaPrivacyConfig | None = None,
     full_corpus: bool = False,
+    progress_callback: GenerationProgressCallback | None = None,
 ) -> GenerationResult:
     """Generate the default inferred schema for a provider."""
     return _build_provider_bundle(
@@ -66,6 +67,7 @@ def generate_provider_schema(
         max_samples=max_samples,
         privacy_config=privacy_config,
         full_corpus=full_corpus,
+        progress_callback=progress_callback,
     ).result
 
 

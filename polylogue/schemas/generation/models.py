@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.observation import SchemaUnit
@@ -14,6 +14,9 @@ from polylogue.schemas.registry import ClusterManifest
 
 if TYPE_CHECKING:
     from polylogue.schemas.redaction_report import SchemaReport
+
+
+GenerationProgressCallback: TypeAlias = Callable[[str, JSONDocument], None]
 
 
 @dataclass
@@ -30,6 +33,7 @@ class GenerationResult:
     cluster_count: int = 0
     package_count: int = 0
     artifact_counts: dict[str, int] = field(default_factory=dict)
+    phase_receipt: JSONDocument = field(default_factory=dict)
 
     @property
     def success(self) -> bool:

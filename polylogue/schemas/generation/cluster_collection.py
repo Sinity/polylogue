@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.cluster_support import (
     _artifact_priority,
     _cluster_profile_tokens,
@@ -36,6 +37,7 @@ def _collect_cluster_accumulators(
     max_samples: int | None,
     full_corpus: bool = False,
     journal: ObservationJournal | None = None,
+    progress_callback: Callable[[JSONDocument], None] | None = None,
 ) -> tuple[dict[str, _ClusterAccumulator], Sequence[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
@@ -43,6 +45,7 @@ def _collect_cluster_accumulators(
         max_samples=max_samples,
         full_corpus=full_corpus,
         journal=journal,
+        progress_callback=progress_callback,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
 
@@ -54,6 +57,7 @@ def collect_cluster_analysis(
     max_samples: int | None,
     full_corpus: bool = False,
     journal: ObservationJournal | None = None,
+    progress_callback: Callable[[JSONDocument], None] | None = None,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
@@ -102,13 +106,32 @@ def collect_cluster_analysis(
         for unit in retained_units:
             observe_summary(unit)
     else:
+        observed_unit_count = 0
         for unit in observed_units:
             observe_summary(unit)
             journal.append_unit(unit, retain_cluster_payload=False)
+            observed_unit_count += 1
+            if progress_callback is not None and observed_unit_count % 128 == 0:
+                progress_callback(
+                    {
+                        "unit_count": observed_unit_count,
+                        "sample_count": total_schema_samples,
+                        "journal": {"unit_count": journal.unit_count, "sample_count": journal.sample_count},
+                    }
+                )
         # The following phases replay the journal repeatedly. Commit its final
         # ingest batch first so reads do not repeatedly traverse one enormous
         # writer WAL instead of the checkpointable journal database.
         journal.flush()
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "unit_count": observed_unit_count,
+                    "sample_count": total_schema_samples,
+                    "journal": {"unit_count": journal.unit_count, "sample_count": journal.sample_count},
+                    "complete": True,
+                }
+            )
 
     coarse_clusters: list[_ClusterAccumulator] = []
     ordered_summaries: Iterable[tuple[object, _ProfileSummary]]

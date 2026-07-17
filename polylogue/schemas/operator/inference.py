@@ -111,6 +111,7 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
         max_samples=request.max_samples,
         privacy_config=_privacy_config(request.privacy_config),
         full_corpus=request.full_corpus,
+        progress_callback=request.progress_callback,
     )
     package_version = result.default_version or "default"
     registry = _typed_registry()

@@ -197,6 +197,60 @@ def test_schema_generate_forwards_generation_request(
     assert "Generated schema package set for chatgpt" in capsys.readouterr().out
 
 
+def test_schema_generate_writes_aggregate_progress_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_get_config() -> _ConfigStub:
+        return _ConfigStub(db_path=tmp_path / "archive.db")
+
+    def fake_infer(request: SchemaInferRequest) -> SchemaInferResult:
+        assert request.progress_callback is not None
+        request.progress_callback(
+            "observe_and_cluster",
+            {
+                "phase": "observe_and_cluster",
+                "state": "progress",
+                "unit_count": 128,
+                "units_per_s": 32.0,
+            },
+        )
+        return SchemaInferResult(
+            generation=GenerationResult(
+                provider=request.provider,
+                schema={"type": "object"},
+                sample_count=2,
+                phase_receipt={"version": 1, "status": "succeeded", "phases": []},
+            )
+        )
+
+    receipt_path = tmp_path / "receipt.json"
+    monkeypatch.setattr(schema_generate, "get_config", fake_get_config)
+    monkeypatch.setattr(schema_generate, "infer_schema", fake_infer)
+
+    assert schema_generate.main(["--provider", "chatgpt", "--progress", "--receipt", str(receipt_path)]) == 0
+
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["generation"]["status"] == "succeeded"
+    assert len(receipt["progress_events"]) == 1
+    event = receipt["progress_events"][0]
+    assert event["phase"] == "observe_and_cluster"
+    assert event["state"] == "progress"
+    assert event["unit_count"] == 128
+    assert event["units_per_s"] == 32.0
+    assert "max_rss_bytes" in event["process"]
+    assert receipt["input"] == {
+        "index_size_bytes": None,
+        "source_db_bytes": None,
+        "raw_row_count": None,
+        "raw_blob_bytes": None,
+    }
+    assert "max_rss_bytes" in receipt["process_final"]
+    assert receipt["resume"]["status"] == "restart_from_acquisition"
+    assert "observe_and_cluster" in capsys.readouterr().err
+
+
 def test_schema_generate_cluster_without_manifest_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
