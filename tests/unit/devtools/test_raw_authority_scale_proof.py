@@ -7,6 +7,11 @@ from typing import cast
 import pytest
 
 from devtools.raw_authority_scale_proof import ProcessSample, run_raw_authority_scale_proof
+from polylogue.config import Config
+from polylogue.core.enums import Provider
+from polylogue.storage import repair
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def test_raw_authority_scale_proof_reaches_two_matching_quiescent_censuses(tmp_path: Path) -> None:
@@ -82,3 +87,27 @@ def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_i
     first_receipt = cast(dict[str, object], first["receipt"])
     second_receipt = cast(dict[str, object], second["receipt"])
     assert first_receipt["archive_id"] == second_receipt["archive_id"]
+
+
+def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"private-native-id"}}\n',
+            source_path="/private/source/session.jsonl",
+            acquired_at_ms=1,
+        )
+
+    profile = repair.raw_materialization_scale_profile(
+        Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    )
+
+    assert profile["available"] is True
+    assert profile["candidate_count"] == 1
+    assert profile["expanded_candidate_count"] == 1
+    assert profile["authority_component_count"] == 1
+    assert profile["component_raw_count_histogram"] == [{"upper_bound_raw_count": 1, "count": 1}]
+    serialized = str(profile)
+    assert "private-native-id" not in serialized
+    assert "/private/source/session.jsonl" not in serialized

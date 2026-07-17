@@ -4300,6 +4300,57 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     }
 
 
+def _histogram(values: Sequence[int], *, field: str) -> list[dict[str, int]]:
+    """Summarize numeric frontier shape without retaining identifying rows."""
+    buckets: dict[int, int] = {}
+    for value in values:
+        upper_bound = 1
+        while upper_bound < max(value, 1):
+            upper_bound *= 2
+        buckets[upper_bound] = buckets.get(upper_bound, 0) + 1
+    return [{field: upper_bound, "count": count} for upper_bound, count in sorted(buckets.items())]
+
+
+def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
+    """Return a private-free authority-frontier shape for synthetic proof input.
+
+    The profile deliberately exposes counts and distributions only.  It is safe
+    to retain with a synthetic workload receipt because it never includes raw
+    ids, source paths, blob hashes, or payload-derived fields.
+    """
+    backlog = raw_materialization_replay_backlog(config, limit=0)
+    if not bool(backlog["available"]):
+        return {"available": False, "reason": backlog["reason"]}
+    candidates = _raw_materialization_candidate_ids(config)
+    component_raw_counts = [len(component) for component in candidates.authority_components]
+    component_blob_bytes = [
+        sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
+        for component in candidates.authority_components
+    ]
+    return {
+        "available": True,
+        "format": "raw-authority-scale-profile-v1",
+        "candidate_count": int(backlog["candidate_count"]),
+        "expanded_candidate_count": int(backlog["expanded_candidate_count"]),
+        "authority_component_count": int(backlog["authority_component_count"]),
+        "executable_authority_component_count": int(backlog["executable_authority_component_count"]),
+        "blocked_authority_component_count": int(backlog["blocked_authority_component_count"]),
+        "total_blob_bytes": int(backlog["total_blob_bytes"]),
+        "expanded_total_blob_bytes": int(backlog["expanded_total_blob_bytes"]),
+        "component_raw_count_histogram": _histogram(component_raw_counts, field="upper_bound_raw_count"),
+        "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
+        "residual_state_counts": {
+            "missing_blob_count": int(backlog["missing_blob_count"]),
+            "authority_quarantined_count": int(backlog["authority_quarantined_count"]),
+            "byte_authority_fragment_count": int(backlog["byte_authority_fragment_count"]),
+            "byte_authority_quarantined_count": int(backlog["byte_authority_quarantined_count"]),
+            "byte_authority_pending_count": int(backlog["byte_authority_pending_count"]),
+            "adoption_deferred_count": int(backlog["adoption_deferred_count"]),
+            "blocked_candidate_count": int(backlog["blocked_candidate_count"]),
+        },
+    }
+
+
 def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
@@ -6302,6 +6353,7 @@ __all__ = [
     "preview_message_type_backfill",
     "preview_session_insights",
     "raw_materialization_replay_backlog",
+    "raw_materialization_scale_profile",
     "repair_empty_sessions",
     "repair_message_type_backfill",
     "repair_orphaned_attachments",
