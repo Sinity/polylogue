@@ -26,6 +26,7 @@ class _SyntheticRuntimeContext(Protocol):
     _relation_solver: RelationConstraintSolver
     _active_profile_tokens: tuple[str, ...]
     _active_record_bucket: tuple[str, str] | None
+    _max_array_items: int | None
 
     def _generate_from_schema(
         self,
@@ -389,6 +390,8 @@ def _generate_array(
         n_items = rng.randint(bounded_lo, bounded_hi)
     else:
         n_items = rng.randint(1, 3)
+    if self._max_array_items is not None:
+        n_items = min(n_items, self._max_array_items)
 
     item_type = item_schema.get("type")
     item_allows_null = item_type == "null" or (

@@ -34,6 +34,7 @@ class _SyntheticBatchContext(Protocol):
     workload_profile: SchemaRecord | None
     _active_profile_tokens: tuple[str, ...]
     _active_record_bucket: tuple[str, str] | None
+    _max_synthetic_string_length: int | None
     _relation_solver: RelationConstraintSolver
     _semantic_gen: SemanticValueGenerator | None
 
@@ -470,7 +471,10 @@ def generate_batch(
     generated_message_counts: list[int] = []
     selected_variants: Counter[str] = Counter()
     for index in range(count):
-        self._relation_solver = RelationConstraintSolver(self.schema)
+        self._relation_solver = RelationConstraintSolver(
+            self.schema,
+            max_string_length=self._max_synthetic_string_length,
+        )
         self._semantic_gen = None
         selected_variant = self._select_structural_variant(profile_rng)
         if selected_variant is not None:

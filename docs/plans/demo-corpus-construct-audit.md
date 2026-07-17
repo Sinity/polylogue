@@ -17,7 +17,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: |
 | Sessions | 15 |
 | Messages | 62 indexed |
-| Blocks | 106 |
+| Blocks | 105 |
 | Session profiles | 15 |
 | Origins | aistudio-drive, chatgpt-export, claude-ai-export, claude-code-session, codex-session |
 | Run rows | 15 |
