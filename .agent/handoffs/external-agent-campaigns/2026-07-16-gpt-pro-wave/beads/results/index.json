@@ -11,8 +11,15 @@
    "bytes": 35210095,
    "checked_at": "2026-07-17T10:55:00+00:00",
    "status": "rejected_incomplete",
-   "problems": ["zero-byte patch", "copied 162 MB repository snapshot", "remote verification lacks project dependencies"],
-   "integration": "raw package retained; no implementation is authorized from it"
+   "problems": [
+    "zero-byte patch",
+    "copied 162 MB repository snapshot",
+    "remote verification lacks project dependencies"
+   ],
+   "integration": "raw package retained; no implementation is authorized from it",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "rejected"
   },
   {
    "job": "beads-02",
@@ -24,8 +31,16 @@
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "status": "recovered_incomplete_package",
    "patch_applies": true,
-   "problems": ["missing required HANDOFF.md", "missing required TESTS.md", "missing required EVIDENCE.md", "no provider result ZIP or verified conversation export"],
-   "integration": "MCP algebra foundation candidate; must be reconciled with beads-03/04 on current master"
+   "problems": [
+    "missing required HANDOFF.md",
+    "missing required TESTS.md",
+    "missing required EVIDENCE.md",
+    "no provider result ZIP or verified conversation export"
+   ],
+   "integration": "MCP algebra foundation candidate; must be reconciled with beads-03/04 on current master",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "verified"
   },
   {
    "job": "beads-03",
@@ -45,7 +60,10 @@
    ],
    "patch_lines": 20870,
    "patch_applies": true,
-   "apply_detail": "patch applies cleanly"
+   "apply_detail": "patch applies cleanly",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "validated"
   },
   {
    "job": "beads-04",
@@ -65,7 +83,10 @@
    ],
    "patch_lines": 4143,
    "patch_applies": true,
-   "apply_detail": "patch applies cleanly"
+   "apply_detail": "patch applies cleanly",
+   "attempt_id": "a01",
+   "package_revision": "r01",
+   "state": "validated"
   }
  ]
 }

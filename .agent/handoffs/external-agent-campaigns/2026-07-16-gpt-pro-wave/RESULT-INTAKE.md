@@ -1,10 +1,11 @@
 # GPT Pro result intake — 2026-07-17
 
 This campaign now retains the valid downloaded result packages under each
-workload's `results/<job>/r01/raw` directory.  The raw member is the immutable
-received artifact; it is deliberately kept as received rather than rewritten
-into source files. Each workload index records the SHA-256, byte size,
-snapshot, package state, and the result of local validation.
+workload's `results/<job>/a01/raw` directory. Each immutable `result.json`
+receipt records the received artifact, prompt hash, package revision, provider
+identity, custody, snapshot, state, and local adjudication. The raw member is
+deliberately kept as received rather than rewritten into source files. Each
+workload index is only a rebuildable projection of those receipts.
 
 ## What this does and does not mean
 

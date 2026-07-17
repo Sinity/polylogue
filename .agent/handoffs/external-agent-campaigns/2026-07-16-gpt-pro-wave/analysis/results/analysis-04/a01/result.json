@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "analysis",
+  "job_id": "analysis-04",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "acquired",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "2d55c9e7b05884f4445881026be348e8f4f6dd395b31e1ddc3aa46bfc40fa530",
+  "snapshot_identity": null,
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "analysis-04-surface-semantic-matrix-r01.zip",
+      "sha256": "01e51ca0f2f122fa1484ed9a17b0e0f279876d3a71ca1524d8167b148b8b07f2",
+      "size_bytes": 31672,
+      "custody_path": "analysis/results/analysis-04/a01/raw/analysis-04-surface-semantic-matrix-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "analysis retained for Bead adjudication"
+}
