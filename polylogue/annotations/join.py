@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -190,14 +191,18 @@ def _structural_document(
     repo = getattr(summary, "git_repository_url", None) if summary is not None else None
     created_at = getattr(summary, "created_at", None) if summary is not None else None
     updated_at = getattr(summary, "updated_at", None) if summary is not None else None
+
+    def json_value(value: object) -> object:
+        return value.isoformat() if isinstance(value, datetime) else value
+
     document: dict[str, object] = {
         "target_kind": target_kind,
         "payload_kind": payload_kind,
         "session_id": str(session_id) if session_id is not None else None,
         "origin": str(origin) if origin is not None else None,
         "repo": repo,
-        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
-        "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
+        "created_at": json_value(created_at),
+        "updated_at": json_value(updated_at),
         "model": model if isinstance(model, str) else None,
         "mapping_state": mapping_state if isinstance(mapping_state, str) else None,
     }

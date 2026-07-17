@@ -254,6 +254,7 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
     spec = request.query_spec()
     if spec.session_id is None:
         return None
+    session_id = spec.session_id
 
     from polylogue.paths import archive_file_set_root_for_paths
 
@@ -265,9 +266,9 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
         return run_archive_read_sync(
             archive_root,
             operation="cli.read.exact_summary",
-            arguments={"session_id": spec.session_id},
+            arguments={"session_id": session_id},
             work=lambda archive: [
-                _archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(spec.session_id)))
+                _archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(session_id)))
             ],
             projection="session-summary",
         )

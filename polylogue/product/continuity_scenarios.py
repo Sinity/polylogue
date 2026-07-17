@@ -59,7 +59,10 @@ class ContinuityScenarioSpec:
 
     def oracle(self, fixture: Mapping[str, object]) -> tuple[str, ...]:
         """Build target refs from fixture evidence, not production query output."""
-        return tuple(str(ref) for ref in self.oracle_record(fixture)["refs"])
+        refs = self.oracle_record(fixture)["refs"]
+        if not isinstance(refs, Sequence) or isinstance(refs, (str, bytes)):
+            raise ValueError(f"fixture answer for {self.scenario_id} has no refs sequence")
+        return tuple(str(ref) for ref in refs)
 
     def classify(
         self,
