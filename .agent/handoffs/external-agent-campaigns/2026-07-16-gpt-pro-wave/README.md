@@ -28,11 +28,16 @@ Launch gating and result intake are mechanical, not prose:
   foundation merges, write `foundation-receipt.json`
   (`{"merged_commit": "<sha>", "verified_at": "<iso8601>"}`) at this
   directory's root.
-- `./triage-package.py <result.zip> --workload W --job J --snapshot <commit>
-  [--record]` validates an incoming package (identity, required members,
-  placeholder scan, `git apply --check` in a throwaway worktree) and appends
-  the attempt record to the workload's `results/index.json`. It never runs a
-  package's own test commands — that happens later in a reviewed lane.
+- `./triage-package.py <result.zip> --workload W --job J --attempt aNN
+  --package-revision rNN --prompt-sha256 <hash> --snapshot <commit> --write`
+  validates an incoming package (identity, required members, placeholder scan,
+  `git apply --check` in a throwaway worktree), preserves it in canonical raw
+  custody, and writes one immutable attempt receipt. It then rebuilds the
+  index from receipts. It never runs a package's own test commands — that
+  happens later in a reviewed lane.
+- `python ../reconcile_results.py . --check` is the required post-intake
+  integrity gate: it rejects a missing, ambiguous, stale, or second-outcome
+  projection rather than silently trusting the index.
 - `testdiet/owning-beads.json` maps each testdiet job to the Beads records
   owning its durable product contracts (persisted by PR #2947); paste the
   job's line into the dispatch chat with the prompt. `check-dispatch.py`
