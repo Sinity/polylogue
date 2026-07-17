@@ -21,6 +21,7 @@ from typing import TextIO, cast
 
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios.workload import (
     WorkloadPhaseObservation,
     WorkloadReceipt,
@@ -31,6 +32,7 @@ from polylogue.schemas.workload_tiers import WorkloadScaleTier
 from polylogue.storage import repair
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,17 +79,30 @@ def run_raw_authority_scale_proof(
     for index in range(raws - components):
         revision_counts[index % components] += 1
     with ArchiveStore.open_existing(root, read_only=False) as archive:
+        publisher = archive._blob_publisher
+        if publisher is None:
+            raise RuntimeError("raw-authority scale proof requires a writable blob publisher")
+        source_conn = archive._ensure_source_conn()
         acquired_at_ms = 0
-        for component, revisions in enumerate(revision_counts):
-            native_id = f"scale-{component:05d}"
-            for revision in range(revisions):
-                archive.write_raw_payload(
-                    provider=Provider.CODEX,
-                    payload=_payload(native_id, revision),
-                    source_path=f"/synthetic/raw-authority/{native_id}.jsonl",
-                    acquired_at_ms=acquired_at_ms,
-                )
-                acquired_at_ms += 1
+        with source_conn:
+            for component, revisions in enumerate(revision_counts):
+                native_id = f"scale-{component:05d}"
+                for revision in range(revisions):
+                    payload = _payload(native_id, revision)
+                    blob_hash, _blob_size = publisher.write_from_bytes(payload)
+                    write_source_raw_session(
+                        source_conn,
+                        origin=origin_from_provider(Provider.CODEX),
+                        capture_mode=Provider.CODEX,
+                        source_path=f"/synthetic/raw-authority/{native_id}.jsonl",
+                        source_index=revision,
+                        payload=payload,
+                        acquired_at_ms=acquired_at_ms,
+                        blob_publication_receipt_id=publisher.receipt_id(blob_hash),
+                        manage_transaction=False,
+                    )
+                    acquired_at_ms += 1
+        publisher.flush()
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
     pass_receipts: list[RawAuthorityScalePass] = []
     fixed_point_digests: list[str] = []
@@ -149,17 +164,17 @@ def run_raw_authority_scale_proof(
             "This receipt is a generated projection; only an explicit July-15-sized invocation is production-shaped evidence.",
         ),
     )
-    payload: dict[str, object] = {
+    report: dict[str, object] = {
         "archive_root": str(root),
         "requested_shape": {"components": components, "raws": raws, "pass_limit": pass_limit},
         "passes": [asdict(item) for item in pass_receipts],
         "fixed_point_digests": fixed_point_digests,
         "receipt": receipt.to_payload(),
     }
-    (root / "raw-authority-scale-receipt.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    (root / "raw-authority-scale-receipt.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if not keep:
         shutil.rmtree(root)
-    return payload
+    return report
 
 
 def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
