@@ -110,6 +110,27 @@ def test_repetitions_retain_timeout_without_retry(tmp_path: Path) -> None:
     assert "15s" in (receipt.attempts[0].failure or "")
 
 
+def test_timeout_waits_for_supervisor_cleanup_receipt(tmp_path: Path) -> None:
+    calls = 0
+
+    def runner(
+        command: Sequence[str], root: Path, _env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            _write_managed_run(root, ordinal=calls, nodeid=command[4])
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    receipt = run_repetitions(source_root=tmp_path, attempts_per_mode=1, runner=runner)
+
+    assert not receipt.ok
+    assert receipt.attempts[0].status == "timed_out"
+    assert receipt.attempts[0].archive_root_cleaned is True
+    assert receipt.attempts[0].process_group_cleaned is True
+
+
 def test_repetitions_fail_a_completed_attempt_over_the_evidence_bound(tmp_path: Path) -> None:
     calls = 0
 

@@ -210,6 +210,34 @@ def _receipt_from_run(
     )
 
 
+def _await_timeout_cleanup(
+    *, root: Path, before: set[Path], nodeid: str
+) -> tuple[
+    float | None,
+    float | None,
+    str | None,
+    str | None,
+    bool | None,
+    str | None,
+    bool | None,
+]:
+    """Wait briefly for the externally-owned supervisor to publish teardown.
+
+    A subprocess timeout terminates the devtools owner, while the independent
+    supervisor still needs a bounded interval to notice that death, kill the
+    pytest group, clean its tmpfs root, and write the final receipt.  Reading
+    before that transition would report a completed cleanup as a leak.
+    """
+    details = _receipt_from_run(None, root=root, nodeid=nodeid)
+    for _ in range(100):
+        run_dir = _single_new_run(root, before)
+        details = _receipt_from_run(run_dir, root=root, nodeid=nodeid)
+        if details[4] is True and details[6] is True:
+            return details
+        time.sleep(0.05)
+    return details
+
+
 def _command(*, nodeid: str, workers: int) -> list[str]:
     return [sys.executable, "-m", "devtools", "test", nodeid, "-n", str(workers)]
 
@@ -263,14 +291,8 @@ def _attempt(
         # supervisor then owns the process-tree teardown; wait only for that
         # receipt to become observable and retain whatever it says.  Never run
         # the failed attempt again.
-        timed_out_run_dir: Path | None = None
-        for _ in range(20):
-            timed_out_run_dir = _single_new_run(root, before)
-            if timed_out_run_dir is not None and (timed_out_run_dir / "run.json").exists():
-                break
-            time.sleep(0.05)
         duration_s, node_duration_s, worker_id, archive_scope, archive_cleaned, containment, group_cleaned = (
-            _receipt_from_run(timed_out_run_dir, root=root, nodeid=witness.nodeid)
+            _await_timeout_cleanup(root=root, before=before, nodeid=witness.nodeid)
         )
         return AttemptReceipt(
             witness=witness.name,
