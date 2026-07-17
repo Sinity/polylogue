@@ -3,7 +3,7 @@
   "pins": [
     {
       "path": "$.gitBranch",
-      "role": "conversation_title",
+      "role": "session_title",
       "action": "reject",
       "reason": "git branch names (e.g. 'master') are not conversation titles"
     },

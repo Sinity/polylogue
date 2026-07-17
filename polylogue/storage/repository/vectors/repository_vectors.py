@@ -6,8 +6,8 @@ import asyncio
 import builtins
 from typing import TYPE_CHECKING
 
+from polylogue.core.protocols import VectorProvider
 from polylogue.logging import get_logger
-from polylogue.protocols import VectorProvider
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_async
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -19,7 +19,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
@@ -51,6 +51,29 @@ def test_parent_helpers_require_parent_context_and_build_request() -> None:
 
     with pytest.raises(click.UsageError, match="Query verbs must be invoked"):
         query_verbs._require_parent_context(click.Context(click.Command("verb")))
+
+
+@pytest.mark.parametrize(
+    ("expression", "message"),
+    [
+        ("max-tokens=0", "expected integer >= 1"),
+        ("include-assertions=maybe", "expected true/false"),
+        ("max-tokens=4,max-tokens=8", "Duplicate --projection key"),
+    ],
+)
+def test_read_projection_expression_rejects_invalid_operator_input(expression: str, message: str) -> None:
+    """The public --projection DSL must reject malformed budget and boolean input."""
+    with pytest.raises(click.UsageError, match=message):
+        query_verbs._parse_read_projection_expression(expression)
+
+
+def test_read_projection_expression_normalizes_public_aliases() -> None:
+    """Projection aliases must reach the typed projection field names."""
+    assert query_verbs._parse_read_projection_expression("tokens:7 redact=excluded assertions=yes") == {
+        "max_tokens": 7,
+        "redact_paths": False,
+        "include_assertions": True,
+    }
 
 
 def test_execute_query_verb_dispatches_typed_request() -> None:
@@ -456,6 +479,7 @@ def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
         "recent_files": (),
         "candidate_limit": 10,
         "output_format": None,
+        "execute": False,
     }
     defaults.update(overrides)
     return defaults
@@ -590,7 +614,7 @@ def test_read_verb_context_composes_preamble_not_passthrough() -> None:
 
 def test_read_verb_context_image_invokes_pack_view() -> None:
     """read --view context-image compiles a ContextImage via context_image_payload."""
-    from polylogue.context.compiler import ContextImage, ContextSpec
+    from polylogue.context.compiler import ContextImage
 
     _, child = _context_pair(query_terms=())
     child.obj.polylogue = SimpleNamespace(context_image_payload=MagicMock(name="context_image_payload"))
@@ -680,7 +704,7 @@ def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:
     """Context-image Markdown should be readable as one composed packet."""
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSegment, ContextSpec
+    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
 
     projection_spec = projection_from_views(
         ("temporal", "chronicle"),
@@ -764,40 +788,20 @@ def test_context_image_markdown_renderer_adds_document_structure() -> None:
     assert "session:def [budget]" in rendered
 
 
-def test_continue_verb_compiles_context_from_query_unit_recipe() -> None:
-    """``continue`` composes messages plus terminal query-unit DSL segments."""
+def test_continue_verb_rejects_non_terminal_destination() -> None:
+    """``continue`` only prints its resume command to terminal/stdout (#2827)."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    captured_specs: list[ContextSpec] = []
-    image = ContextImage(
-        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("messages",)), segments=()
-    )
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        captured_specs.append(spec)
-        return image
-
     async def get_session(session_id: str) -> object:
         assert session_id == "codex-session:abc123"
-        return object()
+        return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    child.obj.polylogue = SimpleNamespace(compile_context=compile_context, get_session=get_session)
-    with (
-        patch("polylogue.cli.query_verbs._deliver_content") as deliver,
-    ):
+    child.obj.polylogue = SimpleNamespace(get_session=get_session)
+
+    with pytest.raises(click.UsageError, match="continue prints its command to terminal/stdout"):
         wrapped(child, **_continue_verb_kwargs(destination="clipboard"))
-
-    called_spec = captured_specs[0]
-    assert called_spec.read_views == ("messages",)
-    assert called_spec.unit_queries == (
-        "runs where session.id:codex-session:abc123",
-        "observed-events where session.id:codex-session:abc123",
-        "context-snapshots where session.id:codex-session:abc123",
-        "actions where session.id:codex-session:abc123",
-    )
-    deliver.assert_called_once()
 
 
 def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
@@ -818,59 +822,35 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
             wrapped(child, **_continue_verb_kwargs())
 
 
-def test_continue_verb_json_emits_context_image(capsys: pytest.CaptureFixture[str]) -> None:
-    """``continue --format json`` exposes the shared ContextImage payload."""
+def test_continue_verb_emits_successor_context_json() -> None:
+    """JSON mode preserves the successor-context contract beside resume routing."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
-    spec = ContextSpec(
-        purpose="continue",
-        seed_refs=("session:codex-session:abc123",),
-        read_views=("messages",),
-        unit_queries=("runs where session.id:codex-session:abc123",),
-    )
-    image = ContextImage(
-        spec=spec,
-        segments=(
-            ContextSegment(
-                segment_id="query-unit:abc123",
-                kind="query_unit",
-                title="Query: runs",
-                markdown="Temporal rows.",
-                token_estimate=3,
-            ),
-        ),
-        token_estimate=3,
-    )
-    seen: dict[str, ContextSpec] = {}
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        seen["spec"] = spec
-        return image
 
     async def get_session(session_id: str) -> object:
         assert session_id == "codex-session:abc123"
-        return object()
+        return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(compile_context=compile_context, get_session=get_session))
+    from polylogue.context.compiler import ContextImage
+
+    async def compile_context(spec: ContextSpec) -> ContextImage:
+        return ContextImage(spec=spec, segments=())
+
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(get_session=get_session, compile_context=compile_context))
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    wrapped(child, **_continue_verb_kwargs(output_format="json"))
+    with patch("polylogue.cli.read_views.base.deliver_content") as deliver:
+        wrapped(child, **_continue_verb_kwargs(output_format="json"))
 
-    emitted = json.loads(capsys.readouterr().out)
-    assert emitted["spec"]["purpose"] == "continue"
-    assert emitted["spec"]["seed_refs"] == ["session:codex-session:abc123"]
-    assert emitted["spec"]["read_views"] == ["messages"]
-    assert emitted["segments"][0]["kind"] == "query_unit"
-    spec = seen["spec"]
-    assert spec.purpose == "continue"
-    assert spec.seed_refs == ("session:codex-session:abc123",)
-    assert spec.read_views == ("messages",)
-    assert spec.unit_queries == (
+    payload = json.loads(deliver.call_args.args[1])
+    assert payload["spec"]["purpose"] == "continue"
+    assert payload["spec"]["seed_refs"] == ["session:codex-session:abc123"]
+    assert payload["spec"]["unit_queries"] == [
         "runs where session.id:codex-session:abc123",
         "observed-events where session.id:codex-session:abc123",
         "context-snapshots where session.id:codex-session:abc123",
         "actions where session.id:codex-session:abc123",
-    )
+    ]
 
 
 def test_continue_candidates_ranks_context_without_session_resolution() -> None:
@@ -962,6 +942,7 @@ def test_read_view_temporal_projects_selected_summaries(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
+    """The real CLI JSON route canonicalizes offsets; removing the surface validator leaks them."""
     config = Config(
         archive_root=tmp_path,
         db_path=tmp_path / "index.db",
@@ -975,7 +956,7 @@ def test_read_view_temporal_projects_selected_summaries(
                 "id": "codex-session:abc",
                 "origin": "codex-session",
                 "title": "Temporal slice",
-                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 30, 13, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))),
             }
         ),
         SessionSummary.model_validate(
@@ -983,7 +964,7 @@ def test_read_view_temporal_projects_selected_summaries(
                 "id": "claude-code-session:def",
                 "origin": "claude-code-session",
                 "title": "Follow-up",
-                "created_at": datetime(2026, 6, 30, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 30, 11, 0, tzinfo=timezone(timedelta(hours=2))),
             }
         ),
     ]
@@ -1026,6 +1007,10 @@ def test_read_view_temporal_projects_selected_summaries(
     assert [event["source_ref"] for event in window["events"]] == [
         "session:codex-session:abc",
         "session:claude-code-session:def",
+    ]
+    assert [event["occurred_at"] for event in window["events"]] == [
+        "2026-06-30T08:00:00Z",
+        "2026-06-30T09:00:00Z",
     ]
 
 
@@ -1122,7 +1107,7 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
 
     archive_summary = SimpleNamespace(
         session_id="codex-session:abc",
-        provider=Provider.CODEX,
+        origin="codex-session",
         title="Exact",
         created_at="2026-07-03T09:00:00+00:00",
         updated_at=None,

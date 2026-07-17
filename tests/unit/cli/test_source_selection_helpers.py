@@ -324,7 +324,7 @@ def _check(name: str, status: str, detail: str) -> SimpleNamespace:
 
 
 def _metric(
-    source_name: str,
+    origin: str,
     session_count: int,
     message_count: int = 0,
     avg_messages_per_session: float = 0.0,
@@ -337,7 +337,7 @@ def _metric(
     thinking_percentage: float = 0.0,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        source_name=source_name,
+        origin=origin,
         session_count=session_count,
         message_count=message_count,
         avg_messages_per_session=avg_messages_per_session,
@@ -459,7 +459,7 @@ def test_print_summary_verbose_health_matrix(config: Config, plain: bool, status
 def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> None:
     metrics = [
         _metric(
-            "claude-ai",
+            "claude-ai-export",
             7,
             message_count=70,
             avg_messages_per_session=10.0,
@@ -471,7 +471,7 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
             thinking_percentage=57.1,
         ),
         _metric(
-            "chatgpt",
+            "chatgpt-export",
             3,
             message_count=21,
             avg_messages_per_session=7.0,
@@ -493,11 +493,11 @@ def test_print_summary_verbose_analytics_deep_dive_contract(config: Config) -> N
     assert "Archive:" in result["console"]
     assert "10 sessions" in result["console"]
     assert "Deep Dive:" in result["console"]
-    assert "claude-ai" in result["console"]
+    assert "claude-ai-export" in result["console"]
     assert "Messages: 70" in result["console"]
     assert "Tool Use: 5" in result["console"]
     assert "Thinking: 4" in result["console"]
-    assert "chatgpt" in result["console"]
+    assert "chatgpt-export" in result["console"]
 
 
 def test_print_summary_analytics_errors_are_silent(config: Config) -> None:

@@ -22,6 +22,7 @@ from polylogue.archive.message.paste_detection import has_paste_indicator
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
 from polylogue.paths import hooks_sidecar_dir
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -84,18 +85,9 @@ def _hook_epoch_ms(event: dict[str, object]) -> float:
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
-    if db_path.name == "index.db":
-        return db_path if db_path.exists() else None
-    index_db = db_path.with_name("index.db")
-    return index_db if index_db.exists() else None
+    from polylogue.paths import sibling_index_db
 
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
+    return sibling_index_db(db_path, require_exists=True)
 
 
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:

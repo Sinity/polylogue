@@ -1,8 +1,66 @@
 {
   "archive_root": "archive",
-  "first_result_s": 5.177,
+  "baseline": {
+    "name": "command-exit-only smoke test",
+    "result": {
+      "would_not_verify_planted_constructs": true
+    }
+  },
+  "claim": {
+    "declared_before_execution": true,
+    "scope": "the generated fixture archive and commands in this report only",
+    "statement": "The recorded tour commands complete successfully against the deterministic private-data-free archive.",
+    "status": "supported"
+  },
+  "controls": {
+    "missing_evidence": {
+      "description": "The report retains verifier problems and does not convert absent overlays or constructs into success.",
+      "passed": true
+    },
+    "negative": {
+      "description": "A failed command or failed semantic verifier makes the tour fail.",
+      "passed": true
+    }
+  },
+  "demo_packet_contract_version": "2.0.0",
+  "falsifier": {
+    "condition": "The semantic verifier fails, a public command exits nonzero, or a timing budget is exceeded.",
+    "result": "pass",
+    "triggered": false
+  },
+  "first_result_s": 5.583,
+  "non_claims": [
+    "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
+    "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
+    "The private-archive Receipts benchmark is a separate local-only lane and is not simulated by this fixture."
+  ],
   "ok": true,
+  "oracle": {
+    "description": "The semantic fixture verifier checks planted archive constructs independently of the tour narration.",
+    "expected": {
+      "command_exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "verify_ok": true
+    },
+    "independent": true,
+    "method": "Run demo verification before the public CLI steps and retain its structured result."
+  },
   "output_dir": ".",
+  "primary_construct": {
+    "id": "demo.public-tour",
+    "product_primitives": [
+      "demo seed",
+      "demo verify",
+      "find",
+      "read",
+      "analyze"
+    ],
+    "statement": "The deterministic tour exercises public read and analysis paths over a verified fixture archive."
+  },
   "problems": [],
   "recording_tape_path": "recording.tape",
   "report_json_path": "report.json",
@@ -22,28 +80,28 @@
         "construct_id": "session_profiles",
         "label": "Session profiles",
         "minimum": 3,
-        "observed": 13,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "tool_use_blocks",
         "label": "Tool-use blocks",
         "minimum": 1,
-        "observed": 23,
+        "observed": 24,
         "ok": true
       },
       {
         "construct_id": "tool_result_blocks",
         "label": "Tool-result blocks",
         "minimum": 1,
-        "observed": 25,
+        "observed": 26,
         "ok": true
       },
       {
         "construct_id": "failed_tool_results",
         "label": "Failed tool results",
         "minimum": 1,
-        "observed": 6,
+        "observed": 7,
         "ok": true
       },
       {
@@ -103,6 +161,27 @@
         "ok": true
       },
       {
+        "construct_id": "source_outage_interval_events",
+        "label": "Source-outage interval events",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "ambiguous_cross_material_duplicate",
+        "label": "Ambiguous cross-material duplicate",
+        "minimum": 1,
+        "observed": 2,
+        "ok": true
+      },
+      {
+        "construct_id": "compaction_omits_failed_attempt",
+        "label": "Compaction omits a failed attempt",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
         "construct_id": "session_link_rows",
         "label": "Session-link rows",
         "minimum": 1,
@@ -155,21 +234,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 14,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 45,
+        "observed": 37,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 14,
+        "observed": 15,
         "ok": true
       },
       {
@@ -190,14 +269,14 @@
         "construct_id": "unfinished_terminal_state_rows",
         "label": "Unfinished terminal-state rows",
         "minimum": 1,
-        "observed": 3,
+        "observed": 5,
         "ok": true
       },
       {
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 2,
+        "observed": 1,
         "ok": true
       },
       {
@@ -232,7 +311,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 31,
+        "observed": 36,
         "ok": true
       },
       {
@@ -250,11 +329,13 @@
         "ok": true
       }
     ],
-    "message_count": 55,
+    "message_count": 62,
     "overlays_seeded": true,
-    "session_count": 13,
+    "session_count": 15,
     "session_ids": [
       "aistudio-drive:demo-00",
+      "chatgpt-export:cross-material-duplicate-01",
+      "chatgpt-export:cross-material-duplicate-02",
       "chatgpt-export:dc13ca54-0bba-4298-a38f-09068c2ef2c5",
       "claude-ai-export:demo-temporary-claude-ai",
       "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
@@ -272,24 +353,24 @@
   },
   "steps": [
     {
-      "bytes_written": 1105,
+      "bytes_written": 1399,
       "command": [
         "polylogue",
         "demo",
         "receipts"
       ],
-      "duration_s": 1.662,
+      "duration_s": 1.661,
       "exit_code": 0,
       "name": "claim versus receipt",
       "output_path": "command-output/01-claim-versus-receipt.txt"
     },
     {
-      "bytes_written": 44,
+      "bytes_written": 62,
       "command": [
         "polylogue",
         "actions where is_error:true | group by tool | count"
       ],
-      "duration_s": 1.933,
+      "duration_s": 1.938,
       "exit_code": 0,
       "name": "failed actions aggregate",
       "output_path": "command-output/02-failed-actions-aggregate.txt"
@@ -304,7 +385,7 @@
         "--view",
         "chronicle"
       ],
-      "duration_s": 2.035,
+      "duration_s": 1.985,
       "exit_code": 0,
       "name": "composed lineage",
       "output_path": "command-output/03-composed-lineage.txt"
@@ -316,13 +397,13 @@
         "analyze",
         "--facets"
       ],
-      "duration_s": 1.881,
+      "duration_s": 1.909,
       "exit_code": 0,
       "name": "archive facets",
       "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 11.026,
+  "total_duration_s": 11.414,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],
@@ -339,28 +420,28 @@
         "construct_id": "session_profiles",
         "label": "Session profiles",
         "minimum": 3,
-        "observed": 13,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "tool_use_blocks",
         "label": "Tool-use blocks",
         "minimum": 1,
-        "observed": 23,
+        "observed": 24,
         "ok": true
       },
       {
         "construct_id": "tool_result_blocks",
         "label": "Tool-result blocks",
         "minimum": 1,
-        "observed": 25,
+        "observed": 26,
         "ok": true
       },
       {
         "construct_id": "failed_tool_results",
         "label": "Failed tool results",
         "minimum": 1,
-        "observed": 6,
+        "observed": 7,
         "ok": true
       },
       {
@@ -420,6 +501,27 @@
         "ok": true
       },
       {
+        "construct_id": "source_outage_interval_events",
+        "label": "Source-outage interval events",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
+        "construct_id": "ambiguous_cross_material_duplicate",
+        "label": "Ambiguous cross-material duplicate",
+        "minimum": 1,
+        "observed": 2,
+        "ok": true
+      },
+      {
+        "construct_id": "compaction_omits_failed_attempt",
+        "label": "Compaction omits a failed attempt",
+        "minimum": 1,
+        "observed": 1,
+        "ok": true
+      },
+      {
         "construct_id": "session_link_rows",
         "label": "Session-link rows",
         "minimum": 1,
@@ -472,21 +574,21 @@
         "construct_id": "run_projection_rows",
         "label": "Run projection rows",
         "minimum": 1,
-        "observed": 14,
+        "observed": 15,
         "ok": true
       },
       {
         "construct_id": "observed_event_rows",
         "label": "Observed-event rows",
         "minimum": 1,
-        "observed": 45,
+        "observed": 37,
         "ok": true
       },
       {
         "construct_id": "context_snapshot_rows",
         "label": "Context snapshot rows",
         "minimum": 1,
-        "observed": 14,
+        "observed": 15,
         "ok": true
       },
       {
@@ -507,14 +609,14 @@
         "construct_id": "unfinished_terminal_state_rows",
         "label": "Unfinished terminal-state rows",
         "minimum": 1,
-        "observed": 3,
+        "observed": 5,
         "ok": true
       },
       {
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 2,
+        "observed": 1,
         "ok": true
       },
       {
@@ -549,7 +651,7 @@
         "construct_id": "embedding_candidate_prose_messages",
         "label": "Embedding candidate prose messages",
         "minimum": 1,
-        "observed": 31,
+        "observed": 36,
         "ok": true
       },
       {
@@ -567,14 +669,16 @@
         "ok": true
       }
     ],
-    "message_count": 55,
+    "message_count": 62,
     "ok": true,
     "overlays_present": true,
     "problems": [],
     "query_hits": [
       "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-      "codex-session:demo-00"
+      "codex-session:demo-00",
+      "codex-session:demo-receipts",
+      "codex-session:demo-terminal-error"
     ],
-    "session_count": 13
+    "session_count": 15
   }
 }

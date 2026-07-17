@@ -69,9 +69,9 @@ def _exception_message(result: Result) -> str:
 
 def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     product = ArchiveCoverageInsight(
-        group_by="provider",
-        bucket="claude-code",
-        source_name="claude-code",
+        group_by="origin",
+        bucket="claude-code-session",
+        origin="claude-code-session",
         session_count=1,
         message_count=2,
         user_message_count=1,
@@ -267,6 +267,9 @@ def test_insights_profiles_json(cli_workspace: CliWorkspace) -> None:
     assert "evidence" in first
     assert "inference" in first
     assert "provenance" in first
+    provenance = json_object(first["provenance"])
+    assert provenance["input_high_water_mark_source"] == "provider_ts"
+    assert provenance["time_confidence"] == "recorded"
 
 
 def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
@@ -357,13 +360,13 @@ def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: Cl
             until_ms=None,
             limit=1,
         )
-        rows = archive.list_usage_timeline_insights(provider="chatgpt", limit=1)
+        rows = archive.list_usage_timeline_insights(origin="chatgpt-export", limit=1)
 
     assert cutoff_ms is not None
     assert skip_event_scan is True
     assert len(rows) == 1
     assert rows[0].bucket == "2026-03"
-    assert rows[0].source_name == "chatgpt-export"
+    assert rows[0].origin == "chatgpt-export"
     assert rows[0].event_count == 0
     assert rows[0].stored_cost_usd == 0.0
     assert rows[0].cost_provenance_counts == {"origin_reported": 1}
@@ -464,7 +467,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["aggregate_verdict"] == "ready"
+    assert payload["aggregate_verdict"] == "degraded"
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
@@ -474,7 +477,8 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_tag_rollups",
         "archive_coverage",
     }
-    assert insights["session_profiles"]["verdict"] == "ready"
+    assert insights["session_profiles"]["verdict"] == "degraded"
+    assert json_int(insights["session_profiles"]["degraded_count"]) == 2
     assert json_int(insights["session_work_events"]["row_count"]) >= 1
 
 
@@ -515,8 +519,8 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Insight Readiness: ready" in result.output
-    assert "session_profiles: ready" in result.output
+    assert "Insight Readiness: degraded" in result.output
+    assert "session_profiles: degraded" in result.output
 
 
 def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
@@ -794,9 +798,6 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
     assert [desc for _, desc in prune_events] == [
         "rebuild: pruned orphans from session_work_events",
         "rebuild: pruned orphans from session_phases",
-        "rebuild: pruned orphans from session_runs",
-        "rebuild: pruned orphans from session_observed_events",
-        "rebuild: pruned orphans from session_context_snapshots",
         "rebuild: pruned orphans from session_latency_profiles",
         "rebuild: pruned orphans from session_profiles",
     ]

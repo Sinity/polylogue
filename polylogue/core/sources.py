@@ -43,6 +43,7 @@ __all__ = [
     "SourceFamily",
     "lab_of_origin",
     "origin_from_provider",
+    "origin_provider_fiber",
     "provider_from_origin",
     "provider_to_source",
     "source_for_family",
@@ -122,6 +123,11 @@ _SOURCE_ANTIGRAVITY: Final[Source] = Source(
     runtime_root="~/.antigravity",
     originating_lab="google",
 )
+_SOURCE_BEADS: Final[Source] = Source(
+    family="beads-issue",
+    runtime_root=None,  # repository-local .beads workspaces, not one user-global root
+    originating_lab="beads",
+)
 _SOURCE_GROK: Final[Source] = Source(
     family="grok-export",
     runtime_root=None,
@@ -149,6 +155,7 @@ _PROVIDER_TO_SOURCE: Final[dict[Provider, Source]] = {
     Provider.GEMINI_CLI: _SOURCE_GEMINI_CLI,
     Provider.HERMES: _SOURCE_HERMES,
     Provider.ANTIGRAVITY: _SOURCE_ANTIGRAVITY,
+    Provider.BEADS: _SOURCE_BEADS,
     Provider.GROK: _SOURCE_GROK,
     Provider.DRIVE: _SOURCE_DRIVE,
     Provider.UNKNOWN: _SOURCE_UNKNOWN,
@@ -226,6 +233,7 @@ _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
     Provider.GEMINI_CLI: Origin.GEMINI_CLI_SESSION,
     Provider.HERMES: Origin.HERMES_SESSION,
     Provider.ANTIGRAVITY: Origin.ANTIGRAVITY_SESSION,
+    Provider.BEADS: Origin.BEADS_ISSUE,
     Provider.GROK: Origin.GROK_EXPORT,
     Provider.DRIVE: Origin.AISTUDIO_DRIVE,
     Provider.UNKNOWN: Origin.UNKNOWN_EXPORT,
@@ -243,6 +251,7 @@ _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
     Origin.GEMINI_CLI_SESSION: "google",
     Origin.AISTUDIO_DRIVE: "google",
     Origin.ANTIGRAVITY_SESSION: "google",
+    Origin.BEADS_ISSUE: "beads",
     Origin.HERMES_SESSION: "nous",
     Origin.GROK_EXPORT: "xai",
     Origin.UNKNOWN_EXPORT: "unknown",
@@ -288,6 +297,7 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
     Origin.GEMINI_CLI_SESSION: Provider.GEMINI_CLI,
     Origin.HERMES_SESSION: Provider.HERMES,
     Origin.ANTIGRAVITY_SESSION: Provider.ANTIGRAVITY,
+    Origin.BEADS_ISSUE: Provider.BEADS,
     Origin.GROK_EXPORT: Provider.GROK,
     Origin.CHATGPT_EXPORT: Provider.CHATGPT,
     Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
@@ -296,15 +306,90 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
 }
 
 
-def provider_from_origin(origin: Origin) -> Provider:
+def _build_origin_provider_fiber() -> dict[Origin, tuple[Provider, ...]]:
+    """Group every ``Provider`` by the ``Origin`` it collapses onto.
+
+    Built from :data:`_PROVIDER_TO_ORIGIN` (the total, authoritative forward
+    map) rather than re-declared by hand, so a newly added ``Provider`` can
+    never silently omit itself from its origin's fiber the way the three
+    independently hand-copied ``_provider_for_origin`` dicts drifted before
+    polylogue-9e5.8 Step 1 deduplicated them.
+    """
+
+    fiber: dict[Origin, list[Provider]] = {}
+    for provider in Provider:
+        fiber.setdefault(_PROVIDER_TO_ORIGIN[provider], []).append(provider)
+    return {origin: tuple(providers) for origin, providers in fiber.items()}
+
+
+_ORIGIN_PROVIDER_FIBER: Final[dict[Origin, tuple[Provider, ...]]] = _build_origin_provider_fiber()
+
+
+def origin_provider_fiber(origin: Origin) -> tuple[Provider, ...]:
+    """Return every ``Provider`` that collapses onto ``origin``.
+
+    Most origins have exactly one member and round-trip losslessly through
+    :func:`provider_from_origin`. ``Origin.AISTUDIO_DRIVE`` is the sole
+    multi-member fiber today: ``(Provider.GEMINI, Provider.DRIVE)`` --
+    Gemini/AI-Studio export bundles and Google-Drive-live-acquired AI-Studio
+    captures are the same public source-origin but different provider-wire
+    acquisition mechanisms (see ``docs/provider-origin-identity.md``'s
+    "Capture mode" row). Use this to test whether an origin is ambiguous
+    before trusting :func:`provider_from_origin`'s canonical fallback, or to
+    validate that a ``family_hint`` actually belongs to the fiber it claims
+    to disambiguate.
+    """
+
+    return _ORIGIN_PROVIDER_FIBER.get(origin, ())
+
+
+def _resolve_family_hint(hint: Provider | SourceFamily) -> Provider | None:
+    """Resolve a disambiguating hint to a ``Provider``, or ``None`` if it
+    does not name a recognized provider or source family."""
+
+    if isinstance(hint, Provider):
+        return hint
+    family_provider = _FAMILY_TO_PROVIDER.get(hint)
+    if family_provider is not None:
+        return family_provider
+    try:
+        return Provider.from_string(hint)
+    except ValueError:
+        return None
+
+
+def provider_from_origin(origin: Origin, *, family_hint: Provider | SourceFamily | None = None) -> Provider:
     """Return the canonical provider-wire ``Provider`` for an archive ``Origin``.
 
     Total over ``Origin``. Inverse of :func:`origin_from_provider` with a
     canonical choice for the non-injective ``Origin.AISTUDIO_DRIVE``
     (``Provider.GEMINI``). New code should consume ``Origin`` directly; this
     exists only for boundaries that still speak provider tokens.
+
+    ``family_hint`` disambiguates origins whose :func:`origin_provider_fiber`
+    has more than one member -- today only ``Origin.AISTUDIO_DRIVE``
+    (``{Provider.GEMINI, Provider.DRIVE}``). Pass a ``Source.family`` token
+    (e.g. ``"drive-takeout"``), a provider-wire string, or a ``Provider``
+    value that the caller already knows independently of the stored
+    ``Origin`` -- typically an explicit filter parameter or other
+    acquisition-time context -- to recover the correct fiber member instead
+    of the canonical default.
+
+    A hint that fails to resolve, or resolves to a ``Provider`` outside
+    ``origin``'s fiber, is ignored (falls back to the canonical choice)
+    rather than raising: disambiguation here is advisory, not authoritative.
+    The durable ``source.db`` ``raw_sessions.capture_mode`` field preserves
+    acquisition-time provenance for new raw captures, so source-tier readers
+    can pass it here to recover a persisted fiber member.  ``index.db``
+    sessions still carry only the collapsed ``origin`` and historical source
+    rows retain ``NULL`` for unknown provenance; those callers still need
+    independent context or receive the canonical fallback.
     """
 
+    if family_hint is not None:
+        resolved = _resolve_family_hint(family_hint)
+        if resolved is not None and resolved in _ORIGIN_PROVIDER_FIBER.get(origin, ()):
+            return resolved
     return _ORIGIN_TO_PROVIDER[origin]
 
 
@@ -320,14 +405,14 @@ def source_name_to_origin(source_name: object) -> str:
     so surface modules (daemon HTTP, MCP) project insight rows to origin
     without importing the provider-wire ``Provider`` enum themselves.
 
-    Returns ``"unknown"`` for empty input. A token that is already a
+    Returns ``Origin.UNKNOWN_EXPORT`` for empty or unrecognized input. A token that is already a
     canonical origin passes through unchanged; otherwise it is interpreted
     as a provider-wire token and mapped via :func:`origin_from_provider`.
     """
 
     value = str(source_name or "")
     if not value:
-        return "unknown"
+        return Origin.UNKNOWN_EXPORT.value
     if value in _CANONICAL_ORIGIN_VALUES:
         return value
     # Source-family tokens (e.g. ``gemini-export``, ``drive-takeout``) are
@@ -341,7 +426,7 @@ def source_name_to_origin(source_name: object) -> str:
     try:
         return origin_from_provider(Provider.from_string(value)).value
     except ValueError:
-        return "unknown"
+        return Origin.UNKNOWN_EXPORT.value
 
 
 # User-facing origin tokens for CLI/MCP/completion choices. Derived from the

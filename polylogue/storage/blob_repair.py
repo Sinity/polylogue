@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.logging import get_logger
+from polylogue.storage.table_existence import table_exists as _table_exists
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -14,14 +18,6 @@ class BlobRepairOutcome:
     repaired_count: int
     success: bool
     detail: str
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _blob_hash_text(value: object) -> str | None:
@@ -70,8 +66,13 @@ def _referenced_blob_hashes(
                 surfaces.extend(source_surfaces)
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            # hashes/surfaces feed a repair decision about which blobs are
+            # still referenced; silently dropping source.db's references
+            # here could make a still-referenced blob look orphaned.
+            logger.warning(
+                "blob repair: source.db referenced-hash query failed for %s: %s", source_db_path, exc, exc_info=True
+            )
 
     return hashes, surfaces
 

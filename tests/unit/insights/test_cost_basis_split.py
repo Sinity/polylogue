@@ -54,7 +54,7 @@ def test_provider_reported_total_populates_provider_and_api_basis() -> None:
     """
 
     estimate = CostEstimatePayload(
-        source_name="claude-code",
+        origin="claude-code-session",
         session_id="conv-exact",
         model_name="claude-sonnet-4-5",
         normalized_model="claude-sonnet-4-5",
@@ -226,7 +226,7 @@ def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
 
     # Synthesize a rollup row directly to assert the typed contract.
     rollup = CostRollupInsight(
-        source_name="anthropic",
+        origin="anthropic",
         model_name="claude-sonnet-4-5",
         normalized_model="claude-sonnet-4-5",
         session_count=3,

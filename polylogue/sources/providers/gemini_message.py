@@ -18,6 +18,7 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 from .gemini_models import GeminiBranchParent, GeminiGrounding, GeminiPart, GeminiThoughtSignature
@@ -36,7 +37,7 @@ def _json_object(value: object) -> GeminiDictValue:
 
 def _normalize_mapping(payload: BaseModel | GeminiDictValue) -> GeminiDictValue:
     if isinstance(payload, BaseModel):
-        return _json_object(payload.model_dump())
+        return _json_object(payload.model_dump(exclude_none=True, exclude_defaults=True))
     return payload
 
 
@@ -54,12 +55,6 @@ def _part_text(part: GeminiPartValue) -> str | None:
     return _to_text(part.get("text"))
 
 
-def _part_has_file_payload(part: GeminiPartValue) -> bool:
-    if isinstance(part, GeminiPart):
-        return getattr(part, "inlineData", None) is not None or getattr(part, "fileData", None) is not None
-    return "inlineData" in part or "fileData" in part
-
-
 def _get_str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -70,7 +65,7 @@ def _string_or_empty_dict(value: object) -> GeminiDictValue:
 
 def _part_record(part: GeminiPartValue) -> GeminiDictValue:
     if isinstance(part, GeminiPart):
-        return _json_object(part.model_dump())
+        return _json_object(part.model_dump(exclude_none=True, exclude_defaults=True))
     return part
 
 
@@ -80,6 +75,68 @@ def _drive_document_record(value: GeminiDictValue | str | None) -> GeminiDictVal
     if isinstance(value, str):
         return {"id": value}
     return value
+
+
+def _without_inline_bytes(payload: GeminiDictValue) -> GeminiDictValue:
+    sanitized = dict(payload)
+    sanitized.pop("data", None)
+    return sanitized
+
+
+def _thought_raw(
+    *,
+    thinking_budget: int | None,
+    thought_signatures: list[str | GeminiDictValue],
+) -> GeminiDictValue:
+    raw: GeminiDictValue = {"isThought": True}
+    if thinking_budget is not None:
+        raw["thinkingBudget"] = thinking_budget
+    if thought_signatures:
+        raw["thoughtSignatures"] = thought_signatures
+    return raw
+
+
+def _code_content_block(payload: GeminiDictValue) -> ContentBlock | None:
+    code_text = _to_text(payload.get("code"))
+    if not code_text:
+        return None
+    language = payload.get("language")
+    return ContentBlock(
+        type=ContentType.CODE,
+        text=code_text,
+        language=language if isinstance(language, str) else None,
+        raw=payload,
+    )
+
+
+def _tool_result_content_block(payload: GeminiDictValue) -> ContentBlock | None:
+    output = payload.get("output")
+    outcome = payload.get("outcome")
+    output_text = _to_text(output)
+    outcome_text = _to_text(outcome)
+    if not output_text and not outcome_text:
+        return None
+    return ContentBlock(
+        type=ContentType.TOOL_RESULT,
+        text=output_text if output_text else f"[{outcome_text}]",
+        raw=payload,
+    )
+
+
+def _drive_media_content_block(
+    field_name: str,
+    value: GeminiDictValue | str | None,
+    content_type: ContentType,
+) -> ContentBlock | None:
+    record = _drive_document_record(value)
+    if record is None:
+        return None
+    mime_type = _get_str_or_none(record.get("mimeType"))
+    return ContentBlock(
+        type=content_type,
+        mime_type=mime_type,
+        raw={field_name: record},
+    )
 
 
 class GeminiMessage(BaseModel):
@@ -104,7 +161,11 @@ class GeminiMessage(BaseModel):
     executableCode: GeminiDictValue | None = None
     codeExecutionResult: GeminiDictValue | None = None
     driveDocument: GeminiDictValue | str | None = None
+    driveImage: GeminiDictValue | str | None = None
+    driveAudio: GeminiDictValue | str | None = None
+    driveVideo: GeminiDictValue | str | None = None
     inlineFile: GeminiDictValue | None = None
+    inlineImage: GeminiDictValue | None = None
     youtubeVideo: GeminiDictValue | None = None
     errorMessage: str | None = None
     isEdited: bool = False
@@ -142,7 +203,7 @@ class GeminiMessage(BaseModel):
             timestamp=self.parsed_timestamp,
             role=self.role_normalized,
             tokens=tokens,
-            provider=Provider.GEMINI,
+            origin=origin_from_provider(Provider.GEMINI),
         )
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
@@ -159,12 +220,11 @@ class GeminiMessage(BaseModel):
                 ReasoningTrace(
                     text=self.text,
                     token_count=self.thinkingBudget,
-                    provider=Provider.GEMINI,
-                    raw={
-                        "isThought": True,
-                        "thinkingBudget": self.thinkingBudget,
-                        "thoughtSignatures": sigs,
-                    },
+                    origin=origin_from_provider(Provider.GEMINI),
+                    raw=_thought_raw(
+                        thinking_budget=self.thinkingBudget,
+                        thought_signatures=sigs,
+                    ),
                 )
             )
         return traces
@@ -173,11 +233,17 @@ class GeminiMessage(BaseModel):
         blocks = []
 
         if self.isThought:
+            sigs: list[str | GeminiDictValue] = []
+            for signature in self.thoughtSignatures:
+                sigs.append(signature if isinstance(signature, str) else _normalize_mapping(signature))
             blocks.append(
                 ContentBlock(
                     type=ContentType.THINKING,
                     text=self.text,
-                    raw={"isThought": True},
+                    raw=_thought_raw(
+                        thinking_budget=self.thinkingBudget,
+                        thought_signatures=sigs,
+                    ),
                 )
             )
         elif self.text:
@@ -195,67 +261,76 @@ class GeminiMessage(BaseModel):
             if part_text:
                 blocks.append(
                     ContentBlock(
-                        type=ContentType.TEXT,
+                        type=ContentType.THINKING if raw_part.get("thought") is True else ContentType.TEXT,
                         text=part_text,
                         raw=raw_part,
                     )
                 )
-            elif _part_has_file_payload(part):
+            inline_data = _json_object(raw_part.get("inlineData"))
+            if inline_data:
+                mime_type = _get_str_or_none(inline_data.get("mimeType"))
                 blocks.append(
                     ContentBlock(
                         type=ContentType.FILE,
-                        raw=raw_part,
+                        mime_type=mime_type,
+                        raw={"inlineData": _without_inline_bytes(inline_data)},
                     )
                 )
+            file_data = _json_object(raw_part.get("fileData"))
+            if file_data:
+                mime_type = _get_str_or_none(file_data.get("mimeType"))
+                blocks.append(
+                    ContentBlock(
+                        type=ContentType.FILE,
+                        mime_type=mime_type,
+                        url=_get_str_or_none(file_data.get("fileUri")),
+                        raw={"fileData": file_data},
+                    )
+                )
+            executable_code = _json_object(raw_part.get("executableCode"))
+            if executable_code and (code_block := _code_content_block(executable_code)) is not None:
+                blocks.append(code_block)
+            execution_result = _json_object(raw_part.get("codeExecutionResult"))
+            if execution_result and (result_block := _tool_result_content_block(execution_result)) is not None:
+                blocks.append(result_block)
 
         if self.executableCode:
-            executable_raw = self.executableCode
-            language = executable_raw.get("language", "")
-            code = executable_raw.get("code", "")
-            code_text = _to_text(code)
-            if code_text:
-                blocks.append(
-                    ContentBlock(
-                        type=ContentType.CODE,
-                        text=code_text,
-                        language=language if isinstance(language, str) else None,
-                        raw=self.executableCode,
-                    )
-                )
+            code_block = _code_content_block(self.executableCode)
+            if code_block is not None:
+                blocks.append(code_block)
 
         if self.codeExecutionResult:
-            result_raw = self.codeExecutionResult
-            outcome = result_raw.get("outcome", "")
-            output = result_raw.get("output", "")
-            output_text = _to_text(output)
-            if output or outcome:
-                blocks.append(
-                    ContentBlock(
-                        type=ContentType.TOOL_RESULT,
-                        text=output_text if output_text else f"[{outcome}]",
-                        raw=result_raw,
-                    )
-                )
+            result_block = _tool_result_content_block(self.codeExecutionResult)
+            if result_block is not None:
+                blocks.append(result_block)
 
-        if self.driveDocument:
-            raw_doc = _drive_document_record(self.driveDocument)
-            if raw_doc is not None:
-                blocks.append(
-                    ContentBlock(
-                        type=ContentType.FILE,
-                        raw={"driveDocument": raw_doc},
-                    )
-                )
+        for field_name, value, content_type in (
+            ("driveDocument", self.driveDocument, ContentType.FILE),
+            ("driveImage", self.driveImage, ContentType.IMAGE),
+            ("driveAudio", self.driveAudio, ContentType.AUDIO),
+            ("driveVideo", self.driveVideo, ContentType.VIDEO),
+        ):
+            drive_block = _drive_media_content_block(field_name, value, content_type)
+            if drive_block is not None:
+                blocks.append(drive_block)
 
         if self.inlineFile:
             mime_type = _get_str_or_none(self.inlineFile.get("mimeType"))
-            inline_raw = dict(self.inlineFile)
-            inline_raw.pop("data", None)
             blocks.append(
                 ContentBlock(
                     type=ContentType.FILE,
                     mime_type=mime_type if isinstance(mime_type, str) else None,
-                    raw={"inlineFile": inline_raw},
+                    raw={"inlineFile": _without_inline_bytes(self.inlineFile)},
+                )
+            )
+
+        if self.inlineImage:
+            mime_type = _get_str_or_none(self.inlineImage.get("mimeType"))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.IMAGE,
+                    mime_type=mime_type,
+                    raw={"inlineImage": _without_inline_bytes(self.inlineImage)},
                 )
             )
 
@@ -267,6 +342,15 @@ class GeminiMessage(BaseModel):
                     type=ContentType.VIDEO,
                     url=url,
                     raw={"youtubeVideo": _string_or_empty_dict(self.youtubeVideo)},
+                )
+            )
+
+        if self.errorMessage:
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.ERROR,
+                    text=self.errorMessage,
+                    raw={"errorMessage": self.errorMessage},
                 )
             )
 

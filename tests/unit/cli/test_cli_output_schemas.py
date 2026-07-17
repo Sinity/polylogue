@@ -172,7 +172,6 @@ def test_tool_count_payload_validates_against_schema() -> None:
         ),
         items=(
             ToolCountRowPayload(
-                source_name="claude-code",
                 origin="claude-code-session",
                 normalized_tool_name="mcp__serena__find_symbol",
                 action_kind="mcp",
@@ -216,7 +215,6 @@ def test_tool_family_comparison_payload_validates_against_schema() -> None:
                 ),
                 items=(
                     ToolCountRowPayload(
-                        source_name="claude-code",
                         origin="claude-code-session",
                         normalized_tool_name="mcp__serena__find_symbol",
                         action_kind="mcp",

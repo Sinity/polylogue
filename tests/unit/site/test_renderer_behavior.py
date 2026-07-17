@@ -9,17 +9,13 @@ stale anchors would ship unnoticed. The tests below cover:
   source files,
 * navigation rendering and link integrity across emitted pages,
 * asset references (stylesheet inlining, page-relative anchors),
-* frontmatter / per-page data passed through to templates
-  (``home.html`` hero stats, ``data.source_command`` on
-  ``verifiability_catalog``),
+* frontmatter / per-page data passed through to templates,
 * error / fallback paths for malformed inputs (missing source file,
   unknown template, mistyped TOML section).
 
 The tests work directly against ``build_site`` / ``load_pages_config``
 without invoking the ``devtools`` CLI wrapper, so they stay fast and
-deterministic and do not depend on the user's archive database. The
-hero-stat path is forced empty by pointing ``active_index_db_path`` at
-a non-existent file via monkeypatch.
+deterministic and do not depend on an operator archive.
 """
 
 from __future__ import annotations
@@ -57,6 +53,21 @@ title = "Home"
 template = "home.html"
 
 [[pages]]
+path = "/beads/"
+title = "Roadmap"
+template = "beads.html"
+
+[[pages]]
+path = "/demos/"
+title = "Demos"
+source = "docs/demos.md"
+
+[[pages]]
+path = "/docs/"
+title = "Documentation"
+source = "docs/README.md"
+
+[[pages]]
 path = "/docs/getting-started/"
 title = "Getting Started"
 source = "docs/getting-started.md"
@@ -69,17 +80,9 @@ source = "docs/search.md"
 
 
 @pytest.fixture
-def _no_archive_stats(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Force ``_site_archive_stats`` to see a missing database."""
-    missing = tmp_path / "definitely-does-not-exist.sqlite"
-    monkeypatch.setattr("devtools.pages_builder.active_index_db_path", lambda: missing)
-
-
-@pytest.fixture
 def synthetic_site(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    _no_archive_stats: None,
 ) -> Path:
     """Build a synthetic site against an isolated repo root.
 
@@ -95,14 +98,16 @@ def synthetic_site(
     (docs / "getting-started.md").write_text(
         "# Getting Started\n\n"
         "Welcome to the synthetic site.\n\n"
-        "[Search docs](search.md) and [repo README](../README.md).\n\n"
+        "[Search details](search.md#search-details) and [repo README](../README.md).\n\n"
         "Plain file names such as CLAUDE.md should not become external links.\n",
         encoding="utf-8",
     )
     (docs / "search.md").write_text(
-        "# Search\n\nLook things up here.\n",
+        "# Search\n\nLook things up here.\n\n## Search Details\n\nUse a query.\n",
         encoding="utf-8",
     )
+    (docs / "demos.md").write_text("# Demos\n\nRun a proof.\n", encoding="utf-8")
+    (docs / "README.md").write_text("# Documentation\n\nChoose a guide.\n", encoding="utf-8")
     config_path = fake_root / "pages.toml"
     config_path.write_text(_MINIMAL_CONFIG, encoding="utf-8")
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
@@ -172,7 +177,7 @@ def test_build_site_emits_expected_pages(synthetic_site: Path) -> None:
 def test_doc_pages_render_markdown_body(synthetic_site: Path) -> None:
     """Markdown sources are rendered into the page body."""
     html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
-    assert "<h1>Getting Started</h1>" in html
+    assert '<h1 id="getting-started">Getting Started</h1>' in html
     assert "Welcome to the synthetic site" in html
 
 
@@ -183,6 +188,12 @@ def test_doc_pages_carry_page_title(synthetic_site: Path) -> None:
     rendered_title = "".join(collector.title_chars).strip()
     assert "Search" in rendered_title
     assert "Polylogue" in rendered_title
+
+
+def test_markdown_headings_receive_linkable_ids(synthetic_site: Path) -> None:
+    html = _read(synthetic_site / "docs" / "search" / "index.html")
+    assert '<h1 id="search">Search</h1>' in html
+    assert '<h2 id="search-details">Search Details</h2>' in html
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +251,7 @@ def test_markdown_links_rewritten_for_site_and_repo_files(synthetic_site: Path) 
     """Markdown links point at built site pages or stable source blobs."""
     html = _read(synthetic_site / "docs" / "getting-started" / "index.html")
     hrefs = _collect_links(html).hrefs
-    assert "../search/" in hrefs
+    assert "../search/#search-details" in hrefs
     assert "https://github.com/Sinity/polylogue/blob/master/README.md" in hrefs
     assert "http://CLAUDE.md" not in hrefs
 
@@ -282,15 +293,12 @@ def test_external_github_link_present(synthetic_site: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_home_page_carries_stats_block(synthetic_site: Path) -> None:
-    """The home template receives a ``stats`` mapping. With a missing
-    database the renderer still produces a stable placeholder rather than
-    raising, and 'session_count' is formatted as a literal '0'.
-    """
+def test_home_page_does_not_publish_operator_archive_counts(synthetic_site: Path) -> None:
+    """The public landing page describes capability, not a private archive."""
     html = _read(synthetic_site / "index.html")
-    # The home template renders the formatted stats; ensure the build did
-    # not throw and the placeholder ("0", "0.0M") survived to HTML.
-    assert "0.0M" in html or "0M" in html or ">0<" in html
+    assert "sessions</span>" not in html
+    assert "messages</span>" not in html
+    assert "origins</span>" not in html
 
 
 def test_per_page_data_parsed_and_passed_to_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,10 +318,6 @@ def test_per_page_data_parsed_and_passed_to_template(tmp_path: Path, monkeypatch
     fake_root = tmp_path / "repo"
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
-    monkeypatch.setattr(
-        "devtools.pages_builder.active_index_db_path",
-        lambda: fake_root / "missing.sqlite",
-    )
     config_path = fake_root / "pages.toml"
     config_path.write_text(
         """
@@ -376,6 +380,9 @@ def test_load_pages_config_round_trip(tmp_path: Path) -> None:
     assert [i.label for i in cfg.nav[0].items] == ["Getting Started", "Search"]
     assert [p.path for p in cfg.pages] == [
         "/index.html",
+        "/beads/",
+        "/demos/",
+        "/docs/",
         "/docs/getting-started/",
         "/docs/search/",
     ]
@@ -395,10 +402,6 @@ def test_missing_source_file_produces_placeholder(tmp_path: Path, monkeypatch: p
     fake_root = tmp_path / "repo"
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
-    monkeypatch.setattr(
-        "devtools.pages_builder.active_index_db_path",
-        lambda: fake_root / "missing.sqlite",
-    )
     config_path = fake_root / "pages.toml"
     config_path.write_text(
         """
@@ -433,10 +436,6 @@ def test_unknown_template_is_rejected(tmp_path: Path, monkeypatch: pytest.Monkey
     fake_root = tmp_path / "repo"
     fake_root.mkdir()
     monkeypatch.setattr(pages_builder, "ROOT", fake_root)
-    monkeypatch.setattr(
-        "devtools.pages_builder.active_index_db_path",
-        lambda: fake_root / "missing.sqlite",
-    )
     config_path = fake_root / "pages.toml"
     config_path.write_text(
         """

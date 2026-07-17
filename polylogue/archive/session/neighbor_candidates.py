@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import math
 import re
 from collections.abc import Iterable
@@ -9,14 +10,14 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from polylogue.core.enums import Provider
-from polylogue.errors import PolylogueError
+from polylogue.core.enums import Origin
+from polylogue.core.errors import PolylogueError
+from polylogue.core.protocols import NeighborStore
 from polylogue.storage.query_models import SessionRecordQuery
 
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.domain_models import Session, SessionSummary
-    from polylogue.protocols import SessionQueryRuntimeStore
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
@@ -100,7 +101,7 @@ class NeighborDiscoveryRequest:
 
     session_id: str | None = None
     query: str | None = None
-    provider: str | None = None
+    origin: str | None = None
     limit: int = 10
     window_hours: int = 24
     candidate_pool_limit: int = 100
@@ -120,15 +121,15 @@ def _normalized_title(value: str | None) -> str:
     return " ".join(value.casefold().split())
 
 
-def _canonical_provider(value: str | None) -> str | None:
+def _canonical_origin(value: str | None) -> str | None:
     if value is None:
         return None
-    return str(Provider.from_string(value))
+    return Origin.from_string(value).value
 
 
-def _provider_list(value: str | None) -> list[str] | None:
-    provider = _canonical_provider(value)
-    return [provider] if provider else None
+def _origin_list(value: str | None) -> list[str] | None:
+    origin = _canonical_origin(value)
+    return [origin] if origin else None
 
 
 def _source_timestamp(session: Session) -> datetime | None:
@@ -265,7 +266,7 @@ def _query_hits_reason(hit: SessionSearchHit, query: str) -> NeighborReason:
 
 
 async def _load_target(
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     session_id: str | None,
 ) -> Session | None:
     if session_id is None:
@@ -280,10 +281,10 @@ async def _load_target(
 
 async def _add_same_title_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    provider: str | None,
+    origin: str | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
@@ -292,7 +293,7 @@ async def _add_same_title_candidates(
         return
     summaries = await store.list_summaries_by_query(
         SessionRecordQuery(
-            provider=provider,
+            origin=origin,
             title_contains=target.display_title,
             limit=pool_limit,
         )
@@ -313,10 +314,10 @@ async def _add_same_title_candidates(
 
 async def _add_nearby_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    provider: str | None,
+    origin: str | None,
     source_id: str,
     window_hours: int,
     pool_limit: int,
@@ -327,7 +328,7 @@ async def _add_nearby_candidates(
     since, until = _date_window(anchor, window_hours)
     summaries = await store.list_summaries_by_query(
         SessionRecordQuery(
-            provider=provider,
+            origin=origin,
             since=since,
             until=until,
             limit=pool_limit,
@@ -354,16 +355,16 @@ async def _add_nearby_candidates(
 
 async def _add_query_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     query: str | None,
-    providers: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str | None,
     pool_limit: int,
 ) -> None:
     if not query or not query.strip():
         return
-    hits = await store.search_summary_hits(query.strip(), limit=pool_limit, providers=providers)
+    hits = await store.search_summary_hits(query.strip(), limit=pool_limit, origins=origins)
     for hit in hits:
         if source_id is not None and hit.session_id == source_id:
             continue
@@ -372,15 +373,15 @@ async def _add_query_candidates(
 
 async def _add_shared_attachment_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    providers: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
     for identity in _attachment_identities(target):
-        hits = await store.search_summary_hits(identity, limit=pool_limit, providers=providers)
+        hits = await store.search_summary_hits(identity, limit=pool_limit, origins=origins)
         for hit in hits:
             if hit.session_id == source_id:
                 continue
@@ -398,17 +399,17 @@ async def _add_shared_attachment_candidates(
 
 async def _add_source_content_search_candidates(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session,
-    providers: list[str] | None,
+    origins: builtins.list[str] | None,
     source_id: str,
     pool_limit: int,
 ) -> None:
     seed = _source_search_seed(target)
     if seed is None:
         return
-    hits = await store.search_summary_hits(seed, limit=pool_limit, providers=providers)
+    hits = await store.search_summary_hits(seed, limit=pool_limit, origins=origins)
     for hit in hits:
         if hit.session_id == source_id:
             continue
@@ -426,7 +427,7 @@ async def _add_source_content_search_candidates(
 
 async def _add_content_similarity_reasons(
     drafts: dict[str, _CandidateDraft],
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     *,
     target: Session | None,
     query: str | None,
@@ -490,9 +491,9 @@ def _rank_candidates(
 
 
 async def discover_neighbor_candidates(
-    store: SessionQueryRuntimeStore,
+    store: NeighborStore,
     request: NeighborDiscoveryRequest,
-) -> list[SessionNeighborCandidate]:
+) -> builtins.list[SessionNeighborCandidate]:
     """Return ranked, explainable neighboring-session candidates."""
     if request.limit <= 0:
         return []
@@ -501,8 +502,8 @@ async def discover_neighbor_candidates(
 
     target = await _load_target(store, request.session_id)
     source_id = str(target.id) if target is not None else None
-    provider = _canonical_provider(request.provider)
-    providers = _provider_list(provider)
+    origin = _canonical_origin(request.origin)
+    origins = _origin_list(origin)
     pool_limit = max(request.candidate_pool_limit, request.limit)
     drafts: dict[str, _CandidateDraft] = {}
 
@@ -511,7 +512,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            provider=provider,
+            origin=origin,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -519,7 +520,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            provider=provider,
+            origin=origin,
             source_id=source_id,
             window_hours=request.window_hours,
             pool_limit=pool_limit,
@@ -528,7 +529,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            providers=providers,
+            origins=origins,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -536,7 +537,7 @@ async def discover_neighbor_candidates(
             drafts,
             store,
             target=target,
-            providers=providers,
+            origins=origins,
             source_id=source_id,
             pool_limit=pool_limit,
         )
@@ -545,7 +546,7 @@ async def discover_neighbor_candidates(
         drafts,
         store,
         query=request.query,
-        providers=providers,
+        origins=origins,
         source_id=source_id,
         pool_limit=pool_limit,
     )

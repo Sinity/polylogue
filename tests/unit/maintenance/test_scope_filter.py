@@ -47,14 +47,14 @@ class TestMaintenanceScopeFilterShape:
         f = MaintenanceScopeFilter()
         assert f.is_empty()
         assert f.session_ids is None
-        assert f.provider is None
+        assert f.origin is None
         assert f.source_root is None
         assert f.time_range is None
 
     def test_filter_is_frozen(self) -> None:
-        f = MaintenanceScopeFilter(provider="claude-code")
+        f = MaintenanceScopeFilter(origin="claude-code-session")
         with pytest.raises(ValidationError):
-            f.provider = "chatgpt"
+            f.origin = "chatgpt-export"
 
     def test_filter_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
@@ -93,7 +93,7 @@ class TestMaintenanceScopeFilterRoundTrip:
             {},
             {"session_ids": ("c1",)},
             {"session_ids": ("c1", "c2", "c3")},
-            {"provider": "claude-code"},
+            {"origin": "claude-code-session"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
             {"time_range": (datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 2, 1, tzinfo=timezone.utc))},
@@ -101,7 +101,7 @@ class TestMaintenanceScopeFilterRoundTrip:
             {"parser_version": "v3"},
             {
                 "session_ids": ("c1",),
-                "provider": "claude-code",
+                "origin": "claude-code-session",
                 "source_family": "claude-code-session",
             },
         ],
@@ -123,8 +123,8 @@ class TestMaintenanceScopeFilterRoundTrip:
         assert MaintenanceScopeFilter.from_dict({}).is_empty()
 
     def test_from_dict_ignores_absent_dimensions(self) -> None:
-        f = MaintenanceScopeFilter.from_dict({"provider": "claude-code"})
-        assert f.provider == "claude-code"
+        f = MaintenanceScopeFilter.from_dict({"origin": "claude-code-session"})
+        assert f.origin == "claude-code-session"
         assert f.session_ids is None
 
 
@@ -184,7 +184,7 @@ class TestCrossSurfaceFilterParity:
         operation = _example_operation_with_filter(
             MaintenanceScopeFilter(
                 session_ids=("c1", "c2"),
-                provider="claude-code",
+                origin="claude-code-session",
                 source_family="claude-code-session",
             )
         )
@@ -207,7 +207,7 @@ class TestCrossSurfaceFilterParity:
 
         assert cli_filter == daemon_filter == mcp_filter
         assert cli_filter["session_ids"] == ["c1", "c2"]
-        assert cli_filter["provider"] == "claude-code"
+        assert cli_filter["origin"] == "claude-code-session"
         assert cli_filter["source_family"] == "claude-code-session"
 
     def test_daemon_http_parses_filter_body(self) -> None:
@@ -234,7 +234,7 @@ class TestCrossSurfaceFilterParity:
         body = {
             "targets": ["session_insights"],
             "session_ids": ["c1", "c2"],
-            "provider": "claude-code",
+            "origin": "claude-code-session",
             "source_family": "claude-code-session",
         }
         body_raw = json.dumps(body).encode("utf-8")
@@ -249,7 +249,7 @@ class TestCrossSurfaceFilterParity:
             handler._handle_maintenance_plan()
 
         assert captured["filter"].session_ids == ("c1", "c2")
-        assert captured["filter"].provider == "claude-code"
+        assert captured["filter"].origin == "claude-code-session"
         assert captured["filter"].source_family == "claude-code-session"
 
 
@@ -291,9 +291,9 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
     config_obj = Config(archive_root=archive, render_root=render, sources=[])
 
     with (
-        patch("polylogue.cli.commands.maintenance.preview_backfill", return_value=operation),
-        patch("polylogue.cli.commands.maintenance.archive_root", return_value=archive),
-        patch("polylogue.cli.commands.maintenance.render_root", return_value=render),
+        patch("polylogue.cli.commands.maintenance._plan.preview_backfill", return_value=operation),
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=render),
     ):
         result = runner.invoke(
             maintenance_group,

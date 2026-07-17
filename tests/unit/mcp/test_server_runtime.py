@@ -11,9 +11,11 @@ from polylogue.mcp import server as server_module
 def test_build_server_registers_tools_resources_and_prompts() -> None:
     fake_mcp = MagicMock()
     fake_fast_mcp = MagicMock(return_value=fake_mcp)
+    declared_mcp = MagicMock()
 
     with (
         patch("mcp.server.fastmcp.FastMCP", fake_fast_mcp),
+        patch("polylogue.mcp.server.DeclaredToolRegistrar", return_value=declared_mcp) as registrar_type,
         patch("polylogue.mcp.server.register_tools") as mock_tools,
         patch("polylogue.mcp.server.register_resources") as mock_resources,
         patch("polylogue.mcp.server.register_prompts") as mock_prompts,
@@ -22,9 +24,12 @@ def test_build_server_registers_tools_resources_and_prompts() -> None:
 
     assert built is fake_mcp
     fake_fast_mcp.assert_called_once()
+    registrar_type.assert_called_once_with(fake_mcp, role="read")
     hooks = mock_tools.call_args.args[1]
+    assert mock_tools.call_args.args[0] is declared_mcp
     assert callable(hooks.json_payload)
     assert callable(hooks.clamp_limit)
+    declared_mcp.finalize.assert_called_once_with()
     mock_resources.assert_called_once_with(fake_mcp, hooks)
     mock_prompts.assert_called_once_with(fake_mcp, hooks)
 

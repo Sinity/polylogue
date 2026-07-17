@@ -127,6 +127,12 @@ READER_VISUAL_ARTIFACTS: tuple[VisualArtifact, ...] = (
         fixture_id="reader-visual-synthetic-v1",
         routes=("/", "/api/sessions", "/api/messages/{id}/actions"),
     ),
+    VisualArtifact(
+        artifact_id="polylogue.local_reader.semantic_cards",
+        owner="tests/visual/test_reader_semantic_cards.py",
+        fixture_id="reader-visual-synthetic-v1",
+        routes=("/", "/api/sessions/{id}"),
+    ),
 )
 
 

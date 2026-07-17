@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING, TypedDict, TypeVar
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.enums import MaterialOrigin, Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 _AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
 
@@ -40,23 +40,6 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
-
-
-_ORIGIN_TO_PROVIDER = {
-    "claude-code-session": Provider.CLAUDE_CODE,
-    "codex-session": Provider.CODEX,
-    "gemini-cli-session": Provider.GEMINI_CLI,
-    "hermes-session": Provider.HERMES,
-    "antigravity-session": Provider.ANTIGRAVITY,
-    "chatgpt-export": Provider.CHATGPT,
-    "claude-ai-export": Provider.CLAUDE_AI,
-    "aistudio-drive": Provider.GEMINI,
-    "unknown-export": Provider.UNKNOWN,
-}
-
-
-def _provider_for_origin(origin: str) -> Provider:
-    return _ORIGIN_TO_PROVIDER.get(origin, Provider.UNKNOWN)
 
 
 def _session_seed_scored(
@@ -192,7 +175,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
 def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
@@ -218,7 +201,7 @@ def _maybe_parse_json_object(value: str | None) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Message:
+def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
     from polylogue.archive.message.models import Message
 
     text = "\n\n".join(block.text for block in message.blocks if block.text) or None
@@ -246,7 +229,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
         role=Role.normalize(message.role),
         text=text,
         timestamp=parse_archive_datetime(message.occurred_at),
-        provider=provider,
+        origin=origin,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         material_origin=MaterialOrigin.normalize(message.material_origin),
@@ -263,12 +246,12 @@ def _message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Mes
 def _session_to_session(session: ArchiveSessionEnvelope) -> Session:
     from polylogue.archive.session.branch_type import BranchType
 
-    provider = _provider_for_origin(session.origin)
-    messages = [_message_to_domain(message, provider=provider) for message in session.messages]
+    origin = Origin.from_string(session.origin)
+    messages = [_message_to_domain(message, origin=origin) for message in session.messages]
     timestamps = [message.timestamp for message in messages if message.timestamp is not None]
     return Session(
         id=SessionId(session.session_id),
-        origin=origin_from_provider(provider),
+        origin=origin,
         title=session.title,
         messages=MessageCollection(messages=messages),
         created_at=min(timestamps) if timestamps else None,
@@ -392,10 +375,10 @@ def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchH
     return summaries
 
 
-def _open_archive(archive_root: Path) -> ArchiveStore:
+def _open_archive_for_write(archive_root: Path) -> ArchiveStore:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    return ArchiveStore.open_existing(archive_root)
+    return ArchiveStore.open_existing(archive_root, read_only=False)
 
 
 def _attach_units_to_domain(
@@ -433,7 +416,8 @@ async def list_summaries_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[SessionSummary]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> list[SessionSummary]:
         archive_rows = _archive_summaries(
             plan,
             archive,
@@ -447,6 +431,18 @@ async def list_summaries_archive(
             with_units,
             with_unit_fields,
         )
+        return summaries
+
+    summaries = await run_archive_read(
+        archive_root,
+        operation="archive.query.list-summaries",
+        arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
+        work=read,
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="session-summaries",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
     return plan._finalize(ordered)
@@ -462,7 +458,8 @@ async def list_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
 ) -> builtins.list[Session]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> list[Session]:
         archive_rows = _archive_summaries(
             plan,
             archive,
@@ -476,6 +473,18 @@ async def list_archive(
             with_units,
             with_unit_fields,
         )
+        return sessions
+
+    sessions = await run_archive_read(
+        archive_root,
+        operation="archive.query.list",
+        arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
+        work=read,
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="sessions",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)
     return plan._finalize(ordered)
@@ -505,7 +514,14 @@ async def count_archive(
     ):
         filter_kwargs = _plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
-        with _open_archive(archive_root) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="archive.query.count",
+            arguments={"plan": plan},
+            page_size=1,
+            projection="count",
+            workload_class="scan",
+        ) as archive:
             if query_text is not None:
                 return int(archive.count_search_sessions(query_text, **filter_kwargs))
             return int(archive.count_sessions(**filter_kwargs))
@@ -534,6 +550,7 @@ def archive_search_hits(
     archive_root: Path,
     config: Config | None,
     default_limit: int = 50,
+    archive: ArchiveStore | None = None,
 ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
     """Resolve a search plan to archive session hits paired with summaries.
 
@@ -547,7 +564,8 @@ def archive_search_hits(
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
     filter_kwargs = _plan_filter_kwargs(plan)
-    with _open_archive(archive_root) as archive:
+
+    def read(archive: ArchiveStore) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
         if plan.similar_session_id is not None:
             pool = max(limit + offset, limit) * 3
             scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
@@ -610,6 +628,19 @@ def archive_search_hits(
         ]
         return _pair_hits(archive, ranked), "hybrid"
 
+    if archive is not None:
+        return read(archive)
+    with archive_read_context(
+        archive_root,
+        operation="archive.query.search-hits",
+        arguments={"plan": plan, "default_limit": default_limit},
+        page_size=plan.limit,
+        offset=plan.offset,
+        projection="search-hits",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+    ) as controlled_archive:
+        return read(controlled_archive)
+
 
 def _pair_hits(
     archive: ArchiveStore,
@@ -642,7 +673,7 @@ async def delete_archive(
         session_ids = tuple(str(session.id) for session in sessions)
     if not session_ids:
         return 0
-    with _open_archive(archive_root) as archive:
+    with _open_archive_for_write(archive_root) as archive:
         return archive.delete_sessions(session_ids)
 
 

@@ -71,6 +71,8 @@ class SchemaRegistryToolingMixin:
             provider: str,
             catalog: SchemaPackageCatalog,
             package_schemas: Mapping[str, ElementSchemaMap],
+            *,
+            package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
         ) -> None: ...
 
         def _catalog_path(self, provider: str) -> Path: ...

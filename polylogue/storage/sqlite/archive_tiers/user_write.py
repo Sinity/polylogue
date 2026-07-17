@@ -25,8 +25,10 @@ from polylogue.core.assertions import (
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
+    from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyFinding
     from polylogue.insights.transforms import DecisionCandidate, SessionDigest, TransformRawRef
 
@@ -278,6 +280,26 @@ def assertion_id_for_pathology_finding(
     )
 
 
+def assertion_id_for_finding(
+    *,
+    claim_key: str,
+    target_ref: str,
+    value: Mapping[str, object],
+    evidence_refs: Sequence[str],
+    detector_ref: str,
+) -> str:
+    """Return the deterministic id for one ``polylogue.finding.v1`` claim."""
+
+    return _deterministic_id(
+        f"assertion-{AssertionKind.FINDING}",
+        claim_key,
+        target_ref,
+        _json_dumps(dict(value)),
+        *sorted(evidence_refs),
+        detector_ref,
+    )
+
+
 def assertion_id_for_candidate_judgment(candidate_assertion_id: str, decision: str) -> str:
     return _deterministic_id(f"assertion-{AssertionKind.JUDGMENT}", candidate_assertion_id, decision)
 
@@ -404,12 +426,76 @@ class ArchiveAssertionJudgmentEnvelope:
     candidate: ArchiveAssertionEnvelope
     judgment: ArchiveAssertionEnvelope
     resulting_assertion: ArchiveAssertionEnvelope | None = None
+    outcome: str = "applied"
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentItemEnvelope:
+    candidate_ref: str
+    decision: str
+    reason: str | None = None
+    inject: bool = False
+    actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF
+    replacement_kind: str | AssertionKind | None = None
+    replacement_body_text: str | None = None
+    replacement_value: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentResultEnvelope:
+    candidate_ref: str
+    outcome: str
+    result: ArchiveAssertionJudgmentEnvelope | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveAssertionBulkJudgmentEnvelope:
+    items: tuple[ArchiveAssertionBulkJudgmentResultEnvelope, ...]
+
+    @property
+    def applied_count(self) -> int:
+        return sum(item.outcome == "applied" for item in self.items)
+
+    @property
+    def idempotent_count(self) -> int:
+        return sum(item.outcome == "idempotent" for item in self.items)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(item.outcome == "failed" for item in self.items)
 
 
 @dataclass(frozen=True, slots=True)
 class ArchiveAssertionCandidateReviewEnvelope:
     candidate: ArchiveAssertionEnvelope
     latest_judgment: ArchiveAssertionEnvelope | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FindingAssertion:
+    """One detector-produced claim stored through the assertion lifecycle.
+
+    Query and result-set refs deliberately remain opaque at this layer. The
+    rxdo substrate owns their grammar; this writer preserves them as public
+    evidence refs so future provenance readers can resolve ancestry.
+    """
+
+    claim_key: str
+    target_ref: str
+    body_text: str
+    finding_kind: str
+    statistic: Mapping[str, JSONValue]
+    n: int
+    query_ref: str
+    result_set_ref: str
+    detector_ref: str
+    baseline_ref: str | None = None
+    current_ref: str | None = None
+    expected: Mapping[str, JSONValue] | None = None
+    evidence_refs: Sequence[str] = ()
+    scope_ref: str | None = None
+    confidence: float | None = None
 
 
 def upsert_suppression(
@@ -809,16 +895,6 @@ def read_archive_workspace_envelope(conn: sqlite3.Connection, name: str) -> Arch
     )
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _read_mirrored_assertion(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
     if not _table_exists(conn, "assertions"):
         return None
@@ -920,6 +996,9 @@ def list_archive_blackboard_note_envelopes(
     envelopes = [
         _blackboard_envelope_from_assertion(assertion)
         for assertion in list_assertions_by_kind(conn, AssertionKind.NOTE)
+        # Candidate notes are deliberately visible only through the judgment
+        # queue.  The blackboard is the active, operator-approved read model.
+        if assertion.status == AssertionStatus.ACTIVE
     ]
     if limit is not None and limit > 0:
         return envelopes[:limit]
@@ -1190,6 +1269,209 @@ def upsert_pathology_findings_as_assertions(
     return envelopes
 
 
+def upsert_comparative_judgment_assertion(
+    conn: sqlite3.Connection,
+    judgment: ComparativeJudgment,
+    *,
+    author_kind: str,
+    now_ms: int | None = None,
+) -> ArchiveAssertionEnvelope:
+    """Store one comparative judgment (rxdo.9.11, mechanism K) as an assertion row.
+
+    ``judgment.judgment_id`` (a content hash -- see
+    :func:`polylogue.insights.judgment.comparative.build_comparative_judgment`)
+    is used verbatim as the assertion id, so recording an identical verdict
+    twice is idempotent rather than duplicative.
+
+    ``author_kind`` follows the existing promotion gate
+    (:func:`upsert_assertion`): a non-``"user"`` author (an agent judge) is
+    coerced to a CANDIDATE, non-injected row regardless of the caller's
+    request -- agent judgments stay candidates awaiting operator promotion,
+    per the recursive-safety spine (rxdo.9.15's cascade routes THOSE verdicts
+    to the operator; this function does not decide routing).
+    """
+
+    from polylogue.insights.judgment.comparative import comparative_judgment_to_value
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    value = comparative_judgment_to_value(judgment)
+    evidence_refs = list(dict.fromkeys((*judgment.items, *judgment.evidence_refs)))
+    is_user_authored = author_kind == ASSERTION_DEFAULT_AUTHOR_KIND
+    return upsert_assertion(
+        conn,
+        assertion_id=judgment.judgment_id,
+        scope_ref="insight:comparative-judgment@v1",
+        target_ref=judgment.items[0],
+        key=judgment.dimension,
+        kind=AssertionKind.COMPARATIVE_JUDGMENT,
+        value=value,
+        body_text=judgment.rationale if judgment.rationale_visible else None,
+        author_ref=judgment.judge.actor_ref,
+        author_kind=author_kind,
+        evidence_refs=evidence_refs,
+        status=AssertionStatus.ACTIVE if is_user_authored else AssertionStatus.CANDIDATE,
+        visibility=AssertionVisibility.PRIVATE,
+        context_policy={"inject": False, "promotion_required": not is_user_authored},
+        now_ms=timestamp,
+    )
+
+
+def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudgment]:
+    """Read back every live comparative-judgment assertion row.
+
+    ``list_assertions_by_kind`` only excludes ``DELETED`` rows, but the
+    candidate-judgment lifecycle this kind reuses as-is
+    (:func:`judge_assertion_candidate`) never deletes: a rejected verdict is
+    left at ``status=REJECTED`` (a terminal, non-live row) and an accepted
+    verdict leaves the original candidate at ``status=ACCEPTED`` while
+    writing a *separate*, differently-id'd promoted row at
+    ``status=ACTIVE`` (:func:`_promote_candidate_assertion`). Filtering only
+    on non-``DELETED`` would therefore resurrect rejected verdicts as live
+    judgments and double-count accepted ones (original ``ACCEPTED`` row plus
+    the promoted ``ACTIVE`` row, parsed into two distinct
+    :class:`ComparativeJudgment` objects). ``ACTIVE`` is the sole live
+    status here: user-authored judgments are written directly as ``ACTIVE``
+    (see :func:`upsert_comparative_judgment_assertion`), and agent-authored
+    candidates only reach ``ACTIVE`` via the promoted row once accepted.
+    """
+
+    from polylogue.insights.judgment.comparative import comparative_judgment_from_value
+
+    judgments: list[ComparativeJudgment] = []
+    for envelope in list_assertions_by_kind(conn, AssertionKind.COMPARATIVE_JUDGMENT):
+        if envelope.status != AssertionStatus.ACTIVE:
+            continue
+        if not isinstance(envelope.value, dict):
+            continue
+        raw_items = envelope.value.get("items", ())
+        item_refs = {str(item) for item in raw_items} if isinstance(raw_items, list) else set()
+        # evidence_refs_json is stored as items UNION evidence_refs (so every
+        # comparison subject resolves as ordinary evidence); strip the item
+        # refs back out to reconstruct the original standalone evidence_refs.
+        extra_evidence_refs = [ref for ref in envelope.evidence_refs if ref not in item_refs]
+        judgments.append(
+            comparative_judgment_from_value(envelope.assertion_id, envelope.value, evidence_refs=extra_evidence_refs)
+        )
+    return judgments
+
+
+_FINDING_KINDS: Final[frozenset[str]] = frozenset(
+    {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
+)
+
+
+def _validate_finding_ref(value: str, *, field: str) -> str:
+    """Keep finding evidence refs opaque until the rxdo substrate owns grammar."""
+
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"finding {field} must be a non-empty ref")
+    return normalized
+
+
+def _finding_value(finding: FindingAssertion) -> dict[str, object]:
+    """Validate and project the additive ``polylogue.finding.v1`` payload."""
+
+    if finding.finding_kind not in _FINDING_KINDS:
+        raise ValueError(f"unsupported finding_kind: {finding.finding_kind!r}")
+    if not finding.claim_key.strip():
+        raise ValueError("finding claim_key must be non-empty")
+    if isinstance(finding.n, bool) or finding.n < 0:
+        raise ValueError("finding n must be a non-negative integer")
+    statistic = dict(finding.statistic)
+    if not {"op", "value", "unit"}.issubset(statistic):
+        raise ValueError("finding statistic must contain op, value, and unit")
+
+    query_ref = _validate_finding_ref(finding.query_ref, field="query_ref")
+    result_set_ref = _validate_finding_ref(finding.result_set_ref, field="result_set_ref")
+    value: dict[str, object] = {
+        "_schema": "polylogue.finding.v1",
+        "finding_kind": finding.finding_kind,
+        "statistic": statistic,
+        "n": finding.n,
+        "query_ref": query_ref,
+        "result_set_ref": result_set_ref,
+    }
+    if finding.baseline_ref is not None:
+        value["baseline_ref"] = _validate_finding_ref(finding.baseline_ref, field="baseline_ref")
+    if finding.current_ref is not None:
+        value["current_ref"] = _validate_finding_ref(finding.current_ref, field="current_ref")
+    if finding.finding_kind == "query-delta" and {"baseline_ref", "current_ref"} - value.keys():
+        raise ValueError("query-delta findings require baseline_ref and current_ref")
+    if finding.expected is not None:
+        expected = dict(finding.expected)
+        if not {"measure", "op", "value"}.issubset(expected):
+            raise ValueError("finding expected must contain measure, op, and value")
+        # Future rigor work can add bands, tolerances, or direction-only
+        # expectations without a user-tier schema migration.
+        value["expected"] = expected
+    return value
+
+
+def upsert_findings_as_assertions(
+    conn: sqlite3.Connection,
+    findings: Sequence[FindingAssertion],
+    *,
+    now_ms: int | None = None,
+) -> list[ArchiveAssertionEnvelope]:
+    """Write detector findings as private, non-injected assertion candidates.
+
+    This mirrors :func:`upsert_pathology_findings_as_assertions`: repeated
+    materialization maps identical claim/evidence inputs to the same row, and
+    terminal operator judgments are never overwritten by a detector.
+    """
+
+    timestamp = now_ms if now_ms is not None else _now_ms()
+    envelopes: list[ArchiveAssertionEnvelope] = []
+    for finding in findings:
+        value = _finding_value(finding)
+        query_ref = str(value["query_ref"])
+        result_set_ref = str(value["result_set_ref"])
+        evidence_refs = [
+            query_ref,
+            result_set_ref,
+            *(_validate_finding_ref(ref, field="evidence_ref") for ref in finding.evidence_refs),
+        ]
+        for field in ("baseline_ref", "current_ref"):
+            ref = value.get(field)
+            if isinstance(ref, str):
+                evidence_refs.append(ref)
+        evidence_refs = sorted(set(evidence_refs))
+        detector_ref = _validate_finding_ref(finding.detector_ref, field="detector_ref")
+        assertion_id = assertion_id_for_finding(
+            claim_key=finding.claim_key.strip(),
+            target_ref=finding.target_ref,
+            value=value,
+            evidence_refs=evidence_refs,
+            detector_ref=detector_ref,
+        )
+        existing = read_assertion_envelope(conn, assertion_id)
+        if existing is not None and existing.status != AssertionStatus.CANDIDATE:
+            envelopes.append(existing)
+            continue
+        envelopes.append(
+            upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                scope_ref=finding.scope_ref or detector_ref,
+                target_ref=finding.target_ref,
+                key=finding.claim_key.strip(),
+                kind=AssertionKind.FINDING,
+                value=value,
+                body_text=finding.body_text,
+                author_ref=detector_ref,
+                author_kind="detector",
+                evidence_refs=evidence_refs,
+                status=AssertionStatus.CANDIDATE,
+                visibility=AssertionVisibility.PRIVATE,
+                confidence=finding.confidence,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=timestamp,
+            )
+        )
+    return envelopes
+
+
 def _transform_candidate_evidence_refs(candidate: DecisionCandidate) -> list[str]:
     return [_format_transform_raw_ref(ref) for ref in candidate.raw_refs]
 
@@ -1237,7 +1519,7 @@ def list_assertion_candidates(
 
     return list_assertion_claims(
         conn,
-        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
         target_ref=target_ref,
         statuses=(AssertionStatus.CANDIDATE,),
         limit=limit,
@@ -1250,6 +1532,23 @@ ASSERTION_CANDIDATE_REVIEW_STATUSES: tuple[AssertionStatus, ...] = (
     AssertionStatus.REJECTED,
     AssertionStatus.DEFERRED,
     AssertionStatus.SUPERSEDED,
+)
+
+# Candidate capture is broader than successor-context claims. Terminal notes
+# and corrections must be reviewable even though neither belongs in the normal
+# active-claim reader (which deliberately excludes ordinary overlays).
+ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
+    AssertionKind.DECISION,
+    AssertionKind.CAVEAT,
+    AssertionKind.BLOCKER,
+    AssertionKind.LESSON,
+    AssertionKind.RUN_STATE,
+    AssertionKind.TRANSFORM_CANDIDATE,
+    AssertionKind.PATHOLOGY,
+    AssertionKind.FINDING,
+    AssertionKind.NOTE,
+    AssertionKind.CORRECTION,
+    AssertionKind.COMPARATIVE_JUDGMENT,
 )
 
 
@@ -1271,7 +1570,7 @@ def list_assertion_candidate_reviews(
 
     candidates = list_assertion_claims(
         conn,
-        kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+        kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
         target_ref=target_ref,
         statuses=statuses,
         limit=limit,
@@ -1313,6 +1612,15 @@ def _latest_candidate_judgment(
     return _assertion_row_to_envelope(row)
 
 
+def read_latest_candidate_judgment(
+    conn: sqlite3.Connection,
+    candidate_assertion_id: str,
+) -> ArchiveAssertionEnvelope | None:
+    """Return the durable latest judgment attached to one candidate."""
+
+    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id))
+
+
 def judge_assertion_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1320,6 +1628,7 @@ def judge_assertion_candidate(
     decision: str,
     reason: str | None = None,
     actor_ref: str = ASSERTION_DEFAULT_AUTHOR_REF,
+    inject: bool = False,
     replacement_kind: str | AssertionKind | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
@@ -1330,12 +1639,38 @@ def judge_assertion_candidate(
     normalized_decision = decision.strip().lower()
     if normalized_decision not in {"accept", "reject", "defer", "supersede"}:
         raise ValueError("candidate assertion decision must be accept, reject, defer, or supersede")
+    normalized_replacement_kind = None if replacement_kind is None else _normalize_assertion_kind(replacement_kind)
+    normalized_replacement_value = (
+        None if replacement_value is None else _normalize_assertion_value(replacement_value).as_json_value()
+    )
+    if normalized_decision != "supersede" and any(
+        value is not None
+        for value in (normalized_replacement_kind, replacement_body_text, normalized_replacement_value)
+    ):
+        raise ValueError("replacement fields are only valid for a supersede judgment")
     candidate_id = _assertion_id_from_ref(candidate_ref)
     candidate = read_assertion_envelope(conn, candidate_id)
     if candidate is None:
         raise ValueError(f"candidate assertion not found: {candidate_ref}")
     if candidate.status != AssertionStatus.CANDIDATE:
-        raise ValueError(f"candidate assertion is not awaiting judgment: {candidate_ref}")
+        latest = _latest_candidate_judgment(conn, candidate_id)
+        if latest is not None and _is_exact_judgment_retry(
+            latest,
+            decision=normalized_decision,
+            reason=reason,
+            actor_ref=actor_ref,
+            inject=inject,
+            replacement_kind=normalized_replacement_kind,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        ):
+            return ArchiveAssertionJudgmentEnvelope(
+                candidate=candidate,
+                judgment=latest,
+                resulting_assertion=_resulting_assertion_from_judgment(conn, latest),
+                outcome="idempotent",
+            )
+        raise ValueError(f"candidate assertion has a conflicting prior judgment: {candidate_ref}")
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     resulting_assertion: ArchiveAssertionEnvelope | None = None
@@ -1351,9 +1686,10 @@ def judge_assertion_candidate(
             conn,
             candidate,
             actor_ref=actor_ref,
-            replacement_kind=replacement_kind,
+            inject=inject,
+            replacement_kind=normalized_replacement_kind,
             replacement_body_text=replacement_body_text,
-            replacement_value=replacement_value,
+            replacement_value=normalized_replacement_value,
             now_ms=timestamp,
         )
 
@@ -1365,6 +1701,21 @@ def judge_assertion_candidate(
     evidence_refs = [*candidate.evidence_refs, f"assertion:{candidate_id}"]
     if resulting_assertion is not None:
         evidence_refs.append(f"assertion:{resulting_assertion.assertion_id}")
+    judgment_value: dict[str, JSONValue] = {
+        "decision": normalized_decision,
+        "candidate_ref": f"assertion:{candidate_id}",
+        "reason": reason,
+        "inject_authorized": inject if normalized_decision in {"accept", "supersede"} else False,
+        "resulting_assertion_ref": None
+        if resulting_assertion is None
+        else f"assertion:{resulting_assertion.assertion_id}",
+    }
+    if normalized_decision == "supersede":
+        judgment_value.update(
+            replacement_kind=None if normalized_replacement_kind is None else normalized_replacement_kind.value,
+            replacement_body_text=replacement_body_text,
+            replacement_value=normalized_replacement_value,
+        )
     judgment = upsert_assertion(
         conn,
         assertion_id=assertion_id_for_candidate_judgment(candidate_id, normalized_decision),
@@ -1372,14 +1723,7 @@ def judge_assertion_candidate(
         target_ref=f"assertion:{candidate_id}",
         key=f"{normalized_decision}/{candidate_id}",
         kind=AssertionKind.JUDGMENT,
-        value={
-            "decision": normalized_decision,
-            "candidate_ref": f"assertion:{candidate_id}",
-            "reason": reason,
-            "resulting_assertion_ref": None
-            if resulting_assertion is None
-            else f"assertion:{resulting_assertion.assertion_id}",
-        },
+        value=judgment_value,
         body_text=reason,
         author_ref=actor_ref,
         author_kind="user",
@@ -1397,6 +1741,163 @@ def judge_assertion_candidate(
     )
 
 
+def judge_assertion_candidates(
+    conn: sqlite3.Connection,
+    items: Sequence[ArchiveAssertionBulkJudgmentItemEnvelope],
+    *,
+    now_ms: int | None = None,
+) -> ArchiveAssertionBulkJudgmentEnvelope:
+    """Apply independent candidate judgments in one transaction.
+
+    A malformed or conflicting item rolls back only its savepoint.  Repeated
+    refs are intentionally collapsed before execution so one request cannot
+    create duplicate review history for the same candidate.
+    """
+
+    unique_items: dict[str, ArchiveAssertionBulkJudgmentItemEnvelope] = {}
+    ordered_candidate_ids: list[str] = []
+    result_order: list[str | ArchiveAssertionBulkJudgmentResultEnvelope] = []
+    conflicting_duplicates: set[str] = set()
+
+    for item in items:
+        try:
+            candidate_id = _assertion_id_from_ref(item.candidate_ref)
+        except ValueError as exc:
+            result_order.append(
+                ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=item.candidate_ref, outcome="failed", error=str(exc)
+                )
+            )
+            continue
+        previous = unique_items.get(candidate_id)
+        if previous is None:
+            unique_items[candidate_id] = item
+            ordered_candidate_ids.append(candidate_id)
+            result_order.append(candidate_id)
+        elif not _same_bulk_judgment_input(previous, item):
+            conflicting_duplicates.add(candidate_id)
+
+    results_by_candidate_id: dict[str, ArchiveAssertionBulkJudgmentResultEnvelope] = {}
+    batch_savepoint = "assertion_judgment_batch"
+    conn.execute(f"SAVEPOINT {batch_savepoint}")
+    try:
+        for index, candidate_id in enumerate(ordered_candidate_ids):
+            item = unique_items[candidate_id]
+            if candidate_id in conflicting_duplicates:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}",
+                    outcome="failed",
+                    error="conflicting duplicate judgment inputs for candidate",
+                )
+                continue
+            savepoint = f"assertion_judgment_{index}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                result = judge_assertion_candidate(
+                    conn,
+                    candidate_ref=f"assertion:{candidate_id}",
+                    decision=item.decision,
+                    reason=item.reason,
+                    actor_ref=item.actor_ref,
+                    inject=item.inject,
+                    replacement_kind=item.replacement_kind,
+                    replacement_body_text=item.replacement_body_text,
+                    replacement_value=item.replacement_value,
+                    now_ms=now_ms,
+                )
+            except (TypeError, ValueError) as exc:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome="failed", error=str(exc)
+                )
+            else:
+                results_by_candidate_id[candidate_id] = ArchiveAssertionBulkJudgmentResultEnvelope(
+                    candidate_ref=f"assertion:{candidate_id}", outcome=result.outcome, result=result
+                )
+            finally:
+                conn.execute(f"RELEASE {savepoint}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {batch_savepoint}")
+        conn.execute(f"RELEASE {batch_savepoint}")
+        raise
+    else:
+        conn.execute(f"RELEASE {batch_savepoint}")
+    return ArchiveAssertionBulkJudgmentEnvelope(
+        items=tuple(
+            entry if isinstance(entry, ArchiveAssertionBulkJudgmentResultEnvelope) else results_by_candidate_id[entry]
+            for entry in result_order
+        )
+    )
+
+
+def _same_bulk_judgment_input(
+    left: ArchiveAssertionBulkJudgmentItemEnvelope,
+    right: ArchiveAssertionBulkJudgmentItemEnvelope,
+) -> bool:
+    """Compare duplicate input after its candidate reference was normalized."""
+
+    return (
+        left.decision,
+        left.reason,
+        left.actor_ref,
+        left.inject,
+        left.replacement_kind,
+        left.replacement_body_text,
+        left.replacement_value,
+    ) == (
+        right.decision,
+        right.reason,
+        right.actor_ref,
+        right.inject,
+        right.replacement_kind,
+        right.replacement_body_text,
+        right.replacement_value,
+    )
+
+
+def _is_exact_judgment_retry(
+    judgment: ArchiveAssertionEnvelope,
+    *,
+    decision: str,
+    reason: str | None,
+    actor_ref: str,
+    inject: bool,
+    replacement_kind: AssertionKind | None,
+    replacement_body_text: str | None,
+    replacement_value: JSONValue | None,
+) -> bool:
+    value = judgment.value if isinstance(judgment.value, dict) else {}
+    if decision == "supersede" and not {
+        "replacement_kind",
+        "replacement_body_text",
+        "replacement_value",
+    }.issubset(value):
+        # Earlier judgment rows did not preserve replacement intent, so they
+        # cannot prove an edited retry is exact.  Fail closed rather than
+        # silently treating a possible correction as already applied.
+        return False
+    return (
+        value.get("decision") == decision
+        and value.get("reason") == reason
+        and judgment.author_ref == actor_ref
+        and bool(value.get("inject_authorized", False)) == inject
+        and value.get("replacement_kind") == (None if replacement_kind is None else replacement_kind.value)
+        and value.get("replacement_body_text") == replacement_body_text
+        and value.get("replacement_value") == replacement_value
+    )
+
+
+def _resulting_assertion_from_judgment(
+    conn: sqlite3.Connection,
+    judgment: ArchiveAssertionEnvelope,
+) -> ArchiveAssertionEnvelope | None:
+    value = judgment.value if isinstance(judgment.value, dict) else {}
+    result_ref = value.get("resulting_assertion_ref")
+    if not isinstance(result_ref, str):
+        return None
+    return read_assertion_envelope(conn, _assertion_id_from_ref(result_ref))
+
+
 def _assertion_id_from_ref(value: str) -> str:
     if value.startswith("assertion:"):
         ref = ObjectRef.parse(value)
@@ -1411,13 +1912,14 @@ def _promote_candidate_assertion(
     candidate: ArchiveAssertionEnvelope,
     *,
     actor_ref: str,
+    inject: bool,
     replacement_kind: str | AssertionKind | None,
     replacement_body_text: str | None,
     replacement_value: object | None,
     now_ms: int,
 ) -> ArchiveAssertionEnvelope:
     context_policy: dict[str, JSONValue] = dict(candidate.context_policy)
-    context_policy["inject"] = bool(context_policy.get("inject", False))
+    context_policy["inject"] = inject
     context_policy.pop("promotion_required", None)
     return upsert_assertion(
         conn,
@@ -1596,6 +2098,8 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.RUN_STATE,
     AssertionKind.TRANSFORM_CANDIDATE,
     AssertionKind.PATHOLOGY,
+    AssertionKind.FINDING,
+    AssertionKind.COMPARATIVE_JUDGMENT,
 )
 
 
@@ -1607,7 +2111,12 @@ def list_assertion_claims(
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
     context_inject: bool | None = None,
+    annotation_schema_prefix: str | None = None,
+    annotation_schema_qualified_id: str | None = None,
+    annotation_schema_excluded_qualified_id: str | None = None,
+    annotation_target_kind: str | None = None,
     limit: int | None = None,
+    offset: int = 0,
 ) -> list[ArchiveAssertionEnvelope]:
     """List lifecycle claims for successor-context/profile consumers.
 
@@ -1644,23 +2153,83 @@ def list_assertion_claims(
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
         params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
+    if annotation_schema_prefix is not None:
+        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
+        params.extend((annotation_schema_prefix, annotation_schema_prefix))
+    if annotation_schema_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') = ?")
+        params.append(annotation_schema_qualified_id)
+    if annotation_schema_excluded_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') != ?")
+        params.append(annotation_schema_excluded_qualified_id)
+    if annotation_target_kind is not None:
+        target_prefix = f"{annotation_target_kind}:"
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend((target_prefix, target_prefix))
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY updated_at_ms DESC, assertion_id"
+    if limit is not None and limit >= 0 and context_inject is None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend((limit, max(offset, 0)))
 
     rows = conn.execute(sql, tuple(params)).fetchall()
     claims = [_assertion_row_to_envelope(row) for row in rows]
     if context_inject is not None:
         claims = [claim for claim in claims if bool(claim.context_policy.get("inject")) is context_inject]
-    if limit is not None and limit >= 0:
-        return claims[:limit]
+    if context_inject is not None:
+        start = max(offset, 0)
+        if limit is not None and limit >= 0:
+            return claims[start : start + limit]
+        return claims[start:]
     return claims
+
+
+def count_assertion_claims(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind],
+    statuses: Sequence[str | AssertionStatus],
+    annotation_schema_prefix: str | None = None,
+    annotation_schema_qualified_id: str | None = None,
+    annotation_schema_excluded_qualified_id: str | None = None,
+    annotation_target_kind: str | None = None,
+) -> int:
+    """Count a typed assertion selection without materializing claim rows."""
+
+    if not _table_exists(conn, "assertions") or not kinds or not statuses:
+        return 0
+    normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
+    normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
+    kind_placeholders = ", ".join("?" for _ in normalized_kinds)
+    status_placeholders = ", ".join("?" for _ in normalized_statuses)
+    where = [
+        f"kind IN ({kind_placeholders})",
+        f"COALESCE(status, ?) IN ({status_placeholders})",
+    ]
+    params: list[object] = [*normalized_kinds, ASSERTION_DEFAULT_STATUS.value, *normalized_statuses]
+    if annotation_schema_prefix is not None:
+        where.append("substr(json_extract(value_json, '$._schema'), 1, length(?)) = ?")
+        params.extend((annotation_schema_prefix, annotation_schema_prefix))
+    if annotation_schema_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') = ?")
+        params.append(annotation_schema_qualified_id)
+    if annotation_schema_excluded_qualified_id is not None:
+        where.append("json_extract(value_json, '$._schema') != ?")
+        params.append(annotation_schema_excluded_qualified_id)
+    if annotation_target_kind is not None:
+        target_prefix = f"{annotation_target_kind}:"
+        where.append("substr(target_ref, 1, length(?)) = ?")
+        params.extend((target_prefix, target_prefix))
+    row = conn.execute(f"SELECT count(*) FROM assertions WHERE {' AND '.join(where)}", tuple(params)).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
+    "ASSERTION_CANDIDATE_JUDGMENT_KINDS",
     "ASSERTION_CANDIDATE_REVIEW_STATUSES",
     "ASSERTION_DEFAULT_AUTHOR_KIND",
     "ASSERTION_DEFAULT_AUTHOR_REF",
@@ -1669,6 +2238,9 @@ __all__ = [
     "ASSERTION_DEFAULT_VISIBILITY",
     "ArchiveAnnotationEnvelope",
     "ArchiveAssertionEnvelope",
+    "ArchiveAssertionBulkJudgmentEnvelope",
+    "ArchiveAssertionBulkJudgmentItemEnvelope",
+    "ArchiveAssertionBulkJudgmentResultEnvelope",
     "ArchiveAssertionCandidateReviewEnvelope",
     "ArchiveAssertionJudgmentEnvelope",
     "ArchiveBlackboardNoteEnvelope",
@@ -1678,6 +2250,7 @@ __all__ = [
     "ArchiveRecallPackEnvelope",
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
+    "FindingAssertion",
     "AssertionKind",
     "AssertionStatus",
     "AssertionVisibility",
@@ -1686,6 +2259,7 @@ __all__ = [
     "assertion_id_for_blackboard_note",
     "assertion_id_for_candidate_judgment",
     "assertion_id_for_correction",
+    "assertion_id_for_finding",
     "assertion_id_for_mark",
     "assertion_id_for_promoted_candidate",
     "assertion_id_for_session_metadata",
@@ -1697,7 +2271,9 @@ __all__ = [
     "assertion_id_for_transform_candidate",
     "assertion_id_for_workspace",
     "correction_id_for",
+    "count_assertion_claims",
     "judge_assertion_candidate",
+    "judge_assertion_candidates",
     "list_archive_blackboard_note_envelopes",
     "list_assertion_candidates",
     "list_assertion_candidate_reviews",
@@ -1715,10 +2291,12 @@ __all__ = [
     "read_archive_suppression_envelope",
     "read_archive_workspace_envelope",
     "read_assertion_envelope",
+    "read_latest_candidate_judgment",
     "upsert_annotation",
     "upsert_assertion",
     "upsert_blackboard_note",
     "upsert_correction",
+    "upsert_findings_as_assertions",
     "upsert_mark",
     "upsert_recall_pack",
     "upsert_saved_view",

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TypeAlias
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.field_stats.stats import _collect_field_stats
+from polylogue.schemas.generation.dynamic_keys import (
+    dynamic_object_paths,
+    merge_observed_structure_schemas,
+    observed_structure_schema,
+)
 from polylogue.schemas.generation.support import (
     GENSON_AVAILABLE,
     SchemaBuilder,
@@ -21,35 +26,31 @@ from polylogue.schemas.observation import ProviderConfig
 from polylogue.schemas.pinning import load_pins
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.redaction_report import SchemaReport
-from polylogue.schemas.shape_fingerprint import _structure_fingerprint
 
 SchemaInput: TypeAlias = Mapping[str, object]
 SchemaPayload: TypeAlias = JSONDocument
 
 
-def _load_pins_safe(provider: str) -> dict[str, set[str]]:
-    try:
-        pins = load_pins(provider)
-        rejected: dict[str, set[str]] = {}
-        for pin in pins.pins:
-            if pin.action == "reject":
-                rejected.setdefault(pin.path, set()).add(pin.role)
-        return rejected
-    except Exception:
-        return {}
+def _load_rejected_pins(provider: str) -> dict[str, set[str]]:
+    # load_pins already degrades loudly (missing file -> empty PinSet, corrupt
+    # file -> logged warning + empty PinSet); swallowing anything beyond that
+    # would silently drop operator rejection decisions from generated schemas.
+    pins = load_pins(provider)
+    rejected: dict[str, set[str]] = {}
+    for pin in pins.pins:
+        if pin.action == "reject":
+            rejected.setdefault(pin.path, set()).add(pin.role)
+    return rejected
 
 
 MutableSchemaPayload: TypeAlias = JSONDocument
 
 
-_STRUCTURE_EXEMPLARS_PER_FINGERPRINT = 8
-
-
 def _generate_cluster_schema(
     provider: str,
     config: ProviderConfig,
-    samples: Sequence[SchemaInput],
-    conv_ids: Sequence[str | None],
+    samples: Collection[SchemaInput],
+    conv_ids: Collection[str | None],
     *,
     privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
@@ -58,26 +59,22 @@ def _generate_cluster_schema(
     if not samples:
         return {"type": "object", "description": "No samples available"}, None
 
-    builder = SchemaBuilder()
-    fingerprint_counts: dict[object, int] = {}
-    exemplar_cap = None if full_corpus else _STRUCTURE_EXEMPLARS_PER_FINGERPRINT
-    for sample in samples:
-        fingerprint = _structure_fingerprint(sample)
-        seen = fingerprint_counts.get(fingerprint, 0)
-        if exemplar_cap is None or seen < exemplar_cap:
-            builder.add_object(dict(sample))
-            fingerprint_counts[fingerprint] = seen + 1
-
-    schema = collapse_dynamic_keys(json_document(builder.to_schema()))
+    del full_corpus
+    schema = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in samples)
+    schema = collapse_dynamic_keys(schema)
     schema = _remove_nested_required(schema)
     if config.sample_granularity == "record":
         schema.pop("required", None)
 
-    conv_ids_for_stats: Sequence[str | None] | None = (
+    conv_ids_for_stats: Collection[str | None] | None = (
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
-    field_stats = _collect_field_stats(samples, session_ids=conv_ids_for_stats)
-    pins = _load_pins_safe(provider)
+    field_stats = _collect_field_stats(
+        samples,
+        session_ids=conv_ids_for_stats,
+        dynamic_paths=dynamic_object_paths(schema),
+    )
+    pins = _load_rejected_pins(provider)
     schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema = _annotate_schema(
         schema,
@@ -111,7 +108,7 @@ def _apply_schema_metadata(
     schema["description"] = config.description
     schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
     schema["x-polylogue-sample-count"] = schema_sample_count
-    schema["x-polylogue-generator"] = "po lylogue.schemas.operator.schema_inference"
+    schema["x-polylogue-generator"] = "polylogue.schemas.operator.schema_inference"
     schema["x-polylogue-sample-granularity"] = config.sample_granularity
     schema["x-polylogue-anchor-profile-family-id"] = anchor_profile_family_id
     schema["x-polylogue-observed-artifact-count"] = observed_artifact_count
@@ -154,7 +151,7 @@ def generate_schema_from_samples(
 
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats)
-        pins = _load_pins_safe(provider) if provider else {}
+        pins = _load_rejected_pins(provider) if provider else {}
         schema = _annotate_semantic_and_relational(schema, field_stats, pins=pins)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"

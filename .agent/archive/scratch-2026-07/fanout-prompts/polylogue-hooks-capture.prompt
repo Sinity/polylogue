@@ -1,0 +1,42 @@
+You are lane polylogue-hooks-capture of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-hooks-capture. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Comprehensive hook-event capture for Claude Code, Codex, and Hermes (epic-shaped bead — read notes for the staged plan; ship the Claude Code + Codex stages, leave Hermes for the hermes-wedge lane's spool work if absent). Durable local spool, receiver-ack semantics per the browser-capture pattern.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-qqyg [open]: Comprehensive hook-event capture: Claude Code, Codex, and (if present) Hermes
+
+FILE OWNERSHIP
+OWN (you may modify): polylogue/sources/hooks*; polylogue/sources/live/; tests/unit/sources/hooks/
+AVOID (another lane owns these; do not touch): polylogue/sources/parsers/hermes_state.py; browser-extension/
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools test tests/unit/sources -k hook
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

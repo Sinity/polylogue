@@ -86,6 +86,7 @@ class _LazyGroup(_LazyCommand, click.Group):
 
 _SHORT_HELP: dict[str, str] = {
     "agents": "Inspect agent coordination state.",
+    "annotations": "Import typed annotation batches.",
     "auth": "Authenticate optional external services.",
     "backup": "Create a timestamped durability-tier backup.",
     "check": "Run archive health checks and repairs.",
@@ -96,15 +97,19 @@ _SHORT_HELP: dict[str, str] = {
     "debt": "List archive work that needs operator attention.",
     "diagnostics": "Run archive and session diagnostics.",
     "embed": "Enable, preflight, and backfill the embedding pipeline.",
+    "excise": "Excise a session: durable cross-tier removal (polylogue-27m).",
     "facets": "Show global or scoped archive facet families.",
     "import_command": "Import sessions from configured sources.",
     "hooks": "Install and monitor harness capture hooks.",
     "init": "Detect chat sources and write a starter polylogue.toml.",
     "insights": "Check and export derived insight materialization.",
+    "judge": "Interactively triage candidate assertions.",
     "maintenance": "Preview and run maintenance backfill operations.",
+    "note": "Capture a terminal memory candidate.",
     "ops": "Run operational archive and daemon commands.",
     "paths": "Print canonical archive paths and bind-mount detection.",
     "reset": "Reset local archive state.",
+    "scan_secrets": "Scan a session for credential-shaped content (polylogue-27m).",
     "status": "Show daemon and archive status.",
     "tutorial": "Inspect first-run setup state.",
 }
@@ -116,6 +121,7 @@ _COMMAND_NAMES: dict[str, str] = {
 
 _GROUP_ATTRS: dict[str, str] = {
     "agents": "agents_command",
+    "annotations": "annotations_command",
     "config": "config_command",
     "debt": "debt_command",
     "demo": "demo_command",
@@ -129,6 +135,7 @@ _GROUP_ATTRS: dict[str, str] = {
 
 _COMMAND_ATTRS: dict[str, str] = {
     "import_command": "import_command",
+    "judge": "judge_command",
 }
 
 
@@ -149,6 +156,7 @@ def _L(name: str) -> _LazyCommand:  # noqa: N802
 
 ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("agents"),
+    _L("annotations"),
     _L("config"),
     _L("dashboard"),
     _L("demo"),
@@ -156,6 +164,8 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("hooks"),
     _L("import_command"),
     _L("init"),
+    _L("judge"),
+    _L("note"),
     _L("ops"),
     _L("status"),
     _L("tutorial"),
@@ -168,9 +178,11 @@ OPS_COMMANDS: tuple[click.Command, ...] = (
     _L("debt"),
     _L("diagnostics"),
     _L("embed"),
+    _L("excise"),
     _L("insights"),
     _L("maintenance"),
     _L("reset"),
+    _L("scan_secrets"),
     _L("status"),
 )
 

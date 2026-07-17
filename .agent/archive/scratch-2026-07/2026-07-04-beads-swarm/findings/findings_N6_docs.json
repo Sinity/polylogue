@@ -1,0 +1,76 @@
+{
+  "domain": "docs",
+  "summary": "The docs-IA structure IS bead-tracked and well-specified (polylogue-ttu = tiered index + orphan sweep + stale triage; execution-grade with design+acceptance), and docs/doctrine/ is owned by cpf. But the biggest coherence failure is untracked: durable-tier additive migrations SHIPPED (polylogue/storage/sqlite/migrations/{source/002,user/004}.sql + migration_runner.py, 'Versioned additive migrations for durable archive tiers'), yet architecture-spine.md and the tail of internals.md still assert blanket 'fresh-first, no in-place upgrade chains / Alembic rejected / durable tier changes require rebuild/reset' with no owning bead to reconcile them. execution-plan.md is fully superseded (built entirely around the dropped #1807 umbrella and GH issues now re-encoded as beads) and its retirement is untracked; worse, ttu's tiering plan would re-file it as a live decisions+plans doc rather than retire it.",
+  "underspecified": [
+    {
+      "id": "polylogue-9e5.13",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Enumerate the concrete doc-vs-code contradictions and correct them in one surgical PR. Named targets: (a) architecture-spine.md §'Schema versioning: fresh-first, no in-place upgrade chains' + its Rejected='Alembic/in-place upgrade chains' block — rewrite to the shipped two-regime model (durable tiers source.db/user.db use numbered additive migrations under storage/sqlite/migrations/{source,user}/ behind a backup-manifest gate; derived tiers rebuild/blue-green from source); (b) internals.md lines 277-289, which contradict internals.md's own top-of-section two-regime text — 'durable tier changes still require a version bump and rebuild/reset path' is false since migration_runner.py exists; (c) 'idempotent by content hash' phrasing vs the identity-hash fallback history; (d) stale pathology docstring; (e) blob_links naming (it is a historical alias for the artifact_observations row-group view). Grep each phrase, confirm against live code, fix in place.",
+      "proposed_acceptance": "grep -rn 'no in-place upgrade\\|Alembic\\|require a version bump and rebuild/reset' docs/ returns only accurate two-regime statements; architecture-spine.md and internals.md agree with CONTRIBUTING.md §'Schema-Touching Changes' and with the presence of migrations/{source,user}/*.sql; the four other named drifts (content-hash phrasing, pathology docstring, blob_links) are corrected; single docs-correction PR merged; render all --check green.",
+      "why": "9e5.13 ('Doc-vs-code drift diff -> one docs-correction PR') is the natural owner for the spine/internals schema-versioning contradiction but has empty design+acceptance and does not name the schema-versioning drift — the single most load-bearing doc-vs-code contradiction currently in the tree. Deep-P3 beads need not be execution-grade, but this one gates a shipped-feature contradiction and should name it explicitly."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Reconcile schema-versioning doctrine docs with shipped durable-tier additive migrations",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-cpf",
+      "why": "Durable-tier additive migrations shipped (polylogue/storage/sqlite/migrations/source/002_raw_capture_multimap.sql, user/004_user_settings.sql, migration_runner.py docstring 'Versioned additive migrations for durable archive tiers', backup-manifest gate at migration_runner.py:73-106). architecture-spine.md §'Major Decisions' still lists in-place upgrade chains as Rejected and internals.md:284-289 says 'durable tier changes still require a version bump and rebuild/reset path'. No bead owns this reconciliation: cpf only 'links from architecture-spine', and polylogue-b5l (blue-green) explicitly affirms the fresh-first correctness half and edits internals.md only for the operational/derived-index downtime story — it does not touch the durable-tier additive-migration contradiction.",
+      "design": "Rewrite architecture-spine.md §'Schema versioning' from the absolute 'fresh-first, no in-place upgrade chains' into the two-regime decision it now is: durable tiers (source/user) = numbered additive migrations one user_version step at a time behind a verified backup manifest; derived tiers (index/embeddings) = rebuild or blue-green replace from source; ops.db = narrow ALTER carve-out. Fix internals.md:277-289 to match its own top-of-section text. This can be folded into 9e5.13's PR if that bead is scoped first; keep it under cpf if the doctrine-landing pass owns architecture-spine edits.",
+      "acceptance": "architecture-spine.md and internals.md describe the same two-regime model as CONTRIBUTING.md and docs/architecture.md; no doc asserts 'no in-place upgrade chains' as an unqualified rule; a reader following the spine to migration_runner.py finds no contradiction.",
+      "deps": ["polylogue-9e5.13"]
+    },
+    {
+      "proposed_title": "Retire docs/execution-plan.md (superseded by the beads backlog)",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-3tl",
+      "why": "execution-plan.md is organized entirely around the DROPPED #1807 umbrella ('the active public backlog is a residual map around #1807') and lists #2006/#1844/#1883/#2177/#2196/#2246/#2248/#2304/#2307/#2308/#2309/#2316/#2317 as active lanes — all GH issues now re-encoded as beads (or folded, per the shared brief). It is a stranger's second-most-prominent planning doc (README.md:14 calls it 'Current issue-driven sequencing plan') yet describes an abandoned coordination frame. External legibility (3tl) is directly harmed by a superseded 'current plan' at the top of the index.",
+      "design": "git mv docs/execution-plan.md docs/archive/execution-plan.md with a banner pointing at the beads backlog (bd) as the live sequencing source, OR delete it and remove the README.md:14 row; update README.md docs index and any pages nav. Confirm no code/docs deep-links (grep 'execution-plan' across docs/ + polylogue/ + devtools/). Note: coordinate with ttu — ttu's tiering design currently mislists execution-plan.md under a live 'decisions+plans' tier.",
+      "acceptance": "docs/execution-plan.md no longer presents as a current plan (archived-with-banner or removed); README.md docs index has no live link to it; grep 'execution-plan' returns no dangling references; render all --check green.",
+      "deps": []
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-b5l",
+      "kind": "stale-doc",
+      "evidence": "architecture-spine.md:34-37 §'Schema versioning: fresh-first, no in-place upgrade chains' — 'Chosen: SCHEMA_VERSION constant is the authority. Mismatch = rejected.' 'Rejected: Alembic/in-place upgrade chains'. This contradicts shipped code: polylogue/storage/sqlite/migrations/source/002_raw_capture_multimap.sql, migrations/user/004_user_settings.sql, and migration_runner.py:1 'Versioned additive migrations for durable archive tiers' with a backup-manifest gate. The spine's Major Decisions block has no durable-additive carve-out. b5l edits internals.md but only for the operational blue-green/derived-index story and explicitly affirms 'no in-place migration chains' as the correctness half — so no bead reconciles the spine's durable-tier contradiction.",
+      "fix": "This is a stale-doc contradiction, not a b5l scope item; track the fix under the new gap (parent cpf) or expanded 9e5.13. Rewrite architecture-spine.md §Schema-versioning to the two-regime model."
+    },
+    {
+      "id": "docs/internals.md",
+      "kind": "stale-doc",
+      "evidence": "internals.md:284-289 'The only compatibility carve-out is ops.db ... That exception is not a migration pattern for source.db, index.db, embeddings.db, or user.db; durable tier changes still require a version bump and rebuild/reset path.' directly contradicts internals.md's own top-of-§'Schema Versioning Model' ('Durable tiers (source.db and user.db) may use explicit additive migrations ... live under polylogue/storage/sqlite/migrations/{source,user}/') and the shipped migration_runner.py. The file is internally inconsistent because the older tail was not reconciled when the two-regime top was added.",
+      "fix": "Delete/rewrite internals.md:277-289 to state the durable-tier additive-migration path as the carve-out (not only ops.db); align with the top of the same section."
+    },
+    {
+      "id": "docs/execution-plan.md",
+      "kind": "stale-doc",
+      "evidence": "execution-plan.md:9-13 'the active public backlog is a residual map around #1807 rather than a single linear implementation queue' and the whole table keys off #1807 + GH issue numbers that are now re-encoded as beads. Shared brief: 'gh-1807 umbrella was DROPPED (doctrine lives in docs)'. README.md:14 still advertises it as 'Current issue-driven sequencing plan for the remaining backlog.' No bead tracks its retirement.",
+      "fix": "See the 3tl-parented retirement gap above; also remove/repoint README.md:14."
+    },
+    {
+      "id": "polylogue-ttu",
+      "kind": "scope-conflict",
+      "evidence": "ttu design step (1) tiers the tree into 'decisions+plans (spine, execution-plan, plans/*)' — i.e. it plans to re-file docs/execution-plan.md as a LIVE decisions+plans doc. But execution-plan.md is fully superseded (built around dropped #1807). ttu would preserve a stale doc under a current-authority tier; its own step (3) stale-triage should instead route it to docs/archive/.",
+      "fix": "Add to ttu's stale-triage list: execution-plan.md is superseded, archive it rather than filing under decisions+plans. Better: retire it before ttu runs (the 3tl gap), so ttu's tiering starts from a clean set."
+    },
+    {
+      "id": "docs/maintenance.md",
+      "kind": "stale-doc",
+      "evidence": "maintenance.md:368-389 SchemaVersionError recovery runbook: 'Polylogue uses fresh-first schema versioning, not in-place upgrade chains ... There is no reverse in-place upgrade ... Decide: roll the code back, or rebuild the changed tier forward. There is no third option'. For durable tiers (source/user) there now IS a third option — the additive-migration path with a backup manifest (migration_runner.py). The runbook omits it, so an operator hitting a durable-tier version bump is told to rebuild/rollback when a migration exists.",
+      "fix": "Add a durable-tier branch to the SchemaVersionError runbook: if the mismatch is on source.db/user.db and a numbered migration exists, run the backup-manifest-gated migration instead of rebuild/rollback. Lower-confidence than spine/internals — maintenance.md may be intentionally derived-tier-focused; verify against current migration UX before editing."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-cpf",
+      "issue": "priority-violation",
+      "detail": "cpf (P2, 'Land the six doctrines') design says 'Commit texts under docs/doctrine/ (or internals sections — match the ttu docs-IA tiering)', i.e. it soft-depends on ttu's tiering decision — but ttu is P3. A P2 doctrine-landing bead whose file placement is gated on a P3 IA bead either stalls or forces a placement guess that ttu later moves.",
+      "proposed": "Either add an explicit cpf->ttu dependency (and lift ttu toward P2 so the tiering exists before doctrines land), OR decouple: let cpf commit doctrines to docs/doctrine/ unconditionally and let ttu re-file them later like any other doc. Decoupling is cheaper and keeps cpf unblocked."
+    }
+  ],
+  "reorg": []
+}

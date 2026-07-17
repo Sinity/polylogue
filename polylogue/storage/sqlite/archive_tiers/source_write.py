@@ -12,10 +12,84 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from polylogue.archive.revision_authority import RawRevisionEnvelope
-from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.table_existence import table_exists as _table_exists
+
+
+class ContentExcisedError(RuntimeError):
+    """Raised when acquire attempts to re-store a durably excised blob.
+
+    The archive can forget on purpose (polylogue-27m): once a blob hash is
+    recorded in ``excised_content``, ordinary re-ingest of unmodified source
+    bytes must not resurrect it, even across an ``index.db`` rebuild. There
+    are two acquire-time raw-session write functions that gate on this --
+    ``write_source_raw_session`` (payload held in memory; used by the CLI
+    import path via ``ArchiveStore.write_raw_and_parsed_result`` /
+    ``pipeline.services.archive_ingest.parse_sources_archive``) and
+    ``write_source_raw_session_blob_ref`` (payload already published as a
+    blob, not held in memory; used by the daemon's memory-bounded streaming
+    path for multi-GiB files -- ``ArchiveStore.write_raw_blob_ref`` /
+    ``sources.live.batch.LiveBatchProcessor._ingest_full_records_archive``).
+    Both must gate identically or the blob-ref route silently resurrects
+    excised content that arrives via the streaming path (polylogue-27m fix
+    round). Callers at the batch orchestration layer catch this and skip the
+    one file (count it, continue the batch) rather than aborting the whole
+    run.
+    """
+
+    def __init__(self, *, blob_hash: bytes, source_path: str) -> None:
+        self.blob_hash = blob_hash
+        self.source_path = source_path
+        super().__init__(
+            f"content at {source_path!r} (blob_hash={blob_hash.hex()}) was durably excised; refusing to re-acquire"
+        )
+
+
+def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
+    """Return ``True`` if ``blob_hash`` is recorded in the durable excision ledger.
+
+    A cheap primary-key lookup; a no-op fast path when the table does not
+    exist (an archive whose ``source.db`` predates migration 010) or is
+    empty (the overwhelming common case -- excision is rare).
+    """
+    if not _table_exists(conn, "excised_content"):
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
+        (blob_hash,),
+    ).fetchone()
+    return row is not None
+
+
+def record_excised_blob_hash(
+    conn: sqlite3.Connection,
+    *,
+    blob_hash: bytes,
+    reason: str,
+    actor: str,
+    prior_revision: str | None = None,
+    span: tuple[int, int] | None = None,
+    excised_at_ms: int,
+) -> None:
+    """Idempotently record a durable removed-content marker.
+
+    ``INSERT ... ON CONFLICT DO NOTHING``: re-excising the same blob hash
+    (e.g. a retried apply) must not overwrite the original reason/actor/
+    timestamp of record.
+    """
+    span_start, span_end = span if span is not None else (None, None)
+    conn.execute(
+        """
+        INSERT INTO excised_content (
+            removed_hash, hash_kind, reason, actor, prior_revision, span_start, span_end, excised_at_ms
+        ) VALUES (?, 'blob_hash', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(removed_hash, hash_kind) DO NOTHING
+        """,
+        (blob_hash, reason, actor, prior_revision, span_start, span_end, excised_at_ms),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +183,7 @@ class ArchiveRawSessionEnvelope:
 
     raw_id: str
     origin: str
+    capture_mode: str | None
     native_id: str | None
     source_path: str
     source_index: int
@@ -171,6 +246,71 @@ def deterministic_history_sidecar_id(origin: Origin | str, source_path: str, con
     digest.update(b"\0")
     digest.update(content_hash)
     return digest.hexdigest()
+
+
+def _revision_values(revision: RawRevisionEnvelope) -> tuple[object, ...]:
+    return (
+        revision.logical_source_key,
+        revision.kind.value,
+        revision.source_revision,
+        revision.predecessor_source_revision,
+        revision.predecessor_raw_id,
+        revision.baseline_raw_id,
+        revision.append_start_offset,
+        revision.append_end_offset,
+        revision.acquisition_generation,
+        revision.authority.value,
+    )
+
+
+def _is_compatible_classification_refinement(
+    existing: tuple[object, ...],
+    revision: RawRevisionEnvelope,
+) -> bool:
+    """Accept retry of a provisional envelope already refined by classification."""
+    proposed = _revision_values(revision)
+    if revision.authority is not RawRevisionAuthority.QUARANTINED:
+        return False
+    if existing[9] != RawRevisionAuthority.BYTE_PROVEN.value:
+        return False
+    # Classification may fill the raw parent/baseline and generation, but it
+    # cannot change the acquired stream identity or its byte boundaries.
+    for index in (0, 1, 2, 3, 6, 7):
+        if existing[index] != proposed[index]:
+            return False
+    return all(proposed[index] is None or existing[index] == proposed[index] for index in (4, 5))
+
+
+def _assert_existing_raw_identity(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    origin: str,
+    native_id: str | None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    revision: RawRevisionEnvelope | None,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT origin, native_id, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"raw insert conflict lost its retained row: {raw_id}")
+    values = tuple(row)
+    if values[:6] != (origin, native_id, source_path, source_index, blob_hash, blob_size):
+        raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    if revision is not None and values[6:] != _revision_values(revision):
+        raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
 
 
 def apply_source_raw_state_update(
@@ -252,6 +392,7 @@ def write_source_raw_session(
     conn: sqlite3.Connection,
     *,
     origin: Origin | str,
+    capture_mode: Provider | str | None = None,
     source_path: str,
     source_index: int,
     payload: bytes,
@@ -284,7 +425,11 @@ def write_source_raw_session(
     """
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = _enum_value(origin)
+    if origin_value is None:
+        raise ValueError("origin is required for raw sessions")
     blob_hash = deterministic_blob_hash(payload)
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
@@ -295,20 +440,22 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        cursor = conn.execute(
             """
-            INSERT OR REPLACE INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash,
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
                 validation_mode, detection_warnings_json, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(raw_id) DO NOTHING
             """,
             (
                 resolved_raw_id,
                 origin_value,
+                _enum_value(capture_mode),
                 native_id,
                 source_path,
                 source_index,
@@ -336,6 +483,23 @@ def write_source_raw_session(
                 revision.authority.value if revision else "quarantined",
             ),
         )
+        if cursor.rowcount == 0:
+            if capture_mode is not None:
+                conn.execute(
+                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                    (_enum_value(capture_mode), resolved_raw_id),
+                )
+            _assert_existing_raw_identity(
+                conn,
+                raw_id=resolved_raw_id,
+                origin=origin_value,
+                native_id=native_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                revision=revision,
+            )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -373,6 +537,7 @@ def write_source_raw_session_blob_ref(
     conn: sqlite3.Connection,
     *,
     origin: Origin | str,
+    capture_mode: Provider | str | None = None,
     source_path: str,
     source_index: int,
     blob_hash: bytes,
@@ -393,6 +558,10 @@ def write_source_raw_session_blob_ref(
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = _enum_value(origin)
+    if origin_value is None:
+        raise ValueError("origin is required for raw sessions")
+    if is_blob_hash_excised(conn, blob_hash):
+        raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
         source_path,
@@ -401,18 +570,20 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        conn.execute(
+        cursor = conn.execute(
             """
-            INSERT OR REPLACE INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash,
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(raw_id) DO NOTHING
             """,
             (
                 resolved_raw_id,
                 origin_value,
+                _enum_value(capture_mode),
                 native_id,
                 source_path,
                 source_index,
@@ -431,6 +602,23 @@ def write_source_raw_session_blob_ref(
                 revision.authority.value if revision else "quarantined",
             ),
         )
+        if cursor.rowcount == 0:
+            if capture_mode is not None:
+                conn.execute(
+                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                    (_enum_value(capture_mode), resolved_raw_id),
+                )
+            _assert_existing_raw_identity(
+                conn,
+                raw_id=resolved_raw_id,
+                origin=origin_value,
+                native_id=native_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                revision=revision,
+            )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -468,36 +656,34 @@ def bind_source_raw_revision(conn: sqlite3.Connection, raw_id: str, revision: Ra
             SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
                 predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
                 append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
-            WHERE raw_id = ? AND revision_authority = 'quarantined'
+            WHERE raw_id = ?
+              AND revision_kind = 'unknown'
+              AND revision_authority = 'quarantined'
+              AND logical_source_key IS NULL
+              AND source_revision IS NULL
             """,
             (
-                revision.logical_source_key,
-                revision.kind.value,
-                revision.source_revision,
-                revision.predecessor_source_revision,
-                revision.predecessor_raw_id,
-                revision.baseline_raw_id,
-                revision.append_start_offset,
-                revision.append_end_offset,
-                revision.acquisition_generation,
-                revision.authority.value,
+                *_revision_values(revision),
                 raw_id,
             ),
         )
         if cursor.rowcount != 1:
             existing = conn.execute(
                 """
-                SELECT logical_source_key, revision_kind, source_revision
+                SELECT logical_source_key, revision_kind, source_revision,
+                       predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+                       append_start_offset, append_end_offset, acquisition_generation,
+                       revision_authority
                 FROM raw_sessions WHERE raw_id = ?
                 """,
                 (raw_id,),
             ).fetchone()
-            if existing == (
-                revision.logical_source_key,
-                revision.kind.value,
-                revision.source_revision,
-            ):
-                return
+            if existing is not None:
+                existing_values = tuple(existing)
+                if existing_values == _revision_values(revision) or _is_compatible_classification_refinement(
+                    existing_values, revision
+                ):
+                    return
             raise ValueError(f"raw revision is already authoritative or missing: {raw_id}")
 
 
@@ -507,7 +693,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     row = conn.execute(
         """
         SELECT
-            raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+            raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash, blob_size,
             acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error, validated_at_ms,
             validation_status, validation_error, validation_drift_count, validation_mode,
             detection_warnings_json
@@ -575,6 +761,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     return ArchiveRawSessionEnvelope(
         raw_id=row["raw_id"],
         origin=row["origin"],
+        capture_mode=row["capture_mode"],
         native_id=row["native_id"],
         source_path=row["source_path"],
         source_index=row["source_index"],
@@ -860,15 +1047,18 @@ __all__ = [
     "ArchiveRawSessionEnvelope",
     "ArchiveSourceArtifact",
     "ArchiveSourceBlobRef",
+    "ContentExcisedError",
     "deterministic_blob_hash",
     "deterministic_history_sidecar_id",
     "deterministic_raw_session_id",
+    "is_blob_hash_excised",
     "list_hook_events",
     "list_raw_artifacts",
     "read_history_sidecar",
     "read_hook_event",
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
+    "record_excised_blob_hash",
     "write_history_sidecar",
     "write_source_raw_session",
     "write_source_raw_session_blob_ref",

@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -52,6 +54,45 @@ def _bundle(*sessions: dict[str, object]) -> bytes:
     return json.dumps(list(sessions), sort_keys=True).encode()
 
 
+def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:
+    """Replay must retain the same workspace-scoped native ID as ingest."""
+    source_path = tmp_path / "workspace" / ".beads" / "interactions.jsonl"
+    payload = (
+        b'{"id":"event-1","kind":"closed","created_at":"2026-07-12T00:00:00Z",'
+        b'"issue_id":"polylogue-7fj","actor":"agent","extra":{}}\n'
+    )
+
+    sessions = _parse_one(Provider.BEADS, payload, str(source_path))
+
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id.startswith("polylogue-7fj@workspace-")
+    assert sessions[0].working_directories == [str(source_path.parent.parent.resolve())]
+
+
+def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"streamed"}}\n'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="streamed.jsonl",
+            acquired_at_ms=1,
+        )
+    monkeypatch.setattr(
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: pytest.fail("stream-safe revision replay must not eagerly read a blob"),
+    )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+
+    assert result.scanned == 1
+    assert result.replayed_logical_sources == 1
+
+
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     baseline = (
@@ -90,6 +131,16 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
     assert result.classified_full == 2
     assert result.replayed_logical_sources == 1
     assert result.quarantined == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parser_census = conn.execute(
+            """
+            SELECT status, COUNT(*)
+            FROM raw_authority_parser_census
+            WHERE parser_fingerprint = 'revision-membership-v1'
+            GROUP BY status ORDER BY status
+            """
+        ).fetchall()
+    assert parser_census == [("complete", 2), ("failed", 1)]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
 
@@ -143,6 +194,45 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
         )
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
+
+
+def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path: Path) -> None:
+    """A newly parsed path must not split an already-known byte cohort."""
+    initialize_active_archive_root(tmp_path)
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"shared","timestamp":"2026-07-15T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"old"}]}}\n'
+    )
+    newest = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","role":"assistant","content":'
+        b'[{"type":"output_text","text":"new"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        old_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path="first/shared.jsonl",
+            acquired_at_ms=1,
+        )
+    assert backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[old_raw_id]).replayed_logical_sources == 1
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        new_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=newest,
+            source_path="moved/shared.jsonl",
+            acquired_at_ms=2,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[new_raw_id])
+
+    assert result.scanned == 2
+    assert result.replayed_logical_sources == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id, message_count, raw_id FROM sessions").fetchall() == [
+            ("shared", 2, new_raw_id)
+        ]
 
 
 def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
@@ -402,7 +492,7 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     original_parse = revision_backfill._parse_retained_raw
     opened: list[str] = []
 
-    def observed_parse(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+    def observed_parse(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
         opened.append(raw_id)
         return original_parse(archive, raw_id)
 

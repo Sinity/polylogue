@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -16,16 +17,21 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.browser_capture.models import (
+    BROWSER_CAPTURE_API_SCHEMA,
     BrowserCaptureAcceptedPayload,
     BrowserCaptureArchiveStatePayload,
+    BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
     BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.browser_capture.receiver import (
+    BrowserCaptureReceiverConfig,
     capture_artifact_path,
     capture_artifact_ref,
     existing_capture_state,
+    receiver_identity,
+    receiver_status_payload,
     write_capture_envelope,
 )
 from polylogue.browser_capture.route_contracts import (
@@ -48,6 +54,7 @@ def _payload(provider: str = "chatgpt", session_id: str = "conv-123") -> dict[st
             "page_title": "ChatGPT - Work plan",
             "captured_at": "2026-04-24T00:00:00+00:00",
             "adapter_name": "chatgpt-dom-v1",
+            "extension_instance_id": "test-extension-instance",
         },
         "session": {
             "provider": provider,
@@ -135,12 +142,12 @@ def _seed_browser_capture_archive(
 
 
 def _request(
-    host: str, port: int, method: str, path: str, *, body: object | str | None = None, origin: str
+    host: str, port: int, method: str, path: str, *, body: object | str | bytes | None = None, origin: str
 ) -> HTTPResponse:
     conn = HTTPConnection(host, port)
     headers = {"Origin": origin}
-    payload: str | None
-    if isinstance(body, str):
+    payload: str | bytes | None
+    if isinstance(body, (bytes, str)):
         payload = body
         headers["Content-Type"] = "application/json"
     elif body is not None:
@@ -285,6 +292,60 @@ def test_existing_capture_state_reports_written_artifact(tmp_path: Path) -> None
     assert Path(typed.artifact_ref).is_absolute() is False
 
 
+def test_receiver_identity_is_stable_across_restarts_and_hides_pairing_secret(tmp_path: Path) -> None:
+    token = "pairing-secret-that-must-never-leak"
+    first = BrowserCaptureReceiverConfig(spool_path=tmp_path / "spool", auth_token=token)
+    restarted = BrowserCaptureReceiverConfig(spool_path=tmp_path / "moved-spool", auth_token=token)
+
+    first_id = receiver_identity(first)
+    restarted_id = receiver_identity(restarted)
+
+    assert first_id == restarted_id
+    assert first_id.startswith("rx-")
+    assert len(first_id) == 23
+    assert token not in first_id
+    assert str(first.spool_path) not in first_id
+
+
+def test_receiver_identity_changes_on_token_rotation(tmp_path: Path) -> None:
+    before = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-before-rotation")
+    after = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="token-after-rotation")
+
+    assert receiver_identity(before) != receiver_identity(after)
+
+
+def test_no_auth_receiver_identity_is_stable_per_resolved_spool(tmp_path: Path) -> None:
+    first = BrowserCaptureReceiverConfig(spool_path=tmp_path / "same" / ".." / "spool")
+    same_resolved_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "spool")
+    different_spool = BrowserCaptureReceiverConfig(spool_path=tmp_path / "other")
+
+    assert receiver_identity(first) == receiver_identity(same_resolved_spool)
+    assert receiver_identity(first) != receiver_identity(different_spool)
+
+
+def test_receiver_status_payload_advertises_versioned_stable_identity(tmp_path: Path) -> None:
+    config = BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token="stable-pairing-token")
+
+    payload = receiver_status_payload(config)
+    typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
+
+    assert typed.api_schema == BROWSER_CAPTURE_API_SCHEMA
+    assert typed.receiver_id == receiver_identity(config)
+    assert typed.auth_required is True
+    assert "stable-pairing-token" not in json.dumps(payload)
+
+
+def test_receiver_status_route_exposes_pairing_contract(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "GET", "/v1/status", origin=_EXTENSION_ORIGIN)
+        payload = json.loads(response.read())
+
+    typed = BrowserCaptureReceiverStatusPayload.model_validate(payload)
+    assert response.status == HTTPStatus.OK
+    assert typed.api_schema == BROWSER_CAPTURE_API_SCHEMA
+    assert typed.receiver_id.startswith("rx-")
+
+
 def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:
     runner = CliRunner()
 
@@ -379,10 +440,49 @@ def test_browser_capture_serve_allow_no_auth_env_var_matches_the_flag(cli_worksp
     assert flag_token is None
 
 
+@pytest.mark.parametrize(
+    ("auth_args", "expected_token"),
+    [(["--auth-token", "explicit-token"], "explicit-token"), (["--allow-no-auth"], None)],
+)
+def test_browser_action_uses_the_selected_receiver_auth_identity(
+    tmp_path: Path,
+    auth_args: list[str],
+    expected_token: str | None,
+) -> None:
+    result = CliRunner().invoke(
+        daemon_cli,
+        [
+            "browser-capture",
+            "action",
+            "--provider",
+            "chatgpt",
+            "--text",
+            "harmless draft",
+            "--model-slug",
+            "gpt-5-6-pro",
+            "--model-label",
+            "GPT-5.6 Sol",
+            "--effort-label",
+            "Pro",
+            "--spool",
+            str(tmp_path),
+            "--format",
+            "json",
+            *auth_args,
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    expected = receiver_identity(BrowserCaptureReceiverConfig(spool_path=tmp_path, auth_token=expected_token))
+    assert payload["receiver_id"] == expected
+
+
 def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
     concrete_routes = {(contract.method, contract.pattern) for contract in BROWSER_CAPTURE_ROUTE_CONTRACTS}
 
     assert ("GET", "/v1/status") in concrete_routes
+    assert ("GET", "/v1/browser-captures/capabilities") in concrete_routes
     assert ("GET", "/v1/archive-state") in concrete_routes
     assert ("POST", "/v1/browser-captures") in concrete_routes
     assert browser_capture_route_contract_for("POST", "/v1/browser-captures") is not None
@@ -396,6 +496,16 @@ def test_receiver_rejects_web_origins_by_default(tmp_path: Path) -> None:
     assert response.status == HTTPStatus.FORBIDDEN
     assert response.getheader("X-Request-ID")
     assert error.error == "origin_not_allowed"
+
+
+def test_receiver_declares_durable_browser_backfill_ack_contract(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "GET", "/v1/browser-captures/capabilities", origin=_EXTENSION_ORIGIN)
+        body = BrowserCaptureCapabilitiesPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.OK
+    assert response.getheader("X-Request-ID")
+    assert body.durable_ack_fields == ("receiver_request_id", "content_hash")
 
 
 def test_receiver_rejects_extra_web_origin_without_token(tmp_path: Path) -> None:
@@ -423,8 +533,54 @@ def test_receiver_accepts_extension_capture_and_reports_typed_dto(tmp_path: Path
     assert body.schema_version == 1
     assert body.capture_id == "chatgpt:conv-123"
     assert body.artifact_ref == capture_artifact_ref(BrowserCaptureEnvelope.model_validate(_payload()), tmp_path)
+    request_body = json.dumps(_payload()).encode()
+    assert body.content_hash == hashlib.sha256(request_body).hexdigest()
     assert Path(body.artifact_ref).is_absolute() is False
     assert (tmp_path / body.artifact_ref).exists()
+
+
+def test_receiver_rejects_capture_without_extension_instance_id(tmp_path: Path) -> None:
+    payload = _payload()
+    cast(dict[str, object], payload["provenance"]).pop("extension_instance_id")
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=payload,
+            origin=_EXTENSION_ORIGIN,
+        )
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert error.error == "missing_extension_instance_id"
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_receiver_ack_hashes_exact_javascript_request_bytes(tmp_path: Path) -> None:
+    request_body = (
+        '{"polylogue_capture_kind":"browser_llm_session","schema_version":1,'
+        '"provenance":{"source_url":"https://chatgpt.com/c/conv-123",'
+        '"captured_at":"2026-04-24T00:00:00.000Z","adapter_name":"chatgpt-backfill-native-v1",'
+        '"extension_instance_id":"test-extension-instance"},'
+        '"session":{"provider":"chatgpt","provider_session_id":"conv-123",'
+        '"turns":[{"provider_turn_id":"u1","role":"user","text":"żółć 😀"}]},'
+        '"provider_meta":{"number":1.25,"nested":{"b":2,"a":1}}}'
+    ).encode()
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "POST",
+            "/v1/browser-captures",
+            body=request_body,
+            origin=_EXTENSION_ORIGIN,
+        )
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+
+    assert accepted.content_hash == hashlib.sha256(request_body).hexdigest()
 
 
 def test_receiver_returns_429_without_writing_when_spool_quota_exceeded(
@@ -672,6 +828,47 @@ def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path
     assert response.status == HTTPStatus.NO_CONTENT
     assert allow_headers is not None
     assert "X-Request-ID" in allow_headers
+
+
+def test_receiver_preflight_grants_private_network_access_when_requested(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "OPTIONS",
+            "/v1/browser-captures",
+            headers={
+                "Origin": _CHATGPT_ORIGIN,
+                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
+                "Access-Control-Request-Private-Network": "true",
+            },
+        )
+        response = conn.getresponse()
+        allow_private_network = response.getheader("Access-Control-Allow-Private-Network")
+        response.read()
+        conn.close()
+
+    assert response.status == HTTPStatus.NO_CONTENT
+    assert allow_private_network == "true"
+
+
+def test_receiver_preflight_omits_private_network_header_when_not_requested(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, auth_token="secret", extra_origins=(_CHATGPT_ORIGIN,)) as (host, port):
+        conn = HTTPConnection(host, port)
+        conn.request(
+            "OPTIONS",
+            "/v1/browser-captures",
+            headers={
+                "Origin": _CHATGPT_ORIGIN,
+                "Access-Control-Request-Headers": "authorization, content-type, x-request-id",
+            },
+        )
+        response = conn.getresponse()
+        allow_private_network = response.getheader("Access-Control-Allow-Private-Network")
+        response.read()
+        conn.close()
+
+    assert response.status == HTTPStatus.NO_CONTENT
+    assert allow_private_network is None
 
 
 def test_receiver_allows_extra_web_origin_only_with_token(tmp_path: Path) -> None:

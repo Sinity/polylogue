@@ -6,9 +6,11 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.api.archive import _active_archive_root, _provider_for_archive_origin
+from polylogue.api.archive import _active_archive_root
 from polylogue.archive.query.spec import parse_query_date
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.types import SessionId
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
 from polylogue.cost.plans import resolve_plan
@@ -37,7 +39,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
-from polylogue.insights.tag_rollups import synthesize_provider_tag_rollups
+from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import (
     LogicalSession,
@@ -47,11 +49,10 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     class _InsightOperationsSurface(Protocol):
         async def list_session_tag_rollup_insights(
@@ -265,7 +266,7 @@ def _archive_session_topology(archive: object, session_id: str) -> SessionTopolo
     nodes = tuple(
         TopologyNode(
             session_id=SessionId(envelope.session_id),
-            source_name=_provider_for_archive_origin(envelope.origin).value,
+            origin=envelope.origin,
             title=envelope.title,
             depth=depths.get(envelope.session_id, 0),
             is_root=envelope.session_id == root_id,
@@ -315,30 +316,43 @@ class PolylogueInsightsMixin:
         request = query or SessionTagRollupQuery()
         since_ms = _archive_query_date_ms("since", request.since)
         until_ms = _archive_query_date_ms("until", request.until)
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            # The archive rebuild does not write ``provider:<name>`` rows into
-            # session_tags (provider identity lives on sessions.origin), so the
+
+        def read(archive: ArchiveStore) -> tuple[list[SessionTagRollupInsight], list[SessionTagRollupInsight]]:
+            # The archive rebuild does not write ``origin:<name>`` rows into
+            # session_tags (origin identity lives on sessions.origin), so the
             # archive read only returns explicit/auto tags. Synthesize the
-            # provider rollups to preserve the legacy ``insights tags``
+            # origin rollups to preserve the legacy ``insights tags``
             # contract, then merge them with the materialized tag rollups.
             materialized = archive.list_session_tag_rollup_insights(
-                provider=request.provider,
+                origin=request.origin,
                 query=request.query,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=None,
                 offset=0,
             )
-            provider_rollups = synthesize_provider_tag_rollups(
+            origin_rollups = synthesize_origin_tag_rollups(
                 archive,
-                provider=request.provider,
+                origin=request.origin,
                 query=request.query,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 materialized_at=datetime.now(UTC).isoformat(),
             )
+            return materialized, origin_rollups
+
+        materialized, origin_rollups = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_tag_rollups",
+            arguments={"origin": request.origin, "query": request.query, "since": since_ms, "until": until_ms},
+            work=read,
+            page_size=request.limit,
+            offset=request.offset,
+            projection="tag-rollups",
+            stable_order="session_count:desc,tag",
+        )
         rollups = sorted(
-            [*materialized, *provider_rollups],
+            [*materialized, *origin_rollups],
             key=lambda rollup: (-rollup.session_count, rollup.tag),
         )
         if request.offset:
@@ -351,8 +365,13 @@ class PolylogueInsightsMixin:
         self,
         session_id: str,
     ) -> list[SessionWorkEventInsight]:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_session_work_event_insights(session_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_work_events.get",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.get_session_work_event_insights(session_id),
+            projection="session-work-events",
+        )
 
     async def list_session_work_event_insights(
         self,
@@ -367,23 +386,42 @@ class PolylogueInsightsMixin:
             _archive_query_date_ms("until", request.until),
             _session_date_upper_ms(request.session_date_until),
         )
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_session_work_event_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_work_events.list",
+            arguments={
+                "session_id": request.session_id,
+                "origin": request.origin,
+                "heuristic_label": request.heuristic_label,
+                "since": since_ms,
+                "until": until_ms,
+            },
+            work=lambda archive: archive.list_session_work_event_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 heuristic_label=request.heuristic_label,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="session-work-events",
+            stable_order="time,session_id",
+        )
 
     async def get_session_phase_insights(
         self,
         session_id: str,
     ) -> list[SessionPhaseInsight]:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_session_phase_insights(session_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_phases.get",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.get_session_phase_insights(session_id),
+            projection="session-phases",
+        )
 
     async def list_session_phase_insights(
         self,
@@ -398,74 +436,124 @@ class PolylogueInsightsMixin:
             _archive_query_date_ms("until", request.until),
             _session_date_upper_ms(request.session_date_until),
         )
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_session_phase_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_phases.list",
+            arguments={
+                "session_id": request.session_id,
+                "origin": request.origin,
+                "since": since_ms,
+                "until": until_ms,
+            },
+            work=lambda archive: archive.list_session_phase_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="session-phases",
+            stable_order="time,session_id",
+        )
 
     async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_thread_insight(thread_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.thread.get",
+            arguments={"thread_id": thread_id},
+            work=lambda archive: archive.get_thread_insight(thread_id),
+            projection="thread-insight",
+        )
 
     async def list_thread_insights(
         self,
         query: ThreadInsightQuery | None = None,
     ) -> list[ThreadInsight]:
         request = query or ThreadInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_thread_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.thread.list",
+            arguments={"query": request.query, "since": request.since, "until": request.until},
+            work=lambda archive: archive.list_thread_insights(
                 query=request.query,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="thread-insights",
+            stable_order="time,thread_id",
+        )
 
     async def list_archive_coverage_insights(
         self,
         query: ArchiveCoverageInsightQuery | None = None,
     ) -> list[ArchiveCoverageInsight]:
         request = query or ArchiveCoverageInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_archive_coverage_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.archive_coverage.list",
+            arguments={
+                "group_by": request.group_by,
+                "origin": request.origin,
+                "since": request.since,
+                "until": request.until,
+            },
+            work=lambda archive: archive.list_archive_coverage_insights(
                 group_by=request.group_by,
-                provider=request.provider,
+                origin=request.origin,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="archive-coverage",
+            stable_order="group",
+        )
 
     async def list_tool_usage_insights(
         self,
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
-        with ArchiveStore(_active_archive_root(self.config)) as archive:
-            return archive.list_tool_usage_insights(query)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.tool_usage.list",
+            arguments={"query": query},
+            work=lambda archive: archive.list_tool_usage_insights(query),
+            page_size=getattr(query, "limit", None),
+            offset=getattr(query, "offset", 0),
+            projection="tool-usage",
+            stable_order="tool,origin",
+        )
 
     async def list_session_cost_insights(
         self,
         query: SessionCostInsightQuery | None = None,
     ) -> list[SessionCostInsight]:
         request = query or SessionCostInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            # The archive read returns a degraded estimate built from the
-            # stored scalar cost. Re-derive the full estimate (model identity,
-            # catalog basis, missing-reason taxonomy) from the session so
-            # the public ``model``/``normalized_model`` fields are populated.
-            # The ``model`` and ``status`` filters key on those re-derived
-            # fields, so apply them after enrichment rather than asking the
-            # archive (which cannot answer a model filter).
-            insights = enrich_session_cost_insights(
+        insights = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_cost.list",
+            arguments={
+                "session_id": request.session_id,
+                "origin": request.origin,
+                "since": request.since,
+                "until": request.until,
+                "limit": request.limit,
+                "offset": request.offset,
+            },
+            work=lambda archive: enrich_session_cost_insights(
                 archive,
                 archive.list_session_cost_insights(
                     session_id=request.session_id,
-                    provider=request.provider,
+                    origin=request.origin,
                     status=None,
                     model=None,
                     since_ms=_archive_query_date_ms("since", request.since),
@@ -473,7 +561,12 @@ class PolylogueInsightsMixin:
                     limit=request.limit,
                     offset=request.offset,
                 ),
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="session-cost",
+            stable_order="time,session_id",
+        )
         if request.status is not None:
             insights = [insight for insight in insights if insight.estimate.status == request.status]
         if request.model is not None:
@@ -488,81 +581,145 @@ class PolylogueInsightsMixin:
         self,
         session_id: str,
     ) -> SessionLatencyProfileInsight | None:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_session_latency_profile_insight(session_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_latency.get",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.get_session_latency_profile_insight(session_id),
+            projection="session-latency",
+        )
 
     async def list_session_latency_profile_insights(
         self,
         query: SessionLatencyProfileInsightQuery | None = None,
     ) -> list[SessionLatencyProfileInsight]:
         request = query or SessionLatencyProfileInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_session_latency_profile_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_latency.list",
+            arguments={
+                "session_id": request.session_id,
+                "origin": request.origin,
+                "only_stuck": request.only_stuck,
+                "since": request.since,
+                "until": request.until,
+            },
+            work=lambda archive: archive.list_session_latency_profile_insights(
                 session_id=request.session_id,
-                provider=request.provider,
+                origin=request.origin,
                 only_stuck=request.only_stuck,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="session-latency",
+            stable_order="time,session_id",
+        )
 
     async def find_stuck_session_latency_profile_insights(
         self,
         query: SessionLatencyProfileInsightQuery | None = None,
     ) -> list[SessionLatencyProfileInsight]:
         request = query or SessionLatencyProfileInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.find_stuck_session_latency_profile_insights(
-                provider=request.provider,
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_latency.stuck",
+            arguments={"origin": request.origin, "since": request.since, "until": request.until},
+            work=lambda archive: archive.find_stuck_session_latency_profile_insights(
+                origin=request.origin,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
-            )
+            ),
+            page_size=request.limit,
+            projection="session-latency",
+            stable_order="time,session_id",
+            workload_class="scan",
+        )
 
     async def list_cost_rollup_insights(
         self,
         query: CostRollupInsightQuery | None = None,
     ) -> list[CostRollupInsight]:
         request = query or CostRollupInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_cost_rollup_insights(
-                provider=request.provider,
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.cost_rollup.list",
+            arguments={
+                "origin": request.origin,
+                "model": request.model,
+                "since": request.since,
+                "until": request.until,
+            },
+            work=lambda archive: archive.list_cost_rollup_insights(
+                origin=request.origin,
                 model=request.model,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="cost-rollup",
+            stable_order="time,origin,model",
+            workload_class="scan",
+        )
 
     async def list_usage_timeline_insights(
         self,
         query: UsageTimelineInsightQuery | None = None,
     ) -> list[UsageTimelineInsight]:
         request = query or UsageTimelineInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_usage_timeline_insights(
-                provider=request.provider,
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.usage_timeline.list",
+            arguments={
+                "origin": request.origin,
+                "model": request.model,
+                "group_by": request.group_by,
+                "since": request.since,
+                "until": request.until,
+            },
+            work=lambda archive: archive.list_usage_timeline_insights(
+                origin=request.origin,
                 model=request.model,
                 group_by=request.group_by,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="usage-timeline",
+            stable_order="time,origin,model",
+            workload_class="scan",
+        )
 
     async def list_archive_debt_insights(
         self,
         query: ArchiveDebtInsightQuery | None = None,
     ) -> list[ArchiveDebtInsight]:
         request = query or ArchiveDebtInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_archive_debt_insights(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.archive_debt.list",
+            arguments={"category": request.category, "only_actionable": request.only_actionable},
+            work=lambda archive: archive.list_archive_debt_insights(
                 category=request.category,
                 only_actionable=request.only_actionable,
                 limit=request.limit,
                 offset=request.offset,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="archive-debt",
+            stable_order="category,session_id",
+        )
 
     async def cost_outlook(
         self,
@@ -612,7 +769,7 @@ class PolylogueInsightsMixin:
         group_by: str = "workflow_shape",
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, object]:
         """GROUP BY session counts over workflow_shape/terminal_state/origin.
 
@@ -621,7 +778,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import aggregate_session_profiles_by_dimension
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         buckets = aggregate_session_profiles_by_dimension(profiles, group_by)
         return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
@@ -632,7 +789,7 @@ class PolylogueInsightsMixin:
         group_by: str = "week",
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, object]:
         """Histogram session workflow shapes by week, origin, or project.
 
@@ -642,7 +799,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import workflow_shape_distribution_buckets
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         buckets = workflow_shape_distribution_buckets(profiles, group_by)
         return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
@@ -670,7 +827,7 @@ class PolylogueInsightsMixin:
         *,
         since: str | None = None,
         until: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         tool_category: str | None = None,
         limit: int = 500,
     ) -> dict[str, object]:
@@ -678,7 +835,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import tool_call_latency_distribution_payload
 
         insights = await self.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=provider, since=since, until=until, limit=limit)
+            SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=limit)
         )
         return tool_call_latency_distribution_payload(insights, tool_category=tool_category)
 
@@ -731,7 +888,7 @@ class PolylogueInsightsMixin:
         if ref_profile is None:
             return None
         candidates = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=ref_profile.source_name, limit=candidate_pool_limit)
+            SessionProfileInsightQuery(origin=ref_profile.origin, limit=candidate_pool_limit)
         )
         scored = compute_metadata_similarity_candidates(ref_profile, candidates, exclude_session_id=session_id)
         return {
@@ -745,7 +902,7 @@ class PolylogueInsightsMixin:
         *,
         metric_x: str,
         metric_y: str,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
     ) -> dict[str, object]:
@@ -760,7 +917,7 @@ class PolylogueInsightsMixin:
         ensure_known_session_metric(metric_y, "metric_y")
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(provider=provider, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
         )
         return pearson_session_correlation(profiles, metric_x=metric_x, metric_y=metric_y)
 
@@ -774,11 +931,19 @@ class PolylogueInsightsMixin:
     # ------------------------------------------------------------------
 
     async def _resolve_for_topology(self, session_id: str) -> str | None:
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def resolve(archive: ArchiveStore) -> str | None:
             try:
                 return archive.resolve_session_id(session_id)
             except KeyError:
                 return None
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="topology.resolve",
+            arguments={"session_id": session_id},
+            work=resolve,
+            projection="session-id",
+        )
 
     async def get_session_topology(self, session_id: str) -> SessionTopology | None:
         """Return the typed :class:`SessionTopology` for ``session_id``.
@@ -787,8 +952,14 @@ class PolylogueInsightsMixin:
         unresolved native parent edges are surfaced via the topology
         object itself; see :class:`SessionTopology`.
         """
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return _archive_session_topology(archive, session_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="topology.session",
+            arguments={"session_id": session_id},
+            work=lambda archive: _archive_session_topology(archive, session_id),
+            projection="topology",
+            stable_order="root,depth,session_id",
+        )
 
     async def get_ancestors(self, session_id: str) -> list[SessionRef]:
         """Return ancestor refs ordered root → parent.

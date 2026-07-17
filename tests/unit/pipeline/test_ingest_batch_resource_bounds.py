@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_batch import _IngestWorkerRequest, _iter_ingest_results_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.sinex.models import PublicationMode
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -115,7 +116,10 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
         return [IngestRecordResult(raw_id="raw-large")]
 
     def fake_drain(*args: object, **kwargs: object) -> None:
-        del args, kwargs
+        del args
+        ensure_transaction = kwargs.get("ensure_index_transaction")
+        assert callable(ensure_transaction)
+        ensure_transaction()
         events.append("drain")
 
     monkeypatch.setattr(ingest_batch_core, "_iter_ingest_results_sync", fake_iter)
@@ -128,6 +132,7 @@ def test_consume_ingest_results_delays_write_transaction_until_parse_result(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
+        publication_mode=PublicationMode.OFF,
     )
 
     assert transaction_started is True
@@ -147,7 +152,14 @@ def test_consume_ingest_results_releases_large_result_payload(
             return None
 
     monkeypatch.setattr(ingest_batch_core, "_iter_ingest_results_sync", lambda *args, **kwargs: [result])
-    monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", lambda *args, **kwargs: None)
+
+    def fake_drain(*args: object, **kwargs: object) -> None:
+        del args
+        ensure_transaction = kwargs.get("ensure_index_transaction")
+        assert callable(ensure_transaction)
+        ensure_transaction()
+
+    monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", fake_drain)
     monkeypatch.setattr(ingest_batch_core, "release_process_memory", lambda: releases.append("release"))
     monkeypatch.setattr(ingest_batch_core, "read_current_rss_mb", lambda: 42.0)
 
@@ -163,6 +175,7 @@ def test_consume_ingest_results_releases_large_result_payload(
         worker_request=_worker_request(),
         summary=summary,  # type: ignore[arg-type]
         materialized_ids=set(),
+        publication_mode=PublicationMode.OFF,
     )
 
     assert transaction_started is True

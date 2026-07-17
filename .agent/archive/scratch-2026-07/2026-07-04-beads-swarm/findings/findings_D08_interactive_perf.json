@@ -1,0 +1,84 @@
+{
+  "domain": "D08_interactive_perf",
+  "summary": "Coherent, well-authored SLO story: 20d.14 defines the named latency budgets that 20d.1 (fast path, the structural mechanism), 20d.12 (cache), 20d.13 (SSE), 20d.15/20d.6 (ingest lanes) all cite. The weakness is not scope but formalization: the epic and its spine feature 20d.1 carry rich design but no acceptance_criteria, and the stated cross-bead sequencing (20d.12-after-20d.1, 20d.15-and-20d.6-cite-20d.14) is written in prose but not recorded as deps. No child duplicates the shipped /metrics work (20d.14 histograms + 20d.12 cache stats are additive); k8k is a cross-repo Sinnix bug that should stay standalone.",
+  "underspecified": [
+    {
+      "id": "polylogue-20d.1",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "Fast-path read surface: `--verbose` prints `served-by: daemon (uds, <ms>)` and a warm daemon serves find/read/messages/facets in <=0.5s wall (target 3.6-17s -> 0.3-0.5s, cited against the 20d.14 interactive tier). Golden parity: `--format json` output is byte-identical between direct and daemon-proxied execution for every read surface on the demo corpus. Safety: with the daemon pointed at a different archive_root/index_schema_version/daemon_version than the client's resolved config, the client silently falls back to the in-process path (regression test seeds the POLYLOGUE_ARCHIVE_ROOT=/tmp mismatch trap). `--no-daemon` / `POLYLOGUE_DAEMON=off` force the direct path; daemon-down probe fails in microseconds. Writes never proxy (user.db direct).",
+      "why": "20d.1 is the spine, wave:2 feature and the explicit 'structural attack' of the whole epic, yet acceptance_criteria is null. Its design field already encodes concrete targets (latency, byte-identical parity, config-mismatch fallback marked NON-NEGOTIABLE, escape hatches) — those are checkable done-states that belong in acceptance so the frontier bead is execution-grade."
+    },
+    {
+      "id": "polylogue-20d",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "This epic is the front-door interactive-latency spine. Mechanism ordering: 20d.14 states the named budgets first (starting points, evidence-tuned); 20d.2 removes the ~2s import tax for the daemonless cold path; 20d.1 routes the hot path through the daemon over UDS; 20d.12 makes the daemon worth reaching (cursor-keyed result cache); 20d.13 replaces polling with SSE push; 20d.6/20d.15 own the live vs bulk ingest lanes; 20d.4/20d.5/20d.10/20d.11/20d.7/20d.8 are the direct-path and storage-profile fixes that keep the degraded mode fast.",
+      "proposed_acceptance": "The 20d.14 interactive SLO tier is defined in slo-catalog.yaml and runs green in `devtools bench slo` against the seeded corpus with a live daemon in CI; the operator machine meets the daemon-served query, completion round-trip, cold-CLI, and ingest-to-searchable budgets when measured live. No interactive read verb pays the old cold-import or FTS-gate penalties (regression gates from 20d.2 and 20d.4 in place).",
+      "why": "The parent epic has design=null and acceptance_criteria=null. As the anchor for 14 children it should tie its done-state to 20d.14's budgets so 'interactive time' is a measured claim, not a vibe; the epic description already lists the evidence (2s imports, 5-9s helps, 43s regen, 0.2 files/s) that the children must retire."
+    },
+    {
+      "id": "polylogue-20d.2",
+      "missing": ["acceptance"],
+      "proposed_design": "",
+      "proposed_acceptance": "`python -X importtime` shows surfaces/payloads and api/archive no longer imported on the `polylogue <cmd> --help` path; a new devtools help-latency budget check runs targeted `--help` invocations under a fixed budget (e.g. <700ms cold, citing 20d.14 cold-CLI budget) and fails loudly on drift; nested helps (import/reset/maintenance archive-read/analyze tools) drop from the observed 5-9s to under the budget.",
+      "why": "20d.2 is wave:1 (likely first to execute) with a rich design field but acceptance_criteria=null. Its design already names the regression gate (help-latency budget check); promoting the target into acceptance makes the wave-1 bead execution-grade."
+    },
+    {
+      "id": "polylogue-20d.4",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "Port the daemon's structured-vs-FTS discriminator (http.py ~:1789-1793) to the single CLI search-vs-list dispatch site: branch on spec.query_terms/contains_terms so a structured-only query (filters, no text terms) skips the FTS readiness gate and routes to the list/query-unit path. Verify the current shape first (v23 FTS-readiness + recent work may have moved the gate).",
+      "proposed_acceptance": "A structured-only CLI query (e.g. `--origin ... --since ...` with no text terms) succeeds and returns rows on an archive whose FTS index is deliberately stale/unready; a text FTS query on the same archive still honors the readiness gate. Parity: the CLI's structured/FTS branch decision matches the daemon's for the same spec.",
+      "why": "Both design and acceptance are null; the description embeds a concrete plan and a named regression. Promote them so the bead is checkable. (Also see inconsistencies: this is really a correctness/parity fix, and 20d.1 subsumes it.)"
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-20d.4",
+      "kind": "wrong-type",
+      "evidence": "Filed type=task, labels area:cli/area:perf, but the described defect is behavioral: 'structured filters pay the FTS readiness gate' and 'Regression: structured-only query on an archive with deliberately-stale FTS must succeed' — i.e. structured queries are wrongly gated/blocked by unrelated FTS state. Title cites '#1860 parity'. That is a correctness/parity bug surfacing as latency, not a pure optimization.",
+      "fix": "Reclassify as type=bug (keep area:perf as a secondary label). The done-state is 'the query returns correct results without the spurious gate', which is a correctness assertion."
+    },
+    {
+      "id": "polylogue-k8k",
+      "kind": "scope-conflict",
+      "evidence": "k8k is parent=null, priority=2, about the Sinnix devshell wrapper (`/realm/project/sinnix/scripts/sinnix-direnvrc` routing polylogue through `sinnix-scope background`, 45.59s wall). Its acceptance mutates Sinnix/devenv scoping, not Polylogue code. This is a cross-repo environment bug tracked in the Polylogue backlog.",
+      "fix": "Keep k8k standalone (do NOT reparent under 20d): the fix lives in the Sinnix repo, so making it a 20d child would falsely imply Polylogue-code ownership of the front-door latency it measures. Add a note/ref linking k8k to 20d as measurement context (the wrapper inflates every interactive Polylogue read the 20d work is trying to speed up)."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-20d.12",
+      "issue": "missing-dep",
+      "detail": "20d.12 design explicitly states 'Sequence: lands with/after 20d.1 so CLI + webui + MCP all hit the same cache' — the cache is only worth building once the fast path routes callers through the daemon. But dependency_count=0 (only the parent-child edge exists).",
+      "proposed": "Add dep: polylogue-20d.12 depends_on polylogue-20d.1."
+    },
+    {
+      "id": "polylogue-20d.15",
+      "issue": "missing-dep",
+      "detail": "20d.15 text sets up two relationships that are prose-only: '20d.6 owns the LIVE catch-up lane ... this bead owns the BULK lane' (clean split, but the shared WAL-autocheckpoint interplay is cross-cutting) and its throughput target '>=100 rows/s ... stated in the SLO catalog as a maintenance-tier budget (20d.14)'. dependency_count=0.",
+      "proposed": "Add dep polylogue-20d.15 depends_on polylogue-20d.14 (its acceptance target is the budget 20d.14 must define). Record a coordinate/relates link to 20d.6 for the shared WAL/autocheckpoint measurement rather than a hard block."
+    },
+    {
+      "id": "polylogue-20d.14",
+      "issue": "epic-ac-gap",
+      "detail": "20d.14 is the definitional hub: its design says 'The budgets become the acceptance criteria for the sibling beads: fast path, cache, push, import deferral all cite this tier instead of inventing their own targets.' Several siblings already cite it in prose (20d.15 -> maintenance-tier budget; 20d.12 -> SLO lane hit-rate; 20d.13 -> within 2s) but no dep edges record that 20d.1/20d.2/20d.12/20d.13 acceptance depends on 20d.14 defining the tier.",
+      "proposed": "Treat 20d.14 as the budget anchor for the SLO story: add depends_on polylogue-20d.14 from 20d.1, 20d.2, 20d.12, and 20d.13 so their acceptance criteria reference the named budgets rather than re-inventing targets. Sequence 20d.14 (or at least its budget skeleton) ahead of the measured beads."
+    },
+    {
+      "id": "polylogue-20d.8",
+      "issue": "missing-dep",
+      "detail": "20d.8 description: 'Likely falls out of the action-unit outcome fields work (SQL-side pairing instead of Python row inspection). Re-measure after that lands.' 20d.10 in the same epic lowers the action matchers onto the actions view (SQL-side, keystone v16 columns). The 43s regen is an implied downstream of that SQL-side pairing work, but no dep is recorded and the upstream 'action-unit outcome fields work' bead isn't linked.",
+      "proposed": "Add a soft dep / relates edge polylogue-20d.8 depends_on polylogue-20d.10 (or the specific action-unit-outcome bead if it lives in another epic) and mark 20d.8 as 're-measure after upstream lands' so it isn't worked before its prerequisite."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-k8k",
+      "change": "reparent",
+      "from": "null (standalone)",
+      "to": "keep standalone (do NOT move under polylogue-20d)",
+      "rationale": "Answering the focus hint: k8k does not belong as a 20d child. Its fix is in the Sinnix repo (devshell scope wrapper), not Polylogue code; 20d children are Polylogue-code front-door perf work. Reparenting would misattribute ownership. Link it to 20d as external measurement context instead."
+    }
+  ]
+}

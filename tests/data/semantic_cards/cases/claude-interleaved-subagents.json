@@ -79,7 +79,7 @@
     {
       "schema_version": "semantic-card.v1",
       "kind": "task",
-      "title": "Task / subagent",
+      "title": "Task / delegation",
       "source": {
         "session_id": "fixture:claude-interleaved-subagents",
         "provider_family": "claude-code",
@@ -88,14 +88,24 @@
         "block_index": 0,
         "tool_name": "Task",
         "tool_id": "t1",
+        "material_origin": "unknown",
         "result_message_id": "m-result-1",
         "result_block_id": "b-result-1",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "Task"
+        },
+        {
+          "label": "semantic family",
+          "value": "subagent"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
         },
         {
           "label": "agent",
@@ -144,7 +154,7 @@
     {
       "schema_version": "semantic-card.v1",
       "kind": "task",
-      "title": "Task / subagent",
+      "title": "Task / delegation",
       "source": {
         "session_id": "fixture:claude-interleaved-subagents",
         "provider_family": "claude-code",
@@ -153,14 +163,24 @@
         "block_index": 1,
         "tool_name": "Task",
         "tool_id": "t2",
+        "material_origin": "unknown",
         "result_message_id": "m-result-2",
         "result_block_id": "b-result-2",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "Task"
+        },
+        {
+          "label": "semantic family",
+          "value": "subagent"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
         },
         {
           "label": "agent",

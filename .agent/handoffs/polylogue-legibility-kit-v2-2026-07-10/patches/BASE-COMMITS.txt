@@ -1,0 +1,8 @@
+Polylogue: f6c1da997bea64bc6cd9670d9cbb8f7e7439ec51
+Sinex:     b70a08d9e51cecc9e76b92f955a88183e99842cf
+
+Apply from the corresponding repository root:
+  git apply --index /path/to/polylogue-legibility-v2-full.patch
+  git apply --index /path/to/sinex-legibility-v2-full.patch
+
+The patches intentionally trade commit-history elegance for a complete static-access delta.

@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_float as _row_float
+from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
 )
@@ -32,7 +37,7 @@ from polylogue.daemon.cursor_lag_status import CursorLagSummary as CursorLagSumm
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
-from polylogue.daemon.health import DaemonHealth, check_health
+from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, check_health
 from polylogue.daemon.live_ingest_attempt_models import (
     LiveIngestAttemptState,
 )
@@ -51,8 +56,10 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
+from polylogue.logging import get_logger
 from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_readiness import (
@@ -60,10 +67,13 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
+from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 # Backwards-compatible alias for the stuck threshold (#1246). The "stale"
 # rollup field stays in the typed status payload to avoid breaking
@@ -151,6 +161,65 @@ class RawMaterializationReadiness(BaseModel):
     category_counts: dict[str, int] = Field(default_factory=dict)
     source_family_counts: dict[str, int] = Field(default_factory=dict)
     sampled_rows: list[dict[str, object]] = Field(default_factory=list)
+    raw_authority_census: dict[str, object] | None = None
+    raw_authority_frontier: dict[str, object] | None = None
+    raw_authority_frontier_blocking_count: int = 0
+    raw_authority_frontier_remediation_refs: list[dict[str, object]] = Field(default_factory=list)
+    raw_authority_blocker_count: int = 0
+    raw_authority_pending_census_count: int = 0
+    raw_authority_ledger_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class RawFrontierIntegrity(BaseModel):
+    """Standing readiness projection of authoritative raw-frontier gaps (polylogue-yla8.7).
+
+    Process health and raw-materialization candidate counts can both be
+    green while an accepted append head references a deleted predecessor or
+    an ingest cursor sits ahead of accepted material — yla8.6 found this only
+    through manual SQL after ordinary use broke. This model composes three
+    independently-degrading facts so that gap can never render silently green:
+
+    * ``broken_head_*`` — a distinct current raw seed from either
+      ``sessions.raw_id`` or ``raw_revision_heads`` whose transitive
+      predecessor chain (the same
+      chain validator ``active_raw_retention_authority`` uses to protect
+      retention) is missing or invalid.
+    * ``missing_source_raw_*`` — re-projects
+      ``RawMaterializationReadiness.lost_source_evidence_count`` /
+      ``lost_source_evidence_samples`` (an index ``sessions.raw_id`` absent
+      from ``source.raw_sessions``); computed once there, not requeried here.
+    * ``cursor_ahead_*`` — an ``ops.ingest_cursor`` committed byte frontier
+      past the byte frontier actually accepted into the index for that
+      logical source — the exact symptom yla8.6 found only via manual SQL.
+
+    ``overall_status`` is ``"violated"`` when any check proves a real gap,
+    even if a sibling remains unknown; otherwise unknown authority degrades
+    the result and only fully-proven zeroes render ``"healthy"``.
+    """
+
+    available: bool = False
+    overall_status: Literal["healthy", "unknown", "violated"] = "unknown"
+
+    broken_head_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    broken_head_count: int = 0
+    broken_head_checked_count: int = 0
+    broken_head_samples: list[dict[str, object]] = Field(default_factory=list)
+    broken_head_reason: str = ""
+
+    missing_source_raw_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    missing_source_raw_count: int = 0
+    missing_source_raw_samples: list[dict[str, object]] = Field(default_factory=list)
+    missing_source_raw_reason: str = ""
+
+    cursor_ahead_status: Literal["healthy", "unknown", "violated"] = "unknown"
+    cursor_ahead_count: int = 0
+    cursor_ahead_checked_count: int = 0
+    cursor_head_comparison_count: int = 0
+    cursor_ahead_comparison_count: int = 0
+    cursor_ahead_samples: list[dict[str, object]] = Field(default_factory=list)
+    cursor_authority_gap_count: int = 0
+    cursor_authority_gap_samples: list[dict[str, object]] = Field(default_factory=list)
+    cursor_ahead_reason: str = ""
 
 
 class ArchiveTierStatus(BaseModel):
@@ -281,6 +350,7 @@ class DaemonStatus(BaseModel):
     """Typed daemon status consumed by CLI, TUI, web, browser extension, MCP."""
 
     daemon_liveness: bool = False
+    daemon_lifecycle: dict[str, object] = Field(default_factory=dict)
     component_state: ComponentState = Field(default_factory=ComponentState)
     source_lag: list[SourceLagItem] = Field(default_factory=list)
     failing_files: list[str] = Field(default_factory=list)
@@ -300,9 +370,11 @@ class DaemonStatus(BaseModel):
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
     raw_materialization_readiness: RawMaterializationReadiness = Field(default_factory=RawMaterializationReadiness)
+    raw_frontier_integrity: RawFrontierIntegrity = Field(default_factory=RawFrontierIntegrity)
     raw_replay_backlog: dict[str, object] = Field(default_factory=dict)
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
     component_readiness: dict[str, object] = Field(default_factory=dict)
+    claim_guard: dict[str, object] = Field(default_factory=dict)
     browser_capture_active: bool = False
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
@@ -486,8 +558,12 @@ def _archive_tier_status(
             )
         finally:
             conn.close()
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as exc:
+        # version_status already defaults to "invalid" above and stays that
+        # way here, so this branch does carry a signal — but the exception
+        # itself was previously discarded. Log it so operators can tell a
+        # read failure from a genuinely corrupt/unversioned tier.
+        logger.warning("archive tier status query failed for %s (%s): %s", path, name, exc, exc_info=True)
     return ArchiveTierStatus(
         name=name,
         path=str(path),
@@ -507,15 +583,21 @@ def _fts_readiness_info() -> dict[str, object]:
 
 def _insight_freshness_info() -> dict[str, object]:
     """Check insight materialization status through bounded SQL counts."""
+    from polylogue.paths import sibling_index_db
+
     dbf = _active_status_db_path()
     if not dbf.exists():
-        archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
+        index_db = sibling_index_db(dbf, require_exists=False)
+        if index_db is not None:
+            archive_info = _archive_insight_freshness_info(index_db)
+            if archive_info is not None:
+                return archive_info
+        return {"sessions_with_profiles": 0, "total_sessions": 0}
+    index_db = sibling_index_db(dbf, require_exists=False)
+    if index_db is not None:
+        archive_info = _archive_insight_freshness_info(index_db)
         if archive_info is not None:
             return archive_info
-        return {"sessions_with_profiles": 0, "total_sessions": 0}
-    archive_info = _archive_insight_freshness_info(dbf.with_name("index.db"))
-    if archive_info is not None:
-        return archive_info
     try:
         conn = open_readonly_connection(dbf)
         try:
@@ -542,7 +624,8 @@ def _insight_freshness_info() -> dict[str, object]:
             "sessions_with_profiles": sessions_with_profiles,
             "total_sessions": total_sessions,
         }
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
         return {"sessions_with_profiles": 0, "total_sessions": 0}
 
 
@@ -661,8 +744,12 @@ def _raw_failure_info() -> dict[str, object]:
                         ).fetchone()[0]
                         or 0
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                # contextlib.suppress above already covers the expected
+                # "detection_warnings column not on this schema yet" case;
+                # anything reaching here is unexpected and previously
+                # vanished silently behind a 0 count.
+                logger.warning("detection-warnings count query failed: %s", exc, exc_info=True)
             # Bounded failure samples (most recent 50), typed.
             samples: list[RawFailureSample] = []
             raw_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)").fetchall()}
@@ -712,7 +799,8 @@ def _raw_failure_info() -> dict[str, object]:
             "maintenance_failures": maintenance_count,
             "samples": combined,
         }
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: raw-failure query failed for %s: %s", dbf, exc, exc_info=True)
         return {
             "parse_failures": 0,
             "validation_failures": 0,
@@ -827,7 +915,8 @@ def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
         root = archive_root()
         records = read_maintenance_failures(root)
         total = count_maintenance_failures(root)
-    except Exception:
+    except Exception as exc:
+        logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
         return [], 0
 
     samples: list[RawFailureSample] = []
@@ -856,40 +945,6 @@ def _safe_int(value: object) -> int:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return int(value)
     return 0
-
-
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _row_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
 
 
 def _safe_float(value: object, *, default: float = 0.0) -> float:
@@ -962,7 +1017,8 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: live-cursor summary query failed for %s: %s", dbf, exc, exc_info=True)
         return LiveCursorSummary()
 
     now = datetime.now(UTC)
@@ -1073,9 +1129,12 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
 
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     """Return recent durable live-ingest attempt snapshots."""
+    from polylogue.paths import sibling_index_db
+
     dbf = _active_status_db_path()
     ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
-    if (dbf.with_name("index.db").exists() or not dbf.exists()) and ops_summary is not None:
+    index_db = sibling_index_db(dbf, require_exists=False)
+    if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
     if not dbf.exists():
         return ops_summary if ops_summary is not None else LiveIngestAttemptSummary()
@@ -1155,7 +1214,8 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
             slow_threshold_s = compute_slow_threshold_s(conn)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("status: live-ingest-attempt summary query failed for %s: %s", dbf, exc, exc_info=True)
         return LiveIngestAttemptSummary()
 
     now = datetime.now(UTC)
@@ -1326,23 +1386,7 @@ def _archive_compute_slow_threshold_s(conn: sqlite3.Connection) -> float | None:
     if len(samples) < SLOW_MIN_SAMPLES:
         return None
     samples.sort()
-    return _percentile(samples, SLOW_P95_QUANTILE)
-
-
-def _percentile(sorted_values: list[float], q: float) -> float:
-    if not sorted_values:
-        return 0.0
-    if len(sorted_values) == 1:
-        return float(sorted_values[0])
-    if q <= 0:
-        return float(sorted_values[0])
-    if q >= 1:
-        return float(sorted_values[-1])
-    position = (len(sorted_values) - 1) * q
-    lower = int(position)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    weight = position - lower
-    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+    return percentile(samples, SLOW_P95_QUANTILE)
 
 
 def _archive_latest_stage_payloads(
@@ -1608,19 +1652,13 @@ def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:
     return retry_at <= now
 
 
-def _check_daemon_liveness() -> bool:
-    """Check whether the daemon process is running via pidfile."""
-    try:
-        from polylogue.paths import archive_root
+def _check_daemon_liveness(lifecycle: dict[str, object] | None = None) -> bool:
+    """Return whether one durable daemon lifecycle snapshot is fresh."""
+    if lifecycle is None:
+        from polylogue.daemon.lifecycle import lifecycle_status
 
-        pidfile = Path(archive_root()) / "daemon.pid"
-        if not pidfile.exists():
-            return False
-        pid = int(pidfile.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
+        lifecycle = lifecycle_status()
+    return bool(lifecycle.get("running", False))
 
 
 def _daemon_component_readiness(
@@ -1630,6 +1668,7 @@ def _daemon_component_readiness(
     insight_freshness: InsightFreshness,
     embedding_readiness: EmbeddingReadiness,
     raw_materialization_readiness: RawMaterializationReadiness,
+    raw_frontier_integrity: RawFrontierIntegrity,
     archive_storage: ArchiveStorageStatus,
     live_ingest_attempts: LiveIngestAttemptSummary,
 ) -> dict[str, object]:
@@ -1647,12 +1686,47 @@ def _daemon_component_readiness(
         ).to_dict(),
         "search": _component_from_fts_readiness(fts_readiness).to_dict(),
         "raw_materialization": _component_from_raw_materialization_readiness(raw_materialization_readiness).to_dict(),
+        "raw_frontier_integrity": _component_from_raw_frontier_integrity(raw_frontier_integrity).to_dict(),
         "session_profiles": _component_from_insight_freshness(insight_freshness).to_dict(),
         "embeddings": _component_from_daemon_embedding_readiness(embedding_readiness).to_dict(),
         "archive_storage": _component_from_archive_storage(archive_storage).to_dict(),
         "daemon_ingest": _component_from_live_ingest(live_ingest_attempts).to_dict(),
     }
     return components
+
+
+def _daemon_claim_guard(
+    *,
+    archive_storage: ArchiveStorageStatus,
+    raw_materialization_readiness: RawMaterializationReadiness,
+    raw_frontier_integrity: RawFrontierIntegrity,
+    fts_readiness: FTSReadiness,
+    live_ingest_attempts: LiveIngestAttemptSummary,
+) -> dict[str, object]:
+    """Derive the claim-guard block for the daemon-serving status path."""
+    raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
+    fts_component = _component_from_fts_readiness(fts_readiness)
+    rebuild_attempts = len(archive_storage.active_rebuild_index_attempts)
+    active_writer = bool(live_ingest_attempts.running_count) or bool(rebuild_attempts)
+    writer_parts: list[str] = []
+    if live_ingest_attempts.running_count:
+        writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
+    if rebuild_attempts:
+        writer_parts.append(f"{rebuild_attempts} index rebuild attempt(s) running")
+    guard = derive_claim_guard(
+        archive_schema_ready=archive_storage.archive_schema_ready,
+        schema_mismatches=archive_storage.schema_mismatches,
+        missing_tiers=archive_storage.missing_tiers,
+        raw_materialization_ready=raw_materialization_ready(raw_materialization_readiness),
+        raw_materialization_summary=raw_component.summary,
+        raw_frontier_integrity_ready=raw_frontier_integrity.overall_status == "healthy",
+        raw_frontier_integrity_summary=raw_frontier_integrity_summary(raw_frontier_integrity.model_dump()),
+        search_ready=fts_readiness.messages_ready,
+        search_summary=fts_component.summary,
+        active_writer=active_writer,
+        active_writer_summary="; ".join(writer_parts),
+    )
+    return cast(dict[str, object], guard.to_dict())
 
 
 def _component_from_daemon_state(component: str, state: str, *, scope: str) -> ComponentReadiness:
@@ -1698,6 +1772,12 @@ def _component_from_raw_materialization_readiness(
     from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
     return component_from_raw_materialization_readiness(readiness.model_dump())
+
+
+def _component_from_raw_frontier_integrity(integrity: RawFrontierIntegrity) -> ComponentReadiness:
+    from polylogue.readiness.capability import component_from_raw_frontier_integrity
+
+    return component_from_raw_frontier_integrity(integrity.model_dump())
 
 
 def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentReadiness:
@@ -1856,7 +1936,7 @@ def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentR
     )
 
 
-def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
+def _raw_materialization_readiness_info(*, classify_gaps: bool = True) -> RawMaterializationReadiness:
     """Summarize acquired-but-not-materialized raw evidence for readiness.
 
     This is intentionally cheaper than the full archive-debt endpoint: daemon
@@ -1864,12 +1944,39 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     not silently diverge, but normal status reads must not open raw blobs or run
     the exact classifier over large archives.
     """
-    payload = raw_materialization_readiness_snapshot(archive_root())
+    payload = (
+        raw_materialization_readiness_snapshot(archive_root())
+        if classify_gaps
+        else raw_materialization_readiness_snapshot(archive_root(), classify_gaps=False)
+    )
     return RawMaterializationReadiness.model_validate(payload)
 
 
-def _raw_replay_backlog_info() -> dict[str, object]:
-    """Return weighted raw source-to-index replay backlog for daemon status."""
+def _raw_frontier_integrity_info(
+    raw_materialization_readiness: RawMaterializationReadiness,
+) -> RawFrontierIntegrity:
+    """Read the one canonical split-tier projection used by every surface."""
+
+    active_root = _active_status_db_path().parent
+    projection = raw_frontier_integrity_projection(
+        active_root,
+        raw_materialization_readiness.model_dump(),
+    )
+    return RawFrontierIntegrity.model_validate(projection.to_dict())
+
+
+def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
+    """Return weighted raw replay backlog only for an explicitly rich read."""
+    if not include:
+        return {
+            "available": False,
+            "reason": "excluded_from_bounded_status_snapshot",
+            "candidate_count": 0,
+            "total_blob_bytes": 0,
+            "top_raw_rows": [],
+            "origin_summary": [],
+            "source_path_summary": [],
+        }
     try:
         from polylogue.config import Config
         from polylogue.paths import render_root
@@ -1896,6 +2003,8 @@ def build_daemon_status(
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_expensive_health: bool = False,
+    include_raw_replay_backlog: bool = True,
+    include_exact_raw_materialization_readiness: bool = True,
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
@@ -1913,8 +2022,11 @@ def build_daemon_status(
     storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
-    raw_materialization_readiness = _raw_materialization_readiness_info()
-    raw_replay_backlog = _raw_replay_backlog_info()
+    raw_materialization_readiness = _raw_materialization_readiness_info(
+        classify_gaps=include_exact_raw_materialization_readiness
+    )
+    raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
+    raw_replay_backlog = _raw_replay_backlog_info(include=include_raw_replay_backlog)
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -1946,8 +2058,25 @@ def build_daemon_status(
         health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
     try:
         health = check_health(tiers=health_tiers)
-    except Exception:
-        health = DaemonHealth()
+    except Exception as exc:
+        # DaemonHealth() alone defaults to overall_status=OK with zero
+        # alerts — the single most misleading fallback possible for a
+        # health check: a failed check would present as "everything is
+        # fine" instead of "the check itself broke" (polylogue-cpf.4).
+        logger.warning("status: check_health() failed: %s", exc, exc_info=True)
+        health = DaemonHealth(
+            overall_status=HealthSeverity.ERROR,
+            checked_at=datetime.now(UTC).isoformat(),
+            alerts=[
+                HealthAlert(
+                    check_name="check_health",
+                    tier=HealthTier.FAST,
+                    severity=HealthSeverity.ERROR,
+                    message=f"health check itself failed: {exc}",
+                    checked_at=datetime.now(UTC).isoformat(),
+                )
+            ],
+        )
 
     # Surface memory pressure from the most recent running attempt
     rss_current_mb: float | None = None
@@ -2021,6 +2150,9 @@ def build_daemon_status(
         total_sessions=_safe_int(freshness.get("total_sessions", 0)),
     )
 
+    from polylogue.daemon.lifecycle import lifecycle_status
+
+    daemon_lifecycle = lifecycle_status()
     return DaemonStatus(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
@@ -2028,7 +2160,8 @@ def build_daemon_status(
         raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
-        daemon_liveness=_check_daemon_liveness(),
+        daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
+        daemon_lifecycle=daemon_lifecycle,
         component_state=component_state,
         source_lag=[SourceLagItem(name=s.name, root=str(s.root), exists=s.exists()) for s in watch_sources],
         failing_files=[item.source_path for item in live_cursor.failing_files],
@@ -2045,6 +2178,7 @@ def build_daemon_status(
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_frontier_integrity=raw_frontier_integrity,
         raw_replay_backlog=raw_replay_backlog,
         archive_storage=storage_info,
         component_readiness=_daemon_component_readiness(
@@ -2053,7 +2187,15 @@ def build_daemon_status(
             insight_freshness=insight_freshness,
             embedding_readiness=embedding_readiness,
             raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
             archive_storage=storage_info,
+            live_ingest_attempts=live_ingest_attempts,
+        ),
+        claim_guard=_daemon_claim_guard(
+            archive_storage=storage_info,
+            raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
+            fts_readiness=fts_readiness,
             live_ingest_attempts=live_ingest_attempts,
         ),
         health=health,
@@ -2071,6 +2213,9 @@ def daemon_status_payload(
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_browser_capture_spool_path: bool = False,
+    include_raw_replay_backlog: bool = True,
+    include_exact_raw_materialization_readiness: bool = True,
+    include_archive_debt: bool = True,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2085,24 +2230,31 @@ def daemon_status_payload(
                 "ts": last.get("ts"),
                 "payload": last.get("payload"),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        # last_ingestion stays None, identical to "daemon hasn't ingested
+        # anything yet" — log so a get_last_ingestion_batch() failure isn't
+        # mistaken for a cold-start daemon.
+        logger.warning("daemon status last-ingestion lookup failed: %s", exc, exc_info=True)
 
     status = build_daemon_status(
         sources=sources,
         browser_capture_enabled=browser_capture_enabled,
         browser_capture_spool_path=browser_capture_spool_path,
+        include_raw_replay_backlog=include_raw_replay_backlog,
+        include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
     )
-    archive_debt = _archive_debt_status_summary()
+    archive_debt = _archive_debt_status_summary() if include_archive_debt else _excluded_archive_debt_status_summary()
 
     return json_document(
         {
-            "ok": True,
+            "ok": status.raw_frontier_integrity.overall_status == "healthy",
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
+            "daemon_lifecycle": status.daemon_lifecycle,
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
             "component_readiness": status.component_readiness,
+            "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(
                 browser_capture_spool_path,
@@ -2128,6 +2280,7 @@ def daemon_status_payload(
             "last_ingestion_batch": last_ingestion,
             "fts_readiness": status.fts_readiness.model_dump(),
             "raw_materialization_readiness": status.raw_materialization_readiness.model_dump(),
+            "raw_frontier_integrity": status.raw_frontier_integrity.model_dump(),
             "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {
@@ -2172,11 +2325,27 @@ def _archive_debt_status_summary() -> dict[str, object]:
     }
 
 
+def _excluded_archive_debt_status_summary() -> dict[str, object]:
+    """Describe the diagnostic debt endpoint without recomputing it."""
+    return {
+        "endpoint": "/api/archive-debt",
+        "available": False,
+        "reason": "excluded_from_bounded_status_snapshot",
+        "rows": [],
+        "totals": {},
+    }
+
+
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
+    lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
-        lines.append("  Status: running")
+        age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None
+        suffix = f" (heartbeat {age}s ago)" if isinstance(age, int | float) else ""
+        lines.append(f"  Status: running{suffix}")
+    elif isinstance(lifecycle, dict):
+        lines.append(f"  Status: {lifecycle.get('state', 'absent')} heartbeat")
     storage = payload.get("archive_storage")
     if isinstance(storage, dict):
         present = storage.get("present_tiers", [])
@@ -2331,22 +2500,31 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             for family in families[:5]:
                 if isinstance(family, dict):
                     lines.append(f"    {family.get('family')}: {family.get('failed_count', 0)} failed")
-    # Cursor lag summary (#1232) — show only when something is stuck so the
-    # quiet steady state stays quiet.
+    # Cursor lag summary (#1232) — degraded cursors are outside the lag SLO,
+    # but must be surfaced even when no ordinary cursor is stuck.
     cursor_lag = payload.get("cursor_lag")
     if isinstance(cursor_lag, dict):
         stuck = _safe_int(cursor_lag.get("stuck_file_count"))
-        if stuck > 0:
+        degraded = _safe_int(cursor_lag.get("degraded_file_count"))
+        if stuck > 0 or degraded > 0:
             idle = _safe_int(cursor_lag.get("idle_file_count"))
             max_lag = _safe_float(cursor_lag.get("max_lag_s"))
-            lines.append(f"Cursor lag: {stuck} stuck file(s) ({idle} idle), worst lag {max_lag:.0f}s")
+            max_degraded_lag = _safe_float(cursor_lag.get("max_degraded_lag_s"))
+            lines.append(
+                f"Cursor lag: {stuck} stuck, {degraded} degraded, {idle} idle "
+                f"(worst lag {max_lag:.0f}s; degraded age {max_degraded_lag:.0f}s)"
+            )
             cursor_families = cursor_lag.get("family_summaries")
             if isinstance(cursor_families, list):
                 for family in cursor_families[:5]:
-                    if isinstance(family, dict) and _safe_int(family.get("stuck_file_count")) > 0:
+                    if isinstance(family, dict) and (
+                        _safe_int(family.get("stuck_file_count")) > 0
+                        or _safe_int(family.get("degraded_file_count")) > 0
+                    ):
                         lines.append(
                             "  "
                             f"{family.get('family')}: {_safe_int(family.get('stuck_file_count'))} stuck, "
+                            f"{_safe_int(family.get('degraded_file_count'))} degraded, "
                             f"worst lag {_safe_float(family.get('max_lag_s')):.0f}s"
                         )
                         # Auto-calibration baseline state (#1349). Render only
@@ -2390,6 +2568,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     f"{_safe_int(materialization.get('warning'))} warning, "
                     f"{_safe_int(materialization.get('blocked'))} blocked"
                 )
+    frontier = payload.get("raw_frontier_integrity")
+    if isinstance(frontier, dict):
+        overall = str(frontier.get("overall_status") or "unknown")
+        summary = raw_frontier_integrity_summary(frontier)
+        detail = "" if summary == "ready" else f": {summary}"
+        lines.append(f"Raw frontier integrity: {overall}{detail}")
     backlog = payload.get("raw_replay_backlog")
     if isinstance(backlog, dict) and backlog.get("available"):
         candidates = _safe_int(backlog.get("candidate_count"))
@@ -2425,8 +2609,8 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     # Health summary
     health = payload.get("health")
     if isinstance(health, dict):
-        overall = health.get("overall_status", "unknown")
-        lines.append(f"Health: {overall} ({health.get('alert_count', 0)} alerts)")
+        health_overall = str(health.get("overall_status", "unknown"))
+        lines.append(f"Health: {health_overall} ({health.get('alert_count', 0)} alerts)")
     # Raw failure summary
     raw_parse = _safe_int(payload.get("raw_parse_failures"))
     raw_val = _safe_int(payload.get("raw_validation_failures"))

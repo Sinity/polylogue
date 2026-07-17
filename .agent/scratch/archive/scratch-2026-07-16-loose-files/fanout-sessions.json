@@ -1,0 +1,147 @@
+{
+ "polylogue-fable-demo": {
+  "sid": "019f580c-73e5-7190-9d97-876a9e3f09d3",
+  "worktree": "/realm/worktrees/polylogue-fable-demo"
+ },
+ "polylogue-hermes-wedge": {
+  "sid": "019f580c-73ee-7ce0-814a-a4105354ddfc",
+  "worktree": "/realm/worktrees/polylogue-hermes-wedge"
+ },
+ "polylogue-extension-redesign": {
+  "sid": "019f580c-74c7-7fc0-b6d4-a401aadb6d50",
+  "worktree": "/realm/worktrees/polylogue-extension-redesign"
+ },
+ "polylogue-capture-hardening": {
+  "sid": "019f580c-7472-7313-8c51-78bda29e80cc",
+  "worktree": "/realm/worktrees/polylogue-capture-hardening"
+ },
+ "polylogue-web-cockpit": {
+  "sid": "019f580c-7f90-7591-b433-0ea3952c19c2",
+  "worktree": "/realm/worktrees/polylogue-web-cockpit"
+ },
+ "polylogue-distribution": {
+  "sid": "019f580c-7456-7601-a253-7957d39e9796",
+  "worktree": "/realm/worktrees/polylogue-distribution"
+ },
+ "polylogue-provider-origin": {
+  "sid": "019f580c-7558-7001-aed8-c30f13917ce5",
+  "worktree": "/realm/worktrees/polylogue-origin-sql-dto",
+  "status": "merged-2820"
+ },
+ "polylogue-embeddings-hygiene": {
+  "sid": "019f580c-74b4-7c03-bafd-7a7c1b07615f",
+  "worktree": "/realm/worktrees/polylogue-embeddings-hygiene"
+ },
+ "polylogue-annotation-judgment": {
+  "sid": "019f580c-76d5-7df3-9f35-ebfcc8f0fc43",
+  "worktree": "/realm/worktrees/polylogue-annotation-judgment"
+ },
+ "polylogue-live-performance": {
+  "sid": "019f580c-7486-7243-975c-34d59cc6dec0",
+  "worktree": "/realm/worktrees/polylogue-live-performance"
+ },
+ "polylogue-demo-corpus": {
+  "sid": "019f580c-7467-7fc2-b379-bf11737066b5",
+  "worktree": "/realm/worktrees/polylogue-demo-corpus"
+ },
+ "polylogue-fastforward-mech": {
+  "sid": "019f580c-7ad8-7580-a167-8f913c719cf5",
+  "worktree": "/realm/worktrees/polylogue-fastforward-mech"
+ },
+ "polylogue-search-coverage": {
+  "sid": "019f580c-751e-7f92-b785-2d5e1b29d183",
+  "worktree": "/realm/worktrees/polylogue-search-coverage"
+ },
+ "polylogue-docs-ia": {
+  "sid": "019f580c-7528-7163-ac24-9686195d8224",
+  "worktree": "/realm/worktrees/polylogue-docs-ia"
+ },
+ "polylogue-coverage-triage": {
+  "sid": "019f580c-7d4d-7bc1-86c0-11a01135308b",
+  "worktree": "/realm/worktrees/polylogue-coverage-triage"
+ },
+ "polylogue-eqp-census": {
+  "sid": "019f580c-7c0b-7052-bc05-55d3940c7daf",
+  "worktree": "/realm/worktrees/polylogue-eqp-census"
+ },
+ "polylogue-test-harness": {
+  "sid": "019f580c-8167-71f0-8bc1-cea04ef005e9",
+  "worktree": "/realm/worktrees/polylogue-test-harness"
+ },
+ "polylogue-cost-honesty": {
+  "sid": "019f580c-8d19-7f30-ba24-335f6061fcb6",
+  "worktree": "/realm/worktrees/polylogue-cost-honesty"
+ },
+ "polylogue-hooks-capture": {
+  "sid": "019f580c-a1ac-7f70-837d-74e8b4c150d6",
+  "worktree": "/realm/worktrees/polylogue-hooks-capture"
+ },
+ "polylogue-rigor-contracts": {
+  "sid": "019f580c-b506-7950-881d-a34d387db53d",
+  "worktree": "/realm/worktrees/polylogue-rigor-contracts"
+ },
+ "polylogue-api-parity": {
+  "sid": "019f580c-acff-7240-b376-143233544788",
+  "worktree": "/realm/worktrees/polylogue-api-parity"
+ },
+ "polylogue-test-hardening": {
+  "sid": "019f580c-b8c1-7810-b682-d1d1da7dfa4a",
+  "worktree": "/realm/worktrees/polylogue-test-hardening"
+ },
+ "polylogue-mcp-ergonomics": {
+  "sid": "019f580c-b15a-7ea2-bb64-5995583e6797",
+  "worktree": "/realm/worktrees/polylogue-mcp-ergonomics"
+ },
+ "polylogue-temporal-provenance": {
+  "sid": "019f580c-b780-7c22-b6e8-0c07140e7e9e",
+  "worktree": "/realm/worktrees/polylogue-temporal-provenance"
+ },
+ "polylogue-origin-interop": {
+  "sid": "019f5814-6f21-7e43-b21b-4d26eeaf20de",
+  "worktree": "/realm/worktrees/polylogue-origin-interop"
+ },
+ "polylogue-usage-convergence": {
+  "sid": "019f5842-5b30-7a80-8577-0d8d927ad69b",
+  "worktree": "/realm/worktrees/polylogue-usage-convergence"
+ },
+ "polylogue-kwsb": {
+  "sid": "019f5842-6fa8-74b1-83d1-6a4d0c1382cb",
+  "worktree": "/realm/worktrees/polylogue-kwsb"
+ },
+ "polylogue-write-model": {
+  "sid": "019f5842-85d7-7602-887f-1deb6c3d6b17",
+  "worktree": "/realm/worktrees/polylogue-write-model"
+ },
+ "polylogue-terminal-note": {
+  "sid": "019f5842-b916-7513-80fd-9629fbf8a5a6",
+  "worktree": "/realm/worktrees/polylogue-terminal-note"
+ },
+ "polylogue-beads-ingest": {
+  "sid": "019f5842-cc79-7f20-81bf-58f85c8acd9c",
+  "worktree": "/realm/worktrees/polylogue-beads-ingest"
+ },
+ "polylogue-daemon-forensics": {
+  "sid": "019f5842-9d4c-7ab3-8f34-95a55e833113",
+  "worktree": "/realm/worktrees/polylogue-daemon-forensics"
+ },
+ "polylogue-hot-daemon": {
+  "sid": "019f58d8-5df5-7ec0-9d80-f1668befb6e2",
+  "worktree": "/realm/worktrees/polylogue-hot-daemon"
+ },
+ "polylogue-rxdo-language": {
+  "sid": "019f58e0-b25a-7003-bf64-b7eb3a1383ab",
+  "worktree": "/realm/worktrees/polylogue-rxdo-language"
+ },
+ "polylogue-rxdo-substrate": {
+  "sid": "019f58e0-459d-7400-99db-cff982497578",
+  "worktree": "/realm/worktrees/polylogue-rxdo-substrate"
+ },
+ "polylogue-rxdo-lifecycle": {
+  "sid": "019f58e0-7d41-7fd0-ad0b-3ff3e21c01f6",
+  "worktree": "/realm/worktrees/polylogue-rxdo-lifecycle"
+ },
+ "polylogue-basetemp-fix": {
+  "sid": "019f58bc-c5b0-7b53-8a92-f72fe7d99b2e",
+  "worktree": "/realm/worktrees/polylogue-basetemp-fix"
+ }
+}

@@ -36,11 +36,28 @@ polylogue/archive/semantic/data/litellm_model_prices.json linguist-vendored -dif
 
 # Generated surfaces — exclude from language stats, suppress regen diff noise.
 docs/schemas/cli-output/*.json linguist-generated -diff
+docs/generated/** linguist-generated -diff
+docs/openapi/** linguist-generated -diff
+docs/plans/topology-target.yaml linguist-generated -diff
+docs/topology-status.md linguist-generated -diff
 .agent/demos/**/*.json linguist-generated -diff
+
+# Internal agent workspaces are repository operations, not product-language
+# composition. Keep their ordinary diffs unless a narrower rule above applies.
+.agent/** linguist-detectable=false
+
+# Immutable external result patches are acquired evidence, not working-source
+# diffs. Preserve their exact bytes (including whitespace) for later review.
+.agent/handoffs/external-agent-campaigns/**/results/**/raw/PATCH.diff -text -diff
+.agent/handoffs/external-agent-campaigns/**/results/**/extracted/PATCH.diff whitespace=-trailing-space
 
 # Fixtures / captured payloads — not first-party code (keep diffs: they're edited).
 **/representatives/*.json linguist-vendored
 tests/data/** linguist-vendored
+
+# Syrupy indents blank lines inside triple-quoted snapshot values. Those
+# serializer-required spaces are not ordinary trailing-whitespace defects.
+tests/**/__snapshots__/*.ambr whitespace=-blank-at-eol
 
 # Merge strategies
 flake.lock merge=ours

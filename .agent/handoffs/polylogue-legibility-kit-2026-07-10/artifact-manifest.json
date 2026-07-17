@@ -1,0 +1,166 @@
+{
+  "package": "Polylogue + Sinex external-legibility kit",
+  "generated_on": "2026-07-10",
+  "source_snapshots": {
+    "polylogue": "f6c1da997bea64bc6cd9670d9cbb8f7e7439ec51",
+    "sinex": "b70a08d9e51cecc9e76b92f955a88183e99842cf"
+  },
+  "primary_artifacts": [
+    {
+      "id": "start",
+      "path": "00-START-HERE.md",
+      "description": "Guide to the complete package",
+      "bytes": 9611,
+      "sha256": "5297b95905f4e25220be136506512fd96c0b93fac92bf45659441122be0c36c4"
+    },
+    {
+      "id": "diagnostic",
+      "path": "01-diagnostic-and-positioning.md",
+      "description": "External-legibility diagnosis and category positioning",
+      "bytes": 22932,
+      "sha256": "3d5b722913457404149bc0407a1e152381edbd50134e954b4b6e46e7d3a984c4"
+    },
+    {
+      "id": "demo_expanded",
+      "path": "02b-demo-portfolio-expanded.md",
+      "description": "Rigorous demo redesign and Incident 14:32 corpus specification",
+      "bytes": 37127,
+      "sha256": "5ee603e1ae80e3984fc9ef829755a25d310e4e870b47a2b4edbd728d87f7e544"
+    },
+    {
+      "id": "poly_execution",
+      "path": "03b-polylogue-agent-execution-expanded.md",
+      "description": "Rapid frontier-agent execution plan for Polylogue",
+      "bytes": 23376,
+      "sha256": "3ed62ac7138b392348d9b9ea07221f3c0e52f1016288c874f61aa2bdeb693f2a"
+    },
+    {
+      "id": "swarm",
+      "path": "05-single-machine-swarm-runbook.md",
+      "description": "Single-machine worktree and coordination runbook",
+      "bytes": 9841,
+      "sha256": "0243cffc7ccb2286cf2383797a1b47aa93a4919cda799d7275abfbaf8f6ca42d"
+    },
+    {
+      "id": "fork_prompts",
+      "path": "08-fork-prompts.md",
+      "description": "Sixteen primary fork prompts",
+      "bytes": 32804,
+      "sha256": "c040f5e7b7ac7fb55236b1e6aca1913c4dc7b90dff83710a0fe1fba49b63f3dd"
+    },
+    {
+      "id": "joint_architecture",
+      "path": "08-joint-architecture-one-pager.md",
+      "description": "Maximal Sinex-Polylogue backend architecture",
+      "bytes": 3395,
+      "sha256": "50effb37800bcea11d64b6e42900c72951c260fceb98f70470345294676e8031"
+    },
+    {
+      "id": "claims",
+      "path": "09-public-claims-ledger.yaml",
+      "description": "Machine-readable public claims ledger",
+      "bytes": 14548,
+      "sha256": "0fde08dc52773d62b48d41eed3a967971756589aa05fe2ab262f44e9afd133e6"
+    },
+    {
+      "id": "demo_schema",
+      "path": "10-demo-packet-v2.schema.json",
+      "description": "Construct-valid proof packet schema",
+      "bytes": 7333,
+      "sha256": "3e2f7913e78ff548fe0124d5b837aeca28903723d22f42f9057c5fe8f990db04"
+    },
+    {
+      "id": "demo_portfolio",
+      "path": "11-demo-portfolio.yaml",
+      "description": "Machine-readable demo portfolio",
+      "bytes": 4331,
+      "sha256": "b5ea79f7617185e26f6139769ba22ee4a0286af49ac7f8bd6171b6ef9a79f5ca"
+    },
+    {
+      "id": "beads_cut",
+      "path": "12-beads-launch-cut.csv",
+      "description": "Proposed Beads launch subset",
+      "bytes": 2835,
+      "sha256": "c7a9054d15528740aad76b5f4fdd970d965d5865bca1d91076c8fe9d44e1b6ef"
+    },
+    {
+      "id": "lanes",
+      "path": "13-worktree-lanes.csv",
+      "description": "Parallel worktree ownership plan",
+      "bytes": 1448,
+      "sha256": "a88b816692e26256f943e0e58c73853ee5e53a65178e1fd27abe5215be335249"
+    },
+    {
+      "id": "validation",
+      "path": "15-validation-report.md",
+      "description": "Executed checks and non-verification",
+      "bytes": 6286,
+      "sha256": "26133b25daad6c59a2bbde39e164ba529692f3f2e02ac780df78b8350669c692"
+    },
+    {
+      "id": "poly_patch",
+      "path": "patches/polylogue-external-legibility.patch",
+      "description": "Applyable Polylogue patch",
+      "bytes": 308784,
+      "sha256": "284c5109b42cba0f1b21d0c3cf3a87d5a0f33fb92db5382611e77838646d98b4"
+    },
+    {
+      "id": "sinex_patch",
+      "path": "patches/sinex-external-legibility.patch",
+      "description": "Applyable Sinex patch",
+      "bytes": 83185,
+      "sha256": "1cebc6ba6f97134c668d48b2413271e28d6b75d5a2509cb8172887f108ee71b4"
+    },
+    {
+      "id": "tour",
+      "path": "polylogue-demo-tour/report.md",
+      "description": "Executed deterministic Polylogue proof packet",
+      "bytes": 2374,
+      "sha256": "19aa31022a4c4c47821ac903e4f96797a4ac59aee014b1f5de526f338b5290cf"
+    },
+    {
+      "id": "deck_pdf",
+      "path": "Polylogue-Sinex-external-legibility.pdf",
+      "description": "Thirteen-page executive deck",
+      "bytes": 435450,
+      "sha256": "211c01f54d4384d456cba6ff26f4ca8035d7eb7eb72fd0a0a1137e6d599b5701"
+    },
+    {
+      "id": "deck_pptx",
+      "path": "Polylogue-Sinex-external-legibility.pptx",
+      "description": "Editable executive deck",
+      "bytes": 835423,
+      "sha256": "03af285b5b668451b48e7cc5d4f1000bd77cc964eb557fa149db3d027386e222"
+    },
+    {
+      "id": "poly_mockup",
+      "path": "mockups/polylogue-home.png",
+      "description": "Polylogue landing-page prototype",
+      "bytes": 344213,
+      "sha256": "133144298e97fe614cfee4556cdcac4ef3da2eba625e82656d387b966c78e86f"
+    },
+    {
+      "id": "sinex_mockup",
+      "path": "mockups/sinex-home.png",
+      "description": "Sinex landing-page prototype",
+      "bytes": 156607,
+      "sha256": "697822b68527563b221d41467eb3d1b49f7f947fb9a169d5a70f20ee5a5e5742"
+    },
+    {
+      "id": "joint_mockup",
+      "path": "mockups/resume-this-bead.png",
+      "description": "Joint Agent Work Packet prototype",
+      "bytes": 322730,
+      "sha256": "46c2dc053e90e1475ad6975493f8a2fbcecded049e9b2e27afa1f65db402a49b"
+    }
+  ],
+  "validation_summary": {
+    "polylogue_targeted_tests": "41 passed",
+    "polylogue_demo_constructs": "30/30",
+    "patch_apply_checks": "both passed at exact bases",
+    "sinex_runtime_compiled": false,
+    "deck": "13 slides / 13 PDF pages",
+    "primary_fork_prompts": 16,
+    "alternate_fork_prompts": 16
+  }
+}

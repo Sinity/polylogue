@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import shlex
-from collections.abc import Awaitable
+import subprocess
+from collections.abc import Awaitable, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -1319,6 +1320,9 @@ def read_verb(
 
 @click.command("continue")
 @click.option(
+    "--exec", "execute", is_flag=True, help="Run the verified interactive resume command instead of printing it."
+)
+@click.option(
     "--to",
     "destination",
     type=click.Choice(_READ_DESTINATIONS),
@@ -1358,7 +1362,7 @@ def read_verb(
     "output_format",
     type=click.Choice(["json"]),
     default=None,
-    help="Output format. JSON emits the shared ContextImage payload.",
+    help="Emit the successor ContextImage as JSON instead of a resume command.",
 )
 @click.pass_context
 def continue_verb(
@@ -1371,15 +1375,15 @@ def continue_verb(
     recent_files: tuple[str, ...],
     candidate_limit: int,
     output_format: str | None,
+    execute: bool,
 ) -> None:
-    """Compile a successor-agent continuation report for one matched session.
+    """Print or execute a resume command, or emit successor context as JSON.
 
     \b
     Examples:
         polylogue find id:abc then continue
         polylogue find id:abc then continue --format json
-        polylogue --latest continue --to clipboard
-        polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+        polylogue find id:abc then continue --exec
         polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
     """
     env: AppEnv = ctx.obj
@@ -1390,9 +1394,12 @@ def continue_verb(
         destination=destination,
         format=output_format or request.params.get("output_format") or "default",
         candidates=candidates,
+        execute=execute,
     ):
         return
     if candidates:
+        if execute:
+            raise click.UsageError("continue --exec cannot be combined with --candidates.")
         if destination not in ("terminal", "stdout") or out_path is not None:
             raise click.UsageError("continue --candidates writes to terminal/stdout; omit --to/--out.")
         if not repo_path:
@@ -1417,17 +1424,13 @@ def continue_verb(
     session = run_coroutine_sync(env.polylogue.get_session(session_id))
     if session is None:
         raise click.UsageError(f"Session not found: {session_id}")
-    root_format = request.params.get("output_format")
-    effective_format = (
-        output_format if output_format is not None else root_format if isinstance(root_format, str) else None
-    )
-    if effective_format == "json":
+    if _wants_json(request, output_format=output_format):
+        if execute:
+            raise click.UsageError("continue --exec cannot be combined with --format json.")
         if destination not in ("terminal", "stdout", "file"):
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
         if destination == "file" and not out_path:
             raise click.UsageError("continue --format json --to file requires --out.")
-        from pathlib import Path
-
         from polylogue.context.compiler import ContextSpec
 
         image = run_coroutine_sync(
@@ -1440,28 +1443,24 @@ def continue_verb(
                 )
             )
         )
-        rendered = serialize_surface_payload(image, exclude_none=True)
-        if destination == "file":
-            assert out_path is not None
-            Path(out_path).write_text(rendered + "\n", encoding="utf-8")
-        else:
-            click.echo(rendered)
-        return
-    if effective_format not in (None, "markdown"):
-        raise click.UsageError("continue supports markdown output by default or --format json.")
-    from polylogue.context.compiler import ContextSpec
-
-    image = run_coroutine_sync(
-        env.polylogue.compile_context(
-            ContextSpec(
-                purpose="continue",
-                seed_refs=(f"session:{session_id}",),
-                read_views=("messages",),
-                unit_queries=_successor_context_unit_queries(session_id),
-            )
+        _deliver_content(
+            env,
+            serialize_surface_payload(image, exclude_none=True) + "\n",
+            destination=destination,
+            out_path=out_path,
         )
-    )
-    _deliver_content(env, _render_context_image_markdown(image), destination=destination, out_path=out_path)
+        return
+    from polylogue.archive.resume_routing import route_resume
+
+    route = route_resume(session)
+    if route.status != "supported" or route.command is None:
+        raise click.UsageError(route.detail or "This session cannot be resumed by a verified local harness command.")
+    if execute:
+        subprocess.run(route.argv, cwd=route.cwd, check=False)
+        return
+    if destination not in ("terminal", "stdout") or out_path is not None:
+        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
+    click.echo(route.command)
 
 
 @click.command("delete")
@@ -1800,32 +1799,35 @@ def review_mark_candidates_command(env: AppEnv, target_ref: str | None, limit: i
 
 
 @mark_candidates_group.command("accept")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--inject", is_flag=True, help="Authorize context injection for accepted candidates.")
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def accept_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str | None,
     actor_ref: str,
+    inject: bool,
     output_format: str | None,
 ) -> None:
     """Accept a candidate assertion into an active assertion."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="accept",
         reason=reason,
         actor_ref=actor_ref,
+        inject=inject,
         output_format=output_format,
     )
 
 
 @mark_candidates_group.command("reject")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", required=True)
 @click.option("--actor-ref", default="user:local", show_default=True)
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
@@ -1833,7 +1835,7 @@ def accept_mark_candidate_command(
 @click.pass_obj
 def reject_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str,
     actor_ref: str,
     output_format: str | None,
@@ -1841,7 +1843,7 @@ def reject_mark_candidate_command(
     """Reject a candidate assertion with a durable reason."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="reject",
         reason=reason,
         actor_ref=actor_ref,
@@ -1850,7 +1852,7 @@ def reject_mark_candidate_command(
 
 
 @mark_candidates_group.command("defer")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
@@ -1858,7 +1860,7 @@ def reject_mark_candidate_command(
 @click.pass_obj
 def defer_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     reason: str | None,
     actor_ref: str,
     output_format: str | None,
@@ -1866,7 +1868,7 @@ def defer_mark_candidate_command(
     """Record a durable candidate assertion deferral."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="defer",
         reason=reason,
         actor_ref=actor_ref,
@@ -1875,30 +1877,33 @@ def defer_mark_candidate_command(
 
 
 @mark_candidates_group.command("supersede")
-@click.argument("candidate_ref")
+@click.argument("candidate_refs", nargs=-1, required=True)
 @click.option("--kind", "replacement_kind", required=True, help="Kind for the replacement active assertion.")
 @click.option("--body", "replacement_body_text", required=True, help="Body text for the replacement assertion.")
 @click.option("--reason", default=None)
 @click.option("--actor-ref", default="user:local", show_default=True)
+@click.option("--inject", is_flag=True, help="Authorize context injection for promoted replacements.")
 @click.option("--json", "output_format", flag_value="json", default=None, help="Shortcut for --format json.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_obj
 def supersede_mark_candidate_command(
     env: AppEnv,
-    candidate_ref: str,
+    candidate_refs: tuple[str, ...],
     replacement_kind: str,
     replacement_body_text: str,
     reason: str | None,
     actor_ref: str,
+    inject: bool,
     output_format: str | None,
 ) -> None:
     """Supersede a candidate with an explicit active assertion."""
     _emit_candidate_judgment(
         env,
-        candidate_ref=candidate_ref,
+        candidate_refs=candidate_refs,
         decision="supersede",
         reason=reason,
         actor_ref=actor_ref,
+        inject=inject,
         output_format=output_format,
         replacement_kind=replacement_kind,
         replacement_body_text=replacement_body_text,
@@ -1908,29 +1913,42 @@ def supersede_mark_candidate_command(
 def _emit_candidate_judgment(
     env: AppEnv,
     *,
-    candidate_ref: str,
+    candidate_refs: Sequence[str],
     decision: str,
     reason: str | None,
     actor_ref: str,
     output_format: str | None,
     replacement_kind: str | None = None,
     replacement_body_text: str | None = None,
+    inject: bool = False,
 ) -> None:
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
+
     payload = run_coroutine_sync(
-        env.polylogue.judge_assertion_candidate(
-            candidate_ref=candidate_ref,
-            decision=decision,
-            reason=reason,
-            actor_ref=actor_ref,
-            replacement_kind=replacement_kind,
-            replacement_body_text=replacement_body_text,
+        env.polylogue.judge_assertion_candidates(
+            items=tuple(
+                ArchiveAssertionBulkJudgmentItemEnvelope(
+                    candidate_ref=candidate_ref,
+                    decision=decision,
+                    reason=reason,
+                    actor_ref=actor_ref,
+                    inject=inject,
+                    replacement_kind=replacement_kind,
+                    replacement_body_text=replacement_body_text,
+                )
+                for candidate_ref in candidate_refs
+            )
         )
     )
     if output_format == "json":
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
-    result_ref = payload.judgment.resulting_assertion_ref or "no active assertion"
-    click.echo(f"{decision}: {payload.candidate.assertion_id} -> {result_ref}")
+    for item in payload.items:
+        if item.result is None:
+            click.echo(f"{decision}: {item.candidate_ref} -> failed ({item.error or 'unknown error'})")
+            continue
+        result_ref = item.result.judgment.resulting_assertion_ref or "no active assertion"
+        click.echo(f"{decision}: {item.result.candidate.assertion_id} -> {result_ref} ({item.outcome})")
 
 
 @click.group("analyze", invoke_without_command=True, no_args_is_help=False)

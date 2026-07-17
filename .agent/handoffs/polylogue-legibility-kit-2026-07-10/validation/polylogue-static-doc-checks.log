@@ -1,0 +1,5 @@
+markdown files checked: 5
+relative links checked: 48
+claims parsed: 8 unique
+relative links, claims YAML, and roadmap-link policy: PASS
+git diff --check: PASS

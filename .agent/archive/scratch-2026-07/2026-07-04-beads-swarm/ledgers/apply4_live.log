@@ -1,0 +1,41 @@
+bd close polylogue-s7ae.1 rc=0
+bd close polylogue-s7ae.2 rc=1
+  ERR: cannot close polylogue-s7ae.2: blocked by open issues [polylogue-pj8] (use --force to override)
+
+bd create Classify the 74%-aborted full verify from the coordination commit before deploy rc=0
+  -> polylogue-s7ae.6 : Classify the 74%-aborted full verify from the coordinat
+bd comment polylogue-7ry rc=0
+bd create Capture extension: reliability, coverage, and in-page presence rc=0
+  -> polylogue-jlme : Capture extension: reliability, coverage, and in-page p
+bd update polylogue-3v1 rc=0
+bd update polylogue-90y rc=0
+bd create Ecosystem interop + origin breadth: more sources in, two-way citable export out rc=0
+  -> polylogue-l4kf : Ecosystem interop + origin breadth: more sources in, tw
+bd update polylogue-t0p rc=0
+bd update polylogue-uiw rc=0
+bd update polylogue-2qx rc=0
+bd update polylogue-0cg rc=0
+bd update polylogue-7xv rc=0
+bd update polylogue-611 rc=0
+bd update polylogue-ale rc=0
+bd update polylogue-wmj rc=0
+bd update polylogue-7k7 rc=0
+bd update polylogue-r47 rc=0
+bd update polylogue-4g5 rc=0
+bd create Substrate consolidation: kill the storage twins and split the god-modules rc=0
+  -> polylogue-a7xr : Substrate consolidation: kill the storage twins and spl
+bd update polylogue-0aj rc=0
+bd update polylogue-yp0 rc=0
+bd update polylogue-48h rc=0
+bd update polylogue-pf1 rc=0
+bd update polylogue-1ty rc=0
+bd update polylogue-1a9 rc=0
+bd update polylogue-dab rc=0
+bd update polylogue-c9y rc=0
+bd update polylogue-4c0 rc=0
+bd update polylogue-7fj rc=0
+bd update polylogue-kph rc=0
+bd comment polylogue-lio rc=0
+bd update polylogue-9e5 rc=0
+
+=== SUMMARY (LIVE) created=4 ===

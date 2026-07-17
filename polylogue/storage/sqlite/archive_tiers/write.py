@@ -1,7 +1,10 @@
 """Minimal archive index parsed-session writer/read helpers.
 
-Writer module: index, user.
-Twin-write contract: session-tag-assertion-mirror.
+Writer module: index.
+
+Session tag/work-event/phase CRUD (the former ``user``-tier twin-write
+contract here) moved to ``session_annotations_write.py`` — see that
+module's docstring for the current writer-module declaration.
 """
 
 from __future__ import annotations
@@ -40,13 +43,29 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_message_fts_triggers_sync,
     suspend_message_fts_triggers_sync,
 )
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import delete_session_rows_sql, insert_session_rows_sql
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
     LINEAGE_TRUNCATION_DEPTH_LIMIT,
     LineageTruncationReason,
 )
+from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
+from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
+from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
+    ArchiveSessionPhase,
+    ArchiveSessionTag,
+    ArchiveSessionWorkEvent,
+    read_session_phases,
+    read_session_tags,
+    read_session_work_events,
+    upsert_session_phase,
+    upsert_session_tag,
+    upsert_session_work_event,
+)
+from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
 logger = get_logger(__name__)
 
@@ -68,33 +87,6 @@ class ArchiveBlockRow:
     # Keystone structured tool-result outcome (schema v16). NULL = unknown.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveWebConstructRow:
-    construct_id: str
-    session_id: str
-    message_id: str
-    block_id: str
-    position: int
-    provider: str
-    construct_type: str
-    provider_key: str | None = None
-    title: str | None = None
-    url: str | None = None
-    text: str | None = None
-    source_id: str | None = None
-    group_id: str | None = None
-    group_title: str | None = None
-    query: str | None = None
-    asset_pointer: str | None = None
-    mime_type: str | None = None
-    status: str | None = None
-    task_id: str | None = None
-    task_type: str | None = None
-    rank: int | None = None
-    start_index: int | None = None
-    end_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +122,10 @@ class ArchiveMessageRow:
     duration_ms: int = 0
     parent_message_id: str | None = None
     attachments: tuple[ArchiveAttachmentRow, ...] = ()
+    # Exact composition provenance for semantic transcript rendering. Parent
+    # rows retain their original source session when a prefix-sharing child is
+    # composed, so inherited evidence is not guessed from position.
+    source_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +167,11 @@ class ArchiveSessionEnvelope:
     # divergent tail when the parent's branch point was hard-deleted.
     lineage_complete: bool = True
     lineage_truncation_reason: LineageTruncationReason | None = None
+    # Bounded composition facts established during this exact archive read.
+    # ``none`` is explicit rather than NULL so callers can distinguish a root
+    # or ordinary child from an unavailable composition signal.
+    lineage_inheritance: str = "none"
+    lineage_branch_point_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,57 +184,6 @@ class ArchiveInsightMaterialization:
     source_sort_key_ms: int | None
     input_high_water_mark_ms: int | None
     input_row_count: int
-    input_high_water_mark_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionTag:
-    session_id: str
-    tag: str
-    tag_source: str
-    method: str | None
-    confidence: float | None
-    evidence: dict[str, object] | None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionWorkEvent:
-    event_id: str
-    session_id: str
-    position: int
-    work_event_type: str
-    summary: str
-    confidence: float
-    start_index: int
-    end_index: int
-    started_at_ms: int | None
-    ended_at_ms: int | None
-    duration_ms: int
-    file_paths: tuple[str, ...]
-    tools_used: tuple[str, ...]
-    evidence: dict[str, object]
-    inference: dict[str, object]
-    search_text: str
-    input_high_water_mark: str | None = None
-    input_high_water_mark_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveSessionPhase:
-    phase_id: str
-    session_id: str
-    position: int
-    start_index: int
-    end_index: int
-    started_at_ms: int | None
-    ended_at_ms: int | None
-    duration_ms: int
-    tool_counts: dict[str, int]
-    word_count: int
-    evidence: dict[str, object]
-    inference: dict[str, object]
-    search_text: str
-    input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
 
 
@@ -330,6 +280,7 @@ def write_parsed_session_to_archive(
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
     with transaction:
+        conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
         t0 = time.perf_counter()
         conn.execute(
             """
@@ -460,6 +411,9 @@ def write_parsed_session_to_archive(
             )
             add_timing("index.blocks", t0)
             t0 = time.perf_counter()
+            refresh_action_pairs(conn, session_id)
+            add_timing("index.action_pairs", t0)
+            t0 = time.perf_counter()
             _write_web_constructs(
                 conn,
                 session,
@@ -573,6 +527,10 @@ def write_parsed_session_to_archive(
             add_timing=add_timing,
         )
         add_timing("index.graph_resolve", t0)
+        t0 = time.perf_counter()
+        refresh_delegation_facts_for_session(conn, session_id)
+        add_timing("index.delegation_facts", t0)
+        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
         if merge_append and session.ingest_flags:
             t0 = time.perf_counter()
             _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
@@ -654,6 +612,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
     for table in (
+        "action_pairs",
         "blocks",
         "attachment_refs",
         "paste_spans",
@@ -850,351 +809,6 @@ def read_insight_materialization(
     )
 
 
-def upsert_session_tag(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag: str,
-    tag_source: str,
-    method: str | None = None,
-    confidence: float | None = None,
-    evidence: dict[str, object] | None = None,
-) -> ArchiveSessionTag:
-    """Upsert one unified user/auto tag row for an archive session."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    normalized_tag = tag.strip().lower()
-    if not normalized_tag:
-        raise ValueError("tag cannot be empty")
-    if len(normalized_tag) > 200:
-        raise ValueError("tag exceeds maximum length of 200 characters")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_tags (
-                session_id, tag, tag_source, method, confidence, evidence_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, tag, tag_source) DO UPDATE SET
-                method = excluded.method,
-                confidence = excluded.confidence,
-                evidence_json = excluded.evidence_json
-            """,
-            (
-                session_id,
-                normalized_tag,
-                tag_source,
-                method,
-                confidence,
-                _json_dumps(evidence) if evidence is not None else None,
-            ),
-        )
-        _mirror_session_tag_assertion_if_available(
-            conn,
-            session_id=session_id,
-            tag=normalized_tag,
-            tag_source=tag_source,
-            method=method,
-            confidence=confidence,
-            evidence=evidence,
-        )
-    return read_session_tags(conn, session_id=session_id, tag_source=tag_source)[normalized_tag]
-
-
-def _mirror_session_tag_assertion_if_available(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag: str,
-    tag_source: str,
-    method: str | None,
-    confidence: float | None,
-    evidence: dict[str, object] | None,
-) -> None:
-    """Mirror user tag writes when the active tier owns assertions."""
-    if tag_source != "user" or not _table_exists(conn, "assertions"):
-        return
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_session_tag_assertion
-
-    upsert_session_tag_assertion(
-        conn,
-        session_id=session_id,
-        tag=tag,
-        tag_source=tag_source,
-        method=method,
-        confidence=confidence,
-        evidence=evidence,
-    )
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
-def read_session_tags(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    tag_source: str | None = None,
-) -> dict[str, ArchiveSessionTag]:
-    """Read archive session tags keyed by normalized tag."""
-    conn.row_factory = sqlite3.Row
-    params: list[object] = [session_id]
-    source_filter = ""
-    if tag_source is not None:
-        source_filter = "AND tag_source = ?"
-        params.append(tag_source)
-    rows = conn.execute(
-        f"""
-        SELECT session_id, tag, tag_source, method, confidence, evidence_json
-        FROM session_tags
-        WHERE session_id = ?
-          {source_filter}
-        ORDER BY tag_source, tag
-        """,
-        tuple(params),
-    ).fetchall()
-    return {
-        row["tag"]: ArchiveSessionTag(
-            session_id=row["session_id"],
-            tag=row["tag"],
-            tag_source=row["tag_source"],
-            method=row["method"],
-            confidence=row["confidence"],
-            evidence=_json_loads(row["evidence_json"]) if row["evidence_json"] is not None else None,
-        )
-        for row in rows
-    }
-
-
-def upsert_session_work_event(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    position: int,
-    work_event_type: str,
-    summary: str,
-    confidence: float = 0.0,
-    start_index: int = 0,
-    end_index: int = 0,
-    started_at_ms: int | None = None,
-    ended_at_ms: int | None = None,
-    duration_ms: int = 0,
-    file_paths: tuple[str, ...] = (),
-    tools_used: tuple[str, ...] = (),
-    evidence: dict[str, object] | None = None,
-    inference: dict[str, object] | None = None,
-    search_text: str = "",
-    input_high_water_mark: str | None = None,
-    input_high_water_mark_source: str | None = None,
-) -> ArchiveSessionWorkEvent:
-    """Upsert one deterministic session work-event row."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_work_events (
-                session_id, position, work_event_type, summary, confidence,
-                start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-                file_paths_json, tools_used_json,
-                input_high_water_mark, input_high_water_mark_source,
-                evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, position) DO UPDATE SET
-                work_event_type = excluded.work_event_type,
-                summary = excluded.summary,
-                confidence = excluded.confidence,
-                start_index = excluded.start_index,
-                end_index = excluded.end_index,
-                started_at_ms = excluded.started_at_ms,
-                ended_at_ms = excluded.ended_at_ms,
-                duration_ms = excluded.duration_ms,
-                file_paths_json = excluded.file_paths_json,
-                tools_used_json = excluded.tools_used_json,
-                input_high_water_mark = excluded.input_high_water_mark,
-                input_high_water_mark_source = excluded.input_high_water_mark_source,
-                evidence_json = excluded.evidence_json,
-                inference_json = excluded.inference_json,
-                search_text = excluded.search_text
-            """,
-            (
-                session_id,
-                position,
-                work_event_type,
-                summary,
-                confidence,
-                start_index,
-                end_index,
-                started_at_ms,
-                ended_at_ms,
-                duration_ms,
-                _json_dumps(list(file_paths)),
-                _json_dumps(list(tools_used)),
-                input_high_water_mark,
-                input_high_water_mark_source,
-                _json_dumps(evidence or {}),
-                _json_dumps(inference or {}),
-                search_text,
-            ),
-        )
-        _refresh_session_profile_count(conn, session_id, table="session_work_events", column="work_event_count")
-    return read_session_work_events(conn, session_id=session_id)[position]
-
-
-def read_session_work_events(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-) -> dict[int, ArchiveSessionWorkEvent]:
-    """Read deterministic session work events keyed by position."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT event_id, session_id, position, work_event_type, summary, confidence,
-            start_index, end_index, started_at_ms, ended_at_ms, duration_ms,
-            file_paths_json, tools_used_json,
-            input_high_water_mark, input_high_water_mark_source,
-            evidence_json, inference_json, search_text
-        FROM session_work_events
-        WHERE session_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return {
-        row["position"]: ArchiveSessionWorkEvent(
-            event_id=row["event_id"],
-            session_id=row["session_id"],
-            position=row["position"],
-            work_event_type=row["work_event_type"],
-            summary=row["summary"],
-            confidence=row["confidence"],
-            start_index=row["start_index"],
-            end_index=row["end_index"],
-            started_at_ms=row["started_at_ms"],
-            ended_at_ms=row["ended_at_ms"],
-            duration_ms=row["duration_ms"],
-            file_paths=_json_tuple(row["file_paths_json"]),
-            tools_used=_json_tuple(row["tools_used_json"]),
-            evidence=_json_loads(row["evidence_json"]),
-            inference=_json_loads(row["inference_json"]),
-            search_text=row["search_text"],
-            input_high_water_mark=row["input_high_water_mark"],
-            input_high_water_mark_source=row["input_high_water_mark_source"],
-        )
-        for row in rows
-    }
-
-
-def upsert_session_phase(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-    position: int,
-    start_index: int = 0,
-    end_index: int = 0,
-    started_at_ms: int | None = None,
-    ended_at_ms: int | None = None,
-    duration_ms: int = 0,
-    tool_counts: dict[str, int] | None = None,
-    word_count: int = 0,
-    evidence: dict[str, object] | None = None,
-    inference: dict[str, object] | None = None,
-    search_text: str = "",
-    input_high_water_mark: str | None = None,
-    input_high_water_mark_source: str | None = None,
-) -> ArchiveSessionPhase:
-    """Upsert one deterministic session phase row."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO session_phases (
-                session_id, position, start_index, end_index,
-                started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
-                input_high_water_mark, input_high_water_mark_source,
-                evidence_json, inference_json, search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, position) DO UPDATE SET
-                start_index = excluded.start_index,
-                end_index = excluded.end_index,
-                started_at_ms = excluded.started_at_ms,
-                ended_at_ms = excluded.ended_at_ms,
-                duration_ms = excluded.duration_ms,
-                tool_counts_json = excluded.tool_counts_json,
-                word_count = excluded.word_count,
-                input_high_water_mark = excluded.input_high_water_mark,
-                input_high_water_mark_source = excluded.input_high_water_mark_source,
-                evidence_json = excluded.evidence_json,
-                inference_json = excluded.inference_json,
-                search_text = excluded.search_text
-            """,
-            (
-                session_id,
-                position,
-                start_index,
-                end_index,
-                started_at_ms,
-                ended_at_ms,
-                duration_ms,
-                _json_dumps(tool_counts or {}),
-                word_count,
-                input_high_water_mark,
-                input_high_water_mark_source,
-                _json_dumps(evidence or {}),
-                _json_dumps(inference or {}),
-                search_text,
-            ),
-        )
-        _refresh_session_profile_count(conn, session_id, table="session_phases", column="phase_count")
-    return read_session_phases(conn, session_id=session_id)[position]
-
-
-def read_session_phases(
-    conn: sqlite3.Connection,
-    *,
-    session_id: str,
-) -> dict[int, ArchiveSessionPhase]:
-    """Read deterministic session phases keyed by position."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT phase_id, session_id, position, start_index, end_index,
-            started_at_ms, ended_at_ms, duration_ms, tool_counts_json, word_count,
-            input_high_water_mark, input_high_water_mark_source,
-            evidence_json, inference_json, search_text
-        FROM session_phases
-        WHERE session_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return {
-        row["position"]: ArchiveSessionPhase(
-            phase_id=row["phase_id"],
-            session_id=row["session_id"],
-            position=row["position"],
-            start_index=row["start_index"],
-            end_index=row["end_index"],
-            started_at_ms=row["started_at_ms"],
-            ended_at_ms=row["ended_at_ms"],
-            duration_ms=row["duration_ms"],
-            tool_counts={str(key): _json_int(value) for key, value in _json_loads(row["tool_counts_json"]).items()},
-            word_count=row["word_count"],
-            evidence=_json_loads(row["evidence_json"]),
-            inference=_json_loads(row["inference_json"]),
-            search_text=row["search_text"],
-            input_high_water_mark=row["input_high_water_mark"],
-            input_high_water_mark_source=row["input_high_water_mark_source"],
-        )
-        for row in rows
-    }
-
-
 def read_archive_session_envelope(
     conn: sqlite3.Connection, session_id: str, *, _depth: int = 0
 ) -> ArchiveSessionEnvelope:
@@ -1333,6 +947,7 @@ def read_archive_session_envelope(
                 duration_ms=int(message["duration_ms"] or 0),
                 parent_message_id=message["parent_message_id"],
                 attachments=tuple(attachments_by_message.get(message["message_id"], ())),
+                source_session_id=str(session["session_id"]),
             )
         )
 
@@ -1350,8 +965,12 @@ def read_archive_session_envelope(
     # composed view includes that parent's transcript.
     lineage_complete = True
     lineage_truncation_reason: LineageTruncationReason | None = None
+    lineage_inheritance = "none"
+    lineage_branch_point_message_id: str | None = None
     edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
     if edge is not None:
+        lineage_inheritance = "prefix-sharing"
+        parent_session_id, lineage_branch_point_message_id = edge
         if _depth >= _MAX_LINEAGE_DEPTH:
             lineage_complete = False
             lineage_truncation_reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
@@ -1361,14 +980,13 @@ def read_archive_session_envelope(
                 session["session_id"],
             )
         else:
-            parent_session_id, branch_point_message_id = edge
             parent_envelope = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1)
             parent_messages = parent_envelope.messages
             prefix: list[ArchiveMessageRow] = []
             found = False
             for parent_message in parent_messages:
                 prefix.append(parent_message)
-                if parent_message.message_id == branch_point_message_id:
+                if parent_message.message_id == lineage_branch_point_message_id:
                     found = True
                     break
             # Dangling branch point (parent message hard-deleted): keep this
@@ -1399,6 +1017,8 @@ def read_archive_session_envelope(
         messages=tuple(messages),
         lineage_complete=lineage_complete,
         lineage_truncation_reason=lineage_truncation_reason,
+        lineage_inheritance=lineage_inheritance,
+        lineage_branch_point_message_id=lineage_branch_point_message_id,
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
@@ -1465,9 +1085,9 @@ def rebuild_archive_messages_fts(conn: sqlite3.Connection) -> int:
     """Rebuild the archive message FTS index from canonical ``blocks`` rows."""
     conn.execute("DELETE FROM messages_fts")
     conn.execute(
-        """
+        f"""
         INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, search_text
+        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
         FROM blocks
         WHERE search_text != ''
         """
@@ -1484,13 +1104,28 @@ def _write_messages(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write message rows using table-driven column specification.
+
+    The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (29 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the three hand-aligned duplicates (column list in INSERT,
+    placeholder string, tuple order) into a single source of truth.
+    """
+    spec = archive_tiers_specs.MESSAGES_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             position = position_offset + (message.position if message.position is not None else fallback_position)
             variant_index = message.variant_index if message.variant_index is not None else 0
+            # Build tuple in the order defined by spec.writable_columns, skipping
+            # columns with non-standard placeholders (like parent_message_id=NULL)
             yield (
                 session_id,
                 _sqlite_text(_effective_message_native_id(message, duplicate_native_ids)) or None,
+                # parent_message_id: skipped (always NULL in VALUES)
                 position,
                 _enum_value(message.role),
                 _enum_value(message.message_type),
@@ -1519,19 +1154,14 @@ def _write_messages(
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
             )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders come from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO messages (
-            session_id, native_id, parent_message_id, position, role, message_type, material_origin,
-            model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text,
-            has_tool_use, has_thinking, has_paste, paste_boundary,
-            variant_index, is_active_path, is_active_leaf, word_count,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            duration_ms, content_hash, occurred_at_ms
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _message_content_hash(
@@ -1624,6 +1254,17 @@ def _write_blocks(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
+    """Write block rows using table-driven column specification.
+
+    The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
+      - writable_columns: the ordered list of columns to INSERT (14 total)
+      - The column names and placeholders are generated from the spec
+      - The tuple order is derived from the spec's writable_columns order
+
+    This consolidates the hand-aligned duplicates into a single source of truth.
+    """
+    spec = archive_tiers_specs.BLOCKS_SPEC
+
     def rows() -> Iterable[tuple[object, ...]]:
         for fallback_position, message in enumerate(messages):
             message_id = _message_id(
@@ -1641,6 +1282,7 @@ def _write_blocks(
                 language = _block_language(block)
                 is_error = getattr(block, "is_error", None)
                 exit_code = getattr(block, "exit_code", None)
+                # Tuple built in order defined by spec.writable_columns
                 yield (
                     message_id,
                     session_id,
@@ -1668,16 +1310,14 @@ def _write_blocks(
                     ),
                 )
 
-    conn.executemany(
-        """
+    # Generate INSERT statement from spec: column list and placeholders from single source
+    insert_sql = f"""
         INSERT OR REPLACE INTO blocks (
-            message_id, session_id, position, block_type, text, tool_name,
-            tool_id, tool_input, semantic_type, media_type, language,
-            tool_result_is_error, tool_result_exit_code, content_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows(),
-    )
+            {spec.insert_column_names}
+        ) VALUES ({spec.insert_placeholder_string})
+        """
+
+    conn.executemany(insert_sql, rows())
 
 
 def _write_web_constructs(
@@ -1810,6 +1450,9 @@ def _replace_full_session_messages_and_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("blocks", t0)
+        t0 = time.perf_counter()
+        refresh_action_pairs(conn, session_id)
+        add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
             conn,
@@ -2019,6 +1662,10 @@ def _write_attachments(
             ),
         )
         ref_position = _attachment_position(attachment)
+        ref_id = f"{message_id}:attachment:{ref_position}"
+        # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
+        # explicitly so identifiers from an older projection cannot survive.
+        conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
             INSERT OR REPLACE INTO attachment_refs (
@@ -2035,7 +1682,6 @@ def _write_attachments(
                 _sqlite_text(_attachment_caption(attachment)),
             ),
         )
-        ref_id = f"{message_id}:attachment:{ref_position}"
         _write_attachment_native_ids(conn, ref_id, attachment)
     affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
     if not affected_attachment_ids:
@@ -2448,9 +2094,9 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         SELECT session_id
         FROM sessions
         WHERE root_session_id = ? OR session_id = ?
-        ORDER BY sort_key_ms IS NULL, sort_key_ms, session_id
+        ORDER BY session_id != ?, sort_key_ms IS NULL, sort_key_ms, session_id
         """,
-        (root_session_id, root_session_id),
+        (root_session_id, root_session_id, root_session_id),
     ).fetchall()
     desired_session_ids = [str(row[0]) for row in session_rows]
     existing_thread = conn.execute(
@@ -2482,13 +2128,19 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         ):
             return
         if existing_session_ids == desired_session_ids[: len(existing_session_ids)]:
-            for position, row in enumerate(session_rows[len(existing_session_ids) :], start=len(existing_session_ids)):
-                conn.execute(
+            new_rows = [
+                (root_session_id, row[0], position)
+                for position, row in enumerate(
+                    session_rows[len(existing_session_ids) :], start=len(existing_session_ids)
+                )
+            ]
+            if new_rows:
+                conn.executemany(
                     """
                     INSERT INTO thread_sessions (thread_id, session_id, position)
                     VALUES (?, ?, ?)
                     """,
-                    (root_session_id, row[0], position),
+                    new_rows,
                 )
             conn.execute(
                 """
@@ -2500,14 +2152,70 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
                 (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
             )
             return
+        if len(existing_session_ids) == len(desired_session_ids):
+            # Same membership, different order (a thread member's sort key
+            # moved past siblings without joining/leaving the thread). Since
+            # both lists have equal length, index i names the same numeric
+            # ``position`` in both orderings, so the common leading/trailing
+            # run that already agrees can be left untouched -- only the
+            # differing middle span needs a delete+reinsert. Without this, a
+            # giant long-lived thread (thousands of resumed/forked Codex
+            # sessions) pays a full O(thread_size) rebuild on every reorder,
+            # even when only a handful of rows actually moved
+            # (polylogue-6wnh).
+            n = len(existing_session_ids)
+            common_prefix_len = 0
+            while (
+                common_prefix_len < n
+                and existing_session_ids[common_prefix_len] == desired_session_ids[common_prefix_len]
+            ):
+                common_prefix_len += 1
+            common_suffix_len = 0
+            max_suffix = n - common_prefix_len
+            while (
+                common_suffix_len < max_suffix
+                and existing_session_ids[n - 1 - common_suffix_len] == desired_session_ids[n - 1 - common_suffix_len]
+            ):
+                common_suffix_len += 1
+            span_end = n - common_suffix_len
+            if span_end > common_prefix_len:
+                conn.execute(
+                    """
+                    DELETE FROM thread_sessions
+                    WHERE thread_id = ? AND position >= ? AND position < ?
+                    """,
+                    (root_session_id, common_prefix_len, span_end),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO thread_sessions (thread_id, session_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (root_session_id, session_id, position)
+                        for position, session_id in enumerate(
+                            desired_session_ids[common_prefix_len:span_end], start=common_prefix_len
+                        )
+                    ],
+                )
+            conn.execute(
+                """
+                UPDATE threads
+                SET session_count = ?,
+                    depth = ?
+                WHERE thread_id = ?
+                """,
+                (n, max(n - 1, 0), root_session_id),
+            )
+            return
     conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-    for position, row in enumerate(session_rows):
-        conn.execute(
+    if session_rows:
+        conn.executemany(
             """
             INSERT INTO thread_sessions (thread_id, session_id, position)
             VALUES (?, ?, ?)
             """,
-            (root_session_id, row[0], position),
+            [(root_session_id, row[0], position) for position, row in enumerate(session_rows)],
         )
     conn.execute(
         """
@@ -3318,9 +3026,11 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     if not token_rows:
         return
 
-    # Look up the active catalog_id once so FK can be set when we have a price.
-    catalog_row = conn.execute("SELECT catalog_id FROM price_catalogs LIMIT 1").fetchone()
-    active_catalog_id: str | None = str(catalog_row[0]) if catalog_row is not None else None
+    # Seed or reuse the revision matching the current content hash before
+    # pricing, so an existing archive receives catalog corrections too.
+    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
+
+    active_catalog_id = seed_price_catalog(conn)
     priced_at_ms = int(time.time() * 1000)
 
     for row in token_rows:
@@ -3333,7 +3043,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
         # Compute cost_usd from the curated catalog when a price entry exists.
         # estimate_cost() reads the in-memory PRICING dict so the result always
-        # matches the DB-backed model_prices rows seeded from the same source.
+        # matches the DB-backed model_prices rows selected by the same catalog
+        # hash as the active in-memory source.
         normalized = _normalize_model(model_name)
         billable = sum_input + sum_output + sum_cache_read + sum_cache_write
         if normalized in PRICING and billable > 0:
@@ -3493,7 +3204,11 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 
 _SIG_FIELD_SEP = "\x1f"
 _SIG_BLOCK_SEP = "\x1e"
+# The synchronous envelope reader below is recursive, so retain its conservative
+# Python-stack guard. Writer-side signature composition is iterative and shares
+# the async reader's much larger runaway backstop.
 _MAX_LINEAGE_DEPTH = 64
+_MAX_WRITER_LINEAGE_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
 
 
 def _canonical_json(value: object) -> str:
@@ -3547,12 +3262,12 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
     per ingest batch and invalidated whenever those rows change."""
     own_rows = conn.execute(
         """
-        SELECT m.message_id, m.position, m.role,
+        SELECT m.message_id, m.position, m.variant_index, m.role,
                b.block_type, b.text, b.tool_name, b.tool_input
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ? AND m.variant_index = 0
-        ORDER BY m.position, b.position
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
         """,
         (session_id,),
     ).fetchall()
@@ -3565,7 +3280,7 @@ def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[
         if cur_id is not None:
             own.append((cur_id, _message_signature_from_blocks(cur_role, cur_blocks)))
 
-    for message_id, _position, role, block_type, text, tool_name, tool_input in own_rows:
+    for message_id, _position, _variant_index, role, block_type, text, tool_name, tool_input in own_rows:
         if message_id != cur_id:
             flush()
             cur_id = message_id
@@ -3593,8 +3308,9 @@ def _composed_db_signatures(
     _depth: int = 0,
 ) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
-    transcript (its inherited prefix + own tail), recursively resolving any
-    prefix-sharing lineage edge. Mirrors the read-side composition.
+    transcript (its inherited prefix + own tail). Walk the lineage iteratively
+    and compose root-to-leaf, mirroring the async read path without inheriting
+    the synchronous envelope reader's Python-stack limit.
 
     When ``cache`` is supplied, each session's OWN signatures are memoized by
     ``session_id`` for the life of one ingest batch. When ``composed_cache`` is
@@ -3613,52 +3329,77 @@ def _composed_db_signatures(
             return _composed_db_signatures(conn, session_id, cache=cache, composed_cache=composed_cache, _depth=_depth)
         finally:
             conn.execute("ROLLBACK")
-    if composed_cache is not None:
-        composed = composed_cache.get(session_id)
-        if composed is not None:
-            return composed
-    own = cache.get(session_id) if cache is not None else None
-    if own is None:
-        own = _own_db_signatures(conn, session_id)
-        if cache is not None:
-            cache[session_id] = own
 
-    if _depth >= _MAX_LINEAGE_DEPTH:
-        if composed_cache is not None:
-            composed_cache[session_id] = own
+    def own_signatures(target_session_id: str) -> list[tuple[str, str]]:
+        own = cache.get(target_session_id) if cache is not None else None
+        if own is None:
+            own = _own_db_signatures(conn, target_session_id)
+            if cache is not None:
+                cache[target_session_id] = own
         return own
-    edge = conn.execute(
-        """
-        SELECT resolved_dst_session_id, branch_point_message_id
-        FROM session_links
-        WHERE src_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND resolved_dst_session_id IS NOT NULL
-          AND branch_point_message_id IS NOT NULL
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
-    if edge is None:
+
+    # Collect (child, branch point, child-owned rows) leaf-first, then compose
+    # from the oldest reached ancestor down. A visited set is the real cycle
+    # guard; the shared depth limit only bounds malformed acyclic chains.
+    chain: list[tuple[str, str, list[tuple[str, str]]]] = []
+    visited = {session_id}
+    cursor_session_id = session_id
+    composed: list[tuple[str, str]] | None = None
+    remaining_depth = max(0, _MAX_WRITER_LINEAGE_DEPTH - _depth)
+    for _ in range(remaining_depth):
         if composed_cache is not None:
-            composed_cache[session_id] = own
-        return own
-    parent_id, branch_point_message_id = edge
-    parent_composed = _composed_db_signatures(
-        conn,
-        str(parent_id),
-        cache=cache,
-        composed_cache=composed_cache,
-        _depth=_depth + 1,
-    )
-    prefix: list[tuple[str, str]] = []
-    for entry in parent_composed:
-        prefix.append(entry)
-        if entry[0] == branch_point_message_id:
+            cached_composed = composed_cache.get(cursor_session_id)
+            if cached_composed is not None:
+                composed = cached_composed
+                break
+        own = own_signatures(cursor_session_id)
+        edge = conn.execute(
+            """
+            SELECT resolved_dst_session_id, branch_point_message_id
+            FROM session_links
+            WHERE src_session_id = ?
+              AND inheritance = 'prefix-sharing'
+              AND resolved_dst_session_id IS NOT NULL
+              AND branch_point_message_id IS NOT NULL
+            LIMIT 1
+            """,
+            (cursor_session_id,),
+        ).fetchone()
+        if edge is None:
+            composed = own
+            if composed_cache is not None:
+                composed_cache[cursor_session_id] = composed
             break
-    composed = prefix + own
-    if composed_cache is not None:
-        composed_cache[session_id] = composed
+        parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
+        if parent_id in visited:
+            composed = own
+            if composed_cache is not None:
+                composed_cache[cursor_session_id] = composed
+            break
+        chain.append((cursor_session_id, branch_point_message_id, own))
+        visited.add(parent_id)
+        cursor_session_id = parent_id
+    if composed is None:
+        # The runaway guard was exhausted. Match the async reader: start with
+        # the oldest reached session's own rows, then compose the retained
+        # descendant chain. Ancestors beyond the common cutoff are omitted.
+        composed = own_signatures(cursor_session_id)
+        if composed_cache is not None:
+            composed_cache[cursor_session_id] = composed
+
+    for child_session_id, branch_point_message_id, own in reversed(chain):
+        prefix: list[tuple[str, str]] = []
+        found = False
+        for entry in composed:
+            prefix.append(entry)
+            if entry[0] == branch_point_message_id:
+                found = True
+                break
+        # A genuinely missing branch point is not a license to inherit a nearby
+        # or entire prefix. This matches the async reader's dangling-edge rule.
+        composed = (prefix if found else []) + own
+        if composed_cache is not None:
+            composed_cache[child_session_id] = composed
     return composed
 
 
@@ -3956,6 +3697,13 @@ def _delete_all_session_message_dependents(
         params,
     )
     conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
+    conn.execute(
+        """
+        DELETE FROM attachment_native_ids
+        WHERE ref_id IN (SELECT ref_id FROM attachment_refs WHERE session_id = ?)
+        """,
+        (session_id,),
+    )
     conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM paste_spans WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
@@ -3989,6 +3737,15 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
         UPDATE session_agent_policies
         SET source_message_id = NULL
         WHERE source_message_id IN ({placeholders})
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        DELETE FROM attachment_native_ids
+        WHERE ref_id IN (
+            SELECT ref_id FROM attachment_refs WHERE message_id IN ({placeholders})
+        )
         """,
         params,
     )

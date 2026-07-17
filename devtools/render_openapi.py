@@ -1,8 +1,9 @@
 """Render the OpenAPI schema for stable daemon query HTTP surfaces.
 
-The surface payload models in :mod:`polylogue.surfaces.payloads` are the
-typed result contracts shared across CLI JSON, MCP, the Python API, and
-daemon HTTP. To make the daemon HTTP surface machine-discoverable — and
+The payload models in :mod:`polylogue.surfaces.payloads` and the browser
+credential models in :mod:`polylogue.daemon.web_auth` are typed contracts
+shared by daemon HTTP clients and other Polylogue surfaces. To make the daemon
+HTTP surface machine-discoverable — and
 to let external tooling auto-generate clients without touching private
 Python types — this command writes an OpenAPI 3.1 document at
 ``docs/openapi/search.yaml`` that exposes both request parameters and
@@ -37,10 +38,16 @@ from polylogue.archive.viewport import (
     read_view_http_query_params,
 )
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
+from polylogue.daemon.web_auth import (
+    WebCredentialBootstrapPayload,
+    WebCredentialFailurePayload,
+    WebCredentialRevocationPayload,
+)
 from polylogue.surfaces.payloads import (
     RANKING_POLICY_MIXED,
     RANKING_POLICY_VERSION,
     AssertionClaimListPayload,
+    QueryErrorPayload,
     QueryUnitAggregateEnvelope,
     QueryUnitEnvelope,
     SearchEnvelope,
@@ -62,7 +69,24 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     AssertionClaimListPayload,
     SessionSearchHitPayload,
     SessionListRowPayload,
+    WebCredentialBootstrapPayload,
+    WebCredentialRevocationPayload,
+    WebCredentialFailurePayload,
+    QueryErrorPayload,
 )
+
+_WEB_CREDENTIAL_FAILURE_STATES = [
+    "web_credential_missing",
+    "web_credential_invalid",
+    "web_credential_expired",
+    "web_credential_revoked",
+    "web_credential_wrong_origin",
+    "web_credential_insufficient_scope",
+]
+
+
+def _protected_read_security() -> list[dict[str, list[str]]]:
+    return [{"machineBearer": []}, {"webCredentialCookie": []}]
 
 
 def _route_contract_payload(contract: RouteContract) -> dict[str, str]:
@@ -220,6 +244,54 @@ def _collect_component_schemas() -> dict[str, Any]:
     return schemas
 
 
+def _web_credential_error_response(description: str) -> dict[str, Any]:
+    """Return the generated-client contract for one credential failure."""
+
+    return {
+        "description": description,
+        "headers": {
+            "X-Polylogue-Web-Credential-State": {
+                "schema": {
+                    "type": "string",
+                    "enum": _WEB_CREDENTIAL_FAILURE_STATES,
+                }
+            }
+        },
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebCredentialFailurePayload"}}},
+    }
+
+
+def _query_error_response(description: str) -> dict[str, Any]:
+    return {
+        "description": description,
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QueryErrorPayload"}}},
+    }
+
+
+def _protected_auth_error_response(description: str) -> dict[str, Any]:
+    """Describe either machine-bearer admission errors or typed web states."""
+
+    return {
+        "description": description,
+        "headers": {
+            "X-Polylogue-Web-Credential-State": {
+                "description": "Present when the first-party web credential was evaluated.",
+                "schema": {"type": "string", "enum": _WEB_CREDENTIAL_FAILURE_STATES},
+            }
+        },
+        "content": {
+            "application/json": {
+                "schema": {
+                    "anyOf": [
+                        {"$ref": "#/components/schemas/QueryErrorPayload"},
+                        {"$ref": "#/components/schemas/WebCredentialFailurePayload"},
+                    ]
+                }
+            }
+        },
+    }
+
+
 def _build_openapi_document() -> dict[str, Any]:
     schemas = _collect_component_schemas()
     return {
@@ -230,7 +302,8 @@ def _build_openapi_document() -> dict[str, Any]:
             "description": (
                 "Local daemon HTTP API exposing typed query envelopes shared "
                 "across CLI JSON, MCP, and the Python API. This document is "
-                "generated from Pydantic models in `polylogue.surfaces.payloads`; "
+                "generated from Pydantic models in `polylogue.surfaces.payloads` "
+                "and `polylogue.daemon.web_auth`; "
                 "do not edit by hand. "
                 f"Run `{control_plane_command('render openapi')}` to regenerate."
             ),
@@ -248,6 +321,66 @@ def _build_openapi_document() -> dict[str, Any]:
             }
         ],
         "paths": {
+            "/api/web-auth/session": {
+                "post": {
+                    "summary": "Bootstrap or rotate a first-party web credential",
+                    "description": (
+                        "Loopback, exact-origin browser bootstrap. The opaque credential is returned only in an "
+                        "HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata, scopes, and "
+                        "expiry but never credential bytes."
+                    ),
+                    "operationId": "bootstrapWebCredential",
+                    "security": [],
+                    "responses": {
+                        "201": {
+                            "description": "Credential issued and protected cookie set.",
+                            "headers": {
+                                "Set-Cookie": {
+                                    "description": "Protected HttpOnly first-party credential transport.",
+                                    "schema": {"type": "string", "writeOnly": True},
+                                },
+                                "X-Polylogue-Web-Credential-State": {"schema": {"type": "string", "const": "ready"}},
+                            },
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/WebCredentialBootstrapPayload"}
+                                }
+                            },
+                        },
+                        "400": _query_error_response("Credential-shaped query parameters are forbidden."),
+                        "403": _web_credential_error_response("Bootstrap origin was not the daemon's authority."),
+                    },
+                    "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
+                },
+                "delete": {
+                    "summary": "Revoke the current first-party web credential",
+                    "operationId": "revokeWebCredential",
+                    "security": [{"webCredentialCookie": []}],
+                    "responses": {
+                        "200": {
+                            "description": "Credential revoked and browser cookie expired.",
+                            "headers": {
+                                "Set-Cookie": {
+                                    "description": "Expires the protected first-party credential cookie.",
+                                    "schema": {"type": "string", "writeOnly": True},
+                                },
+                                "X-Polylogue-Web-Credential-State": {
+                                    "schema": {"type": "string", "const": "web_credential_revoked"}
+                                },
+                            },
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/WebCredentialRevocationPayload"}
+                                }
+                            },
+                        },
+                        "400": _query_error_response("Credential-shaped query parameters are forbidden."),
+                        "401": _web_credential_error_response("Credential is missing, invalid, expired, or revoked."),
+                        "403": _web_credential_error_response("Credential origin or scope is not admitted."),
+                    },
+                    "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
+                },
+            },
             "/api/sessions": {
                 "get": {
                     "summary": "Ranked session search and list",
@@ -261,6 +394,7 @@ def _build_openapi_document() -> dict[str, Any]:
                         "pagination."
                     ),
                     "operationId": "searchSessions",
+                    "security": _protected_read_security(),
                     "parameters": [
                         {
                             "name": "query",
@@ -333,7 +467,12 @@ def _build_openapi_document() -> dict[str, Any]:
                             "content": {
                                 "application/json": {"schema": {"$ref": "#/components/schemas/SearchEnvelope"}}
                             },
-                        }
+                        },
+                        "400": _query_error_response("Malformed query or credential-shaped query parameter."),
+                        "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
+                        "403": _protected_auth_error_response(
+                            "Host, origin, or web credential scope was not admitted."
+                        ),
                     },
                 }
             },
@@ -348,6 +487,7 @@ def _build_openapi_document() -> dict[str, Any]:
                         "``Polylogue.query_units()``."
                     ),
                     "operationId": "queryUnits",
+                    "security": _protected_read_security(),
                     "parameters": [
                         {
                             "name": "expression",
@@ -566,7 +706,14 @@ def _build_openapi_document() -> dict[str, Any]:
                         },
                         "400": {
                             "description": "Malformed query or non-terminal session expression.",
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/QueryErrorPayload"}}
+                            },
                         },
+                        "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
+                        "403": _protected_auth_error_response(
+                            "Host, origin, or web credential scope was not admitted."
+                        ),
                     },
                 }
             },
@@ -575,6 +722,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "summary": "Execute a session read-view",
                     "description": _read_view_http_description(),
                     "operationId": "readSessionView",
+                    "security": _protected_read_security(),
                     "parameters": _read_view_http_parameters(),
                     "responses": {
                         "200": {
@@ -583,8 +731,12 @@ def _build_openapi_document() -> dict[str, Any]:
                                 "application/json": {"schema": {"$ref": "#/components/schemas/SessionReadViewEnvelope"}}
                             },
                         },
-                        "400": {"description": "Unsupported view or format."},
+                        "400": _query_error_response("Unsupported view/format or credential-shaped query parameter."),
                         "404": {"description": "Session not found."},
+                        "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
+                        "403": _protected_auth_error_response(
+                            "Host, origin, or web credential scope was not admitted."
+                        ),
                     },
                 }
             },
@@ -599,6 +751,7 @@ def _build_openapi_document() -> dict[str, Any]:
                         "lifecycle read."
                     ),
                     "operationId": "listAssertionClaims",
+                    "security": _protected_read_security(),
                     "parameters": [
                         {
                             "name": "target_ref",
@@ -654,13 +807,35 @@ def _build_openapi_document() -> dict[str, Any]:
                                     "schema": {"$ref": "#/components/schemas/AssertionClaimListPayload"}
                                 }
                             },
-                        }
+                        },
+                        "400": _query_error_response("Malformed or credential-shaped query parameter."),
+                        "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
+                        "403": _protected_auth_error_response(
+                            "Host, origin, or web credential scope was not admitted."
+                        ),
                     },
                 }
             },
         },
         "components": {
             "schemas": schemas,
+            "securitySchemes": {
+                "machineBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "opaque",
+                    "description": "Machine-client token configured by --api-auth-token.",
+                },
+                "webCredentialCookie": {
+                    "type": "apiKey",
+                    "in": "cookie",
+                    "name": "polylogue_web_credential",
+                    "description": (
+                        "Short-lived, origin-bound HttpOnly credential issued by bootstrapWebCredential. "
+                        "Browser clients use credentials: same-origin and never read the cookie value."
+                    ),
+                },
+            },
             "x-polylogue-ranking-policy": {
                 "default": RANKING_POLICY_MIXED,
                 "version": RANKING_POLICY_VERSION,
@@ -680,7 +855,7 @@ def _build_yaml_body() -> str:
     document = _build_openapi_document()
     header = (
         "# Generated by `" + control_plane_command("render openapi") + "`. Do not edit by hand.\n"
-        "# Source models: polylogue.surfaces.payloads query envelopes.\n"
+        "# Source models: polylogue.surfaces.payloads query envelopes and polylogue.daemon.web_auth.\n"
     )
     body = yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=120)
     return header + body

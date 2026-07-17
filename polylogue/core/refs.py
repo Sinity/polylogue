@@ -35,6 +35,40 @@ ObjectRefKind: TypeAlias = Literal[
     "github-issue",
     "github-pr",
     "github-review",
+    # Analysis-provenance object kinds (polylogue-rxdo epic). Most refs land
+    # here before their backing storage tiers exist; annotation-batch now
+    # resolves through durable user.db storage (polylogue-rxdo.7.1). Do not append a
+    # ``@content-hash`` anchor suffix onto these — that belongs to the
+    # separate citation-anchor work (polylogue-bby.11).
+    "query",
+    "query-run",
+    "result-set",
+    "finding",
+    "cohort",
+    "analysis",
+    "annotation-batch",
+    # rxdo.9.11-.16 comparative-judgment mechanisms (K-O). ``ranker`` and
+    # ``judgment-set`` follow the same content-address discipline as
+    # ``query``/``metric``: two rankers citing different hashes are visibly
+    # incomparable. ``elicitation-session`` and ``experiment-analysis`` are
+    # durable receipt/analysis-artifact identities, not new lifecycle stores.
+    "judgment-set",
+    "ranker",
+    "elicitation-session",
+    "experiment-analysis",
+    # polylogue-lph4: delegation attempt identity, reusing the polylogue-y964
+    # `delegations` view vocabulary. Two id shapes share this one kind:
+    #   - action-observed (resolved/unresolved/ambiguous): object_id is the
+    #     parent-side dispatch `instruction_tool_use_block_id` verbatim. That
+    #     block id already embeds its owning session_id as a structural
+    #     prefix, so (parent_session_id, instruction_tool_use_block_id) is
+    #     fully recoverable from the id alone -- no extra encoding needed.
+    #   - edge-only (edge_only/quarantined, no parent-side dispatch action
+    #     to key off): object_id is ``edge:<parent_session_id>::<child_session_id>``,
+    #     a deterministic relation identity over the resolved session_links
+    #     pair. ``::`` is used as the internal separator (matching
+    #     EvidenceRef) because session ids themselves may contain ``:``.
+    "delegation",
 ]
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
@@ -70,6 +104,18 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "github-issue": "github-issue",
     "github-pr": "github-pr",
     "github-review": "github-review",
+    "query": "query",
+    "query-run": "query-run",
+    "result-set": "result-set",
+    "finding": "finding",
+    "cohort": "cohort",
+    "analysis": "analysis",
+    "annotation-batch": "annotation-batch",
+    "delegation": "delegation",
+    "judgment-set": "judgment-set",
+    "ranker": "ranker",
+    "elicitation-session": "elicitation-session",
+    "experiment-analysis": "experiment-analysis",
 }
 
 
@@ -213,13 +259,50 @@ def _parse_object_ref_kind(value: str) -> ObjectRefKind:
         raise ValueError(f"unsupported object ref kind: {value!r}") from exc
 
 
+_DELEGATION_EDGE_PREFIX: Final[str] = "edge:"
+
+
+def delegation_edge_object_id(parent_session_id: str, child_session_id: str) -> str:
+    """Return the deterministic edge-only delegation object id.
+
+    Used when a resolved child has no discoverable parent-side dispatch
+    action to key off (``mapping_state`` ``edge_only``/``quarantined`` in
+    the ``delegations`` view) -- there is no ``instruction_tool_use_block_id``
+    to anchor identity on, so identity falls back to the resolved
+    ``session_links`` relation itself.
+    """
+
+    if not parent_session_id or not child_session_id:
+        raise ValueError("delegation edge identity requires non-empty parent and child session ids")
+    return f"{_DELEGATION_EDGE_PREFIX}{parent_session_id}::{child_session_id}"
+
+
+def parse_delegation_edge_object_id(object_id: str) -> tuple[str, str] | None:
+    """Split a delegation object id into ``(parent_session_id, child_session_id)``.
+
+    Returns ``None`` when ``object_id`` is not the edge-only shape -- callers
+    should then treat it as an action-observed
+    ``instruction_tool_use_block_id`` instead.
+    """
+
+    if not object_id.startswith(_DELEGATION_EDGE_PREFIX):
+        return None
+    remainder = object_id[len(_DELEGATION_EDGE_PREFIX) :]
+    parent_session_id, separator, child_session_id = remainder.partition("::")
+    if not separator or not parent_session_id or not child_session_id:
+        return None
+    return parent_session_id, child_session_id
+
+
 __all__ = [
     "EvidenceRef",
     "EvidenceRefKind",
     "ObjectRef",
     "ObjectRefKind",
     "PublicRef",
+    "delegation_edge_object_id",
     "normalize_object_ref_text",
     "normalize_public_ref_text",
+    "parse_delegation_edge_object_id",
     "parse_public_ref",
 ]

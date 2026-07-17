@@ -5,18 +5,20 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.commands import maintenance
+from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_rebuild_index
 from polylogue.config import Config
 from polylogue.core.enums import Provider
+from polylogue.core.json import json_document
 from polylogue.maintenance.replay import rebuild_index_from_source
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -30,6 +32,151 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
+
+
+def test_raw_authority_census_cli_resolves_receipt_handle(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    receipt = record_raw_authority_census(
+        root,
+        (),
+        selected_plan_ids=set(),
+        executable_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
+        scope={"source_family": "codex"},
+        residual={},
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-census",
+            receipt.query_handle,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["query_handle"] == receipt.query_handle
+    assert payload["census"]["census_id"] == receipt.census_id
+
+
+def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    root = cli_workspace["archive_root"]
+    raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
+    plan = RawReplayPlan(
+        "raw-replay:cli-oversized",
+        "b" * 64,
+        raw_ids,
+        ("codex:oversized",),
+        json_document({"raw_ids": list(raw_ids)}),
+        json_document({"raw_ids": list(raw_ids)}),
+        json_document({"raw_ids": list(raw_ids)}),
+    )
+    receipt = record_raw_authority_census(
+        root,
+        (plan,),
+        selected_plan_ids=set(),
+        executable_plan_ids={plan.plan_id},
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "cli-oversized"},
+        residual={},
+    )
+
+    census_result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-census",
+            receipt.query_handle,
+            "--limit",
+            "1",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert census_result.exit_code == 0
+    assert len(census_result.output) < 8_000
+    census_payload = json.loads(census_result.output)
+    item = census_payload["plans"][0]
+    assert item["plan"]["input_raw_count"] == 2_000
+    assert "raw-01999" not in census_result.output
+
+    detail_result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "raw-authority-detail",
+            item["detail_query_handle"],
+            "--chunk-chars",
+            "256",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert detail_result.exit_code == 0
+    detail_payload = json.loads(detail_result.output)
+    assert len(detail_payload["chunk"]) <= 256
+    assert detail_payload["next_query_handle"] is not None
+
+
+def test_raw_authority_blocker_resolution_cli_requires_confirmation(
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def resolve(
+        _root: Path,
+        blocker_id: str,
+        *,
+        resolution: str,
+        assertion_id: str | None = None,
+        judgment_disposition: str | None = None,
+    ) -> dict[str, object]:
+        assert assertion_id is None
+        assert judgment_disposition is None
+        calls.append((blocker_id, resolution))
+        return {"blocker_id": blocker_id, "current_plan": {"plan_id": "current-plan"}}
+
+    monkeypatch.setattr("polylogue.storage.raw_authority.resolve_raw_authority_blocker", resolve)
+    base = [
+        "--plain",
+        "ops",
+        "maintenance",
+        "raw-authority-blocker-resolve",
+        "--blocker-id",
+        "blocker-1",
+        "--reason",
+        "reviewed current evidence",
+    ]
+    refused = cli_runner.invoke(cli, base)
+    accepted = cli_runner.invoke(cli, [*base, "--yes"], catch_exceptions=False)
+
+    assert refused.exit_code != 0
+    assert "without --yes" in refused.output
+    assert accepted.exit_code == 0
+    assert "Resolved blocker-1" in accepted.output
+    assert calls == [("blocker-1", "reviewed current evidence")]
 
 
 def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
@@ -58,7 +205,6 @@ def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
 def _seed_assertion_export_rows(archive_root: Path) -> None:
     with sqlite3.connect(archive_root / "user.db") as conn:
         conn.row_factory = sqlite3.Row
-        initialize_archive_tier(conn, ArchiveTier.USER)
         upsert_assertion(
             conn,
             assertion_id="export-mark",
@@ -87,36 +233,6 @@ def _seed_assertion_export_rows(archive_root: Path) -> None:
             visibility="private",
             now_ms=1_700_000_002_000,
         )
-
-
-def _seed_missing_blob_cursor(archive_root: Path, source: Path) -> None:
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text('{"type":"session_meta","payload":{"id":"missing-blob"}}\n', encoding="utf-8")
-    blob_hash = b"a" * 32
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        write_source_raw_session_blob_ref(
-            conn,
-            origin="codex-session",
-            source_path=str(source),
-            source_index=0,
-            blob_hash=blob_hash,
-            blob_size=source.stat().st_size,
-            acquired_at_ms=1,
-            native_id="missing-blob",
-        )
-    stat = source.stat()
-    CursorStore(archive_root / "ops.db").set(
-        source,
-        stat.st_size,
-        byte_offset=stat.st_size,
-        last_complete_newline=stat.st_size,
-        parser_fingerprint="live-batched-v2",
-        content_fingerprint=blob_hash.hex(),
-        source_name="codex",
-        st_dev=stat.st_dev,
-        st_ino=stat.st_ino,
-        mtime_ns=stat.st_mtime_ns,
-    )
 
 
 def _create_user_v3(path: Path) -> None:
@@ -774,6 +890,299 @@ def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
     assert refs == [(str(source),)]
 
 
+def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
+    """Seed embeddings.db with one vector row for a message that no longer
+    exists under an otherwise-live session — standing in for a message
+    dropped by an index rebuild (polylogue-1dk1) while the session survives.
+    """
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Origin
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+        ArchiveEmbeddingWrite,
+        upsert_message_embeddings,
+    )
+    from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    long_text = "This live message keeps the session present in the rebuilt index."
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="orphan-cli-fixture",
+                title="orphan reconcile fixture",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="live",
+                        role=Role.USER,
+                        text=long_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            )
+        )
+
+    orphan_message_id = f"{session_id}:orphaned-message-no-longer-in-index"
+    with sqlite3.connect(archive_root / "embeddings.db") as conn:
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+        upsert_message_embeddings(
+            conn,
+            [
+                ArchiveEmbeddingWrite(
+                    message_id=orphan_message_id,
+                    session_id=session_id,
+                    origin=Origin.CODEX_SESSION,
+                    embedding=[0.01] * EMBEDDING_DIMENSION,
+                    model="voyage-4",
+                    embedded_at_ms=1_700_000_000_000,
+                    content_hash=b"o" * 32,
+                )
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES (?, 'codex-session', 1, 1700000000000, 0, NULL)
+            """,
+            (session_id,),
+        )
+        conn.commit()
+    index_db = archive_root / "index.db"
+    (archive_root / ".index-active-pointer").write_text(str(index_db.resolve()), encoding="utf-8")
+    generations = archive_root / ".index-generations" / "gen-current"
+    generations.mkdir(parents=True, exist_ok=True)
+    (generations / "generation.json").write_text(
+        json.dumps(
+            {
+                "generation_id": "gen-current",
+                "owner_id": "test",
+                "archive_root": str(archive_root),
+                "index_path": str(index_db.resolve()),
+                "state": "active",
+                "created_at_ms": 1_700_000_000_000,
+                "source_snapshot": "source-at-rebuild-start",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return session_id, orphan_message_id
+
+
+def test_embedding_orphan_reconcile_default_quiet_window_matches_reconcile_module() -> None:
+    """The CLI's hardcoded --help default (polylogue-sod7) must not drift from the real constant.
+
+    _embeddings.py hardcodes _DEFAULT_QUIET_WINDOW_SECONDS instead of importing
+    DEFAULT_QUIET_WINDOW_MS from polylogue.storage.embeddings.reconcile, so
+    that constant -- and its heavy import chain -- isn't paid on the
+    `--help` path. This test is the drift guard for that duplication.
+    """
+    from polylogue.cli.commands.maintenance._embeddings import _DEFAULT_QUIET_WINDOW_SECONDS
+    from polylogue.storage.embeddings.reconcile import DEFAULT_QUIET_WINDOW_MS
+
+    assert _DEFAULT_QUIET_WINDOW_SECONDS == DEFAULT_QUIET_WINDOW_MS // 1000
+
+
+def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES ('codex-session:absent', 'codex-session', 0, 1700000000000, 0, NULL)
+            """
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--output-format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mode"] == "embedding_orphan_reconcile"
+    assert payload["mutates"] is False
+    assert payload["dry_run"] is True
+    assert payload["orphan_message_rows"] == 1
+    assert payload["candidate_message_rows"] == 1
+    assert payload["candidate_message_meta_rows"] == 1
+    assert payload["candidate_vector_rows"] == 1
+    assert payload["candidate_status_rows"] == 1
+    assert payload["removed_message_rows"] == 0
+    assert payload["removed_vector_rows"] == 0
+    assert payload["removed_status_rows"] == 0
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
+def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_counts(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (
+                session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message
+            ) VALUES ('codex-session:absent', 'codex-session', 0, 1700000000000, 0, NULL)
+            """
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Would remove:  1 meta row(s), 1 vector row(s), 1 status row(s)" in result.output
+    assert "Removed:" not in result.output
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
+def test_embedding_orphan_reconcile_cli_apply_removes_rows(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "embedding-orphan-reconcile",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["mutates"] is True
+    assert payload["dry_run"] is False
+    assert payload["removed_message_rows"] == 1
+    assert payload["removed_vector_rows"] == 1
+    assert payload["sessions_recounted"] == 1
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+                0
+            ]
+            == 0
+        )
+        status = conn.execute(
+            "SELECT message_count_embedded, needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert status is not None
+        assert status[0] == 0
+        assert status[1] == 1
+
+
+def test_embedding_orphan_reconcile_cli_apply_is_bounded_by_default(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    session_id, _message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    embeddings_db = cli_workspace["archive_root"] / "embeddings.db"
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO message_embeddings_meta (
+                message_id, model, dimension, content_hash, embedded_at_ms, needs_reindex
+            ) VALUES (?, 'voyage-4', 1024, ?, 1700000000000, 0)
+            """,
+            [(f"{session_id}:zz-orphan-{position:03d}", b"z" * 32) for position in range(500)],
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "embedding-orphan-reconcile",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["candidate_message_rows"] == 500
+    assert payload["removed_message_rows"] == 500
+    assert payload["more_pending"] is True
+    with sqlite3.connect(embeddings_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+
+
+def test_embedding_orphan_reconcile_cli_apply_requires_exclusive_offline_lease(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """Production CLI proof: a live/shared writer lease blocks break-glass apply."""
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    writer = ActiveWriterLease(cli_workspace["archive_root"])
+    writer.acquire()
+    try:
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
+        )
+    finally:
+        writer.close()
+
+    assert result.exit_code != 0
+    assert "index rebuild lease is already held" in result.output
+
+
+def test_embedding_orphan_reconcile_cli_apply_refuses_stale_index_schema(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """The break-glass writer cannot treat a pre-rebuild index as deletion truth."""
+    _session_id, message_id = _seed_orphan_embedding_row(cli_workspace["archive_root"])
+    index_db = cli_workspace["archive_root"] / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA user_version = 32")
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "embedding-orphan-reconcile", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RuntimeError)
+    assert "active index is v32, packaged index is v" in str(result.exception)
+    with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM message_embeddings_meta WHERE message_id = ?", (message_id,)).fetchone()[
+                0
+            ]
+            == 1
+        )
+
+
 def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path], cli_runner: CliRunner) -> None:
     _stage_uninitialized_archive(cli_workspace)
     result = cli_runner.invoke(
@@ -807,7 +1216,10 @@ def test_archive_init_cli_executes_confirmed_initialization(
             ),
         )
 
-    monkeypatch.setattr(maintenance, "initialize_archive_tier_files_from_plan", fake_init)
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive_init.initialize_archive_tier_files_from_plan",
+        fake_init,
+    )
 
     result = cli_runner.invoke(
         cli,
@@ -860,7 +1272,7 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
     assert payload["tier"] == "user"
     assert payload["from_version"] == 3
     assert payload["to_version"] == USER_SCHEMA_VERSION
-    assert payload["applied_versions"] == [4, 5]
+    assert payload["applied_versions"] == list(range(4, USER_SCHEMA_VERSION + 1))
     assert payload["backup_receipt"] == str(manifest.with_name("verification-receipt.json"))
     with sqlite3.connect(user_db) as conn:
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
@@ -1003,20 +1415,17 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
-def test_missing_raw_blob_cursor_repair_dry_run_keeps_cursor(
+def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
-    source = cli_workspace["archive_root"] / "watch" / "missing-blob.jsonl"
-    _seed_missing_blob_cursor(cli_workspace["archive_root"], source)
-
     result = cli_runner.invoke(
         cli,
         [
             "--plain",
             "ops",
             "maintenance",
-            "missing-raw-blob-cursors",
+            "raw-authority-frontier",
             "--output-format",
             "json",
         ],
@@ -1025,44 +1434,55 @@ def test_missing_raw_blob_cursor_repair_dry_run_keeps_cursor(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["mode"] == "dry-run"
-    assert payload["candidate_count"] == 1
-    assert payload["deleted_cursor_count"] == 0
-    assert payload["candidates"][0]["source_path"] == str(source)
-    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
-        assert conn.execute("SELECT 1 FROM ingest_cursor WHERE source_path = ?", (str(source),)).fetchone() == (1,)
+    assert payload["accepted_head_count"] == 0
+    assert payload["plan_count"] == 0
+    assert payload["executable_plan_count"] == 0
+    assert payload["state_counts"] == {}
+    assert payload["query_handle"].startswith("polylogue://raw-authority-census/")
 
+    help_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"])
+    assert help_result.exit_code == 0
+    assert "raw-authority-frontier" in help_result.output
+    for removed in (
+        "missing-raw-blob-cursors",
+        "quarantined-accepted-raws",
+        "browser-capture-origin-mismatches",
+        "legacy-browser-capture-missing-native-id",
+        "browser-canonical-authority-conflicts",
+        "duplicate-raw-identity",
+    ):
+        assert removed not in help_result.output
 
-def test_missing_raw_blob_cursor_repair_apply_deletes_only_cursor(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    source = cli_workspace["archive_root"] / "watch" / "missing-blob.jsonl"
-    _seed_missing_blob_cursor(cli_workspace["archive_root"], source)
-
-    result = cli_runner.invoke(
+    apply_without_confirmation = cli_runner.invoke(
         cli,
         [
             "--plain",
             "ops",
             "maintenance",
-            "missing-raw-blob-cursors",
-            "--apply",
-            "--output-format",
-            "json",
+            "raw-authority-frontier",
+            "--apply-plan",
+            "raw-authority-frontier:" + "a" * 64,
+            "--preview-census",
+            payload["census_id"],
         ],
-        catch_exceptions=False,
     )
+    assert apply_without_confirmation.exit_code == 1
+    assert "without --yes" in apply_without_confirmation.output
 
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["mode"] == "apply"
-    assert payload["candidate_count"] == 1
-    assert payload["deleted_cursor_count"] == 1
-    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
-        assert conn.execute("SELECT 1 FROM ingest_cursor WHERE source_path = ?", (str(source),)).fetchone() is None
-    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
-        assert conn.execute("SELECT 1 FROM raw_sessions WHERE source_path = ?", (str(source),)).fetchone() == (1,)
+
+def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """A census reconciles durable obligations, so it needs writer exclusion."""
+    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=123):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "raw-authority-frontier", "--output-format", "json"],
+        )
+
+    assert result.exit_code == 1
+    assert "Refusing offline maintenance while polylogued PID 123 is running" in result.output
 
 
 def test_archive_read_cli_lists_archive_sessions(
@@ -1089,7 +1509,6 @@ def test_archive_read_cli_lists_archive_sessions(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -1100,7 +1519,7 @@ def test_archive_read_cli_lists_archive_sessions(
             ]
 
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance.ArchiveStore.open_existing",
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
@@ -1166,14 +1585,13 @@ def test_archive_read_cli_searches_archive_blocks(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     snippet="[needle]",
                 )
             ]
 
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance.ArchiveStore.open_existing",
+        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
@@ -1216,13 +1634,13 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
     monkeypatch: pytest.MonkeyPatch,
     selection_args: list[str],
 ) -> None:
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 4)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index._count_source_raw_sessions", lambda _root: 4)
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._all_index_rebuild_raw_ids",
+        "polylogue.cli.commands.maintenance._rebuild_index._all_index_rebuild_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._missing_index_raw_ids",
+        "polylogue.cli.commands.maintenance._rebuild_index._missing_index_raw_ids",
         lambda _root: ["raw-parent", "raw-child"],
     )
 
@@ -1296,7 +1714,7 @@ def test_all_index_rebuild_raw_ids_uses_source_acquisition_order(
                 (raw_id, raw_id, f"/tmp/{raw_id}.jsonl", acquired_at_ms),
             )
 
-    assert maintenance._all_index_rebuild_raw_ids(cli_workspace["archive_root"]) == [
+    assert maintenance_rebuild_index._all_index_rebuild_raw_ids(cli_workspace["archive_root"]) == [
         "raw-parent",
         "raw-sibling-a",
         "raw-sibling-b",
@@ -1338,7 +1756,9 @@ def test_rebuild_index_explicit_raw_ids_remain_inspectable_in_plan_mode(
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 10)
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._rebuild_index._count_source_raw_sessions", lambda _root: 10
+    )
 
     result = cli_runner.invoke(
         cli,
@@ -1394,9 +1814,9 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
                 (raw_id, raw_id, f"/tmp/{raw_id}.jsonl", blob_size, acquired_at_ms),
             )
 
-    monkeypatch.setattr("polylogue.cli.commands.maintenance._count_source_raw_sessions", lambda _root: 2)
+    monkeypatch.setattr("polylogue.cli.commands.maintenance._rebuild_index._count_source_raw_sessions", lambda _root: 2)
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._missing_index_raw_ids",
+        "polylogue.cli.commands.maintenance._rebuild_index._missing_index_raw_ids",
         lambda _root: ["raw-large", "raw-small"],
     )
     result = cli_runner.invoke(

@@ -9,7 +9,8 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 - a single-process worker default (``-n 0``) for fast focused runs, overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - live, streamed output (unlike ``devtools verify``, which captures);
-- the same pytest progress ledger, heartbeat, and stall timeout used by
+- the same pytest progress ledger, external deadline supervisor, owned process
+  group/cgroup containment, heartbeat, and stall timeout used by
   ``devtools verify``;
 - a checkout-scoped lock that serializes overlapping runs so two suites from
   the same checkout do not race and burn CPU. Concurrency is already
@@ -31,6 +32,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from devtools.verify import (
+    PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
     PYTEST_OUTPUT_PATH,
     PYTEST_PROGRESS_PATH,
@@ -40,7 +42,7 @@ from devtools.verify import (
     _clear_pytest_report,
     _run,
 )
-from devtools.verify_runs import VerifyRun, git_head
+from devtools.verify_runs import VerifyRun, apply_managed_pytest_runtime_policy, git_head
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -48,9 +50,11 @@ _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
 
 def _managed_env() -> dict[str, str]:
     """Mirror devtools.verify's subprocess environment for parity."""
-    env = os.environ.copy()
+    env, _policy = apply_managed_pytest_runtime_policy(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
@@ -141,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))
     sys.stderr.write(
         f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} output={PYTEST_OUTPUT_PATH}\n"
+        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
+        f"output={PYTEST_OUTPUT_PATH}\n"
     )
     return rc

@@ -1,0 +1,15 @@
+{
+  "case": "healthy-quiet",
+  "file_size_bytes": 1024,
+  "cursor_observed_size_bytes": 1024,
+  "cursor_offset_bytes": 1024,
+  "failure_count": 0,
+  "excluded": false,
+  "expected": {
+    "operational_state": "idle",
+    "stage": "searchable",
+    "pending_bytes": 0,
+    "unobserved_growth_bytes": 0,
+    "accepted_raw_id": "raw-current"
+  }
+}

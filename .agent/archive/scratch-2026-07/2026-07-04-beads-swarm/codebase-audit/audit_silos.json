@@ -1,0 +1,87 @@
+{
+  "silos": [
+    {
+      "concern": "Content-inclusion projection (which content kinds/families/bodies appear in output). Two independent vocabularies for the same decision: an 8-boolean include_* dataclass with its own ContentKind enum, and the body_policy/exclude_block_kinds/include_roles fields on the intended algebra spec. Surfaces pick one or the other; formatting.format_session takes ContentProjectionSpec while the projection bridge takes ProjectionSpec.",
+      "implementations": [
+        "polylogue/archive/semantic/content_projection.py:35 (class ContentProjectionSpec + ContentKind enum:21)",
+        "polylogue/surfaces/projection_spec.py:95 (ProjectionSpec.body_policy:100 + exclude_block_kinds:102 + include_roles:101, BodyPolicy enum:34)",
+        "polylogue/rendering/formatting.py:49 (format_session(content_projection: ContentProjectionSpec))"
+      ],
+      "should_be": "ProjectionSpec (BodyPolicy x EvidenceFamily x exclude_block_kinds/include_roles) in polylogue/surfaces/projection_spec.py is the single content-projection algebra; ContentProjectionSpec/ContentKind should be derived from or replaced by it.",
+      "existing_bead_or_null": "polylogue-jnj.1"
+    },
+    {
+      "concern": "Render-format token vocabulary. The set of legal output formats is declared in four unrelated places with visible drift ('text' vs 'plaintext'): the RenderFormat enum, a bare SESSION_OUTPUT_FORMATS tuple, a MACHINE_OUTPUT_FORMATS frozenset, and a per-view formats tuple repeated on every read-view profile.",
+      "implementations": [
+        "polylogue/surfaces/projection_spec.py:43 (RenderFormat enum, 9 values + RENDER_FORMAT_ALIASES:67)",
+        "polylogue/rendering/formatting.py:32 (SESSION_OUTPUT_FORMATS tuple, 8 values, no 'ndjson')",
+        "polylogue/cli/query_output.py:64 (MACHINE_OUTPUT_FORMATS frozenset)",
+        "polylogue/archive/viewport/profiles.py:88 (per-profile formats tuples; profiles.py:131 uses 'text' where SESSION_OUTPUT_FORMATS/RenderFormat use 'plaintext')"
+      ],
+      "should_be": "RenderFormat enum in polylogue/surfaces/projection_spec.py owns the format vocabulary; view profiles, format normalizers, and CLI classifiers reference subsets of it instead of re-listing string literals.",
+      "existing_bead_or_null": "polylogue-jnj.3"
+    },
+    {
+      "concern": "Render destination + delivery. RenderSpec models destination as a RenderDestination enum with an .out path and a file-requires-path validator, but the CLI read-view stack carries destination as a bare str on ReadViewInvocation and reimplements file/clipboard/stdout dispatch in deliver_content().",
+      "implementations": [
+        "polylogue/surfaces/projection_spec.py:57 (RenderDestination enum) + :125 (RenderSpec.destination/.out + _file_destination_requires_path validator:134)",
+        "polylogue/cli/read_views/base.py:99 (ReadViewInvocation.destination: str, out_path: str|None:100)",
+        "polylogue/cli/read_views/base.py:155 (deliver_content(): file/clipboard/echo dispatch)"
+      ],
+      "should_be": "RenderSpec (RenderDestination + out) owns destination semantics and delivery; ReadViewInvocation should carry a RenderSpec, and deliver_content should be a single renderer-side sink keyed off RenderDestination.",
+      "existing_bead_or_null": "polylogue-jnj.1"
+    },
+    {
+      "concern": "Per-view flag clusters that re-declare projection/selection knobs the algebra already owns. Each read view has its own frozen options dataclass (limit/offset/full, edge_limit, neighbor limit/window_hours, related_limit, ...) even though ProjectionSpec already carries body_limit, body_offset, edge_limit, neighbor_limit, neighbor_window_hours.",
+      "implementations": [
+        "polylogue/cli/read_views/base.py:24 (ReadViewMessageOptions.limit/offset/full)",
+        "polylogue/cli/read_views/base.py:54 (ReadViewNeighborOptions.limit/window_hours)",
+        "polylogue/cli/read_views/base.py:73 (ReadViewChronicleOptions.edge_limit)",
+        "polylogue/cli/read_views/base.py:33 (ReadViewContextOptions) + :62 (ReadViewCorrelationOptions) + :40 (ReadViewContextImageOptions)",
+        "polylogue/surfaces/projection_spec.py:104 (ProjectionSpec.edge_limit/body_limit/body_offset/neighbor_limit/neighbor_window_hours)"
+      ],
+      "should_be": "SelectionSpec + ProjectionSpec in projection_spec.py own these knobs; per-view option dataclasses collapse into projection/selection fields keyed by the view's projection family map (READ_VIEW_PROJECTION_FAMILIES).",
+      "existing_bead_or_null": "polylogue-jnj.1"
+    },
+    {
+      "concern": "Three independent session->HTML transforms. Export/read '--format html' renders through a Jinja template; block/projection rendering builds HTML from blocks in Python; the daemon web reader constructs session HTML as JS strings client-side. Same conceptual transform (session/message -> HTML) implemented three ways with three escaping/sanitizing regimes.",
+      "implementations": [
+        "polylogue/rendering/renderers/html.py:22 (render_session_html -> Jinja templates/session.html) via polylogue/rendering/formatting.py:130 (_conv_to_html)",
+        "polylogue/rendering/blocks.py:130 (render_blocks_html/_render_block_html) + polylogue/rendering/renderers/html_messages.py:17 (build_projection_html_messages) / :44 (build_session_html_messages)",
+        "polylogue/daemon/web_shell.py:22 (inline <!DOCTYPE html> shell) + client-side JS HTML string construction (web_shell.py:573) across polylogue/daemon/web_shell_reader.py and siblings"
+      ],
+      "should_be": "One session/message -> renderable -> HTML pipeline (blocks/html_messages feeding a single template renderer) that both the export path and the daemon web reader consume, instead of three parallel HTML emitters.",
+      "existing_bead_or_null": "polylogue-7le"
+    },
+    {
+      "concern": "Status/readiness assembly implemented in three code paths. Direct-archive readiness, tier/ops/workload status, and compaction all live in a 2000-line CLI module; the daemon has its own status payload builders; and workload-diagnostics builds a third snapshot of overlapping archive-health fields.",
+      "implementations": [
+        "polylogue/cli/commands/status.py:661 (_archive_readiness_status) + :509 (_archive_tier_status) + :981 (_ops_workload_status) + :1503 (_direct_archive_readiness_status) + :1311 (_compact_status_payload)",
+        "polylogue/daemon/status.py:320 (live_source_status_payload) + :341 (browser_capture_status_payload) + :76 (_active_status_db_path)",
+        "polylogue/cli/commands/diagnostics.py:48 (workload_command) + polylogue/daemon/live_ingest_attempt_workload.py:53 (workload_fields)"
+      ],
+      "should_be": "One status-assembly module producing a typed status/readiness payload that daemon status, CLI status, and workload diagnostics all read (per bead 703), rather than three overlapping assemblers.",
+      "existing_bead_or_null": "polylogue-703"
+    },
+    {
+      "concern": "Query params -> filter fields forked in the daemon HTTP fast path. build_query_spec_from_params (SessionQuerySpec.from_params) is the single params->spec lowerer, but the daemon split-archive fast path deliberately does NOT construct a SessionQuerySpec and instead re-derives every public structured filter (has_paste/has_tool_use/repo/has_type/tool/action.../cwd_prefix/title/min_messages...) from raw HTTP params in parallel, with an in-code comment that it 'must mirror those public params here'. The Lark DSL grammar itself is correctly the sole text->spec entrypoint across CLI/MCP/daemon/api; the fork is on the params->filter axis, not the DSL.",
+      "implementations": [
+        "polylogue/archive/query/spec.py:498 (SessionQuerySpec.from_params -> build_query_spec_from_params)",
+        "polylogue/daemon/http.py:1970 (split-archive fast path: 'does not construct a SessionQuerySpec directly, so it must mirror those public params here') through http.py:~2010 (_filter_kw assembly)",
+        "polylogue/daemon/http.py:984 (_query_params_from_http building SessionQuerySpec-compatible params by hand)"
+      ],
+      "should_be": "SessionQuerySpec.from_params is the one params->spec algebra; the daemon fast path should build a spec (or reuse its lowered filter fields) rather than mirroring each public param, so a new filter field cannot silently exist in the spec builder but be dropped by the fast path.",
+      "existing_bead_or_null": null
+    }
+  ],
+  "proposed_beads": [
+    {
+      "title": "Route daemon split-archive fast path through SessionQuerySpec.from_params",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-4p1",
+      "design": "polylogue/daemon/http.py:1970 documents that the split-archive fast path intentionally does not construct a SessionQuerySpec and hand-mirrors every public structured filter (has_paste, has_tool_use, has_thinking, repo, has_type, tool/exclude_tool, action/exclude_action/action_sequence/action_text, referenced_path, cwd_prefix, title, min/max_messages, min/max_words, plus the shared _filter_kw block). This is a parallel implementation of build_query_spec_from_params (polylogue/archive/query/spec.py:498). A filter field added to the spec builder is silently absent from the daemon fast path until someone edits both sites. Collapse it: have the fast path build a SessionQuerySpec via from_params and read its lowered filter fields, keeping only the genuinely count/summary-specific plumbing (session_id passed separately) outside the spec. Prove parity with a test that enumerates SessionQuerySpec filter fields and asserts each is honored by the fast path.",
+      "acceptance": "The daemon split-archive list/search/count path derives all structured filters from a SessionQuerySpec built via from_params (no per-field re-read of HTTP params for filters the spec already models); a test enumerates SessionQuerySpec filter attributes and fails if the fast path drops any; the in-code 'must mirror those public params here' comment and its manual mirroring block are removed; render surfaces (openapi/cli-output-schemas) still verify."
+    }
+  ]
+}

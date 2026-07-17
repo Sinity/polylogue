@@ -11,6 +11,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -30,6 +31,10 @@ from polylogue.sources.live.batch import (
     _full_parse_progress_groups,
     _FullIngestResult,
     last_complete_newline_from_tail,
+)
+from polylogue.sources.live.batch_support import (
+    encode_cursor_hash_authority,
+    tail_hash_from_path,
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -533,6 +538,39 @@ def test_cursor_mark_failed_quarantines_repeated_failures(tmp_path: Path) -> Non
     assert store.list_failed_with_retry() == []
 
 
+def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Path) -> None:
+    store = CursorStore(tmp_path / "live.sqlite")
+    path = tmp_path / "capture.json"
+    path.write_text('{"accepted":true}', encoding="utf-8")
+    accepted = path.stat()
+    store.set(
+        path,
+        accepted.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="accepted",
+        st_dev=accepted.st_dev,
+        st_ino=accepted.st_ino,
+        mtime_ns=accepted.st_mtime_ns,
+    )
+
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text('{"malformed":', encoding="utf-8")
+    replacement.replace(path)
+    failed = path.stat()
+    for _ in range(5):
+        store.mark_failed(path, failed_stat=failed)
+
+    record = store.get_record(path)
+    assert record is not None
+    assert record.excluded is True
+    assert (record.byte_size, record.st_dev, record.st_ino, record.mtime_ns) == (
+        failed.st_size,
+        failed.st_dev,
+        failed.st_ino,
+        failed.st_mtime_ns,
+    )
+
+
 def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
@@ -839,6 +877,11 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(f.read_bytes()).hexdigest(),
+            sha256(f.read_bytes()).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -861,6 +904,11 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         byte_offset=stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="already-known",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(f.read_bytes()).hexdigest(),
+            sha256(f.read_bytes()).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino + 1,
         mtime_ns=stat.st_mtime_ns,
@@ -910,6 +958,39 @@ def test_parser_version_change_needs_work_without_prefingerprint_read(
     assert watcher._needs_work(f) is True
 
 
+def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "capture.json"
+    path.write_text('{"broken":true}', encoding="utf-8")
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="broken",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=5,
+        excluded=True,
+    )
+
+    assert watcher._needs_work(path) is False
+
+    replacement = root / "replacement.json"
+    replacement.write_text('{"valid":"new capture"}', encoding="utf-8")
+    replacement.replace(path)
+
+    assert watcher._needs_work(path) is True
+    revived = watcher._cursor.get_record(path)
+    assert revived is not None
+    assert revived.excluded is False
+    assert revived.failure_count == 0
+    assert revived.next_retry_at is None
+
+
 def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -927,7 +1008,9 @@ def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     bytes_read = watcher._batch_processor._record_full_cursor(f, raw_fingerprint="raw-sha256")
     record = watcher._cursor.get_record(f)
 
-    assert bytes_read == f.stat().st_size
+    # The cursor stores both a bounded tail and a complete accepted-prefix
+    # hash; this one-record fixture makes both reads span the whole file.
+    assert bytes_read == 2 * f.stat().st_size
     assert record is not None
     assert record.content_fingerprint == "raw-sha256"
 
@@ -998,7 +1081,7 @@ def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path
     assert bytes_read == 0
     assert record is not None
     assert record.byte_size == state_db.stat().st_size
-    assert record.content_fingerprint == "snapshot-hash"
+    assert record.content_fingerprint == "acquisition-revision"
     assert record.tail_hash == "acquisition-revision"
 
 
@@ -1018,6 +1101,11 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -1033,12 +1121,12 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert append_plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
 
 
-def test_large_incomplete_jsonl_append_still_needs_work(tmp_path: Path) -> None:
+def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
     original = b'{"a":1}\n'
-    f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
+    f.write_bytes(original)
     watcher, _parse_sources = _make_watcher(tmp_path, root)
     stat = f.stat()
     watcher._cursor.set(
@@ -1048,15 +1136,25 @@ def test_large_incomplete_jsonl_append_still_needs_work(tmp_path: Path) -> None:
         last_complete_newline=len(original),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
-    assert watcher._needs_work(f) is True
+    # The first bounded probe observes no newline and records the unfinished
+    # tail.  Repeating the same periodic scan must then be a stat-only skip.
+    assert watcher._needs_work(f) is False
     record = watcher._cursor.get_record(f)
     assert record is not None
-    assert record.byte_size == len(original)
+    assert record.byte_size == f.stat().st_size
+    assert record.byte_offset == len(original)
+    assert watcher._needs_work(f) is False
 
 
 def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:
@@ -1692,6 +1790,11 @@ def test_incomplete_append_event_defers_without_ingest_until_newline(tmp_path: P
         last_complete_newline=len(complete),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(complete).hexdigest(),
+            sha256(complete).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -1799,7 +1902,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["source_group_count"] == 1
     assert payload["input_bytes"] == f.stat().st_size
     assert payload["source_payload_read_bytes"] == f.stat().st_size
-    assert payload["cursor_fingerprint_read_bytes"] == f.stat().st_size
+    assert payload["cursor_fingerprint_read_bytes"] == 2 * f.stat().st_size
     assert payload["read_amplification"] == 1.0
     assert payload["files_per_second"] >= 0
     assert payload["source_mb_per_second"] >= 0
@@ -1887,6 +1990,78 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     assert parse_sources.await_count == 0
 
 
+def test_catch_up_rebases_device_drift_after_one_prefix_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remount must not make every later restart rehash stable history."""
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    payload = b'{"a":1}\n'
+    path.write_bytes(payload)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    prefix_hash = sha256(payload).hexdigest()
+    tail_hash, _ = tail_hash_from_path(path, len(payload))
+    watcher._cursor.set(
+        path,
+        len(payload),
+        byte_offset=len(payload),
+        last_complete_newline=len(payload),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=prefix_hash,
+        tail_hash=encode_cursor_hash_authority(
+            prefix_hash,
+            tail_hash,
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        source_name="test",
+        st_dev=stat.st_dev + 1,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    calls = 0
+    rebase_batches = 0
+    real_hash = cast(Callable[..., tuple[str, int]], live_watcher.__dict__["sha256_range_from_path"])
+    real_rebase = watcher._cursor.rebase_authoritative_observations
+
+    def counted_hash(
+        source: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+        chunk_size: int = 64 * 1024,
+    ) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        return real_hash(
+            source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            chunk_size=chunk_size,
+        )
+
+    monkeypatch.setattr(live_watcher, "sha256_range_from_path", counted_hash)
+
+    def counted_rebase(rebases: Iterable[object]) -> int:
+        nonlocal rebase_batches
+        rebase_batches += 1
+        return real_rebase(cast(Iterable[Any], rebases))
+
+    monkeypatch.setattr(watcher._cursor, "rebase_authoritative_observations", counted_rebase)
+
+    asyncio.run(watcher._catch_up([root]))
+    rebased = watcher._cursor.get_record(path)
+    assert calls == 1
+    assert rebase_batches == 1
+    assert parse_sources.await_count == 0
+    assert rebased is not None
+    assert rebased.st_dev == stat.st_dev
+
+    asyncio.run(watcher._catch_up([root]))
+    assert calls == 1
+    assert parse_sources.await_count == 0
+
+
 def test_catch_up_finds_subagent_files(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -1942,6 +2117,22 @@ def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(watcher._catch_up([root]))
+    assert parse_sources.await_count == 1
+
+
+def test_catch_up_prunes_runtime_dependency_trees(tmp_path: Path) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    session = root / "sessions" / "session.jsonl"
+    session.parent.mkdir()
+    session.write_text('{"a":1}\n')
+    dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text('{"not":"a session"}\n')
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+
+    asyncio.run(watcher._catch_up([root]))
+
     assert parse_sources.await_count == 1
 
 
@@ -2073,14 +2264,9 @@ def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
 
     async def _drive() -> None:
         run_task = asyncio.create_task(watcher.run())
-        # Wait for catch_up to finish ingesting the pre-existing file.
-        for _ in range(50):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
+        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=5.0)
         baseline = parse_sources.await_count
-        await asyncio.sleep(0.2)  # ensure awatch is up after catch-up bookkeeping
-        # Append more content; expect a second ingest after debounce.
+        # Append immediately at the old catch-up/watch handoff boundary.
         with open(f, "a") as fh:
             fh.write('{"b":2}\n')
         for _ in range(60):
@@ -2181,6 +2367,35 @@ def test_periodic_catch_up_drains_missed_browser_capture_event(
         assert parse_sources.await_count >= 1
 
     asyncio.run(_drive())
+
+
+def test_periodic_catch_up_backs_off_after_each_reconciliation_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.01)
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_MAX_INTERVAL_S", 0.04)
+    delays: list[float] = []
+    passes = 0
+
+    async def fake_sleep(delay_s: float) -> None:
+        delays.append(delay_s)
+
+    async def fake_catch_up(_roots: list[Path]) -> None:
+        nonlocal passes
+        passes += 1
+        if passes == 3:
+            watcher.stop()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    watcher._catch_up = fake_catch_up  # type: ignore[assignment,method-assign]
+
+    asyncio.run(watcher._periodic_catch_up([root]))
+
+    assert delays == [0.01, 0.02, 0.04]
 
 
 def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:

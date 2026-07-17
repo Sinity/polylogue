@@ -4,18 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import click
 
-from polylogue.coordination import CoordinationView, build_coordination_envelope
-from polylogue.coordination.rendering import (
-    render_coordination_markdown,
-    render_coordination_text,
-    render_coordination_tree,
-)
+if TYPE_CHECKING:
+    from polylogue.coordination import AgentCoordinationPayload, CoordinationView
 
 F = TypeVar("F", bound=Callable[..., object])
+
+
+def _build_coordination_envelope(
+    *,
+    view: CoordinationView,
+    cwd: Path | None,
+    limit: int,
+    detail: bool,
+) -> AgentCoordinationPayload:
+    """Load the coordination substrate only when a projection is requested."""
+    from polylogue.coordination import build_coordination_envelope
+
+    return build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
 
 
 def _format_options(func: F) -> F:
@@ -51,16 +60,22 @@ def _emit(
     output_format: str,
     detail: bool,
 ) -> None:
-    payload = build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
+    payload = _build_coordination_envelope(view=view, cwd=cwd, limit=limit, detail=detail)
     if json_output or output_format == "json":
         click.echo(payload.to_json(exclude_none=True))
         return
     if output_format == "markdown":
+        from polylogue.coordination.rendering import render_coordination_markdown
+
         click.echo(render_coordination_markdown(payload), nl=False)
         return
     if output_format == "tree":
+        from polylogue.coordination.rendering import render_coordination_tree
+
         click.echo(render_coordination_tree(payload))
         return
+    from polylogue.coordination.rendering import render_coordination_text
+
     click.echo(render_coordination_text(payload))
 
 

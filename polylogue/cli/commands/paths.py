@@ -231,7 +231,7 @@ def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, obj
 
 def _read_user_version(path: Path) -> int | None:
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error:
         return None
@@ -279,8 +279,12 @@ def _merge_raw_materialization_debt(readiness: dict[str, object], active_archive
             kinds=("raw-materialization",),
             exact_fts=False,
         )
-    except Exception:
-        return readiness
+    except Exception as exc:
+        # The docstring contract is that paths composes the debt classifier;
+        # when it fails, readiness must say so instead of implying clean debt.
+        degraded = dict(readiness)
+        degraded["debt_classifier_error"] = f"{type(exc).__name__}: {exc}"
+        return degraded
     rows = getattr(payload, "rows", ())
     totals = getattr(payload, "totals", None)
     if totals is None or not rows:

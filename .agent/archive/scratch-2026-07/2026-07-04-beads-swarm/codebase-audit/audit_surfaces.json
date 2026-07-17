@@ -1,0 +1,147 @@
+{
+  "summary": "Layering lint (devtools verify layering) is import-only and passes; it does NOT catch logic reimplementation. Hunt found the divergence concentrated in a daemon _web_reader_archive_root dual-path family, a forked CLI read path, dead-but-diverging CLI stats/render copies, and MCP-first analysis math. Existing beads x7d (row rendering), 703 (status assembly), 9e5.16 (API parity) cover part; 7 untracked cases proposed.",
+  "reimplementations": [
+    {
+      "surface": "polylogue/daemon/http.py:3370 _do_archive_facets + :3519 _archive_facet_bucket (routed via _handle_facets:3339 whenever _web_reader_archive_root() is non-None = the normal split-archive reader path)",
+      "what": "Independently re-assembles the full FacetsResponse: scoped/global buckets, deferred_families, budget_exceeded, family_status, role_counts, message_types. Scoping = archive.search_summaries(query, limit=10_000) -> collect session_ids -> archive.stats(session_ids=...). Leaves has_flags/omitted at defaults and never computes idf. Scoped-to-query trigger is bool(query or origin or origins) vs the facade's spec.has_filters().",
+      "canonical_home": "polylogue/api/archive.py:3723 poly.facets() -> archive/query/facets.py _archive_facet_buckets + compute_idf. The sibling _do_facets (http.py:3353) already delegates correctly and its docstring claims 'daemon HTTP, MCP, CLI all share one scope vocabulary' -- but the archive branch that actually runs in production bypasses it.",
+      "divergence_risk": "HIGH. Two scoping mechanisms; daemon path always returns empty has_flags and no idf; filter-only requests get a different scoped_to_query value than the facade. This is the memory-flagged '/api/facets family names != data keys' bug. Confirmed independently by me and the daemon audit agent.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/daemon/similarity.py: _knn_for_embedding/_archive_knn_for_embedding (:172/:198), _l2_to_cosine_similarity (:217), _aggregate_hits (:235), _source_*_message_embeddings (:135/:157); reached via http.py:3158 build_similar_payload",
+      "what": "Complete session-seeded vector KNN: raw SQL over message_embeddings (WHERE embedding MATCH ? AND k=? ORDER BY distance), per-session best-distance aggregation, matched-message counting, and L2->cosine conversion.",
+      "canonical_home": "polylogue/storage/search_providers/sqlite_vec_queries.py:143 SqliteVecProvider.query_by_session already does exactly this (best_distance per message, :174-195). That file even comments (:14-17) that its per-seed-message K 'mirrors polylogue.daemon.similarity._PER_MESSAGE_K' -- an acknowledged parallel implementation.",
+      "divergence_risk": "MEDIUM-HIGH. L2->cosine formula, per-message K, self-session exclusion, and ranking tie-breaks are duplicated; the vec provider's ranking and the daemon's can drift independently.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/daemon/http.py:1902 _do_archive_list_sessions (web-reader fast path) AND polylogue/mcp/archive_support.py:254-379 archive_session_list_payload/archive_search_payload AND polylogue/cli/archive_query.py:674/787/815 (_query_hits/_paginate_rows/_build_cursor)",
+      "what": "Three surfaces each re-compile the query DSL (compile_expression), re-derive query_terms/contains_terms, merge DSL-spec filters with HTTP/CLI-param filters, hand-map them to ArchiveStore args, and each own their pagination/total/cursor logic. http.py:1970 comment admits 'the split-archive fast path does not construct a SessionQuerySpec directly, so it must mirror those public params here'; it re-fixed bugs #1873/#1860 in the parallel path.",
+      "canonical_home": "polylogue/archive/query/spec.py SessionQuerySpec.from_params + archive/query/archive_execution.py (list_summaries_archive, archive_search_hits, list_summaries_for_plan) + plan_execution.py. The envelope shape (build_search_envelope) is already shared; the execution/total/spec-mapping is not.",
+      "divergence_risk": "HIGH. Classic 'MCP/web give a different count or page than CLI' risk. MCP even has two internal list surfaces with different total semantics: archive_support estimate total = offset+len+(1 if len==limit) vs server_tools.py:363 which uses poly.archive_count_sessions. Root cause is the _web_reader_archive_root dual-path design that shadows the facade.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/cli/read_views/streaming_markdown.py:17 stream_exact_session_markdown (called from cli/read_views/standard.py:85 and :119 for transcript/dialogue --to file markdown exports)",
+      "what": "A whole forked read path: opens its own read-only sqlite connection to index.db, re-implements session-id/ref resolution (_resolve_session_id:62), prefix-sharing lineage gating in raw SQL (_has_prefix_sharing_edge:86, inheritance='prefix-sharing' AND branch_point_message_id IS NOT NULL), _table_exists:104, and the message+block join with the exact (occurred_at_ms IS NULL), occurred_at_ms, message_id, position keyset sort (:142), plus its own block filtering (_keep_block drops 'reasoning').",
+      "canonical_home": "The facade read path it falls back to: api/archive.py get_session/get_messages_paginated + read_archive_session_envelope (composes prefix-sharing lineage) + rendering/core_markdown + rendering/blocks. standard.py:129 run_read_dialogue uses poly.get_session for the non-streaming case -- the streaming case forks it.",
+      "divergence_risk": "MEDIUM-HIGH. Block filtering, lineage composition, timestamp normalization, and sort key are all duplicated; if the substrate's projection/lineage changes, this SQL path silently diverges. It also deliberately BAILS on prefix-sharing sessions (returns False) rather than composing them -- so file exports of forked/resumed sessions silently take a different code path.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/mcp/server_insight_tools.py:826 correlate_sessions, :652 find_similar_sessions (metadata lane), :510 aggregate_sessions, :233 workflow_shape_distribution, :298 find_abandoned_sessions, :131 tool_call_latency_distribution, :559 compare_sessions",
+      "what": "Analysis math hand-coded in the MCP surface: Pearson r (sum_x/sum_xy/sqrt + r-band strings) with a private metric-name->field map; a metadata similarity heuristic (score += 3 same workflow_shape, +1 origin, date-window, +len(tag overlap)); GROUP-BY bucket loops with private severity-rank maps and ISO-week keys; nearest-rank percentile(); per-key set-diff comparison. All fetch profiles via list_session_profile_insights then aggregate in-surface.",
+      "canonical_home": "None exists -- these have no facade/insights home (grep: only under mcp/). Should sink to insights/ (archive_rollups.py owns aggregate reducers; portfolio.py:_distribution/DistributionStat is the canonical percentile form; neighbor_candidates logic in archive/session/) and be exposed via api/ so CLI and the library produce identical answers.",
+      "divergence_risk": "MEDIUM. MCP-only and unreachable from CLI/library; the severity ordering, week-bucketing, similarity weights, and metric map are surface-private semantics that will be re-derived differently if any other surface grows the same verb.",
+      "existing_bead_or_null": "polylogue-9e5.16"
+    },
+    {
+      "surface": "polylogue/cli/query_stats.py:63-78 (_summary_group_key/_session_group_key), :353 output_stats_by_summaries, :399 output_stats_by_grouped_sessions, :446/:514 semantic grouping, :628 output_stats_by_profile_ids; DATE_GROUP_FORMATS:27",
+      "what": "Groups sessions by origin/day/month/year in Python and re-sums messages/words in memory; a second/third in-memory aggregator for tool/action kinds; work-kind key derived by string-scanning profile.auto_tags for a 'kind:' prefix instead of reading workflow_shape. DATE_GROUP_FORMATS literally re-declares the %Y-%m-%d/%Y-%m/%Y formats hard-coded in the SQL grouping.",
+      "canonical_home": "ArchiveStore.stats_by (storage/sqlite/archive_tiers/archive.py:5814, SQL grouping _stats_by_sql:6649) via api/archive.py:4164 get_stats_by; work-kind uses sp.workflow_shape in SQL. The live archive_query.py:394 path already uses archive.stats_by; query_stats is the legacy copy with no live CLI dispatch caller (only re-exports + tests).",
+      "divergence_risk": "MEDIUM. Three different date-key rules for one dimension (updated_at||created_at vs display_date vs strftime(sort_key_ms)); origin 'unknown-export' fallback vs SQL NULL-drop; work-kind auto_tags scan can disagree with workflow_shape. Dead duplicate kept alive only by tests, so drift is invisible.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/cli/query_semantic.py:63 referenced_path_matches_slice, :72 action_matches_slice, :151 output_stats_by_semantic_ids",
+      "what": "Re-derives the referenced-path / action-term / tool-term / action-text filter predicate that the query engine already implements.",
+      "canonical_home": "archive/query/runtime_matching.py:30-35 (referenced_path), archive/query/plan.py:190-199 (_matches_action_terms/_matches_action_sequence/_matches_action_text_terms), and the SQL _session_filter_clause which takes referenced_paths/action_terms/tool_terms as native params.",
+      "divergence_risk": "HIGH (correctness, live-reachable). For multi-term referenced_path the CLI uses any(...) (OR-of-terms, :69) while the substrate uses all(...) (AND-of-terms, runtime_matching.py:35) -- a two-term path query selects DIFFERENT sessions in the semantic-stats surface than in the actual query filter. The 'none' sentinel exists only in the CLI copy.",
+      "existing_bead_or_null": null
+    },
+    {
+      "surface": "polylogue/cli/archive_query.py:1938 _snippet (title max 96 / snippet 320), :2148 _ellipsize, :2043 _summary_payload, :2066 _hit_payload, :2154 _summary_line (title max 50), :2174 _hit_line; polylogue/cli/query_output.py:71 _ellipsize/:392 format_summary_list/:440 format_search_hit_list (DEAD, tests-only); polylogue/cli/select.py:32 _SELECT_TITLE_MAX_CHARS=96/:39 _ellipsize/:73 select_row_from_result",
+      "what": "Row projection + title/snippet truncation duplicated three ways with three different title budgets (50 / 96 / 96-with-rstrip). The live archive_query path uses its own _snippet(...,320); the DEAD query_output copies actually use the substrate bound_search_snippet + SessionListRowPayload.from_summary -- i.e. the dead path is closer to canonical than the live one.",
+      "canonical_home": "surfaces/payloads.py SessionListRowPayload.from_summary / SessionSearchHitPayload.from_search_hit + archive/query/search_hits.py bound_search_snippet. No shared TITLE truncator exists yet (x7d's proposed target).",
+      "divergence_risk": "MEDIUM. Same session's title/snippet renders differently across find results, read --all lists, and select pickers; --limit bounds row count while multiline titles still explode output. Tests pin the dead query_output shape, hiding drift.",
+      "existing_bead_or_null": "polylogue-x7d"
+    },
+    {
+      "surface": "polylogue/daemon/status.py:482 _insight_freshness_info / :523 _archive_insight_freshness_info",
+      "what": "SELECT COUNT(*) FROM sessions and COUNT(*) FROM session_profiles, then reports the bare ratio as session_profiles readiness -- no freshness verification.",
+      "canonical_home": "storage/insights/session/status.py session_insight_status_sync(conn, verify_freshness=True), which the CLI status command uses (cli/commands/status.py:746), and api/archive.py:3873 insight_readiness_report.",
+      "divergence_risk": "HIGH. Daemon calls profiles 'ready' on row-count parity while CLI/substrate require freshness -- the two surfaces disagree in production (the 703 symptom).",
+      "existing_bead_or_null": "polylogue-703"
+    },
+    {
+      "surface": "polylogue/daemon/status.py:441 _archive_tier_status; polylogue/daemon/metrics.py archive tier gauges (ARCHIVE_TIER_SPECS:61-67); polylogue/cli/commands/status.py:518 _archive_tier_status",
+      "what": "Each surface opens the tier files and independently reads PRAGMA user_version, st_size, table counts, and maps to present/mismatch/layout state.",
+      "canonical_home": "One shared tier-status / 'config paths' reader (candidate: api/archive.py health report over archive_tiers).",
+      "divergence_risk": "MEDIUM. Size/version/layout reported differently per surface depending on which tier path each resolves -- the live '844 MB vs 28.5 GB' size mismatch is a tier/path-selection divergence in this family.",
+      "existing_bead_or_null": "polylogue-703"
+    },
+    {
+      "surface": "polylogue/cli/commands/status.py:1930/:1992 fts = _fast_fts_doc_count(conn); fts_pct = 100 * fts / msgs",
+      "what": "Computes FTS coverage with a messages denominator (messages_fts_docsize / messages) -- the formula the canonical explicitly warns against.",
+      "canonical_home": "daemon/fts_status.py:186 fts_readiness_info: source is blocks WHERE search_text != '' (not message count); comment (:181-185) warns other denominators can exceed 100%. Daemon status delegates to this; CLI's local formula diverges.",
+      "divergence_risk": "LOW-and-shrinking. _fast_fts_doc_count is now stubbed to return 0 (status.py:93-97), so the branch is currently dead -- but it is a latent second formula and the mechanism behind the historical 'FTS 100% vs degraded' split.",
+      "existing_bead_or_null": "polylogue-703"
+    },
+    {
+      "surface": "polylogue/mcp/server_context_tools.py:127-159 compose_context_preamble",
+      "what": "Shells out to git rev-parse / git log --oneline -5 directly in the surface to build ContextPreambleProjectState, then re-validates the model. The shared build_context_preamble_payload is called but does not fill project state, so the surface patches it in.",
+      "canonical_home": "context/preamble.py should own branch + recent-commit enrichment so a CLI/hook SessionStart path produces identical project state.",
+      "divergence_risk": "LOW-MEDIUM. SessionStart preamble project-state is MCP-surface-defined; a CLI/hook path would re-derive it differently.",
+      "existing_bead_or_null": null
+    }
+  ],
+  "proposed_beads": [
+    {
+      "title": "Route /api/facets web-reader path through poly.facets(); delete _do_archive_facets",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-t46",
+      "design": "The daemon /api/facets route (http.py:_handle_facets:3339) dispatches to the hand-rolled _do_archive_facets (:3370) + _archive_facet_bucket (:3519) whenever _web_reader_archive_root() is non-None -- which is the normal split-archive path, so production ALWAYS bypasses the shared facade. That parallel assembly uses a different scoping mechanism (search_summaries(limit=10_000)->session_ids vs spec.has_filters() summary roll), leaves has_flags/omitted empty, and never computes idf, so the daemon returns a materially different FacetsResponse than the facade path _do_facets (:3353) already delegates to. Fix: make _handle_facets always build a SessionQuerySpec from params and call poly.facets(spec) (the api/archive.py:3723 contract that already owns scoped+global buckets, idf, deferred/budget), delete _do_archive_facets/_archive_facet_bucket and the _web_reader_archive_root facet branch. Preserve the budget/deadline + client-abort behavior by moving it into (or wrapping) the facade call. Keep the FacetsResponse JSON schema; regenerate openapi/cli-output-schemas.",
+      "acceptance": "_do_archive_facets and _archive_facet_bucket are deleted (grep confirms gone); /api/facets output equals poly.facets(spec).model_dump for the same params, including has_flags/idf/omitted and scoped_to_query on filter-only-no-query requests; a parity test asserts daemon /api/facets == facade facets for a scoped and an unscoped request; devtools verify + render all --check green."
+    },
+    {
+      "title": "Unify list/search query-spec->ArchiveStore execution across CLI, MCP, and daemon web",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-t46",
+      "design": "Three surfaces re-map the query DSL/params to ArchiveStore filter args and each own pagination/total/cursor: daemon http.py:1902 _do_archive_list_sessions (+ the _do_archive_* fast-path family), mcp/archive_support.py:254-379 archive_session_list_payload/archive_search_payload, and cli/archive_query.py:674/787/815 _query_hits/_paginate_rows/_build_cursor. The http.py:1970 comment admits it 'must mirror those public params here' and it re-fixed bugs #1873/#1860 in the parallel path; MCP has two internal list surfaces with different total semantics (archive_support estimate vs server_tools.py:363 poly.archive_count_sessions). Fix: route every surface through SessionQuerySpec.from_params + a single archive execution helper in archive/query/archive_execution.py that returns (rows, total, cursor); surfaces differ only in payload projection (build_search_envelope is already shared). Collapse the _web_reader_archive_root dual path so the facade is the single execution owner.",
+      "acceptance": "CLI find, MCP archive_list_sessions/archive_search_sessions, and daemon /api/sessions return the same total and page boundaries for identical filters (parity test across the three surfaces); the per-surface spec->filter mapping and total/cursor logic is deleted in favor of one execution helper (grep shows no second query_terms/contains merge); the two MCP list surfaces converge to one total semantic; devtools verify green."
+    },
+    {
+      "title": "Delegate daemon session-similarity KNN to SqliteVecProvider.query_by_session",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-t46",
+      "design": "daemon/similarity.py re-implements session-seeded vector ranking (raw MATCH/k SQL over message_embeddings, per-session best-distance aggregation, matched-message count, L2->cosine in _l2_to_cosine_similarity:217) that storage/search_providers/sqlite_vec_queries.py:143 SqliteVecProvider.query_by_session already does -- the substrate file even comments that the daemon's _PER_MESSAGE_K mirrors it. Fix: build_similar_payload (http.py:3158) should call the facade/vec-provider session-similarity method and only project the payload; delete the daemon KNN/aggregation/L2->cosine copy. If the daemon needs a per-session rollup the provider does not expose, add it to the provider (substrate), not the surface.",
+      "acceptance": "daemon _knn_for_embedding/_aggregate_hits/_l2_to_cosine_similarity are deleted; /api/similar ranking equals SqliteVecProvider.query_by_session ordering for a seed session (parity test); the sqlite_vec_queries comment about mirroring _PER_MESSAGE_K is removed because there is no longer a mirror; devtools verify green."
+    },
+    {
+      "title": "Route CLI transcript/dialogue file export through substrate read+render; delete streaming_markdown SQL path",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-t46",
+      "design": "cli/read_views/streaming_markdown.py forks the whole read path for `read --view transcript/dialogue --to file` markdown exports: its own read-only index.db connection, ref resolution (_resolve_session_id), prefix-sharing lineage gating in raw SQL (_has_prefix_sharing_edge), _table_exists, and the message+block keyset join + block filtering -- duplicating api get_session/get_messages_paginated/read_archive_session_envelope + rendering/core_markdown + rendering/blocks. It deliberately bails (returns False) on prefix-sharing sessions, so forked/resumed session file exports silently diverge. Fix: expose a streaming/iterator markdown render over the substrate read (add an iter/stream method on the facade or reuse get_messages_paginated) so standard.py:85/:119 use the same composition+block-filtering as the non-streaming path; delete streaming_markdown.py's SQL. Keep the no-buffering benefit by streaming from the paginated substrate read.",
+      "acceptance": "streaming_markdown.py raw-SQL read helpers are deleted; transcript/dialogue --to file markdown for a prefix-sharing (forked/resumed) session composes the full lineage identically to stdout output (test compares file export bytes vs the substrate transcript for a forked session); block filtering (reasoning/prose) matches the substrate projection; devtools verify green."
+    },
+    {
+      "title": "Sink MCP analysis primitives into insights/ + api facade; delete surface-side math",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-9e5",
+      "design": "server_insight_tools.py implements analysis math directly in the MCP surface, unreachable from CLI/library: correlate_sessions (:826 Pearson r + metric-name->field map), find_similar_sessions metadata lane (:652 weighted heuristic), aggregate_sessions/workflow_shape_distribution/find_abandoned_sessions (:510/:233/:298 GROUP-BY + severity-rank + ISO-week), tool_call_latency_distribution (:131 nearest-rank percentile), compare_sessions (:559 per-key set diff). Move each into insights/ (archive_rollups.py owns aggregate reducers; portfolio.py _distribution/DistributionStat is the canonical percentile; metadata similarity beside SessionNeighborCandidate) and expose via api/insights.py so MCP, CLI, and the library share one definition. This is the read/execution half split out from the 9e5.16 parity AUDIT (which stays read-only per the 9e5 rule).",
+      "acceptance": "correlate/find_similar-metadata/aggregate/workflow_shape/find_abandoned/tool_call_latency/compare have api facade methods and the MCP tools call them (grep shows no math/GROUP-BY left in server_insight_tools.py); the severity map, similarity weights, and week-bucketing are defined once in insights/; a CLI or library caller produces byte-identical aggregates to the MCP tool for a fixture archive; devtools verify green. Cross-refs polylogue-9e5.16."
+    },
+    {
+      "title": "Fix referenced_path OR-vs-AND filter divergence and delete dead CLI stats aggregators",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-t46",
+      "design": "cli/query_semantic.py:63 referenced_path_matches_slice uses any(term...) (OR-of-terms) for multi-term referenced_path while the substrate archive/query/runtime_matching.py:35 uses all(term...) (AND-of-terms), so the semantic-stats surface selects different sessions than the actual query filter -- a live correctness divergence. Separately, cli/query_stats.py (origin/date grouping :63-78/:353/:399, semantic grouping :446/:514, profile work-kind grouping :628 via auto_tags 'kind:' scan) and query_semantic.py:151 re-derive aggregation that ArchiveStore.stats_by (SQL, api get_stats_by) already owns via workflow_shape/sort_key_ms, and they have no live CLI dispatch caller (only re-exports + tests). Fix: route query_semantic path/action matching through the shared predicate/SQL params (delete the CLI copies), and delete the dead query_stats/query_semantic in-memory aggregators in favor of stats_by, removing the tests that pin the dead shape.",
+      "acceptance": "A two-term referenced_path query returns the same session set from the semantic-stats surface and from the query filter (regression test); referenced_path_matches_slice/action_matches_slice and the dead query_stats aggregators are deleted (grep confirms callers gone); origin/date/tool/work-kind grouping goes through stats_by; devtools verify green."
+    },
+    {
+      "title": "Move compose_context_preamble git enrichment into context/preamble.py",
+      "type": "task",
+      "priority": 3,
+      "parent": "polylogue-t46",
+      "design": "mcp/server_context_tools.py:127-159 shells out to git rev-parse / git log --oneline -5 in the surface to fill ContextPreambleProjectState, then re-validates, because the shared build_context_preamble_payload does not populate project state. Move the branch + recent-commit enrichment into context/preamble.py so any surface (MCP tool, a CLI SessionStart/hook path) produces identical project state, and have the MCP tool call the shared builder only.",
+      "acceptance": "No git subprocess in server_context_tools.py; build_context_preamble_payload (or the preamble module) fills project state; MCP and a CLI/hook caller produce identical ContextPreambleProjectState for the same repo; devtools verify green."
+    }
+  ]
+}

@@ -2,41 +2,30 @@
 
 from __future__ import annotations
 
-import json
-from contextlib import suppress
-from hashlib import sha256
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+from polylogue.annotations.importer import (
+    AnnotationBatchImportError,
+    AnnotationBatchImportRequest,
+)
+from polylogue.annotations.importer import (
+    import_annotation_batch as run_annotation_batch_import,
+)
 from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
 from polylogue.mcp.archive_support import blackboard_note_payload
+from polylogue.mcp.mutation_support import page_items, resolve_session_or_error
 from polylogue.mcp.payloads import (
-    MCPMetadataPayload,
-    MCPReaderWorkspaceListPayload,
-    MCPReaderWorkspacePayload,
-    MCPRecallPackListPayload,
-    MCPRecallPackPayload,
-    MCPSavedViewListPayload,
-    MCPSavedViewPayload,
     MCPTagCountsPayload,
-    MCPUserAnnotationListPayload,
-    MCPUserAnnotationPayload,
     MCPUserMarkListPayload,
     MCPUserMarkPayload,
     MutationResultPayload,
 )
+from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
+from polylogue.mcp.server_personal_state_tools import register_personal_state_tools
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
-
-
-async def _resolve_or_error(hooks: ServerCallbacks, session_id: str) -> tuple[str | None, str | None]:
-    """Resolve a session ID, returning the canonical ID or an error JSON."""
-    summary = await hooks.get_polylogue().get_session_summary(session_id)
-    if summary is None:
-        return None, hooks.error_json("Session not found", code="not_found", session_id=session_id)
-    return str(summary.id), None
 
 
 def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
@@ -45,97 +34,81 @@ def _mark_type_error(hooks: ServerCallbacks, mark_type: str) -> str | None:
     return hooks.error_json(f"mark_type must be one of: {', '.join(MARK_TYPE_NAMES)}", detail=mark_type)
 
 
-def _default_saved_view_id(name: str, query_json: str) -> str:
-    digest = sha256(f"{name}\0{query_json}".encode()).hexdigest()
-    return f"saved-view-{digest[:16]}"
-
-
-def _saved_view_payload(row: dict[str, str]) -> MCPSavedViewPayload:
-    try:
-        query = json.loads(row["query_json"])
-    except (json.JSONDecodeError, TypeError):
-        query = {}
-    if not isinstance(query, dict):
-        query = {}
-    return MCPSavedViewPayload(
-        view_id=row["view_id"],
-        name=row["name"],
-        query=query,
-        created_at=row["created_at"],
-    )
-
-
-def _recall_pack_payload(row: dict[str, str]) -> MCPRecallPackPayload:
-    try:
-        session_ids = json.loads(row["session_ids_json"])
-    except (json.JSONDecodeError, TypeError):
-        session_ids = []
-    if not isinstance(session_ids, list):
-        session_ids = []
-    try:
-        payload = json.loads(row["payload_json"])
-    except (json.JSONDecodeError, TypeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    return MCPRecallPackPayload(
-        pack_id=row["pack_id"],
-        label=row["label"],
-        session_ids=tuple(str(item) for item in session_ids),
-        payload=payload,
-        created_at=row["created_at"],
-    )
-
-
-def _workspace_payload(row: dict[str, str]) -> MCPReaderWorkspacePayload:
-    try:
-        open_targets = json.loads(row["open_targets_json"])
-    except (json.JSONDecodeError, TypeError):
-        open_targets = []
-    if not isinstance(open_targets, list):
-        open_targets = []
-    try:
-        layout = json.loads(row["layout_json"])
-    except (json.JSONDecodeError, TypeError):
-        layout = {}
-    if not isinstance(layout, dict):
-        layout = {}
-    try:
-        active_target = json.loads(row["active_target_json"])
-    except (json.JSONDecodeError, TypeError):
-        active_target = {}
-    if not isinstance(active_target, dict):
-        active_target = {}
-    return MCPReaderWorkspacePayload(
-        workspace_id=row["workspace_id"],
-        name=row["name"],
-        mode=row["mode"],
-        open_targets=tuple(item for item in open_targets if isinstance(item, dict)),
-        layout=layout,
-        active_target=active_target,
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
-
-
 def _none_if_empty(value: str | None) -> str | None:
     return value if value else None
 
 
-def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
-    return MCPUserAnnotationPayload(
-        annotation_id=row["annotation_id"],
-        target_type=row["target_type"],
-        target_id=row["target_id"],
-        session_id=row["session_id"],
-        message_id=_none_if_empty(row.get("message_id")),
-        note_text=row["note_text"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
+def register_mutation_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def capture_assertion_candidate(
+        body_text: str,
+        author_ref: str,
+        kind: str = "note",
+        refs: list[str] | None = None,
+        scope_refs: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        """Capture a terminal-equivalent assertion candidate for later judgment."""
 
+        async def run() -> str:
+            from pathlib import Path
 
-def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+            from polylogue.api.archive import candidate_capture_kind
+
+            try:
+                if not author_ref.startswith("agent:") or author_ref == "agent:":
+                    raise ValueError("author_ref must be an agent:<session> ref")
+                result = await hooks.get_polylogue().capture_assertion_candidate(
+                    body_text=body_text,
+                    kind=candidate_capture_kind(kind),
+                    refs=tuple(refs or ()),
+                    scope_refs=tuple(scope_refs or ()),
+                    cwd=Path(cwd) if cwd is not None else None,
+                    author_ref=author_ref,
+                    author_kind="agent",
+                )
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_candidate_capture")
+            return hooks.json_payload(result, exclude_none=False)
+
+        return await hooks.async_safe_call("capture_assertion_candidate", run)
+
+    @mcp.tool()
+    async def import_annotation_batch(
+        jsonl: str,
+        batch_id: str,
+        schema_id: str,
+        schema_version: int,
+        target_ref: str,
+        source_result_ref: str,
+        actor_ref: str,
+        model_ref: str,
+        prompt_ref: str,
+        metadata: dict[str, object] | None = None,
+    ) -> str:
+        """Import bounded JSONL labels as provenance-stamped candidates."""
+
+        async def run() -> str:
+            try:
+                request = AnnotationBatchImportRequest(
+                    jsonl=jsonl,
+                    batch_id=batch_id,
+                    schema_id=schema_id,
+                    schema_version=schema_version,
+                    target_ref=target_ref,
+                    source_result_ref=source_result_ref,
+                    actor_ref=actor_ref,
+                    model_ref=model_ref,
+                    prompt_ref=prompt_ref,
+                    metadata={} if metadata is None else metadata,
+                )
+                result = await run_annotation_batch_import(hooks.get_polylogue(), request)
+            except (AnnotationBatchImportError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_annotation_batch")
+            return hooks.json_payload(result)
+
+        return await hooks.async_safe_call("import_annotation_batch", run)
+
     @mcp.tool()
     async def blackboard_post(
         kind: str,
@@ -182,7 +155,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json(str(exc))
             return hooks.json_payload(blackboard_note_payload(note))
 
-        return await hooks.async_safe_call("blackboard_post", run)
+        return await hooks.async_safe_call("blackboard_post", run, session_id=scope_session)
 
     @mcp.tool()
     async def add_tag(
@@ -192,7 +165,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         author_kind: str | None = None,
     ) -> str:
         async def run() -> str:
-            resolved, err = await _resolve_or_error(hooks, session_id)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None  # _resolve_or_error contract
@@ -211,12 +184,12 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("add_tag", run)
+        return await hooks.async_safe_call("add_tag", run, session_id=session_id)
 
     @mcp.tool()
     async def remove_tag(session_id: str, tag: str) -> str:
         async def run() -> str:
-            resolved, err = await _resolve_or_error(hooks, session_id)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None  # _resolve_or_error contract
@@ -233,7 +206,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("remove_tag", run)
+        return await hooks.async_safe_call("remove_tag", run, session_id=session_id)
 
     @mcp.tool()
     async def bulk_tag_sessions(session_ids: list[str], tags: list[str]) -> str:
@@ -254,14 +227,31 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("bulk_tag_sessions", run)
+        return await hooks.async_safe_call("bulk_tag_sessions", run, session_ids=tuple(session_ids))
 
     @mcp.tool()
-    async def list_tags(origin: str | None = None) -> str:
+    async def list_tags(
+        origin: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
+    ) -> str:
+        """List deterministic tag-count pages without expanding a large tag map."""
+
         async def run() -> str:
             poly = hooks.get_polylogue()
             tags = await poly.list_tags(origin=origin)
-            return hooks.json_payload(MCPTagCountsPayload(root=tags))
+            clamped_limit = hooks.clamp_limit(limit)
+            page_offset = max(0, offset)
+            page = dict(sorted(tags.items())[page_offset : page_offset + clamped_limit])
+            with hooks.response_context(
+                "list_tags",
+                {
+                    "origin": origin,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                },
+            ):
+                return hooks.json_payload(MCPTagCountsPayload(root=page))
 
         return await hooks.async_safe_call("list_tags", run)
 
@@ -272,6 +262,8 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         target_type: str | None = None,
         target_id: str | None = None,
         message_id: str | None = None,
+        limit: MCPToolLimit = 50,
+        offset: MCPToolOffset = 0,
     ) -> str:
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -293,9 +285,31 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
                 for row in rows
             )
-            return hooks.json_payload(MCPUserMarkListPayload(items=items, total=len(items)))
+            clamped_limit = hooks.clamp_limit(limit)
+            page, total, page_offset, next_offset = page_items(items, limit=clamped_limit, offset=offset)
+            with hooks.response_context(
+                "list_marks",
+                {
+                    "mark_type": mark_type,
+                    "session_id": session_id,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "message_id": message_id,
+                    "limit": clamped_limit,
+                    "offset": page_offset,
+                },
+            ):
+                return hooks.json_payload(
+                    MCPUserMarkListPayload(
+                        items=page,
+                        total=total,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
+                    )
+                )
 
-        return await hooks.async_safe_call("list_marks", run)
+        return await hooks.async_safe_call("list_marks", run, session_id=session_id)
 
     @mcp.tool()
     async def add_mark(
@@ -309,7 +323,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
                 return mark_error
-            resolved, err = await _resolve_or_error(hooks, session_id)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -332,7 +346,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("add_mark", run)
+        return await hooks.async_safe_call("add_mark", run, session_id=session_id)
 
     @mcp.tool()
     async def remove_mark(
@@ -346,7 +360,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             mark_error = _mark_type_error(hooks, mark_type)
             if mark_error:
                 return mark_error
-            resolved, err = await _resolve_or_error(hooks, session_id)
+            resolved, err = await resolve_session_or_error(hooks, session_id)
             if err:
                 return err
             assert resolved is not None
@@ -369,385 +383,9 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("remove_mark", run)
+        return await hooks.async_safe_call("remove_mark", run, session_id=session_id)
 
-    @mcp.tool()
-    async def list_annotations(
-        session_id: str | None = None,
-        target_type: str | None = None,
-        target_id: str | None = None,
-        message_id: str | None = None,
-    ) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            rows = await poly.list_annotations(
-                session_id=session_id,
-                target_type=target_type,
-                target_id=target_id,
-                message_id=message_id,
-            )
-            items = tuple(_annotation_payload(row) for row in rows)
-            return hooks.json_payload(MCPUserAnnotationListPayload(items=items, total=len(items)))
-
-        return await hooks.async_safe_call("list_annotations", run)
-
-    @mcp.tool()
-    async def save_annotation(
-        annotation_id: str,
-        session_id: str,
-        note_text: str,
-        target_type: str = TARGET_SESSION,
-        target_id: str | None = None,
-        message_id: str | None = None,
-    ) -> str:
-        async def run() -> str:
-            if not annotation_id.strip():
-                return hooks.error_json("annotation_id must not be empty")
-            if not note_text.strip():
-                return hooks.error_json("note_text must not be empty")
-            resolved, err = await _resolve_or_error(hooks, session_id)
-            if err:
-                return err
-            assert resolved is not None
-            poly = hooks.get_polylogue()
-            created = await poly.save_annotation(
-                annotation_id,
-                resolved,
-                note_text,
-                target_type=target_type,
-                target_id=target_id,
-                message_id=message_id,
-            )
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok",
-                    session_id=resolved,
-                    key=annotation_id,
-                    outcome="added" if created else "updated",
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("save_annotation", run)
-
-    @mcp.tool()
-    async def delete_annotation(annotation_id: str) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            deleted = await poly.delete_annotation(annotation_id)
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="deleted" if deleted else "not_found",
-                    detail=None if deleted else "annotation_not_found",
-                    key=annotation_id,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("delete_annotation", run)
-
-    @mcp.tool()
-    async def list_saved_views() -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            rows = await poly.list_views()
-            items = tuple(_saved_view_payload(row) for row in rows)
-            return hooks.json_payload(MCPSavedViewListPayload(items=items, total=len(items)))
-
-        return await hooks.async_safe_call("list_saved_views", run)
-
-    @mcp.tool()
-    async def save_saved_view(name: str, query_json: str, view_id: str | None = None) -> str:
-        async def run() -> str:
-            if not name.strip():
-                return hooks.error_json("saved view name must not be empty")
-            try:
-                query = json.loads(query_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("query_json must be valid JSON")
-            if not isinstance(query, dict):
-                return hooks.error_json("query_json must encode an object")
-
-            from polylogue.archive.query.spec import SessionQuerySpec
-
-            try:
-                SessionQuerySpec.from_params(query, strict=True)
-            except Exception as exc:
-                detail = f"{type(exc).__name__}: {exc}"
-                return hooks.error_json("query_json is not a valid SessionQuerySpec", detail=detail)
-
-            canonical_query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
-            poly = hooks.get_polylogue()
-            saved_id = view_id or _default_saved_view_id(name.strip(), canonical_query_json)
-            created = await poly.save_view(saved_id, name.strip(), canonical_query_json)
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok",
-                    key=saved_id,
-                    outcome="added" if created else "updated",
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("save_saved_view", run)
-
-    @mcp.tool()
-    async def delete_saved_view(view_id: str) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            deleted = await poly.delete_view(view_id)
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="deleted" if deleted else "not_found",
-                    detail=None if deleted else "saved_view_not_found",
-                    key=view_id,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("delete_saved_view", run)
-
-    @mcp.tool()
-    async def list_recall_packs() -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            rows = await poly.list_recall_packs()
-            items = tuple(_recall_pack_payload(row) for row in rows)
-            return hooks.json_payload(MCPRecallPackListPayload(items=items, total=len(items)))
-
-        return await hooks.async_safe_call("list_recall_packs", run)
-
-    @mcp.tool()
-    async def save_recall_pack(
-        pack_id: str,
-        label: str,
-        payload_json: str = "{}",
-    ) -> str:
-        async def run() -> str:
-            if not pack_id.strip():
-                return hooks.error_json("pack_id must not be empty")
-            if not label.strip():
-                return hooks.error_json("label must not be empty")
-            try:
-                payload = json.loads(payload_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("payload_json must be valid JSON")
-            if not isinstance(payload, dict):
-                return hooks.error_json("payload_json must encode an object")
-            items = payload.get("items")
-            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-                return hooks.error_json("payload_json must include an items list of objects")
-            poly = hooks.get_polylogue()
-            created = await poly.create_recall_pack(
-                pack_id.strip(),
-                label.strip(),
-                json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            )
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok",
-                    key=pack_id.strip(),
-                    outcome="added" if created else "updated",
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("save_recall_pack", run)
-
-    @mcp.tool()
-    async def delete_recall_pack(pack_id: str) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            deleted = await poly.delete_recall_pack(pack_id)
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="deleted" if deleted else "not_found",
-                    detail=None if deleted else "recall_pack_not_found",
-                    key=pack_id,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("delete_recall_pack", run)
-
-    @mcp.tool()
-    async def list_workspaces() -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            rows = await poly.list_workspaces()
-            items = tuple(_workspace_payload(row) for row in rows)
-            return hooks.json_payload(MCPReaderWorkspaceListPayload(items=items, total=len(items)))
-
-        return await hooks.async_safe_call("list_workspaces", run)
-
-    @mcp.tool()
-    async def save_workspace(
-        workspace_id: str,
-        name: str,
-        mode: str = "tabs",
-        open_targets_json: str = "[]",
-        layout_json: str = "{}",
-        active_target_json: str = "{}",
-    ) -> str:
-        async def run() -> str:
-            if not workspace_id.strip():
-                return hooks.error_json("workspace_id must not be empty")
-            if not name.strip():
-                return hooks.error_json("name must not be empty")
-            if mode not in {"tabs", "stack", "compare", "timeline"}:
-                return hooks.error_json("mode must be one of: tabs, stack, compare, timeline")
-            try:
-                open_targets = json.loads(open_targets_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("open_targets_json must be valid JSON")
-            if not isinstance(open_targets, list) or not all(isinstance(item, dict) for item in open_targets):
-                return hooks.error_json("open_targets_json must encode a list of objects")
-            try:
-                layout = json.loads(layout_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("layout_json must be valid JSON")
-            if not isinstance(layout, dict):
-                return hooks.error_json("layout_json must encode an object")
-            try:
-                active_target = json.loads(active_target_json)
-            except json.JSONDecodeError:
-                return hooks.error_json("active_target_json must be valid JSON")
-            if not isinstance(active_target, dict):
-                return hooks.error_json("active_target_json must encode an object")
-            poly = hooks.get_polylogue()
-            created = await poly.save_workspace(
-                workspace_id.strip(),
-                name.strip(),
-                mode,
-                json.dumps(open_targets, sort_keys=True, separators=(",", ":")),
-                json.dumps(layout, sort_keys=True, separators=(",", ":")),
-                json.dumps(active_target, sort_keys=True, separators=(",", ":")),
-            )
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok",
-                    key=workspace_id.strip(),
-                    outcome="added" if created else "updated",
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("save_workspace", run)
-
-    @mcp.tool()
-    async def delete_workspace(workspace_id: str) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            deleted = await poly.delete_workspace(workspace_id)
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="deleted" if deleted else "not_found",
-                    detail=None if deleted else "workspace_not_found",
-                    key=workspace_id,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("delete_workspace", run)
-
-    @mcp.tool()
-    async def get_metadata(session_id: str) -> str:
-        async def run() -> str:
-            poly = hooks.get_polylogue()
-            metadata = await poly.get_metadata(session_id)
-            return hooks.json_payload(MCPMetadataPayload.from_document(metadata))  # type: ignore[arg-type]
-
-        return await hooks.async_safe_call("get_metadata", run)
-
-    @mcp.tool()
-    async def set_metadata(session_id: str, key: str, value: str) -> str:
-        async def run() -> str:
-            from polylogue.api.archive import SessionNotFoundError
-            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
-
-            # Short-circuit on key validation before opening the facade so
-            # the contract is fast and unit tests can exercise the rejection
-            # path without standing up an archive.
-            key_error = validate_metadata_key(key)
-            if key_error is not None:
-                return hooks.error_json(
-                    key_error,
-                    session_id=session_id,
-                    code="invalid_key",
-                )
-
-            parsed_value: object = value
-            with suppress(json.JSONDecodeError, TypeError):
-                parsed_value = json.loads(value)
-            parsed_str = str(parsed_value)
-
-            poly = hooks.get_polylogue()
-            try:
-                result = await poly.set_metadata(session_id, key, parsed_str)
-            except MetadataKeyValidationError as exc:
-                return hooks.error_json(
-                    str(exc),
-                    session_id=session_id,
-                    code="invalid_key",
-                )
-            except SessionNotFoundError:
-                return hooks.error_json(
-                    "Session not found",
-                    code="not_found",
-                    session_id=session_id,
-                )
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok" if result.outcome == "set" else "unchanged",
-                    session_id=result.session_id,
-                    key=result.key,
-                    detail=result.detail,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("set_metadata", run)
-
-    @mcp.tool()
-    async def delete_metadata(session_id: str, key: str) -> str:
-        async def run() -> str:
-            from polylogue.api.archive import SessionNotFoundError
-            from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
-
-            key_error = validate_metadata_key(key)
-            if key_error is not None:
-                return hooks.error_json(
-                    key_error,
-                    session_id=session_id,
-                    code="invalid_key",
-                )
-
-            poly = hooks.get_polylogue()
-            try:
-                result = await poly.delete_metadata(session_id, key)
-            except MetadataKeyValidationError as exc:
-                return hooks.error_json(
-                    str(exc),
-                    session_id=session_id,
-                    code="invalid_key",
-                )
-            except SessionNotFoundError:
-                return hooks.error_json(
-                    "Session not found",
-                    code="not_found",
-                    session_id=session_id,
-                )
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok" if result.outcome == "deleted" else "not_found",
-                    session_id=result.session_id,
-                    key=result.key,
-                    detail=result.detail,
-                ),
-                exclude_none=True,
-            )
-
-        return await hooks.async_safe_call("delete_metadata", run)
+    register_personal_state_tools(mcp, hooks)
 
     @mcp.tool()
     async def delete_session(session_id: str, confirm: bool = False) -> str:
@@ -769,122 +407,90 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("delete_session", run)
+        return await hooks.async_safe_call("delete_session", run, session_id=session_id)
 
-    # ------------------------------------------------------------------
-    # Learning corrections (#1131)
-    # ------------------------------------------------------------------
+
+def register_assertion_review_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+    """Register promotion tools only for authenticated review capability."""
 
     @mcp.tool()
-    async def record_correction(
-        session_id: str,
-        kind: str,
-        payload: dict[str, str],
-        note: str | None = None,
-        author_ref: str | None = None,
-        author_kind: str | None = None,
+    async def judge_assertion_candidate(
+        candidate_ref: str,
+        decision: Literal["accept", "reject", "defer", "supersede"],
+        reason: str | None = None,
+        inject: bool = False,
+        actor_ref: str = "user:local",
+        replacement_kind: str | None = None,
+        replacement_body_text: str | None = None,
+        replacement_value: object | None = None,
     ) -> str:
-        """Record a user correction targeting a derived insight."""
+        """Judge one candidate; caller text is provenance, not authorization."""
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
 
         async def run() -> str:
-            from polylogue.insights.feedback import UnknownCorrectionKindError
-
-            resolved, err = await _resolve_or_error(hooks, session_id)
-            if err:
-                return err
-            assert resolved is not None
-            poly = hooks.get_polylogue()
-            try:
-                correction = await poly.record_correction(
-                    resolved,
-                    kind,
-                    payload,
-                    note=note,
-                    author_ref=author_ref,
-                    author_kind=author_kind,
+            payload = await hooks.get_polylogue().judge_assertion_candidates(
+                items=(
+                    ArchiveAssertionBulkJudgmentItemEnvelope(
+                        candidate_ref=candidate_ref,
+                        decision=decision,
+                        reason=reason,
+                        inject=inject,
+                        actor_ref=actor_ref,
+                        replacement_kind=replacement_kind,
+                        replacement_body_text=replacement_body_text,
+                        replacement_value=replacement_value,
+                    ),
                 )
-            except UnknownCorrectionKindError as exc:
-                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok",
-                    session_id=correction.session_id,
-                    outcome=correction.kind.value,
-                    author_ref=author_ref,
-                    author_kind=author_kind,
-                    detail=correction.note,
-                ),
-                exclude_none=True,
             )
+            return hooks.json_payload(payload, exclude_none=True)
 
-        return await hooks.async_safe_call("record_correction", run)
+        return await hooks.async_safe_call("judge_assertion_candidate", run)
 
     @mcp.tool()
-    async def list_corrections(
-        session_id: str | None = None,
-        kind: str | None = None,
+    async def judge_assertion_candidates(
+        items: list[dict[str, object]],
+        actor_ref: str = "user:local",
     ) -> str:
-        """List stored learning corrections."""
+        """Bulk judge candidates with independently reported partial success."""
 
-        async def run() -> str:
-            from polylogue.insights.feedback import UnknownCorrectionKindError
+        from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionBulkJudgmentItemEnvelope
 
-            poly = hooks.get_polylogue()
-            try:
-                corrections = await poly.list_corrections(session_id=session_id, kind=kind)
-            except UnknownCorrectionKindError as exc:
-                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
-            items = [
-                {
-                    "session_id": c.session_id,
-                    "kind": c.kind.value,
-                    "payload": dict(c.payload),
-                    "note": c.note,
-                    "created_at": c.created_at.isoformat(),
-                }
-                for c in corrections
-            ]
-            return json.dumps({"corrections": items, "total": len(items)}, sort_keys=True)
-
-        return await hooks.async_safe_call("list_corrections", run)
-
-    @mcp.tool()
-    async def clear_corrections(session_id: str, kind: str | None = None) -> str:
-        """Delete one or all corrections for a session."""
-
-        async def run() -> str:
-            from polylogue.insights.feedback import UnknownCorrectionKindError
-
-            resolved, err = await _resolve_or_error(hooks, session_id)
-            if err:
-                return err
-            assert resolved is not None
-            poly = hooks.get_polylogue()
-            try:
-                if kind is None:
-                    count = await poly.clear_corrections(resolved)
-                    return hooks.json_payload(
-                        MutationResultPayload(
-                            status="ok",
-                            session_id=resolved,
-                            affected_count=count,
-                            outcome="cleared",
-                        ),
-                        exclude_none=True,
-                    )
-                removed = await poly.delete_correction(resolved, kind)
-            except UnknownCorrectionKindError as exc:
-                return hooks.error_json(str(exc), code="unknown_kind", kind=str(kind or ""))
-            return hooks.json_payload(
-                MutationResultPayload(
-                    status="ok" if removed else "not_found",
-                    session_id=resolved,
-                    outcome="deleted" if removed else "not_found",
-                ),
-                exclude_none=True,
+        def make_item(item: dict[str, object]) -> ArchiveAssertionBulkJudgmentItemEnvelope:
+            candidate_ref = item.get("candidate_ref")
+            decision = item.get("decision")
+            if not isinstance(candidate_ref, str) or not isinstance(decision, str):
+                raise ValueError("each judgment requires string candidate_ref and decision")
+            inject = item.get("inject", False)
+            if type(inject) is not bool:
+                raise ValueError("each judgment requires boolean inject")
+            reason = item.get("reason")
+            replacement_kind = item.get("replacement_kind")
+            replacement_body_text = item.get("replacement_body_text")
+            if replacement_kind is not None and not isinstance(replacement_kind, str):
+                raise ValueError("replacement_kind must be a string when provided")
+            if replacement_body_text is not None and not isinstance(replacement_body_text, str):
+                raise ValueError("replacement_body_text must be a string when provided")
+            return ArchiveAssertionBulkJudgmentItemEnvelope(
+                candidate_ref=candidate_ref,
+                decision=decision,
+                reason=reason if isinstance(reason, str) else None,
+                inject=inject,
+                actor_ref=actor_ref,
+                replacement_kind=replacement_kind,
+                replacement_body_text=replacement_body_text,
+                replacement_value=item.get("replacement_value"),
             )
 
-        return await hooks.async_safe_call("clear_corrections", run)
+        async def run() -> str:
+            try:
+                judgments = tuple(make_item(item) for item in items)
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_assertion_judgment")
+            payload = await hooks.get_polylogue().judge_assertion_candidates(items=judgments)
+            return hooks.json_payload(payload, exclude_none=True)
+
+        return await hooks.async_safe_call("judge_assertion_candidates", run)
 
 
-__all__ = ["register_mutation_tools"]
+__all__ = ["register_assertion_review_tools", "register_mutation_tools"]

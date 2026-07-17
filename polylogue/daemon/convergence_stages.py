@@ -22,16 +22,20 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
+from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import get_logger
+from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
-    pass
+    from polylogue.sinex.service import PublicationService
+    from polylogue.sinex.transport import SinexTransport
 
 logger = get_logger(__name__)
 
@@ -553,24 +557,166 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-def make_default_convergence_stages(db_path: Path) -> tuple[ConvergenceStage, ...]:
-    """Build the daemon's default post-ingest convergence stage set."""
-    return (
-        make_fts_stage(db_path),
-        make_embed_stage(db_path),
-        make_insights_stage(db_path),
+def _sinex_session_ids_for_paths(
+    db_path: Path,
+    paths: Sequence[Path],
+) -> dict[Path, list[str]]:
+    normalized = tuple(dict.fromkeys(Path(path) for path in paths))
+    if not normalized:
+        return {}
+    lookup_db = _active_archive_index_path(db_path) or db_path
+    if not lookup_db.exists():
+        return {path: [] for path in normalized}
+    conn = sqlite3.connect(f"file:{lookup_db}?mode=ro", uri=True, timeout=5.0)
+    try:
+        return _schema_archive_session_ids_for_source_paths(conn, normalized)
+    finally:
+        conn.close()
+
+
+def make_sinex_publication_stage(
+    db_path: Path,
+    service: PublicationService,
+) -> ConvergenceStage:
+    """Drain the durable source-tier outbox before primary projections advance."""
+    from polylogue.sinex.models import PublicationMode
+
+    def ids_for_path(path: Path) -> list[str]:
+        return _sinex_session_ids_for_paths(db_path, (path,)).get(path, [])
+
+    def check(path: Path) -> bool:
+        return bool(service.unresolved_object_ids(ids_for_path(path)))
+
+    def execute(path: Path) -> StageExecuteReturn:
+        session_ids = ids_for_path(path)
+        if not session_ids:
+            return True
+        summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: drain attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(session_ids)
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        unresolved = service.unresolved_object_ids(all_ids)
+        return {path for path, values in by_path.items() if unresolved.intersection(values)}
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        if not all_ids:
+            return True
+        summary = service.drain_once(object_ids=all_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: batch drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            len(all_ids),
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(all_ids)
+
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        return service.unresolved_object_ids(session_ids)
+
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
+        if not session_ids:
+            return True
+        summary = service.drain_once(object_ids=session_ids, limit=service.max_batch)
+        logger.info(
+            "sinex_publication: session drain subjects=%d attempted=%d confirmed=%d debt=%d rejected=%d "
+            "transport_failures=%d payload_failures=%d remaining=%d",
+            len(tuple(dict.fromkeys(session_ids))),
+            summary.attempted,
+            summary.confirmed,
+            summary.durable_debt,
+            summary.rejected,
+            summary.transport_failures,
+            summary.payload_failures,
+            summary.remaining_lag,
+        )
+        return not service.unresolved_object_ids(session_ids)
+
+    def barrier(path: Path) -> bool:
+        return bool(service.blocking_object_ids(ids_for_path(path)))
+
+    def barrier_many(paths: Sequence[Path]) -> set[Path]:
+        by_path = _sinex_session_ids_for_paths(db_path, paths)
+        all_ids = tuple(dict.fromkeys(session_id for values in by_path.values() for session_id in values))
+        blocked = service.blocking_object_ids(all_ids)
+        return {path for path, values in by_path.items() if blocked.intersection(values)}
+
+    return ConvergenceStage(
+        name="sinex_publication",
+        description="Drain exact accepted revisions through the configured Sinex transport",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        check_sessions=check_sessions,
+        execute_sessions=execute_sessions,
+        cpu_bound=False,
+        false_means_pending=True,
+        blocks_following_stages=service.mode is PublicationMode.PRIMARY,
+        barrier_check=barrier,
+        barrier_check_many=barrier_many,
+        barrier_check_sessions=service.blocking_object_ids,
+        status=lambda: service.status().as_dict(),
     )
 
 
+def make_default_convergence_stages(
+    db_path: Path,
+    *,
+    sinex_transport: SinexTransport | None = None,
+) -> tuple[ConvergenceStage, ...]:
+    """Build daemon stages, failing explicitly when backed mode lacks transport."""
+    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import PublicationService
+    from polylogue.sinex.transport import resolve_configured_transport
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    stages: list[ConvergenceStage] = []
+    if mode is not PublicationMode.OFF:
+        transport = sinex_transport if sinex_transport is not None else resolve_configured_transport()
+        stages.append(
+            make_sinex_publication_stage(
+                db_path,
+                PublicationService(
+                    source_db_path=db_path.parent / "source.db",
+                    mode=mode,
+                    transport=transport,
+                ),
+            )
+        )
+    stages.extend(
+        (
+            make_fts_stage(db_path),
+            make_embed_stage(db_path),
+            make_insights_stage(db_path),
+            make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
+        )
+    )
+    return tuple(stages)
+
+
 # ── Helpers ────────────────────────────────────────────────────────
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _fts_doc_count(conn: sqlite3.Connection, table: str) -> int:
@@ -816,6 +962,7 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
+    stale_predicate = session_profile_stale_predicate("c", "sp")
     rows = conn.execute(
         f"""
         SELECT c.session_id
@@ -825,15 +972,7 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
-              OR (
-                  c.sort_key_ms IS NOT NULL
-                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(c.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-              )
-              OR (
-                  c.sort_key_ms IS NULL
-                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                      COALESCE(CAST(c.updated_at_ms / 1000 AS TEXT), '')
-              )
+              OR {stale_predicate}
           )
         ORDER BY c.session_id
         """,
@@ -864,11 +1003,9 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
 
 
 def _active_archive_index_path(db_path: Path) -> Path | None:
-    candidates: list[Path] = []
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+    from polylogue.paths import sibling_index_db
+
+    index_db = sibling_index_db(db_path, require_exists=True)
     if index_db is None:
         return None
     try:
@@ -900,6 +1037,10 @@ def _schema_archive_session_ids_for_source_paths(
             if not _ensure_source_tier_attached(conn):
                 return {path: [] for path in normalized_paths}
         except sqlite3.Error:
+            # Swallowed here, one level below the stage's own check/execute
+            # logging (the 1xc.11 fix), so the outer probe never sees this
+            # failure and can't log it either.
+            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
             return {path: [] for path in normalized_paths}
     result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
     paths_by_text = {str(path): path for path in normalized_paths}
@@ -1395,6 +1536,7 @@ def _archive_hot_insight_session_ids(
             if not _ensure_source_tier_attached(conn):
                 return set()
         except sqlite3.Error:
+            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
             return set()
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(
@@ -1422,6 +1564,7 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
+    stale_predicate = session_profile_stale_predicate("s", "sp")
     rows = conn.execute(
         f"""
         SELECT s.session_id
@@ -1429,24 +1572,25 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
         LEFT JOIN insight_materialization AS im
           ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        LEFT JOIN insight_materialization AS pu
+          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE s.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
               OR im.materializer_version != ?
-              OR (
-                  s.sort_key_ms IS NOT NULL
-                  AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-              )
-              OR (
-                  s.sort_key_ms IS NULL
-                  AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                      COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
-              )
+              OR pu.session_id IS NULL
+              OR pu.materializer_version != ?
+              OR {stale_predicate}
           )
         ORDER BY s.session_id
         """,
-        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION),
+        unique_ids
+        + (
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+        ),
     ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -1454,28 +1598,34 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
 def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
     if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    sql = """
+    # The OR chain below also catches provider-usage staleness (polylogue-f2qv.5):
+    # a session whose session_profile is fresh but whose session_model_usage
+    # rollup predates a materializer-version bump (or was never stamped) still
+    # needs a rebuild pass so it self-heals like every other session insight
+    # instead of requiring a manual `ops reset --index`.
+    stale_predicate = session_profile_stale_predicate("s", "sp")
+    sql = f"""
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
         LEFT JOIN insight_materialization AS im
           ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
+        LEFT JOIN insight_materialization AS pu
+          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE
           sp.session_id IS NULL
           OR sp.materializer_version != ?
           OR im.materializer_version != ?
-          OR (
-              s.sort_key_ms IS NOT NULL
-              AND ABS(COALESCE(sp.source_sort_key, 0.0) - (CAST(s.sort_key_ms AS REAL) / 1000.0)) > 0.000001
-          )
-          OR (
-              s.sort_key_ms IS NULL
-              AND COALESCE(strftime('%s', sp.source_updated_at), sp.source_updated_at, '') !=
-                  COALESCE(CAST(s.updated_at_ms / 1000 AS TEXT), '')
-          )
+          OR pu.session_id IS NULL
+          OR pu.materializer_version != ?
+          OR {stale_predicate}
         ORDER BY s.session_id
     """
-    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION, SESSION_INSIGHT_MATERIALIZER_VERSION)
+    params: tuple[object, ...] = (
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+        SESSION_INSIGHT_MATERIALIZER_VERSION,
+    )
     if limit is not None:
         sql += " LIMIT ?"
         params = params + (max(0, int(limit)),)
@@ -1644,4 +1794,6 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_sinex_publication_stage",
+    "make_standing_query_stage",
 ]

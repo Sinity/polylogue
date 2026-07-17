@@ -11,7 +11,7 @@ from typing import TypeAlias
 from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -23,27 +23,6 @@ VerificationRow: TypeAlias = tuple[str, str, str | None, str]
 VerificationSqlParam: TypeAlias = str | int
 VerificationSqlParams: TypeAlias = tuple[VerificationSqlParam, ...]
 VerificationUpdate: TypeAlias = tuple[str, str, str, str | None]
-
-
-# Reverse of ``origin_from_provider``: map a ``origin``
-# token back to the legacy provider token the verification flow filters and
-# reports on. ``origin_from_provider`` collapses both ``gemini`` and ``drive``
-# onto ``aistudio-drive``; the canonical reverse choice is ``drive``.
-_PROVIDER_BY_ORIGIN: dict[str, str] = {
-    Origin.CHATGPT_EXPORT.value: Provider.CHATGPT.value,
-    Origin.CLAUDE_AI_EXPORT.value: Provider.CLAUDE_AI.value,
-    Origin.CLAUDE_CODE_SESSION.value: Provider.CLAUDE_CODE.value,
-    Origin.CODEX_SESSION.value: Provider.CODEX.value,
-    Origin.GEMINI_CLI_SESSION.value: Provider.GEMINI_CLI.value,
-    Origin.HERMES_SESSION.value: Provider.HERMES.value,
-    Origin.ANTIGRAVITY_SESSION.value: Provider.ANTIGRAVITY.value,
-    Origin.AISTUDIO_DRIVE.value: Provider.DRIVE.value,
-    Origin.UNKNOWN_EXPORT.value: Provider.UNKNOWN.value,
-}
-
-
-def _provider_for_origin(origin: str) -> str:
-    return _PROVIDER_BY_ORIGIN.get(origin, Provider.UNKNOWN.value)
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +47,11 @@ def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, 
 
 def _row_payload_data(row: sqlite3.Row) -> VerificationRow:
     origin = str(row["origin"])
+    provider = provider_from_origin(Origin.from_string(origin), family_hint=Provider.DRIVE).value
     return (
         str(row["raw_id"]),
-        _provider_for_origin(origin),
-        _provider_for_origin(origin),
+        provider,
+        provider,
         str(row["source_path"] or ""),
     )
 

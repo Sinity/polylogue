@@ -1,9 +1,9 @@
 """Protocol conformance tests.
 
-Verifies that every declared implementor of SearchProvider, VectorProvider,
-OutputRenderer, and ConsoleLike satisfies the contract defined in
-polylogue.protocols and related Protocol classes, and that parser modules
-export their expected public API.
+Verifies that every declared implementor of VectorProvider, OutputRenderer,
+and ConsoleLike satisfies the contract defined in polylogue.protocols and
+related Protocol classes, and that parser modules export their expected
+public API.
 
 No mocks for the happy-path contracts — real instances with temp paths only, so
 gaps in constructor signatures or missing methods fail here rather than silently
@@ -11,6 +11,8 @@ at runtime.
 
 Findings addressed:
   - Finding 1: SearchProvider / VectorProvider / OutputRenderer (@runtime_checkable, no tests)
+    SearchProvider (FTS5Provider, HybridSearchProvider) was removed
+    (polylogue-a7xr.10): both implementations had zero production consumers.
   - Finding 2: Parser module interface drift (chatgpt/codex vs claude/drive)
   - Finding 3: ConsoleLike (ui/facade.py) untested
 """
@@ -23,65 +25,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.protocols import SearchProvider, VectorProvider
-from polylogue.storage.runtime import MessageRecord
-from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.search_providers.hybrid import HybridSearchProvider
+from polylogue.core.protocols import VectorProvider
 from polylogue.ui.facade import ConsoleLike, PlainConsole
-
-
-class _VectorStub:
-    model = "stub"
-
-    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
-        del session_id, messages
-
-    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        del text, limit
-        return []
-
-    def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
-        del session_id, limit
-        return []
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _fts5(tmp_path: Path) -> FTS5Provider:
-    return FTS5Provider(db_path=tmp_path / "fts5.db")
-
-
-def _hybrid(tmp_path: Path) -> HybridSearchProvider:
-    fts5 = _fts5(tmp_path)
-    return HybridSearchProvider(fts_provider=fts5, vector_provider=_VectorStub())
-
-
-# ---------------------------------------------------------------------------
-# SearchProvider (Finding 1)
-# ---------------------------------------------------------------------------
-
-
-class TestSearchProviderConformance:
-    """FTS5Provider and HybridSearchProvider must satisfy the SearchProvider protocol."""
-
-    @pytest.mark.parametrize("factory", [_fts5, _hybrid], ids=["fts5", "hybrid"])
-    def test_isinstance(self, factory: Callable[[Path], SearchProvider], tmp_path: Path) -> None:
-        assert isinstance(factory(tmp_path), SearchProvider)
-
-    def test_fts5_search_returns_list(self, tmp_path: Path) -> None:
-        result = _fts5(tmp_path).search("anything")
-        assert isinstance(result, list)
-
-    def test_fts5_index_accepts_empty_list(self, tmp_path: Path) -> None:
-        _fts5(tmp_path).index([])  # Must not raise
-
-    def test_hybrid_search_returns_list(self, tmp_path: Path) -> None:
-        result = _hybrid(tmp_path).search("anything")
-        assert isinstance(result, list)
-
 
 # ---------------------------------------------------------------------------
 # VectorProvider (Finding 1 continued)

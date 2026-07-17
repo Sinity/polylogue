@@ -317,48 +317,48 @@ class TestKeyboardNavigation:
 
 def _make_topology() -> SessionTopology:
     """Build a small SessionTopology covering parent+target+sibling+child+unresolved."""
+    from polylogue.core.types import SessionId
     from polylogue.insights.topology import (
         SessionTopology,
         TopologyEdge,
         TopologyEdgeKind,
         TopologyNode,
     )
-    from polylogue.types import SessionId
 
     cid = SessionId
 
     nodes = (
         TopologyNode(
             session_id=cid("root"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Root",
             depth=0,
             is_root=True,
         ),
         TopologyNode(
             session_id=cid("target"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Target",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             session_id=cid("sibling"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Sibling",
             depth=1,
             is_root=False,
         ),
         TopologyNode(
             session_id=cid("child"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Child",
             depth=2,
             is_root=False,
         ),
         TopologyNode(
             session_id=cid("orphan"),
-            source_name="claude-code",
+            origin="claude-code",
             title="Orphan",
             depth=1,
             is_root=False,

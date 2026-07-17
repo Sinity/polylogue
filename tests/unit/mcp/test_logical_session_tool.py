@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+from polylogue.core.types import SessionId
 from polylogue.insights.topology import LogicalSession, SessionRef
-from polylogue.types import SessionId
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface, make_polylogue_mock
 
 
@@ -16,8 +16,8 @@ def test_logical_session_tool_returns_compact_envelope(mcp_server: MCPServerUnde
                 session_id=SessionId("fork"),
                 root_id=SessionId("root"),
                 thread=(
-                    SessionRef(session_id=SessionId("root"), source_name="claude-code", depth=0),
-                    SessionRef(session_id=SessionId("fork"), source_name="claude-code", depth=1),
+                    SessionRef(session_id=SessionId("root"), origin="claude-code", depth=0),
+                    SessionRef(session_id=SessionId("fork"), origin="claude-code", depth=1),
                 ),
                 siblings=(),
                 descendants=(),

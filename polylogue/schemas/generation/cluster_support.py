@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from polylogue.schemas.generation.models import _ClusterAccumulator, _ProfileSummary
-from polylogue.schemas.observation import ProviderConfig, profile_similarity
+from polylogue.schemas.observation import profile_similarity
 
 _PROFILE_CORE_MIN_RATIO = 0.5
 _PROFILE_MAX_TOKENS = 128
@@ -64,14 +63,6 @@ def _update_observed_window(acc: _ClusterAccumulator, observed_at: str | None) -
         acc.last_seen = iso
 
 
-def _cluster_reservoir_size(config: ProviderConfig, max_samples: int | None) -> int:
-    if max_samples is not None:
-        return max(64, min(max_samples, 500))
-    if config.sample_granularity == "record":
-        return 192
-    return 500
-
-
 def _profile_similarity_threshold(artifact_kind: str) -> float:
     return _PROFILE_SIMILARITY_THRESHOLDS.get(artifact_kind, 0.84)
 
@@ -119,11 +110,17 @@ def _new_cluster_accumulator(*, artifact_kind: str, dominant_keys: list[str]) ->
     )
 
 
-def _merge_profile_summary(acc: _ClusterAccumulator, summary: _ProfileSummary) -> None:
+def _merge_profile_summary(
+    acc: _ClusterAccumulator,
+    summary: _ProfileSummary,
+    *,
+    retain_member_profile: bool = True,
+) -> None:
     acc.sample_count += summary.sample_count
     acc.schema_sample_count += summary.schema_sample_count
     acc.profile_token_counts.update(dict.fromkeys(summary.profile_tokens, summary.sample_count))
-    acc.member_profiles.add(summary.profile_tokens)
+    if retain_member_profile:
+        acc.member_profiles.add(summary.profile_tokens)
     acc.dominant_keys = _merge_dominant_keys(acc.dominant_keys, summary.dominant_keys)
     _merge_representative_paths(acc.representative_paths, summary.representative_paths)
 
@@ -131,8 +128,6 @@ def _merge_profile_summary(acc: _ClusterAccumulator, summary: _ProfileSummary) -
 def _merge_cluster_accumulators(
     target: _ClusterAccumulator,
     source: _ClusterAccumulator,
-    *,
-    reservoir_size: int | None = None,
 ) -> None:
     target.sample_count += source.sample_count
     target.schema_sample_count += source.schema_sample_count
@@ -142,23 +137,12 @@ def _merge_cluster_accumulators(
     _merge_representative_paths(target.representative_paths, source.representative_paths)
     target.exact_structure_ids.update(source.exact_structure_ids)
     target.bundle_scopes.update(source.bundle_scopes)
+    target.source_family_ids.update(source.source_family_ids)
     _update_observed_window(target, source.first_seen)
     _update_observed_window(target, source.last_seen)
-    if reservoir_size is not None and source.reservoir_samples:
-        combined = list(zip(target.reservoir_samples, target.reservoir_conv_ids, strict=False))
-        combined.extend(zip(source.reservoir_samples, source.reservoir_conv_ids, strict=False))
-        if len(combined) > reservoir_size:
-            target.rng.shuffle(combined)
-            combined = combined[:reservoir_size]
-        target.reservoir_samples = [sample for sample, _conv_id in combined]
-        target.reservoir_conv_ids = [conv_id for _sample, conv_id in combined]
 
 
-def _refine_coarse_clusters(
-    coarse_clusters: list[_ClusterAccumulator],
-    *,
-    reservoir_size: int | None = None,
-) -> list[_ClusterAccumulator]:
+def _refine_coarse_clusters(coarse_clusters: list[_ClusterAccumulator]) -> list[_ClusterAccumulator]:
     clusters = list(coarse_clusters)
     while True:
         best_pair: tuple[int, int, float] | None = None
@@ -188,33 +172,13 @@ def _refine_coarse_clusters(
             left_index, right_index = right_index, left_index
             left, right = right, left
 
-        _merge_cluster_accumulators(left, right, reservoir_size=reservoir_size)
+        _merge_cluster_accumulators(left, right)
         del clusters[right_index]
-
-
-def _update_cluster_reservoir(
-    acc: _ClusterAccumulator,
-    sample: Mapping[str, object],
-    session_id: str | None,
-    *,
-    reservoir_size: int,
-) -> None:
-    acc.schema_sample_count += 1
-    if len(acc.reservoir_samples) < reservoir_size:
-        acc.reservoir_samples.append(sample)
-        acc.reservoir_conv_ids.append(session_id)
-        return
-
-    slot = acc.rng.randint(0, acc.schema_sample_count - 1)
-    if slot < reservoir_size:
-        acc.reservoir_samples[slot] = sample
-        acc.reservoir_conv_ids[slot] = session_id
 
 
 __all__ = [
     "_artifact_priority",
     "_cluster_profile_tokens",
-    "_cluster_reservoir_size",
     "_cluster_similarity",
     "_cluster_sort_key",
     "_dominant_keys_for_payload",
@@ -226,6 +190,5 @@ __all__ = [
     "_parse_observed_at",
     "_profile_similarity_threshold",
     "_refine_coarse_clusters",
-    "_update_cluster_reservoir",
     "_update_observed_window",
 ]

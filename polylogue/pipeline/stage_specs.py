@@ -20,7 +20,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 
 StageContextPolicy = Literal["none", "requested_or_leaf", "requested_or_all_after_parse"]
 

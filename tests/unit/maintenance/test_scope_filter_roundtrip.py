@@ -34,7 +34,7 @@ from polylogue.maintenance.scope import MaintenanceScopeFilter
 _EXPECTED_DIMENSIONS = frozenset(
     {
         "session_ids",
-        "provider",
+        "origin",
         "source_family",
         "source_root",
         "time_range",
@@ -57,7 +57,7 @@ class TestScopeFilterDictShape:
     def test_to_dict_lists_every_dimension_for_populated_filter(self) -> None:
         full = MaintenanceScopeFilter(
             session_ids=("c1", "c2"),
-            provider="claude",
+            origin="claude-code-session",
             source_family="claude-code-session",
             source_root=Path("/data/claude"),
             time_range=(
@@ -100,7 +100,7 @@ class TestScopeFilterRoundTrip:
             {},
             {"session_ids": ("c1",)},
             {"session_ids": ("c1", "c2", "c3")},
-            {"provider": "claude"},
+            {"origin": "claude-code-session"},
             {"source_family": "claude-code-session"},
             {"source_root": Path("/data/claude")},
             {
@@ -113,7 +113,7 @@ class TestScopeFilterRoundTrip:
             {"parser_version": "v3"},
             {
                 "session_ids": ("c1", "c2"),
-                "provider": "claude",
+                "origin": "claude-code-session",
                 "source_family": "claude-code-session",
                 "source_root": Path("/data"),
                 "time_range": (
@@ -133,7 +133,7 @@ class TestScopeFilterRoundTrip:
     def test_double_round_trip_is_idempotent(self) -> None:
         original = MaintenanceScopeFilter(
             session_ids=("c1",),
-            provider="claude",
+            origin="claude-code-session",
             source_root=Path("/data"),
             time_range=(
                 datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -186,7 +186,7 @@ def _scope_filter_kwargs(draw: Any) -> dict[str, Any]:
     if draw(st.booleans()):
         kwargs["session_ids"] = tuple(draw(st.lists(_ASCII_TEXT, min_size=1, max_size=4, unique=True)))
     if draw(st.booleans()):
-        kwargs["provider"] = draw(_ASCII_TEXT)
+        kwargs["origin"] = draw(_ASCII_TEXT)
     if draw(st.booleans()):
         kwargs["source_family"] = draw(_ASCII_TEXT)
     if draw(st.booleans()):

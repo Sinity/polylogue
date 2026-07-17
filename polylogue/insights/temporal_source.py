@@ -44,6 +44,17 @@ describes the *coverage shape*: ``timestamped_range`` vs
 ``untimestamped`` vs ``start_timestamp_only`` vs ``end_timestamp_only``)
 and to ``date_provenance`` (which describes how a canonical session date
 was derived). The three axes coexist and answer different questions.
+
+Consumer time-confidence contract
+---------------------------------
+
+Consumer payload adapters project this source tag to ``time_confidence``:
+``recorded`` for provider/hook event time, ``estimated`` for a sort key or
+file mtime, and ``unknown`` for materialization time, synthetic fallback
+dates, absent tags, and legacy unknown tags. Aggregates must first reduce
+their sources through :func:`weakest_of`, then project that result. In
+particular, ``unknown`` renders as unknown; it never licenses substituting
+materialization time or a fallback date as the event timestamp.
 """
 
 from __future__ import annotations
@@ -51,40 +62,31 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal, get_args
+from typing import Protocol
 
-TemporalSource = Literal[
-    "provider_ts",
-    "hook_event_ts",
-    "sort_key",
-    "file_mtime",
-    "materialization_ts",
-    "fallback_date",
-]
-
-TEMPORAL_SOURCE_VALUES: frozenset[TemporalSource] = frozenset(get_args(TemporalSource))
-
-# Provenance lattice, strongest first. A lower rank is a stronger (more
-# trustworthy/recency-anchored) signal; ``weakest_source`` picks the higher
-# rank between two values. Order matches the docstring above verbatim.
-_SOURCE_RANK: dict[TemporalSource, int] = {source: rank for rank, source in enumerate(get_args(TemporalSource))}
+from polylogue.core.temporal import (
+    TEMPORAL_SOURCE_VALUES,
+    TIME_CONFIDENCE_VALUES,
+    TemporalSource,
+    TimeConfidence,
+    is_valid_temporal_source,
+    time_confidence_for_source,
+    time_confidence_for_sources,
+    weakest_of,
+    weakest_source,
+)
 
 
-def weakest_source(a: TemporalSource, b: TemporalSource) -> TemporalSource:
-    """Return the weaker (less trustworthy) of two temporal sources."""
+class HasTemporalSource(Protocol):
+    """Structural contract for a consumer record carrying temporal provenance."""
 
-    return a if _SOURCE_RANK[a] >= _SOURCE_RANK[b] else b
+    input_high_water_mark_source: str | None
 
 
-def weakest_of(sources: Sequence[TemporalSource]) -> TemporalSource | None:
-    """Reduce a non-empty sequence to its weakest member; ``None`` if empty."""
+def time_confidence_for_record(record: HasTemporalSource) -> TimeConfidence:
+    """Project a provenance-bearing API/CLI/MCP record without re-deriving time."""
 
-    if not sources:
-        return None
-    result = sources[0]
-    for source in sources[1:]:
-        result = weakest_source(result, source)
-    return result
+    return time_confidence_for_source(record.input_high_water_mark_source)
 
 
 def classify_profile_hwm_source(updated_at: datetime | None) -> TemporalSource:
@@ -198,20 +200,20 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
     return violations
 
 
-def is_valid_temporal_source(value: str) -> bool:
-    """Return True when *value* is a recognized temporal source token."""
-
-    return value in TEMPORAL_SOURCE_VALUES
-
-
 __all__ = [
+    "HasTemporalSource",
     "TEMPORAL_SOURCE_VALUES",
+    "TIME_CONFIDENCE_VALUES",
     "TemporalSource",
+    "TimeConfidence",
     "audit_temporal_source_leaf_callers",
     "classify_aggregate_hwm_source",
     "classify_profile_hwm_source",
     "classify_thread_hwm_source",
     "is_valid_temporal_source",
+    "time_confidence_for_record",
+    "time_confidence_for_source",
+    "time_confidence_for_sources",
     "weakest_of",
     "weakest_source",
 ]

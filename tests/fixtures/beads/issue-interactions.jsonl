@@ -1,0 +1,2 @@
+{"id":"int-close","kind":"field_change","created_at":"2026-07-08T20:14:36.726797203Z","actor":"Sinity","issue_id":"polylogue-7fj","extra":{"field":"status","old_value":"in_progress","new_value":"closed","reason":"Focused parser checks passed."}}
+{"id":"int-priority","kind":"field_change","created_at":"2026-07-08T20:14:35.726797203Z","actor":"Sinity","issue_id":"polylogue-7fj","extra":{"field":"priority","old_value":"3","new_value":"2"}}

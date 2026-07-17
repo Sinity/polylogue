@@ -16,7 +16,18 @@ from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
-from .parsers import antigravity, browser_capture, chatgpt, claude, codex, drive, hermes_state, local_agent
+from .parsers import (
+    antigravity,
+    beads,
+    browser_capture,
+    chatgpt,
+    claude,
+    codex,
+    drive,
+    hermes_spans,
+    hermes_state,
+    local_agent,
+)
 from .parsers.base import ParsedSession, extract_messages_from_list
 
 if TYPE_CHECKING:
@@ -25,8 +36,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI})
-GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE})
-STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
+GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS})
+STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
 _MAX_PARSE_DEPTH = 10
 _NO_LOOKAHEAD = object()
@@ -118,7 +129,7 @@ def is_stream_record_provider(source_path: str | None, provider: str | Provider 
 
 
 def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
-    return "chunkedPrompt" in record or isinstance(record.get("chunks"), list)
+    return drive.looks_like(record)
 
 
 def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
@@ -132,12 +143,16 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
         return Provider.GEMINI_CLI
     if hermes_state.looks_like_state_db_payload(record):
         return Provider.HERMES
+    if hermes_spans.looks_like_atif_payload(record):
+        return Provider.HERMES
     if local_agent.looks_like_hermes(record):
         return Provider.HERMES
     if antigravity.looks_like_markdown_export(record):
         return Provider.ANTIGRAVITY
     if antigravity.looks_like_brain_metadata(record, None):
         return Provider.ANTIGRAVITY
+    if beads.looks_like(record):
+        return Provider.BEADS
     # Specific type-level checks first (Codex, Claude Code use Pydantic
     # validation), then weaker dict-key checks (ChatGPT, Claude AI, Gemini).
     if codex.looks_like([dict(record)]):
@@ -159,8 +174,16 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
 
     first_record = _payload_record(payloads[0])
     if first_record is not None:
+        # A one-document Gemini CLI JSON file reaches detection as a
+        # one-element sequence on the stream path. Preserve the established
+        # Claude-Code-before-Codex sequence ordering while restoring this
+        # stronger local-session discriminator ahead of weaker family shapes.
+        if len(payloads) == 1 and local_agent.looks_like_gemini_cli(first_record):
+            return Provider.GEMINI_CLI
         if browser_capture.looks_like(first_record):
             return _detect_provider_from_record(first_record)
+        if beads.looks_like(first_record):
+            return Provider.BEADS
         if is_json_document(first_record.get("mapping")):
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
@@ -267,7 +290,7 @@ def _schema_guided_payload(
 
 def _looks_like_chunked_session(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and (drive.looks_like(record) or isinstance(record.get("chunks"), list))
+    return record is not None and drive.has_chunk_container(record)
 
 
 def _looks_like_chunked_session_list(payloads: PayloadSequence) -> bool:
@@ -342,12 +365,15 @@ def _grouped_records_spec(
     provider: Provider,
     payload: PayloadRecord | PayloadSequence,
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> LoweredPayloadSpec:
     return LoweredPayloadSpec(
         provider=provider,
         fallback_id=fallback_id,
         mode="grouped_records",
         payload=payload,
+        source_path=source_path,
     )
 
 
@@ -423,6 +449,10 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
             update={
                 "title": existing.title if existing.title != existing.provider_session_id else session.title,
                 "created_at": min(created_values) if created_values else None,
+                "parent_session_provider_id": (
+                    existing.parent_session_provider_id or session.parent_session_provider_id
+                ),
+                "branch_type": existing.branch_type or session.branch_type,
                 "updated_at": max(updated_values) if updated_values else None,
                 "messages": messages,
                 "active_leaf_message_provider_id": active_leaf_message_provider_id,
@@ -435,7 +465,11 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "ingest_flags": sorted({*existing.ingest_flags, *session.ingest_flags}),
             }
         )
-    return list(merged.values())
+    sessions = list(merged.values())
+    return [
+        claude.reconcile_code_session_chunks(session) if session.source_name is Provider.CLAUDE_CODE else session
+        for session in sessions
+    ]
 
 
 def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -> Iterator[ParsedSession]:
@@ -445,14 +479,17 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
     grouping semantics for already-materialized payloads. Raw JSONL ingest and
     repair, however, can be multi-GiB; for that path we split only on contiguous
     ``sessionId`` changes and feed each group to the provider parser as an
-    iterator. That keeps memory proportional to the parsed session currently
-    being written rather than to every raw JSON record in the source blob.
+    iterator. Per-session record-index and UUID continuation state retains no
+    raw payload bytes; its size is proportional to unique record identifiers and
+    makes an interleaved stream semantically identical to eager grouping.
     """
 
     iterator = iter(payloads)
     lookahead: object = _NO_LOOKAHEAD
     pending_prefix: list[object] = []
     first_group = True
+    record_counts_by_session: dict[str, int] = {}
+    seen_record_uuids_by_session: dict[str, set[str]] = {}
 
     def next_item() -> object:
         nonlocal lookahead
@@ -482,13 +519,18 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
         prefix = pending_prefix
         pending_prefix = []
 
+        group_record_count = 0
+
         def group_records(
             prefix: list[object] = prefix,
             first: object = first,
             group_session_id: str = group_session_id,
         ) -> Iterator[object]:
-            nonlocal lookahead
-            yield from prefix
+            nonlocal group_record_count, lookahead
+            for prefix_item in prefix:
+                group_record_count += 1
+                yield prefix_item
+            group_record_count += 1
             yield first
             for item in iterator:
                 record = _payload_record(item)
@@ -496,9 +538,19 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
                 if session_id is not None and session_id != group_session_id:
                     lookahead = item
                     return
+                group_record_count += 1
                 yield item
 
-        yield claude.parse_code_stream(group_records(), group_fallback_id)
+        record_index_start = record_counts_by_session.get(group_session_id, 0)
+        seen_record_uuids = seen_record_uuids_by_session.setdefault(group_session_id, set())
+        session = claude.parse_code_stream(
+            group_records(),
+            group_fallback_id,
+            record_index_start=record_index_start,
+            seen_record_uuids=seen_record_uuids,
+        )
+        record_counts_by_session[group_session_id] = record_index_start + group_record_count
+        yield session
 
 
 def _bundle_record_specs(
@@ -560,6 +612,12 @@ def _lower_drive_like_payload(
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
+        if (
+            payloads
+            and any(drive.looks_like_chunk(item) for item in payloads)
+            and not any(_looks_like_chunked_session(item) for item in payloads)
+        ):
+            return [_chunked_prompt_spec(provider, payloads, fallback_id)]
         if _looks_like_chunked_session_list(payloads):
             nested_specs: list[LoweredPayloadSpec] = []
             for index, item in enumerate(payloads):
@@ -573,7 +631,22 @@ def _lower_drive_like_payload(
                     )
                 )
             return nested_specs
-        return [_chunked_prompt_spec(provider, payloads, fallback_id)]
+        # Drive exports and full-ingest streams can add one or more list/document
+        # wrappers around session records. Recurse through those containers, but
+        # never reinterpret arbitrary records as raw chunks: that would revive
+        # the loose ``chunks`` detector this route is meant to replace.
+        nested_specs = []
+        for index, item in enumerate(payloads):
+            nested_specs.extend(
+                _lower_payload_specs(
+                    provider,
+                    item,
+                    fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                    depth=depth + 1,
+                    schema_resolution=schema_resolution,
+                )
+            )
+        return nested_specs
 
     record = _payload_record(shaped_payload)
     if record is None:
@@ -654,22 +727,31 @@ def _lower_payload_specs(
     if record is not None and (sessions := _record_sessions(record)):
         lowered_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(sessions):
-            if item_record := _payload_record(item):
-                lowered_specs.extend(
-                    _lower_payload_specs(
-                        runtime_provider,
-                        item_record,
-                        f"{fallback_id}-{index}",
-                        depth=depth + 1,
-                        schema_resolution=schema_resolution,
-                    )
+            lowered_specs.extend(
+                _lower_payload_specs(
+                    runtime_provider,
+                    item,
+                    f"{fallback_id}-{index}",
+                    depth=depth + 1,
+                    schema_resolution=schema_resolution,
                 )
+            )
         return lowered_specs
 
     if runtime_provider in BUNDLE_PROVIDERS:
         return _lower_bundle_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id)
+    if runtime_provider is Provider.BEADS:
+        payloads = _payload_sequence(shaped_payload)
+        if payloads is not None and all(
+            (record := _payload_record(item)) is not None and beads.looks_like(record) for item in payloads
+        ):
+            return [_grouped_records_spec(runtime_provider, payloads, fallback_id, source_path=source_path)]
+        record = _single_document_record(shaped_payload)
+        if record is not None and beads.looks_like(record):
+            return [_grouped_records_spec(runtime_provider, [record], fallback_id, source_path=source_path)]
+        return []
     if runtime_provider is Provider.GEMINI_CLI:
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
@@ -686,6 +768,8 @@ def _lower_payload_specs(
     if runtime_provider is Provider.HERMES:
         record = _single_document_record(shaped_payload)
         if record is not None and hermes_state.looks_like_state_db_payload(record):
+            return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
+        if record is not None and hermes_spans.looks_like_atif_payload(record):
             return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
         if record is not None and local_agent.looks_like_hermes(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
@@ -760,6 +844,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         payloads = _payload_sequence(spec.payload)
         return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
 
+    if spec.provider is Provider.BEADS:
+        payloads = _payload_sequence(spec.payload)
+        return beads.parse(payloads, spec.fallback_id, source_path=spec.source_path) if payloads is not None else []
+
     if spec.mode == "local_agent_document":
         record = _payload_record(spec.payload)
         if record is None:
@@ -776,6 +864,8 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
             return []
         if spec.provider is Provider.HERMES and hermes_state.looks_like_state_db_payload(record):
             return hermes_state.parse_state_db_payload(record, spec.fallback_id)
+        if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
+            return [hermes_spans.parse_atif_document(record, spec.fallback_id)]
         if spec.provider is Provider.ANTIGRAVITY:
             if antigravity.looks_like_markdown_export(record):
                 return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
@@ -824,6 +914,8 @@ def parse_stream_payload(
     provider: str | Provider,
     payloads: Iterable[object],
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream."""
     runtime_provider = Provider.from_string(provider)
@@ -831,6 +923,8 @@ def parse_stream_payload(
         return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
+    if runtime_provider is Provider.BEADS:
+        return beads.parse(payloads, fallback_id, source_path=source_path)
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 

@@ -28,7 +28,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 
 
 class TopologyEdgeKind(str, Enum):
@@ -76,7 +76,7 @@ class SessionRef(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     session_id: SessionId
-    source_name: str = ""
+    origin: str = ""
     title: str | None = None
     depth: int = 0
     """Distance from the topology root (root has depth 0)."""
@@ -88,7 +88,7 @@ class TopologyNode(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     session_id: SessionId
-    source_name: str = ""
+    origin: str = ""
     title: str | None = None
     depth: int = 0
     """Distance from the topology root (root has depth 0)."""
@@ -100,7 +100,7 @@ class TopologyNode(BaseModel):
 
         return SessionRef(
             session_id=self.session_id,
-            source_name=self.source_name,
+            origin=self.origin,
             title=self.title,
             depth=self.depth,
         )

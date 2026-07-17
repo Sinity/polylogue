@@ -3,9 +3,8 @@
 Pins three contracts that previous unit tests covered only at the
 helper-function level:
 
-1. Every authenticated endpoint refuses requests without a valid bearer
-   token when a token is configured (``_check_auth_logic`` covers the
-   pure logic; this file confirms each route actually invokes it).
+1. Every authenticated endpoint refuses requests without a valid machine
+   bearer or first-party credential when a daemon token is configured.
 2. Every mutating (POST) endpoint refuses cross-origin browser requests
    via the ``Origin``-header check, regardless of whether the auth token
    matches.
@@ -35,6 +34,7 @@ import pytest
 from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon.http import _check_auth_logic
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
+from polylogue.daemon.web_auth import WebCredentialRegistry, exact_origin_allowed
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -63,16 +63,21 @@ def _paths_for(method: str, auth_policy: str) -> list[str]:
     ]
 
 
-ENDPOINTS_GET = _paths_for("GET", "bearer_if_configured")
+ENDPOINTS_GET = _paths_for("GET", "credential_if_configured")
 
-ENDPOINTS_POST = _paths_for("POST", "bearer_and_same_origin")
+ENDPOINTS_BROWSER_POST = _paths_for("POST", "credential_and_same_origin")
 
-ENDPOINTS_DELETE = _paths_for("DELETE", "bearer_and_same_origin")
+ENDPOINTS_ADMIN_POST = _paths_for("POST", "bearer_if_configured_and_same_origin")
+
+ENDPOINTS_POST = ENDPOINTS_BROWSER_POST + ENDPOINTS_ADMIN_POST
+
+ENDPOINTS_DELETE = _paths_for("DELETE", "credential_and_same_origin")
 
 
 def test_route_contract_security_matrices_are_non_empty() -> None:
     assert ENDPOINTS_GET
-    assert ENDPOINTS_POST
+    assert ENDPOINTS_BROWSER_POST
+    assert ENDPOINTS_ADMIN_POST
     assert ENDPOINTS_DELETE
 
 
@@ -166,41 +171,18 @@ class TestCheckAuthLogic:
 # ---------------------------------------------------------------------------
 
 
-def _origin_allowed(origin: str) -> bool:
-    """Reproduces the localhost-allowlist used by ``_check_cross_origin``.
-
-    Includes the IPv6 loopback (``[::1]``) since the daemon admits ``::1``
-    as a loopback bind address (see ``is_loopback_host``); a web shell
-    served from that bind would send ``Origin: http://[::1]:port``.
-    """
-    if not origin:
-        return True
-    return any(
-        origin.startswith(prefix)
-        for prefix in (
-            "http://127.0.0.1:",
-            "http://localhost:",
-            "https://127.0.0.1:",
-            "https://localhost:",
-            "http://[::1]:",
-            "https://[::1]:",
-        )
-    )
-
-
 class TestOriginAllowlist:
-    """The Origin allowlist is the CSRF boundary for browser-side attacks."""
+    """Exact authority matching is the CSRF boundary for browser mutations."""
 
     @pytest.mark.parametrize(
         ("origin", "expected_allowed"),
         [
-            ("", True),  # not a browser request — curl, hooks, etc.
-            ("http://127.0.0.1:8766", True),  # canonical web shell
-            ("http://localhost:3000", True),  # browser extension dev port
-            ("https://127.0.0.1:8766", True),  # TLS shim if any
-            ("https://localhost:8766", True),
-            ("http://[::1]:8766", True),  # IPv6 loopback web shell
-            ("https://[::1]:8766", True),
+            ("", True),
+            ("http://127.0.0.1:8766", True),
+            ("http://localhost:8766", False),
+            ("http://127.0.0.1:3000", False),
+            ("https://127.0.0.1:8766", True),
+            ("http://[::1]:8766", False),
             ("http://192.168.1.1:8766", False),  # LAN attacker
             ("https://evil.example.com", False),  # hostile page
             ("http://127.0.0.1.evil.com", False),  # subdomain trick
@@ -210,7 +192,7 @@ class TestOriginAllowlist:
         ],
     )
     def test_origin_allowlist_decision(self, origin: str, expected_allowed: bool) -> None:
-        assert _origin_allowed(origin) is expected_allowed
+        assert exact_origin_allowed(origin, "127.0.0.1:8766") is expected_allowed
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +206,9 @@ class _MockServer:
     api_host = "127.0.0.1"
     archive_query_executor = ThreadPoolExecutor(max_workers=1)
     archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
+
+    def __init__(self) -> None:
+        self.web_credentials = WebCredentialRegistry()
 
 
 class _MockHeaders:
@@ -241,7 +226,12 @@ def _make_handler(
     auth_header: str = "",
     origin: str = "",
     host: str = "",
+    cookie: str = "",
+    referer: str = "",
+    fetch_site: str = "",
+    web_client: bool = False,
     body: bytes = b"",
+    server: object | None = None,
 ) -> DaemonAPIHandler:
     """Build a ``DaemonAPIHandler`` instance with mocked transport.
 
@@ -257,7 +247,7 @@ def _make_handler(
     from polylogue.daemon.http import DaemonAPIHandler
 
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = cast("DaemonAPIHTTPServer", _MockServer())
+    handler.server = cast("DaemonAPIHTTPServer", server or _MockServer())
     handler.client_address = ("127.0.0.1", 12345)
     handler.path = path
     handler.command = method
@@ -270,6 +260,14 @@ def _make_handler(
         headers["Origin"] = origin
     if host:
         headers["Host"] = host
+    if cookie:
+        headers["Cookie"] = cookie
+    if referer:
+        headers["Referer"] = referer
+    if fetch_site:
+        headers["Sec-Fetch-Site"] = fetch_site
+    if web_client:
+        headers["X-Polylogue-Web-Client"] = "1"
     handler.headers = cast("Message[str, str]", _MockHeaders(headers))
     handler.rfile = BytesIO(body)
     handler.wfile = BytesIO()
@@ -348,6 +346,7 @@ class TestPostEndpointAuthAndOriginGate:
             path,
             auth_header="Bearer secret",
             origin="http://127.0.0.1:8766",
+            host="127.0.0.1:8766",
         )
         send_error, _ = _capture_responses(handler)
         with (
@@ -434,6 +433,7 @@ class TestDeleteEndpointAuthAndOriginGate:
             path,
             auth_header="Bearer secret",
             origin="http://localhost:8766",
+            host="localhost:8766",
         )
         send_error, _ = _capture_responses(handler)
         with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):

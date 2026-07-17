@@ -96,3 +96,15 @@ def test_sessionfinish_leaves_xdist_basetemp_for_supervisor_cleanup(
     conftest.pytest_sessionfinish(cast("pytest.Session", session), 0)
 
     assert basetemp.exists()
+
+
+def test_archive_template_clone_is_private(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    (source / "index.db").write_bytes(b"immutable-template")
+
+    conftest._clone_archive_template(source, destination)
+    (destination / "index.db").write_bytes(b"private-mutation")
+
+    assert (source / "index.db").read_bytes() == b"immutable-template"

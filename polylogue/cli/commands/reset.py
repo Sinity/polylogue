@@ -9,10 +9,13 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
+if TYPE_CHECKING:
+    from polylogue.surfaces.payloads import MutationStatus
+
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import (
@@ -24,10 +27,6 @@ from polylogue.paths import (
     drive_token_path,
     state_home,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
-from polylogue.surfaces.payloads import MutationResultPayload, MutationStatus
 
 # Durable acquired source evidence. Deleting it means future rebuilds can only
 # recover rows whose original source files still exist.
@@ -207,6 +206,10 @@ def _delete_archive_sessions(session_ids: list[str]) -> int:
 def _suppress_archive_sessions(session_ids: list[str], *, reason: str) -> int:
     if not session_ids:
         return 0
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
+
     user_db = _user_db_path()
     initialize_archive_database(user_db, ArchiveTier.USER)
     conn = sqlite3.connect(user_db)
@@ -245,6 +248,8 @@ def _emit_identity_reset_result(
     plain_message: str,
 ) -> None:
     if output_format == "json":
+        from polylogue.surfaces.payloads import MutationResultPayload
+
         click.echo(
             MutationResultPayload(
                 status=status,
@@ -263,6 +268,8 @@ def _archive_session_ids_from_source(source_path: Path) -> list[str]:
     source_db = _source_db_path()
     if not index_db.exists() or not source_db.exists():
         return []
+    from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
+
     exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(source_path)
     conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
     try:

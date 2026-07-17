@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Searchable project roadmap rendered from committed Beads records.">
+  <title>Roadmap and work graph</title>
+  <link rel="stylesheet" href="../assets/project.css">
+  <script defer src="../assets/project.js"></script>
+  <script defer src="../assets/beads.js"></script>
+</head>
+<body>
+  <header class="site-header"><div class="header-inner"><a class="brand" href="../" id="project-brand">project</a><nav class="header-nav"><a href="../">Overview</a><a href="./">Roadmap</a><a id="github-link" href="#">GitHub</a></nav><button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle color theme">◐</button></div></header>
+  <main class="board-shell">
+    <header class="board-hero"><div><p class="eyebrow">Committed project record</p><h1>Roadmap and work graph</h1><p>Search designs, acceptance criteria, dependencies, and delivery records from the repository’s committed Beads issue graph.</p></div><div class="board-source"><a id="source-link" href="issues.jsonl">View source JSONL</a></div></header>
+    <div class="stats" id="stats" aria-label="Issue summary"></div>
+    <form class="toolbar" id="toolbar"><input id="search" type="search" placeholder="Search titles, descriptions, designs, criteria…" aria-label="Search issues"><select id="status" aria-label="Status"><option value="active">Active work</option><option value="ready">Ready</option><option value="blocked">Blocked</option><option value="all">All statuses</option><option value="closed">Closed</option></select><select id="priority" aria-label="Priority"><option value="all">All priorities</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select><select id="type" aria-label="Type"><option value="all">All types</option></select></form>
+    <div class="results-meta"><span id="result-count">Loading issues…</span><span>Open an item for its full record</span></div>
+    <div class="issues" id="issues" aria-live="polite"></div>
+    <button class="button load-more" id="load-more" type="button" hidden>Show more</button>
+  </main>
+</body>
+</html>

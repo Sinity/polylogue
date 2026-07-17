@@ -21,11 +21,11 @@ from polylogue.archive.session.repo_identity import (
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import DaySessionSummaryPayload
 from polylogue.insights.archive_summaries import aggregate_day_session_summary_insights
 from polylogue.storage.runtime import DaySessionSummaryRecord
-from polylogue.types import SessionId
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 README_PATH = REPO_ROOT / "README.md"
@@ -84,7 +84,7 @@ def test_attribution_does_not_probe_archived_automount_paths(monkeypatch: pytest
         kind=ToolCategory.FILE_READ,
         tool_name="Read",
         tool_id=None,
-        provider=Provider.CLAUDE_CODE,
+        origin=Origin.CLAUDE_CODE_SESSION,
         affected_paths=("/mnt/pendrv/chatlog/claude_code/project/src/main.py",),
         cwd_path="/mnt/pendrv/chatlog/claude_code/project",
         branch_names=(),
@@ -189,14 +189,14 @@ def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_path
                 Message(
                     id="u1",
                     role=Role.USER,
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Origin.CLAUDE_CODE_SESSION,
                     text="Compare the current repo with the system repo.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
                     id="a1",
                     role=Role.ASSISTANT,
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Origin.CLAUDE_CODE_SESSION,
                     text="Inspecting those paths.",
                     timestamp=datetime(2026, 3, 24, 10, 1, tzinfo=timezone.utc),
                     blocks=[
@@ -231,7 +231,7 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
                 Message(
                     id="u1",
                     role=Role.USER,
-                    provider=Provider.CODEX,
+                    origin=Origin.CODEX_SESSION,
                     text="Continue work on the branch and summarize the status.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 )
@@ -263,14 +263,14 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
                 Message(
                     id="u1",
                     role=Role.USER,
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Origin.CLAUDE_CODE_SESSION,
                     text="Inspect the live repo state.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 ),
                 Message(
                     id="a1",
                     role=Role.ASSISTANT,
-                    provider=Provider.CLAUDE_CODE,
+                    origin=Origin.CLAUDE_CODE_SESSION,
                     text="Inspecting.",
                     timestamp=datetime(2026, 3, 24, 10, 1, tzinfo=timezone.utc),
                     blocks=[
@@ -302,7 +302,7 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         kind=ToolCategory.FILE_READ,
         tool_name="Read",
         tool_id=None,
-        provider=Provider.CLAUDE_CODE,
+        origin=Origin.CLAUDE_CODE_SESSION,
         affected_paths=(
             str(work_repo / "README.md"),
             str(work_repo / ".claude" / "settings.json"),
@@ -350,7 +350,7 @@ def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
                 Message(
                     id="u1",
                     role=Role.USER,
-                    provider=Provider.CODEX,
+                    origin=Origin.CODEX_SESSION,
                     text="Keep the variable r untouched and summarize the branch status.",
                     timestamp=datetime(2026, 3, 24, 10, 0, tzinfo=timezone.utc),
                 )

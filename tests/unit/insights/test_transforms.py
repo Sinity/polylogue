@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.types import SessionId
 from polylogue.insights.run_projection import build_run_projection
 from polylogue.insights.transforms import (
     SESSION_DIGEST_TRANSFORM,
@@ -26,7 +27,6 @@ from polylogue.insights.transforms import (
     compile_session_run_projection,
     render_session_report,
 )
-from polylogue.types import SessionId
 
 
 class _ProjectedDigestEvent:

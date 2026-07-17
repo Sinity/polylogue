@@ -1,7 +1,7 @@
 """Per-tool contract coverage for the MCP mutation-tools surface (#1294).
 
 Pins three durable contracts for every ``@mcp.tool()`` registered by
-``polylogue.mcp.server_mutation_tools.register_mutation_tools``:
+the modules composed by ``polylogue.mcp.server_mutation_tools``:
 
 1. **Argument validation** — each tool has a registered handler, the
    required parameters are mandatory (omitting them raises ``TypeError``),
@@ -28,12 +28,14 @@ import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonschema
 import pytest
 
+from polylogue.mcp.declarations.adapter import MCPRegistrationError
 from polylogue.operations import build_runtime_operation_catalog
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
@@ -52,6 +54,13 @@ from tests.infra.mcp import (
 # ---------------------------------------------------------------------------
 
 
+def _mutation_registration_modules() -> tuple[ModuleType, ...]:
+    """Return every module reached by the mutation registration seam."""
+    from polylogue.mcp import server_mutation_tools, server_personal_state_tools
+
+    return (server_mutation_tools, server_personal_state_tools)
+
+
 def _discover_mutation_tool_names() -> frozenset[str]:
     """Discover every ``@mcp.tool()`` registered by
     ``register_mutation_tools``.
@@ -68,34 +77,34 @@ def _discover_mutation_tool_names() -> frozenset[str]:
     read_tools = set(read._tool_manager._tools.keys())
     # Mutation tools are in admin but not in read. Maintenance tools are
     # admin-only too, but they live in server_maintenance_tools and are
-    # excluded by importing the registered names from the mutation module.
-    from polylogue.mcp import server_mutation_tools
-
-    src = inspect.getsource(server_mutation_tools)
+    # excluded by scanning only the modules reached by the mutation seam.
     declared: set[str] = set()
-    for line in src.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("async def ") and "(" in stripped:
-            name = stripped[len("async def ") :].split("(", 1)[0]
-            if name in admin_tools and name not in read_tools:
-                declared.add(name)
+    for module in _mutation_registration_modules():
+        for line in inspect.getsource(module).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("async def ") and "(" in stripped:
+                name = stripped[len("async def ") :].split("(", 1)[0]
+                if name in admin_tools and name not in read_tools:
+                    declared.add(name)
     return frozenset(declared)
 
 
 MUTATION_TOOL_NAMES: frozenset[str] = _discover_mutation_tool_names()
 _MUTATION_SCHEMA = Path("docs/schemas/cli-output/mutation-result.schema.json")
+_MUTATION_TOOL_CODE_REF_PREFIXES = (
+    "polylogue.mcp.server_mutation_tools.",
+    "polylogue.mcp.server_personal_state_tools.",
+)
 
 
 def _discover_mutation_result_tool_names() -> frozenset[str]:
     """Discover mutation tools whose success path emits MutationResultPayload."""
-    from polylogue.mcp import server_mutation_tools
-
-    src = inspect.getsource(server_mutation_tools)
     names: set[str] = set()
-    for chunk in src.split("    @mcp.tool()"):
-        match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
-        if match and "MutationResultPayload(" in chunk:
-            names.add(match.group(1))
+    for module in _mutation_registration_modules():
+        for chunk in inspect.getsource(module).split("    @mcp.tool()"):
+            match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
+            if match and "MutationResultPayload(" in chunk:
+                names.add(match.group(1))
     return frozenset(names)
 
 
@@ -122,6 +131,43 @@ _MCP_MUTATION_OPERATION_SPECS = tuple(
 )
 
 TOOL_MATRIX: dict[str, dict[str, Any]] = {
+    "import_annotation_batch": {
+        "required": {
+            "jsonl",
+            "batch_id",
+            "schema_id",
+            "schema_version",
+            "target_ref",
+            "source_result_ref",
+            "actor_ref",
+            "model_ref",
+            "prompt_ref",
+        },
+        "happy": {
+            "jsonl": '{"row_key":"r1","value":{},"evidence_refs":[]}',
+            "batch_id": "contract-batch",
+            "schema_id": "delegation.discourse",
+            "schema_version": 1,
+            "target_ref": "delegation:contract-target",
+            "source_result_ref": "result-set:contract",
+            "actor_ref": "agent:contract",
+            "model_ref": "agent:model",
+            "prompt_ref": "block:contract:0",
+        },
+    },
+    "capture_assertion_candidate": {
+        "required": {"body_text", "author_ref"},
+        "happy": {
+            "body_text": "capture this",
+            "kind": "lesson",
+            "author_ref": "agent:codex-session:tool-contract",
+        },
+        "invalid_value": {
+            "body_text": "capture this",
+            "kind": "bogus",
+            "author_ref": "agent:codex-session:tool-contract",
+        },
+    },
     "add_tag": {
         "required": {"session_id", "tag"},
         "happy": {
@@ -256,6 +302,14 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
         "happy": {"kind": "finding", "title": "t", "content": "c"},
         "invalid_value": {"kind": "bogus", "title": "t", "content": "c"},
     },
+    "judge_assertion_candidate": {
+        "required": {"candidate_ref", "decision"},
+        "happy": {"candidate_ref": "assertion:contract-candidate", "decision": "accept"},
+    },
+    "judge_assertion_candidates": {
+        "required": {"items"},
+        "happy": {"items": [{"candidate_ref": "assertion:contract-candidate", "decision": "accept"}]},
+    },
 }
 
 
@@ -302,6 +356,31 @@ class TestMutationToolDiscovery:
     vice versa.
     """
 
+    def test_personal_state_tools_depend_on_parent_composition_seam(self) -> None:
+        """The parent registrar owns the only route into the extracted tools."""
+        from polylogue.mcp import server_personal_state_tools
+        from polylogue.mcp.server import build_server
+
+        registered = cast(MCPServerUnderTest, build_server(role="admin"))
+        registered_names = set(registered._tool_manager._tools)
+        personal_names = {
+            line.strip()[len("async def ") :].split("(", 1)[0]
+            for line in inspect.getsource(server_personal_state_tools).splitlines()
+            if line.strip().startswith("async def ")
+            and "(" in line
+            and line.strip()[len("async def ") :].split("(", 1)[0] in registered_names
+        }
+        assert personal_names
+
+        with (
+            patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar,
+            pytest.raises(MCPRegistrationError) as exc_info,
+        ):
+            build_server(role="admin")
+
+        registrar.assert_called_once()
+        assert all(name in str(exc_info.value) for name in personal_names), sorted(personal_names)
+
     def test_every_mutation_tool_is_in_matrix(self) -> None:
         missing = MUTATION_TOOL_NAMES - set(TOOL_MATRIX.keys())
         assert not missing, (
@@ -334,8 +413,8 @@ class TestMutationToolDiscovery:
 
     @pytest.mark.parametrize("spec", _MCP_MUTATION_OPERATION_SPECS, ids=lambda spec: spec.name)
     def test_mcp_mutation_operation_spec_names_registered_tool(self, spec: Any) -> None:
-        tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith("polylogue.mcp.server_mutation_tools."))
-        assert tool_refs, f"{spec.name} declares mcp surface but no server_mutation_tools code_ref"
+        tool_refs = tuple(ref for ref in spec.code_refs if ref.startswith(_MUTATION_TOOL_CODE_REF_PREFIXES))
+        assert tool_refs, f"{spec.name} declares mcp surface but no mutation registrar code_ref"
         referenced_tools = {ref.rsplit(".", 1)[-1] for ref in tool_refs}
         missing = referenced_tools - MUTATION_TOOL_NAMES
         assert not missing, (
@@ -484,7 +563,7 @@ class TestMutationToolArgumentContracts:
         # envelope OR a typed ``PolylogueError`` (FastMCP marshals the
         # latter into ``isError=True`` for the MCP client). Either way,
         # no raw traceback bubbles out.
-        from polylogue.errors import PolylogueError
+        from polylogue.core.errors import PolylogueError
 
         try:
             result = invoke_surface(fn, **kwargs)
@@ -724,7 +803,30 @@ def _arrange_poly_for(poly: Any, tool_name: str) -> None:
     poly.list_corrections = AsyncMock(return_value=[])
     poly.clear_corrections = AsyncMock(return_value=0)
     poly.delete_correction = AsyncMock(return_value=False)
-    if tool_name == "add_tag":
+    if tool_name == "capture_assertion_candidate":
+        from polylogue.core.enums import AssertionKind, AssertionStatus
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        poly.capture_assertion_candidate = AsyncMock(
+            return_value=AssertionClaimPayload(
+                assertion_id="assertion-terminal-note:contract",
+                target_ref="assertion:assertion-terminal-note:contract",
+                kind=AssertionKind.LESSON,
+                body_text="capture this",
+                status=AssertionStatus.CANDIDATE,
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+        )
+    elif tool_name in {"judge_assertion_candidate", "judge_assertion_candidates"}:
+        from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+        poly.judge_assertion_candidates = AsyncMock(
+            return_value=AssertionBulkJudgmentPayload(items=(), applied_count=0, idempotent_count=0, failed_count=0)
+        )
+    elif tool_name == "import_annotation_batch":
+        poly.resolve_ref = AsyncMock(return_value=MagicMock(resolved=False))
+    elif tool_name == "add_tag":
         poly.add_tag = AsyncMock(return_value=TagMutationResult(outcome="added"))
     elif tool_name == "remove_tag":
         poly.remove_tag = AsyncMock(return_value=TagMutationResult(outcome="removed"))

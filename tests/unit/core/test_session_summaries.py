@@ -95,7 +95,7 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
     assert summary.total_tool_active_duration_ms == 600
     assert summary.work_event_breakdown == {"testing": 1, "research": 1}
     assert summary.repos_active == ("polylogue",)
-    assert summary.providers == {"claude-code-session": 1}
+    assert summary.origins == {"claude-code-session": 1}
 
 
 def test_summarize_days_and_weeks_use_profile_date_fallbacks_and_sort_descending() -> None:

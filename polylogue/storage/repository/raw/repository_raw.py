@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.logging import get_logger
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.runtime import (
@@ -15,6 +16,8 @@ from polylogue.storage.runtime import (
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import cursor as cursor_queries
 from polylogue.storage.sqlite.queries import raw as raw_queries
+
+logger = get_logger(__name__)
 
 
 class RepositoryRawMixin:
@@ -107,7 +110,14 @@ class RepositoryRawMixin:
         async with self._backend.connection() as conn:
             try:
                 return await cursor_queries.get_known_source_cursors(conn)
-            except Exception:
+            except Exception as exc:
+                # An empty map silently disables the stat fast path (every
+                # source re-hashes); make the degradation visible.
+                logger.warning(
+                    "source-cursor fast path unavailable (%s: %s); falling back to full source scan",
+                    type(exc).__name__,
+                    exc,
+                )
                 return {}
 
     async def upsert_source_file_cursor(
@@ -135,13 +145,13 @@ class RepositoryRawMixin:
     async def reset_parse_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_parse_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
@@ -149,13 +159,13 @@ class RepositoryRawMixin:
     async def reset_validation_status(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         source_names: list[str] | None = None,
     ) -> int:
         async with self._backend.connection() as conn:
             return await raw_queries.reset_validation_status(
                 conn,
-                provider=provider,
+                origin=origin,
                 source_names=source_names,
                 transaction_depth=self._backend.transaction_depth,
             )
@@ -183,13 +193,13 @@ class RepositoryRawMixin:
 
     async def iter_raw_sessions(
         self,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[RawSessionRecord]:
         async with self._backend.connection() as conn:
             async for record in raw_queries.iter_raw_sessions(
                 conn,
-                provider=provider,
+                origin=origin,
                 limit=limit,
             ):
                 yield record
@@ -216,9 +226,9 @@ class RepositoryRawMixin:
             ):
                 yield header
 
-    async def get_raw_session_count(self, provider: str | None = None) -> int:
+    async def get_raw_session_count(self, origin: str | None = None) -> int:
         async with self._backend.connection() as conn:
-            return await raw_queries.get_raw_session_count(conn, provider=provider)
+            return await raw_queries.get_raw_session_count(conn, origin=origin)
 
     async def get_raw_records_for_session(
         self,

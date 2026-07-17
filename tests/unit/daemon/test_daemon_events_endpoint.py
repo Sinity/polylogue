@@ -17,6 +17,8 @@ status payload on every probe.
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +30,9 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 import pytest
+
+from polylogue.core.json import JSONDocument
+from polylogue.daemon.web_auth import WebCredentialRegistry
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -78,6 +83,44 @@ def _capture_json(handler: DaemonAPIHandler) -> MagicMock:
     send_json = MagicMock()
     handler._send_json = send_json  # type: ignore[method-assign]
     return send_json
+
+
+def _complete_healthy_frontier() -> JSONDocument:
+    return {
+        "available": True,
+        "overall_status": "healthy",
+        "broken_head_status": "healthy",
+        "broken_head_count": 0,
+        "broken_head_checked_count": 1,
+        "broken_head_samples": [],
+        "broken_head_reason": "",
+        "missing_source_raw_status": "healthy",
+        "missing_source_raw_count": 0,
+        "missing_source_raw_samples": [],
+        "missing_source_raw_reason": "",
+        "cursor_ahead_status": "healthy",
+        "cursor_ahead_count": 0,
+        "cursor_ahead_checked_count": 1,
+        "cursor_head_comparison_count": 1,
+        "cursor_ahead_comparison_count": 0,
+        "cursor_ahead_samples": [],
+        "cursor_authority_gap_count": 0,
+        "cursor_authority_gap_samples": [],
+        "cursor_ahead_reason": "",
+    }
+
+
+def _response_etag(response: bytes) -> str:
+    match = re.search(rb"\r\nETag: ([^\r\n]+)", response)
+    assert match is not None
+    return match.group(1).decode("ascii")
+
+
+def _response_json(response: bytes) -> dict[str, object]:
+    _, body = response.split(b"\r\n\r\n", 1)
+    payload = json.loads(body)
+    assert isinstance(payload, dict)
+    return cast(dict[str, object], payload)
 
 
 @pytest.fixture
@@ -295,7 +338,7 @@ class TestEventLedgerReadIsolation:
 
 
 class TestStatusEventEtag:
-    """``GET /api/status`` advertises ``last_event_id`` + ``ETag``; 304 on match."""
+    """``GET /api/status`` ETags include event and normalized snapshot identity."""
 
     def test_status_includes_last_event_id_field(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_daemon_event
@@ -304,20 +347,138 @@ class TestStatusEventEtag:
         handler = _make_handler("GET", "/api/status")
         handler.do_GET()
         out = cast("BytesIO", handler.wfile).getvalue()
-        assert b'ETag: W/"events-' in out
+        assert b'ETag: W/"status-' in out
         assert b'"last_event_id":' in out
 
     def test_status_returns_304_when_etag_matches(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.events import emit_daemon_event, get_latest_event_id
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
 
         emit_daemon_event("ingestion_batch", payload={})
-        etag = f'W/"events-{get_latest_event_id()}"'
+        refresh_status_snapshot(payload={"ok": False, "daemon_liveness": True})
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
 
         handler = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
         handler.do_GET()
         out = cast("BytesIO", handler.wfile).getvalue()
         assert b" 304 " in out
         assert b"Content-Type: application/json" not in out
+
+    def test_status_etag_changes_when_snapshot_becomes_stale(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        emit_daemon_event("ingestion_batch", payload={})
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+        refresh_status_snapshot(
+            payload={
+                "ok": True,
+                "daemon_liveness": True,
+                "raw_frontier_integrity": _complete_healthy_frontier(),
+            }
+        )
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 131.0)
+        second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
+        second.do_GET()
+        response = cast("BytesIO", second.wfile).getvalue()
+        payload = _response_json(response)
+
+        assert b" 200 " in response
+        assert payload["ok"] is False
+        snapshot = cast(dict[str, object], payload["status_snapshot"])
+        frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
+        assert snapshot["state"] == "stale"
+        assert frontier["overall_status"] == "unknown"
+
+    def test_status_etag_changes_when_snapshot_refreshes_to_violation(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        emit_daemon_event("ingestion_batch", payload={})
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 100.0)
+        refresh_status_snapshot(
+            payload={
+                "ok": True,
+                "daemon_liveness": True,
+                "raw_frontier_integrity": _complete_healthy_frontier(),
+            }
+        )
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+
+        violated = _complete_healthy_frontier()
+        violated.update(
+            {
+                "overall_status": "violated",
+                "broken_head_status": "violated",
+                "broken_head_count": 1,
+                "broken_head_samples": [
+                    {"logical_source_key": "codex:one", "accepted_raw_id": "raw-one", "reason": "broken"}
+                ],
+                "broken_head_reason": "1 active seed is broken",
+            }
+        )
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.time.monotonic", lambda: 101.0)
+        refresh_status_snapshot(payload={"ok": False, "daemon_liveness": True, "raw_frontier_integrity": violated})
+        second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
+        second.do_GET()
+        response = cast("BytesIO", second.wfile).getvalue()
+        payload = _response_json(response)
+
+        assert b" 200 " in response
+        frontier = cast(dict[str, object], payload["raw_frontier_integrity"])
+        assert frontier["overall_status"] == "violated"
+
+    def test_status_etag_changes_with_live_write_coordinator_state(
+        self,
+        empty_events_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon.events import emit_daemon_event
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        emit_daemon_event("ingestion_batch", payload={})
+        refresh_status_snapshot(
+            payload={
+                "ok": True,
+                "daemon_liveness": True,
+                "raw_frontier_integrity": _complete_healthy_frontier(),
+            }
+        )
+        monkeypatch.setattr(
+            "polylogue.daemon.status_snapshot._daemon_write_coordinator_payload",
+            lambda: {"state": "idle"},
+        )
+        first = _make_handler("GET", "/api/status")
+        first.do_GET()
+        etag = _response_etag(cast("BytesIO", first.wfile).getvalue())
+
+        monkeypatch.setattr(
+            "polylogue.daemon.status_snapshot._daemon_write_coordinator_payload",
+            lambda: {"state": "writing"},
+        )
+        second = _make_handler("GET", "/api/status", extra_headers={"If-None-Match": etag})
+        second.do_GET()
+        response = cast("BytesIO", second.wfile).getvalue()
+        payload = _response_json(response)
+
+        assert b" 200 " in response
+        assert payload["daemon_write_coordinator"] == {"state": "writing"}
 
 
 class TestGranularEventKinds:
@@ -458,40 +619,38 @@ class TestBackpressureCoalescing:
         assert b'"coalesced": true' in out or b'"coalesced":true' in out
 
 
-class TestAccessTokenQueryFallback:
-    """When a token is configured, EventSource clients can use ``?access_token=``."""
+class TestAccessTokenQueryRejected:
+    """SSE credentials never travel in URLs; EventSource uses the web cookie."""
 
-    def test_access_token_in_query_string_authenticates(self, empty_events_db: Path) -> None:
-        from polylogue.daemon.http import _check_auth_logic
-
-        # The pure logic accepts a Bearer header; the handler-level fallback
-        # rewrites ?access_token=X into Bearer X before delegating.
-        handler = _make_handler("GET", "/api/events?poll=1&since=0&access_token=secret")
+    @pytest.mark.parametrize("credential_param", ["access_token", "api_key", "secret"])
+    def test_credential_in_query_string_is_rejected(
+        self,
+        empty_events_db: Path,
+        credential_param: str,
+    ) -> None:
+        handler = _make_handler("GET", f"/api/events?poll=1&since=0&{credential_param}=secret")
         handler.server = cast(
             "DaemonAPIHTTPServer",
             type(
                 "_Srv",
                 (),
-                {"auth_token": "secret", "api_host": "127.0.0.1"},
+                {
+                    "auth_token": "secret",
+                    "api_host": "127.0.0.1",
+                    "web_credentials": WebCredentialRegistry(),
+                },
             )(),
         )
-        send_json = _capture_json(handler)
+        send_error = MagicMock()
+        handler._send_error = send_error  # type: ignore[method-assign]
         handler.do_GET()
-        # Should succeed (200), not 401.
-        status, _ = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
 
-        # Sanity: the raw logic still rejects when no header is present.
-        assert _check_auth_logic("secret", "127.0.0.1", "").allowed is False
-
-    def test_access_token_in_query_string_is_ignored_on_non_sse_routes(self, empty_events_db: Path) -> None:
-        """The query-token fallback is scoped to /api/events only (kwsb.1).
-
-        Accepting ?access_token= broadly would leak bearer tokens into
-        server logs, proxies, and the Referer header on every route —
-        EventSource's header limitation is the sole legitimate reason for
-        the fallback to exist at all.
-        """
+    def test_access_token_in_query_string_is_rejected_on_non_sse_routes(self, empty_events_db: Path) -> None:
         handler = _make_handler("GET", "/api/status?access_token=secret")
         handler.server = cast(
             "DaemonAPIHTTPServer",
@@ -504,4 +663,50 @@ class TestAccessTokenQueryFallback:
         send_error = MagicMock()
         handler._send_error = send_error  # type: ignore[method-assign]
         handler.do_GET()
-        send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+
+    def test_valid_cookie_cannot_make_query_credential_reach_dispatch(self, empty_events_db: Path) -> None:
+        registry = WebCredentialRegistry()
+        issued = registry.issue("http://127.0.0.1:8766")
+        handler = _make_handler(
+            "GET",
+            "/api/status?access_token=must-not-surface",
+            extra_headers={
+                "Cookie": f"polylogue_web_credential={issued.token}",
+                "Host": "127.0.0.1:8766",
+                "Sec-Fetch-Site": "same-origin",
+                "X-Polylogue-Web-Client": "1",
+            },
+        )
+        handler.server = cast(
+            "DaemonAPIHTTPServer",
+            type(
+                "_Srv",
+                (),
+                {"auth_token": "secret", "api_host": "127.0.0.1", "web_credentials": registry},
+            )(),
+        )
+        status_handler = MagicMock()
+        handler._handle_status = status_handler  # type: ignore[method-assign]
+        send_error = MagicMock()
+        handler._send_error = send_error  # type: ignore[method-assign]
+
+        handler.do_GET()
+
+        send_error.assert_called_once_with(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+        status_handler.assert_not_called()
+
+    def test_route_metadata_redacts_and_disconnect_log_path_drops_query_values(self) -> None:
+        from polylogue.daemon.http import _public_route_from_request_path, _request_path_for_log
+
+        raw = "/api/sessions?query=normal&unknown_name=must-not-surface"
+        assert _public_route_from_request_path(raw) == "/api/sessions"
+        assert _request_path_for_log(raw) == "/api/sessions"

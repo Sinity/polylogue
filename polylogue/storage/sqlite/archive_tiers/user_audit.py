@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "marks": AssertionKind.MARK,
@@ -30,6 +31,11 @@ _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {
     "prompt_evals": AssertionKind.PROMPT_EVAL,
     "transform_candidates": AssertionKind.TRANSFORM_CANDIDATE,
     "pathologies": AssertionKind.PATHOLOGY,
+    "findings": AssertionKind.FINDING,
+    "secret_candidates": AssertionKind.SECRET_CANDIDATE,
+    "excision_records": AssertionKind.EXCISION_RECORD,
+    "excision_requests": AssertionKind.EXCISION_REQUEST,
+    "comparative_judgments": AssertionKind.COMPARATIVE_JUDGMENT,
 }
 
 
@@ -119,14 +125,6 @@ def _assertion_counts_by_kind(conn: sqlite3.Connection) -> dict[str, dict[str, i
         status = str(row[1])
         counts.setdefault(kind, {})[status] = int(row[2] or 0)
     return counts
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 __all__ = [

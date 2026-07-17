@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing_extensions import TypedDict
+from typing_extensions import Self, TypedDict
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
-from polylogue.core.refs import normalize_object_ref_text, normalize_public_ref_text
+from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
     CandidateReviewDecision,
@@ -67,11 +68,13 @@ MutationOperation: TypeAlias = Literal[
     "correction.delete",
     "correction.clear",
     "reset",
+    "excise",
 ]
 
 if TYPE_CHECKING:
     from collections.abc import Container
 
+    from polylogue.annotations.batch import AnnotationBatch
     from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
@@ -80,6 +83,8 @@ if TYPE_CHECKING:
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveContextSnapshotQueryRow,
+        ArchiveDelegationCard,
+        ArchiveDelegationQueryRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
         ArchiveObservedEventQueryRow,
@@ -87,6 +92,7 @@ if TYPE_CHECKING:
         ArchiveRunQueryRow,
     )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
         ArchiveAssertionJudgmentEnvelope,
@@ -113,6 +119,34 @@ class SurfacePayloadModel(BaseModel):
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return serialize_surface_payload(self, exclude_none=exclude_none)
+
+    @classmethod
+    def _from_row_generic(cls, row: object, **field_overrides: object) -> Self:
+        """Generic from_row implementation: copy matching fields from row, allow overrides.
+
+        This implements the pattern used across 70+ simple field assignments in payloads:
+        - For each model field, try to get the value from row if it exists
+        - Allow explicit overrides for fields that need transformations or renames
+        - Ignore row fields that don't exist on the model
+
+        Args:
+            row: A row object (dataclass, namedtuple, or similar) with field attributes
+            **field_overrides: Explicit field assignments to override defaults
+
+        Returns:
+            Instance of cls with fields populated from row + overrides
+
+        Example:
+            return cls._from_row_generic(row, kind=AssertionKind.from_string(row.kind))
+        """
+        # Collect all fields from row that match model fields
+        payload_fields = {}
+        for field_name in cls.model_fields:
+            if hasattr(row, field_name):
+                payload_fields[field_name] = getattr(row, field_name)
+        # Apply overrides
+        payload_fields.update(field_overrides)
+        return cls(**payload_fields)
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -205,6 +239,31 @@ class ImportSkippedRowPayload(SurfacePayloadModel):
     raw_ref: str | None = None
 
 
+ImportFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
+
+
+class ImportFidelityCapabilityPayload(SurfacePayloadModel):
+    """Coverage and fidelity for one source capability."""
+
+    status: ImportFidelityStatus
+    observed: int = 0
+    expected: int = 0
+    counts: Mapping[str, int] = Field(default_factory=dict)
+    detail: str
+
+
+class ImportFidelityDeclarationPayload(SurfacePayloadModel):
+    """Per-source declaration of retained import evidence and known gaps."""
+
+    producer: str
+    schema_version: int | None = None
+    profile_namespace: str | None = None
+    acquisition_method: str
+    retained_blob_reproducibility: ImportFidelityCapabilityPayload
+    capabilities: Mapping[str, ImportFidelityCapabilityPayload] = Field(default_factory=dict)
+    caveats: tuple[str, ...] = ()
+
+
 class ImportExplainEntryPayload(SurfacePayloadModel):
     """Explanation for one raw artifact or archive entry inspected by import explain."""
 
@@ -225,6 +284,7 @@ class ImportExplainEntryPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
     raw_evidence_refs: tuple[str, ...] = ()
     normalization_warnings: tuple[str, ...] = ()
+    fidelity: ImportFidelityDeclarationPayload | None = None
 
 
 class ImportExplainPayload(SurfacePayloadModel):
@@ -397,7 +457,6 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
 class ToolCountRowPayload(SurfacePayloadModel):
     """One grouped tool count row from a declared archive projection basis."""
 
-    source_name: str
     origin: str
     normalized_tool_name: str
     action_kind: str
@@ -431,7 +490,8 @@ class ToolFamilyComparisonPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-def normalize_role(role: object) -> str:
+def role_label(role: object) -> str:
+    """Convert a role enum or string to a normalized label string."""
     if not role:
         return "unknown"
     if isinstance(role, Enum):
@@ -678,7 +738,7 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=str(message.id),
-            role=normalize_role(message.role),
+            role=role_label(message.role),
             text=message.text or "",
             target_ref=target_ref,
             anchor=reader_anchor("message", message.id),
@@ -713,8 +773,10 @@ class SessionMessagePayload(SurfacePayloadModel):
         """
 
         message_id = str(message.message_id)
-        blocks = tuple(message.blocks)
+        blocks = tuple(getattr(message, "blocks", ()))
         text = "\n\n".join(str(block.text) for block in blocks if block.text)
+        if not text:
+            text = str(getattr(message, "text", "") or "")
         content_blocks: list[dict[str, object]] = []
         for block in blocks:
             row: dict[str, object] = {
@@ -738,11 +800,18 @@ class SessionMessagePayload(SurfacePayloadModel):
         )
         return cls(
             id=message_id,
-            role=normalize_role(getattr(message, "role", "")),
+            role=role_label(getattr(message, "role", "")),
             text=text,
             target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
             anchor=reader_anchor("message", message_id),
-            timestamp=_parse_optional_datetime(getattr(message, "occurred_at", None)),
+            timestamp=(
+                _parse_optional_datetime(getattr(message, "occurred_at", None))
+                or (
+                    datetime.fromtimestamp(float(message.occurred_at_ms) / 1000.0, UTC)
+                    if getattr(message, "occurred_at_ms", None) is not None
+                    else None
+                )
+            ),
             message_type=str(getattr(message, "message_type", "message") or "message"),
             material_origin=str(getattr(message, "material_origin", "unknown") or "unknown"),
             content_blocks=content_blocks,
@@ -1250,6 +1319,12 @@ class SearchEnvelope(SurfacePayloadModel):
     action_affordances: tuple[ActionAffordancePayload, ...] = ()
     diagnostics: QueryMissDiagnosticsPayload | None = None
     route_state: RouteReadinessPayload | None = None
+    # Analysis-provenance fields are additive: response builders populate them
+    # after a committed run has been recorded by the owning execution surface.
+    query_run_ref: str | None = None
+    query_hash: str | None = None
+    result_fingerprint: str | None = None
+    exactness: Literal["exact", "capped", "sampled", "estimate"] | None = None
 
 
 QueryUnitKind: TypeAlias = Literal[
@@ -1261,6 +1336,7 @@ QueryUnitKind: TypeAlias = Literal[
     "run",
     "observed-event",
     "context-snapshot",
+    "delegation",
 ]
 """Terminal query source unit exposed by query-unit envelopes."""
 
@@ -1283,19 +1359,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveMessageQueryRow) -> MessageQueryRowPayload:
-        return cls(
-            message_id=row.message_id,
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            role=row.role,
-            message_type=row.message_type,
-            material_origin=row.material_origin,
-            occurred_at_ms=row.occurred_at_ms,
-            position=row.position,
-            word_count=row.word_count,
-            text=row.text,
-        )
+        return cls._from_row_generic(row)
 
 
 class ActionQueryRowPayload(SurfacePayloadModel):
@@ -1321,23 +1385,110 @@ class ActionQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
+        return cls._from_row_generic(row)
+
+
+def _delegation_instruction_text(payload: str | None) -> str | None:
+    if payload is None:
+        return None
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(decoded, dict):
+        for key in ("prompt", "description", "instruction", "task"):
+            value = decoded.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+    return None
+
+
+def _delegation_ref(row: ArchiveDelegationQueryRow) -> str:
+    if row.instruction_tool_use_block_id is not None:
+        return f"delegation:{row.instruction_tool_use_block_id}"
+    if row.child_session_id is None:
+        raise ValueError("edge-only delegation rows require a child session id")
+    return f"delegation:{delegation_edge_object_id(row.parent_session_id, row.child_session_id)}"
+
+
+def _delegation_preview(value: str | None, *, limit: int = 240) -> tuple[str | None, str | None, bool]:
+    if value is None:
+        return None, None, False
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    if len(value) <= limit:
+        return value, digest, False
+    return value[:limit], digest, True
+
+
+class DelegationQueryRowPayload(SurfacePayloadModel):
+    """Bounded terminal-query row for one delegation attempt."""
+
+    unit: Literal["delegation"] = "delegation"
+    delegation_ref: str
+    parent_session_id: str
+    child_session_id: str | None = None
+    parent_origin: str
+    mapping_state: DelegationMappingState
+    evidence_basis: Literal["action", "edge"]
+    instruction_message_id: str | None = None
+    instruction_tool_use_block_id: str | None = None
+    instruction_preview: str | None = None
+    instruction_sha256: str | None = None
+    instruction_truncated: bool = False
+    artifact_block_id: str | None = None
+    artifact_preview: str | None = None
+    artifact_sha256: str | None = None
+    artifact_truncated: bool = False
+    dispatch_turn_model: str | None = None
+    requested_model: str | None = None
+    child_session_dominant_model: str | None = None
+    result_is_error: bool | None = None
+    result_exit_code: int | None = None
+    result_status: DelegationResultStatus
+    link_confidence: float | None = None
+    link_method: str | None = None
+    inheritance: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationQueryRowPayload:
+        instruction = _delegation_instruction_text(row.instruction_payload)
+        instruction_preview, instruction_sha256, instruction_truncated = _delegation_preview(instruction)
+        artifact_preview, artifact_sha256, artifact_truncated = _delegation_preview(row.artifact_text)
+        evidence_refs: list[str] = []
+        if row.instruction_tool_use_block_id is not None:
+            evidence_refs.append(f"block:{row.instruction_tool_use_block_id}")
+        elif row.instruction_message_id is not None:
+            evidence_refs.append(f"message:{row.instruction_message_id}")
+        if row.artifact_block_id is not None:
+            evidence_refs.append(f"block:{row.artifact_block_id}")
         return cls(
-            session_id=row.session_id,
-            message_id=row.message_id,
-            origin=row.origin,
-            title=row.title,
-            tool_use_block_id=row.tool_use_block_id,
-            tool_result_block_id=row.tool_result_block_id,
-            tool_name=row.tool_name,
-            semantic_type=row.semantic_type,
-            tool_command=row.tool_command,
-            tool_path=row.tool_path,
-            occurred_at_ms=row.occurred_at_ms,
-            output_text=row.output_text,
-            is_error=row.is_error,
-            exit_code=row.exit_code,
-            followup_class=row.followup_class,
-            followup_message_ref=row.followup_message_ref,
+            delegation_ref=_delegation_ref(row),
+            parent_session_id=row.parent_session_id,
+            child_session_id=row.child_session_id,
+            parent_origin=row.parent_origin,
+            mapping_state=row.mapping_state,
+            evidence_basis="action" if row.instruction_tool_use_block_id is not None else "edge",
+            instruction_message_id=row.instruction_message_id,
+            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+            instruction_preview=instruction_preview,
+            instruction_sha256=instruction_sha256,
+            instruction_truncated=instruction_truncated,
+            artifact_block_id=row.artifact_block_id,
+            artifact_preview=artifact_preview,
+            artifact_sha256=artifact_sha256,
+            artifact_truncated=artifact_truncated,
+            dispatch_turn_model=row.dispatch_turn_model,
+            requested_model=row.requested_model,
+            child_session_dominant_model=row.child_session_dominant_model,
+            result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
+            result_exit_code=row.result_exit_code,
+            result_status=row.result_status,
+            link_confidence=row.link_confidence,
+            link_method=row.link_method,
+            inheritance=row.inheritance,
+            evidence_refs=tuple(evidence_refs),
         )
 
 
@@ -1360,20 +1511,7 @@ class BlockQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveBlockQueryRow) -> BlockQueryRowPayload:
-        return cls(
-            block_id=row.block_id,
-            message_id=row.message_id,
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            block_type=row.block_type,
-            position=row.position,
-            text=row.text,
-            tool_name=row.tool_name,
-            semantic_type=row.semantic_type,
-            tool_command=row.tool_command,
-            tool_path=row.tool_path,
-        )
+        return cls._from_row_generic(row)
 
 
 class FileQueryRowPayload(SurfacePayloadModel):
@@ -1393,18 +1531,7 @@ class FileQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveFileQueryRow) -> FileQueryRowPayload:
-        return cls(
-            session_id=row.session_id,
-            origin=row.origin,
-            title=row.title,
-            path=row.path,
-            action_count=row.action_count,
-            first_message_id=row.first_message_id,
-            first_tool_use_block_id=row.first_tool_use_block_id,
-            last_tool_use_block_id=row.last_tool_use_block_id,
-            first_seen_ms=row.first_seen_ms,
-            last_seen_ms=row.last_seen_ms,
-        )
+        return cls._from_row_generic(row)
 
 
 class AssertionQueryRowPayload(SurfacePayloadModel):
@@ -1445,23 +1572,11 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveAssertionQueryRow) -> AssertionQueryRowPayload:
-        return cls(
-            assertion_id=row.assertion_id,
-            target_ref=row.target_ref,
-            scope_ref=row.scope_ref,
+        return cls._from_row_generic(
+            row,
             kind=AssertionKind.from_string(row.kind),
-            key=row.key,
-            body_text=row.body_text,
-            value=row.value,
-            author_ref=row.author_ref,
-            author_kind=row.author_kind,
             status=AssertionStatus.from_string(row.status),
             visibility=AssertionVisibility.from_string(row.visibility),
-            evidence_refs=row.evidence_refs,
-            staleness=row.staleness,
-            context_policy=row.context_policy,
-            created_at_ms=row.created_at_ms,
-            updated_at_ms=row.updated_at_ms,
         )
 
 
@@ -1526,6 +1641,44 @@ class AssertionClaimPayload(SurfacePayloadModel):
         )
 
 
+class FindingEvidenceRefState(SurfacePayloadModel):
+    """Live resolution state for one evidence ref cited by a finding."""
+
+    ref: str
+    resolvable: bool
+    reason: str | None = None
+
+
+class FindingProvenancePayload(SurfacePayloadModel):
+    """Queryable provenance projection over one ``AssertionKind.FINDING`` claim.
+
+    Surfaces the evidence-ancestry fields the finding-provenance doctrine
+    calls for (finding id, claim key, target, query/result/baseline/current
+    refs, detector ref) as structured data instead of prose, plus a live
+    per-ref resolution check and an honest staleness verdict. This is
+    deliberately *not* the full W3C-PROV-style stanza requested alongside it
+    (no code SHA / corpus-datasheet hash -- those need build-info threading
+    tracked separately as follow-up); it is the bounded slice of "queryable,
+    not prose" provenance available from the finding's own durable evidence
+    refs today.
+    """
+
+    assertion_id: str
+    claim_key: str | None
+    target_ref: str
+    finding_kind: str | None
+    query_ref: str | None
+    result_set_ref: str | None
+    baseline_ref: str | None
+    current_ref: str | None
+    detector_ref: str | None
+    status: AssertionStatus
+    evidence: tuple[FindingEvidenceRefState, ...]
+    staleness_verdict: Literal["current", "stale", "unknown"]
+    created_at_ms: int
+    updated_at_ms: int
+
+
 class AssertionClaimListPayload(SurfacePayloadModel):
     """Shared list envelope for assertion-backed lifecycle claims."""
 
@@ -1561,6 +1714,7 @@ class AssertionJudgmentPayload(SurfacePayloadModel):
     candidate_ref: str
     decision: Literal["accept", "reject", "defer", "supersede"]
     reason: str | None = None
+    inject_authorized: bool = False
     actor_ref: str | None = None
     decided_at_ms: int
     resulting_assertion_ref: str | None = None
@@ -1588,6 +1742,7 @@ class AssertionJudgmentPayload(SurfacePayloadModel):
             candidate_ref=str(value.get("candidate_ref") or envelope.target_ref),
             decision=cast(Literal["accept", "reject", "defer", "supersede"], decision),
             reason=str(value["reason"]) if value.get("reason") is not None else None,
+            inject_authorized=bool(value.get("inject_authorized", False)),
             actor_ref=envelope.author_ref,
             decided_at_ms=envelope.updated_at_ms,
             resulting_assertion_ref=str(resulting_assertion_ref) if resulting_assertion_ref is not None else None,
@@ -1601,6 +1756,7 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
     candidate: AssertionClaimPayload
     judgment: AssertionJudgmentPayload
     resulting_assertion: AssertionClaimPayload | None = None
+    outcome: Literal["applied", "idempotent"] = "applied"
 
     @classmethod
     def from_envelope(cls, envelope: ArchiveAssertionJudgmentEnvelope) -> AssertionJudgmentResultPayload:
@@ -1610,6 +1766,38 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
             resulting_assertion=None
             if envelope.resulting_assertion is None
             else AssertionClaimPayload.from_envelope(envelope.resulting_assertion),
+            outcome=cast(Literal["applied", "idempotent"], envelope.outcome),
+        )
+
+
+class AssertionBulkJudgmentItemPayload(SurfacePayloadModel):
+    candidate_ref: str
+    outcome: Literal["applied", "idempotent", "failed"]
+    result: AssertionJudgmentResultPayload | None = None
+    error: str | None = None
+
+
+class AssertionBulkJudgmentPayload(SurfacePayloadModel):
+    items: tuple[AssertionBulkJudgmentItemPayload, ...]
+    applied_count: int
+    idempotent_count: int
+    failed_count: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveAssertionBulkJudgmentEnvelope) -> AssertionBulkJudgmentPayload:
+        return cls(
+            items=tuple(
+                AssertionBulkJudgmentItemPayload(
+                    candidate_ref=item.candidate_ref,
+                    outcome=cast(Literal["applied", "idempotent", "failed"], item.outcome),
+                    result=None if item.result is None else AssertionJudgmentResultPayload.from_envelope(item.result),
+                    error=item.error,
+                )
+                for item in envelope.items
+            ),
+            applied_count=envelope.applied_count,
+            idempotent_count=envelope.idempotent_count,
+            failed_count=envelope.failed_count,
         )
 
 
@@ -1772,6 +1960,477 @@ class PublicRefResolutionPayload(SurfacePayloadModel):
     @classmethod
     def _validate_resolution_evidence_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(normalize_public_ref_text(ref) for ref in value)
+
+
+ANNOTATION_BATCH_ASSERTION_REF_LIMIT = 20
+ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT = 5
+ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT = 256
+ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT = 96
+ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT = 256
+
+
+class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for an oversized public annotation-batch ref.
+
+    The original ref is intentionally absent. This keeps missing and malformed
+    lookup responses bounded while retaining enough information to correlate
+    the response with the exact UTF-8 input.
+    """
+
+    unit: Literal["annotation-batch-ref-digest"] = "annotation-batch-ref-digest"
+    original_ref_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_utf8_bytes_total: int = Field(gt=ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_oversized_ref(cls, value: str) -> AnnotationBatchRefDigestPayload:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT:
+            raise ValueError("annotation batch ref does not exceed the public byte limit")
+        return cls(
+            original_ref_sha256=hashlib.sha256(encoded).hexdigest(),
+            original_ref_utf8_bytes_total=len(encoded),
+        )
+
+
+class InvalidUnicodeRefDigestPayload(SurfacePayloadModel):
+    """Identity-only descriptor for a public ref that is not valid UTF-8.
+
+    ``surrogatepass`` gives Python's otherwise-unencodable code-point sequence
+    a deterministic digest input without claiming that those bytes are UTF-8.
+    The original text is never exposed on a public surface.
+    """
+
+    unit: Literal["invalid-unicode-ref-digest"] = "invalid-unicode-ref-digest"
+    reason: Literal["invalid-unicode"] = "invalid-unicode"
+    original_ref_surrogatepass_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_ref_codepoints_total: int = Field(ge=1)
+    truncated: Literal[True] = True
+
+    @classmethod
+    def from_invalid_ref(cls, value: str) -> InvalidUnicodeRefDigestPayload:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            digest_input = value.encode("utf-8", errors="surrogatepass")
+        else:
+            raise ValueError("public ref is valid UTF-8")
+        return cls(
+            original_ref_surrogatepass_sha256=hashlib.sha256(digest_input).hexdigest(),
+            original_ref_codepoints_total=len(value),
+        )
+
+
+class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):
+    """Serialization-bounded text prefix with exact UTF-8 identity metadata."""
+
+    text_prefix: str
+    text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    text_bytes_total: int = Field(ge=0)
+    truncated: bool
+
+    @classmethod
+    def from_text(cls, value: str) -> AnnotationBatchTextPreviewPayload:
+        encoded = value.encode("utf-8")
+        low = 0
+        high = len(value)
+        while low < high:
+            midpoint = (low + high + 1) // 2
+            serialized = json.dumps(value[:midpoint], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(serialized) <= ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT:
+                low = midpoint
+            else:
+                high = midpoint - 1
+        prefix = value[:low]
+        return cls(
+            text_prefix=prefix,
+            text_sha256=hashlib.sha256(encoded).hexdigest(),
+            text_bytes_total=len(encoded),
+            truncated=prefix != value,
+        )
+
+    @model_validator(mode="after")
+    def _validate_text_prefix_bound(self) -> AnnotationBatchTextPreviewPayload:
+        serialized = json.dumps(self.text_prefix, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        prefix_bytes = len(self.text_prefix.encode("utf-8"))
+        if len(serialized) > ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT:
+            raise ValueError("annotation batch text prefix exceeds the public serialization bound")
+        if self.text_bytes_total < prefix_bytes:
+            raise ValueError("annotation batch text total cannot be smaller than its prefix")
+        if self.truncated != (self.text_bytes_total > prefix_bytes):
+            raise ValueError("annotation batch text truncation must match its exact byte total")
+        return self
+
+
+class AnnotationBatchJSONPreviewPayload(SurfacePayloadModel):
+    """Byte-bounded canonical JSON prefix with exact identity metadata."""
+
+    json_prefix: str
+    json_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    json_bytes_total: int = Field(ge=0)
+    truncated: bool
+
+    @classmethod
+    def from_document(cls, document: JSONDocument) -> AnnotationBatchJSONPreviewPayload:
+        encoded = json.dumps(
+            document,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        prefix = encoded[:ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT]
+        # ``encoded`` is valid UTF-8; ``ignore`` can only discard a partial
+        # trailing code point when the byte cap bisects one.
+        json_prefix = prefix.decode("utf-8", errors="ignore")
+        return cls(
+            json_prefix=json_prefix,
+            json_sha256=hashlib.sha256(encoded).hexdigest(),
+            json_bytes_total=len(encoded),
+            truncated=len(encoded) > ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT,
+        )
+
+    @model_validator(mode="after")
+    def _validate_json_prefix_bound(self) -> AnnotationBatchJSONPreviewPayload:
+        prefix_bytes = len(self.json_prefix.encode("utf-8"))
+        if prefix_bytes > ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT:
+            raise ValueError("annotation batch JSON prefix exceeds the public byte bound")
+        if self.json_bytes_total < prefix_bytes:
+            raise ValueError("annotation batch JSON total cannot be smaller than its prefix")
+        if self.truncated != (self.json_bytes_total > prefix_bytes):
+            raise ValueError("annotation batch JSON truncation must match its exact byte total")
+        return self
+
+
+class AnnotationBatchPayload(SurfacePayloadModel):
+    """Bounded durable provenance returned for an ``annotation-batch:`` ref."""
+
+    unit: Literal["annotation-batch"] = "annotation-batch"
+    batch_id: AnnotationBatchTextPreviewPayload
+    batch_ref: AnnotationBatchTextPreviewPayload
+    schema_id: AnnotationBatchTextPreviewPayload
+    schema_version: int
+    qualified_schema_id: AnnotationBatchTextPreviewPayload
+    target_ref: AnnotationBatchTextPreviewPayload
+    source_result_ref: AnnotationBatchTextPreviewPayload
+    actor_ref: AnnotationBatchTextPreviewPayload
+    model_ref: AnnotationBatchTextPreviewPayload
+    prompt_ref: AnnotationBatchTextPreviewPayload
+    total_count: int
+    valid_count: int
+    invalid_count: int
+    abstained_count: int
+    assertion_refs: tuple[AnnotationBatchTextPreviewPayload, ...] = Field(
+        default=(),
+        max_length=ANNOTATION_BATCH_ASSERTION_REF_LIMIT,
+    )
+    assertion_refs_total_count: int = Field(ge=0)
+    assertion_refs_omitted_count: int = Field(ge=0)
+    assertion_refs_truncated: bool
+    assertion_ref_values_truncated_count: int = Field(ge=0)
+    validation_failures: tuple[AnnotationBatchJSONPreviewPayload, ...] = Field(
+        default=(),
+        max_length=ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT,
+    )
+    validation_failures_total_count: int = Field(ge=0)
+    validation_failures_omitted_count: int = Field(ge=0)
+    validation_failures_truncated: bool
+    metadata: AnnotationBatchJSONPreviewPayload
+    created_at_ms: int
+
+    @model_validator(mode="after")
+    def _validate_exact_bounded_counts(self) -> AnnotationBatchPayload:
+        assertion_refs_omitted = self.assertion_refs_total_count - len(self.assertion_refs)
+        if self.assertion_refs_total_count != self.valid_count or assertion_refs_omitted < 0:
+            raise ValueError("annotation batch assertion-ref totals must match valid_count")
+        if self.assertion_refs_omitted_count != assertion_refs_omitted:
+            raise ValueError("annotation batch assertion-ref omitted count must be exact")
+        if self.assertion_refs_truncated != (assertion_refs_omitted > 0):
+            raise ValueError("annotation batch assertion-ref truncation must match omitted count")
+        truncated_ref_values = sum(item.truncated for item in self.assertion_refs)
+        if self.assertion_ref_values_truncated_count != truncated_ref_values:
+            raise ValueError("annotation batch assertion-ref value truncation count must be exact")
+
+        validation_failures_omitted = self.validation_failures_total_count - len(self.validation_failures)
+        if self.validation_failures_total_count != self.invalid_count or validation_failures_omitted < 0:
+            raise ValueError("annotation batch validation-failure totals must match invalid_count")
+        if self.validation_failures_omitted_count != validation_failures_omitted:
+            raise ValueError("annotation batch validation-failure omitted count must be exact")
+        if self.validation_failures_truncated != (validation_failures_omitted > 0):
+            raise ValueError("annotation batch validation-failure truncation must match omitted count")
+        return self
+
+    @classmethod
+    def from_batch(cls, batch: AnnotationBatch) -> AnnotationBatchPayload:
+        assertion_refs = tuple(
+            AnnotationBatchTextPreviewPayload.from_text(ref)
+            for ref in batch.assertion_refs[:ANNOTATION_BATCH_ASSERTION_REF_LIMIT]
+        )
+        validation_failures = tuple(
+            AnnotationBatchJSONPreviewPayload.from_document(document)
+            for document in batch.validation_failures[:ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT]
+        )
+        return cls(
+            batch_id=AnnotationBatchTextPreviewPayload.from_text(batch.batch_id),
+            batch_ref=AnnotationBatchTextPreviewPayload.from_text(batch.batch_ref),
+            schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.schema_id),
+            schema_version=batch.schema_version,
+            qualified_schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.qualified_schema_id),
+            target_ref=AnnotationBatchTextPreviewPayload.from_text(batch.target_ref),
+            source_result_ref=AnnotationBatchTextPreviewPayload.from_text(batch.source_result_ref),
+            actor_ref=AnnotationBatchTextPreviewPayload.from_text(batch.actor_ref),
+            model_ref=AnnotationBatchTextPreviewPayload.from_text(batch.model_ref),
+            prompt_ref=AnnotationBatchTextPreviewPayload.from_text(batch.prompt_ref),
+            total_count=batch.total_count,
+            valid_count=batch.valid_count,
+            invalid_count=batch.invalid_count,
+            abstained_count=batch.abstained_count,
+            assertion_refs=assertion_refs,
+            assertion_refs_total_count=len(batch.assertion_refs),
+            assertion_refs_omitted_count=len(batch.assertion_refs) - len(assertion_refs),
+            assertion_refs_truncated=len(assertion_refs) < len(batch.assertion_refs),
+            assertion_ref_values_truncated_count=sum(item.truncated for item in assertion_refs),
+            validation_failures=validation_failures,
+            validation_failures_total_count=len(batch.validation_failures),
+            validation_failures_omitted_count=len(batch.validation_failures) - len(validation_failures),
+            validation_failures_truncated=len(validation_failures) < len(batch.validation_failures),
+            metadata=AnnotationBatchJSONPreviewPayload.from_document(batch.metadata),
+            created_at_ms=batch.created_at_ms,
+        )
+
+    def truncation_caveats(self) -> tuple[str, ...]:
+        """Return explicit bounded-read caveats for omitted or clipped data."""
+
+        caveats: list[str] = []
+        if self.assertion_refs_truncated:
+            caveats.append(
+                "annotation_batch_assertion_refs_capped: "
+                f"returned={len(self.assertion_refs)} total={self.assertion_refs_total_count} "
+                f"omitted={self.assertion_refs_omitted_count}"
+            )
+        if self.assertion_ref_values_truncated_count:
+            caveats.append(
+                "annotation_batch_assertion_ref_values_capped: "
+                f"clipped={self.assertion_ref_values_truncated_count} "
+                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
+            )
+        if self.validation_failures_truncated:
+            caveats.append(
+                "annotation_batch_validation_failures_capped: "
+                f"returned={len(self.validation_failures)} total={self.validation_failures_total_count} "
+                f"omitted={self.validation_failures_omitted_count}"
+            )
+        clipped_failure_count = sum(item.truncated for item in self.validation_failures)
+        if clipped_failure_count:
+            caveats.append(
+                "annotation_batch_validation_failure_json_capped: "
+                f"clipped={clipped_failure_count} byte_cap={ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT}"
+            )
+        if self.metadata.truncated:
+            caveats.append(
+                "annotation_batch_metadata_json_capped: "
+                f"total_bytes={self.metadata.json_bytes_total} byte_cap={ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT}"
+            )
+        clipped_scalar_fields = tuple(
+            name
+            for name in (
+                "batch_id",
+                "batch_ref",
+                "schema_id",
+                "qualified_schema_id",
+                "target_ref",
+                "source_result_ref",
+                "actor_ref",
+                "model_ref",
+                "prompt_ref",
+            )
+            if getattr(self, name).truncated
+        )
+        if clipped_scalar_fields:
+            caveats.append(
+                "annotation_batch_scalar_values_capped: "
+                f"fields={','.join(clipped_scalar_fields)} "
+                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
+            )
+        return tuple(caveats)
+
+
+class PendingObjectRefPayload(SurfacePayloadModel):
+    """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
+
+    Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
+    kinds: ``query``, ``query-run``, ``result-set``, ``finding``, ``cohort``,
+    and ``analysis``) are registered before their backing storage tiers exist.
+    ``resolve_ref`` returns this typed payload for them instead of an opaque
+    not-found so clients can distinguish "not yet implemented" from "does not
+    exist". Annotation batches have durable user-tier storage and resolve
+    through :class:`AnnotationBatchPayload`.
+    """
+
+    unit: Literal["pending"] = "pending"
+    kind: str
+    reason: Literal["substrate-pending"] = "substrate-pending"
+
+
+_DELEGATION_TEXT_BOUND = 2000
+
+
+def _bounded_delegation_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) <= _DELEGATION_TEXT_BOUND:
+        return value
+    return value[:_DELEGATION_TEXT_BOUND] + "…[truncated]"
+
+
+DelegationMappingState: TypeAlias = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationResultStatus: TypeAlias = Literal["ok", "error", "unknown"]
+
+
+class DelegationAttemptPayload(SurfacePayloadModel):
+    """Bounded read payload for one delegation attempt (polylogue-y964
+    `delegations` view, polylogue-lph4 ObjectRef normalization).
+
+    ``mapping_state`` mirrors the view's own vocabulary exactly --
+    resolved/unresolved/ambiguous/edge_only/quarantined -- never
+    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
+    always carry a non-null ``instruction_tool_use_block_id``; edge-only rows
+    (edge_only/quarantined) never fabricate one. Instruction/artifact text is
+    length-bounded (never full-session content) to keep this a citable
+    evidence pointer, not a transcript dump.
+    """
+
+    unit: Literal["delegation-attempt"] = "delegation-attempt"
+    parent_session_id: str
+    child_session_id: str | None = None
+    mapping_state: DelegationMappingState
+    link_confidence: float | None = None
+    link_method: str | None = None
+    inheritance: str | None = None
+    branch_point_message_id: str | None = None
+    instruction_message_id: str | None = None
+    instruction_tool_use_block_id: str | None = None
+    instruction_payload: str | None = None
+    dispatch_turn_model: str | None = None
+    requested_model: str | None = None
+    artifact_block_id: str | None = None
+    artifact_text: str | None = None
+    result_is_error: bool | None = None
+    result_exit_code: int | None = None
+    result_status: DelegationResultStatus
+    parent_origin: str
+    parent_session_dominant_model: str | None = None
+    parent_session_dominant_model_family: str | None = None
+    parent_terminal_state: str | None = None
+    child_session_dominant_model: str | None = None
+    child_session_dominant_model_family: str | None = None
+    child_cost_usd: float | None = None
+    child_cost_is_estimated: bool | None = None
+    child_tokens: int | None = None
+    child_wall_ms: int | None = None
+    child_terminal_state: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationQueryRow) -> DelegationAttemptPayload:
+        return cls._from_row_generic(
+            row,
+            instruction_payload=_bounded_delegation_text(row.instruction_payload),
+            artifact_text=_bounded_delegation_text(row.artifact_text),
+            result_is_error=None if row.result_is_error is None else bool(row.result_is_error),
+            child_cost_is_estimated=None if row.child_cost_is_estimated is None else bool(row.child_cost_is_estimated),
+        )
+
+
+class DelegationContextRowPayload(SurfacePayloadModel):
+    """One bounded parent-context or follow-up message excerpt."""
+
+    message_id: str
+    message_ref: str
+    role: str
+    text: str
+    truncated: bool
+
+
+class DelegationCardPayload(SurfacePayloadModel):
+    """Explicit delegation evidence card; instruction is complete, windows are bounded."""
+
+    unit: Literal["delegation-card"] = "delegation-card"
+    delegation_ref: str
+    attempt: DelegationAttemptPayload
+    parent_session_title: str | None = None
+    child_session_title: str | None = None
+    run_ref: str | None = None
+    run_title: str | None = None
+    instruction: str | None = None
+    instruction_truncated: Literal[False] = False
+    parent_context: tuple[DelegationContextRowPayload, ...] = ()
+    parent_context_truncated: bool = False
+    dispatch_result: str | None = None
+    dispatch_result_truncated: bool = False
+    child_excerpt: str | None = None
+    child_excerpt_truncated: bool = False
+    parent_followup: tuple[DelegationContextRowPayload, ...] = ()
+    parent_followup_truncated: bool = False
+    annotation_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+
+    @classmethod
+    def from_card(cls, card: ArchiveDelegationCard) -> DelegationCardPayload:
+        return cls(
+            delegation_ref=card.delegation_ref,
+            attempt=DelegationAttemptPayload.from_row(card.attempt),
+            parent_session_title=card.parent_session_title,
+            child_session_title=card.child_session_title,
+            run_ref=card.run_ref,
+            run_title=card.run_title,
+            instruction=card.instruction,
+            parent_context=tuple(
+                DelegationContextRowPayload(
+                    message_id=row.message_id,
+                    message_ref=f"message:{row.message_id}",
+                    role=row.role,
+                    text=row.text,
+                    truncated=row.truncated,
+                )
+                for row in card.parent_context
+            ),
+            parent_context_truncated=card.parent_context_truncated,
+            dispatch_result=card.dispatch_result,
+            dispatch_result_truncated=card.dispatch_result_truncated,
+            child_excerpt=card.child_excerpt,
+            child_excerpt_truncated=card.child_excerpt_truncated,
+            parent_followup=tuple(
+                DelegationContextRowPayload(
+                    message_id=row.message_id,
+                    message_ref=f"message:{row.message_id}",
+                    role=row.role,
+                    text=row.text,
+                    truncated=row.truncated,
+                )
+                for row in card.parent_followup
+            ),
+            parent_followup_truncated=card.parent_followup_truncated,
+            annotation_refs=card.annotation_refs,
+            evidence_refs=card.evidence_refs,
+        )
+
+
+#: Caveats surfaced for delegation attempt states that structurally cannot
+#: (or must not) claim a fully resolved child -- keeps `resolve_ref` honest
+#: about what each `mapping_state` does and does not know (polylogue-y964
+#: vocabulary, polylogue-lph4 ObjectRef surface).
+DELEGATION_STATE_CAVEATS: dict[str, str] = {
+    "unresolved": "dispatch action observed but no child session resolved yet (mapping_state=unresolved)",
+    "ambiguous": (
+        "dispatch and resolved-child counts disagree for this parent; the real instruction is known but the "
+        "child cannot be attributed without guessing (mapping_state=ambiguous)"
+    ),
+    "edge_only": (
+        "resolved child session with no discoverable parent-side dispatch action "
+        "(mapping_state=edge_only) -- instruction is never fabricated"
+    ),
+    "quarantined": "session link quarantined as a lineage cycle-break (mapping_state=quarantined)",
+}
 
 
 class SessionReadViewEnvelope(SurfacePayloadModel):
@@ -1979,6 +2638,7 @@ QueryUnitRowPayload: TypeAlias = (
     | RunQueryRowPayload
     | ObservedEventQueryRowPayload
     | ContextSnapshotQueryRowPayload
+    | DelegationQueryRowPayload
 )
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
@@ -2013,12 +2673,7 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:
-        return cls(
-            unit=cast(QueryUnitKind, row.unit),
-            group_by=row.group_by,
-            group_key=row.group_key,
-            count=row.count,
-        )
+        return cls._from_row_generic(row, unit=cast(QueryUnitKind, row.unit))
 
 
 class QueryUnitEnvelope(SurfacePayloadModel):
@@ -2040,6 +2695,9 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    query_ref: str | None = None
+    result_ref: str | None = None
+    continuation: str | None = None
 
 
 class QueryUnitAggregateEnvelope(SurfacePayloadModel):
@@ -2061,6 +2719,9 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    query_ref: str | None = None
+    result_ref: str | None = None
+    continuation: str | None = None
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
@@ -2139,6 +2800,9 @@ def build_query_unit_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    query_ref: str | None = None,
+    result_ref: str | None = None,
+    continuation: str | None = None,
 ) -> QueryUnitEnvelope:
     """Construct the canonical terminal query-unit response envelope."""
 
@@ -2153,6 +2817,9 @@ def build_query_unit_envelope(
         limit=limit,
         offset=offset,
         next_offset=offset + limit if has_next else None,
+        query_ref=query_ref,
+        result_ref=result_ref,
+        continuation=continuation,
     )
 
 
@@ -2166,6 +2833,9 @@ def build_query_unit_aggregate_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    query_ref: str | None = None,
+    result_ref: str | None = None,
+    continuation: str | None = None,
 ) -> QueryUnitAggregateEnvelope:
     """Construct the canonical terminal aggregate response envelope."""
 
@@ -2180,6 +2850,9 @@ def build_query_unit_aggregate_envelope(
         limit=limit,
         offset=offset,
         next_offset=offset + limit if has_next else None,
+        query_ref=query_ref,
+        result_ref=result_ref,
+        continuation=continuation,
     )
 
 
@@ -2224,6 +2897,7 @@ class SearchCursor(BaseModel):
     s: float | None = None
     c: str
     lane: str = Field(validation_alias="l", serialization_alias="l")
+    query_hash: str | None = Field(default=None, validation_alias="q", serialization_alias="q")
 
 
 class InvalidSearchCursorError(ValueError):
@@ -2234,7 +2908,20 @@ class InvalidSearchCursorError(ValueError):
     """
 
 
-def build_search_cursor(hits: Sequence[SessionSearchHitPayload]) -> str | None:
+def search_cursor_request_identity(arguments: Mapping[str, object]) -> str:
+    """Return a stable identity for the logical ranked-search request."""
+    import hashlib
+
+    canonical = {key: value for key, value in arguments.items() if key not in {"cursor", "offset", "limit"}}
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def build_search_cursor(
+    hits: Sequence[SessionSearchHitPayload],
+    *,
+    request_identity: str | None = None,
+) -> str | None:
     """Build an opaque keyset cursor token from the last hit of a page.
 
     Encodes ``(rank, score, session_id, lane)`` of the final hit so
@@ -2256,6 +2943,7 @@ def build_search_cursor(hits: Sequence[SessionSearchHitPayload]) -> str | None:
         s=last.match.score,
         c=last.session.id,
         lane=last.match.retrieval_lane,
+        query_hash=request_identity,
     )
     payload = cursor.model_dump_json(by_alias=True)
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
@@ -2300,6 +2988,7 @@ def apply_search_cursor(
     cursor: SearchCursor,
     *,
     retrieval_lane: str | None = None,
+    request_identity: str | None = None,
 ) -> tuple[SessionSearchHitPayload, ...]:
     """Drop hits up to and including the cursor anchor.
 
@@ -2317,6 +3006,8 @@ def apply_search_cursor(
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={cursor.lane!r} but this request is {retrieval_lane!r}"
         )
+    if cursor.query_hash is not None and request_identity is not None and cursor.query_hash != request_identity:
+        raise InvalidSearchCursorError("cursor belongs to a different ranked-search request")
     result: list[SessionSearchHitPayload] = []
     for hit in hits:
         if _cursor_strictly_before(cursor, hit):
@@ -2374,6 +3065,7 @@ def build_search_envelope(
     ranking_policy: str = RANKING_POLICY_MIXED,
     ranking_policy_version: str = RANKING_POLICY_VERSION,
     cursor: SearchCursor | None = None,
+    request_identity: str | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
@@ -2389,7 +3081,12 @@ def build_search_envelope(
     """
     hits_tuple = tuple(hits)
     if cursor is not None:
-        hits_tuple = apply_search_cursor(hits_tuple, cursor, retrieval_lane=retrieval_lane)
+        hits_tuple = apply_search_cursor(
+            hits_tuple,
+            cursor,
+            retrieval_lane=retrieval_lane,
+            request_identity=request_identity,
+        )
     if len(hits_tuple) > limit:
         hits_tuple = hits_tuple[:limit]
     next_offset: int | None = None
@@ -2397,7 +3094,7 @@ def build_search_envelope(
     if hits_tuple and len(hits_tuple) == limit and (total is None or offset + limit < total):
         # More results likely available; expose both pagination handles.
         next_offset = offset + limit
-        next_cursor = build_search_cursor(hits_tuple)
+        next_cursor = build_search_cursor(hits_tuple, request_identity=request_identity)
     if action_affordances is None:
         from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
@@ -2669,6 +3366,11 @@ class ContextPreamble(SurfacePayloadModel):
     project_state: ContextPreambleProjectState | None = None
     blackboard_notes: list[ContextPreambleBlackboardNote] = Field(default_factory=list)
     guidance: str | ContextPreambleGuidance | None = None
+    # Component name -> "ExceptionType: message" for preamble sections that
+    # failed to assemble. An empty section with a failure entry here means
+    # "lookup failed", never "nothing relevant exists" — consumers must not
+    # treat degraded context as complete context.
+    component_failures: dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -2864,6 +3566,8 @@ __all__ = [
     "FacetTimeRange",
     "FacetFamilyStatusPayload",
     "FacetsResponse",
+    "FindingEvidenceRefState",
+    "FindingProvenancePayload",
     "ArchiveDebtActionPayload",
     "ArchiveDebtKind",
     "ArchiveDebtListPayload",
@@ -2872,6 +3576,9 @@ __all__ = [
     "ArchiveDebtStatus",
     "ArchiveDebtTotalsPayload",
     "ImportDetectorEvidencePayload",
+    "ImportFidelityCapabilityPayload",
+    "ImportFidelityDeclarationPayload",
+    "ImportFidelityStatus",
     "ImportExplainEntryPayload",
     "ImportExplainPayload",
     "ImportProducedRowsPayload",
@@ -2882,6 +3589,14 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
+    "ANNOTATION_BATCH_ASSERTION_REF_LIMIT",
+    "ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT",
+    "ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT",
+    "ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT",
+    "AnnotationBatchJSONPreviewPayload",
+    "AnnotationBatchPayload",
+    "AnnotationBatchTextPreviewPayload",
+    "PendingObjectRefPayload",
     "PublicRefResolutionPayload",
     "MachineErrorPayload",
     "MachineErrorEnvelope",
@@ -2893,6 +3608,10 @@ __all__ = [
     "MetadataMutationResult",
     "DeleteSessionOutcome",
     "DeleteSessionResult",
+    "DelegationAttemptPayload",
+    "DelegationCardPayload",
+    "DelegationContextRowPayload",
+    "DelegationQueryRowPayload",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryUnitAggregateEnvelope",
@@ -2935,7 +3654,7 @@ __all__ = [
     "build_query_unit_envelope",
     "decode_search_cursor",
     "model_json_document",
-    "normalize_role",
+    "role_label",
     "reader_anchor",
     "reader_session_actions",
     "reader_message_actions",

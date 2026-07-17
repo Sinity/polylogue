@@ -7,9 +7,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.logging import get_logger
 from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 _FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     (
@@ -70,7 +73,8 @@ def _triggers_present(conn: sqlite3.Connection, trigger_names: tuple[str, ...]) 
 def _source_has_rows(conn: sqlite3.Connection, table_name: str) -> bool | None:
     try:
         row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("fts source-rows probe failed for %s: %s", table_name, exc, exc_info=True)
         return None
     return row is not None
 
@@ -154,10 +158,9 @@ def _payload_int(surface: dict[str, int | bool | str | None], key: str) -> int:
 
 
 def _archive_index_path_for(dbf: Path) -> Path | None:
-    if dbf.name == "index.db":
-        return dbf
-    index_db = dbf.with_name("index.db")
-    return index_db if index_db.exists() else None
+    from polylogue.paths import sibling_index_db
+
+    return sibling_index_db(dbf, require_exists=True)
 
 
 def _archive_exact_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
@@ -354,7 +357,8 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             return _archive_readiness_payload(conn, exact=exact)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("fts archive readiness query failed for %s: %s", index_db, exc, exc_info=True)
         return {
             "indexed_surface": "messages_fts",
             "messages_ready": False,
@@ -470,7 +474,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             if exact:
                 conn.rollback()
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("fts readiness query failed for %s: %s", dbf, exc, exc_info=True)
         return {
             "messages_ready": False,
             "session_work_events_ready": False,

@@ -2,44 +2,134 @@
 
 # Polylogue Docs Map
 
-Use this map when you need the complete repository documentation surface. The top-level README links the shortest public path; this page keeps operator, architecture, verification, and contributor references separate.
+Start with **Guides** for a task, **Reference** for a surface contract, and **Architecture and Internals** for the substrate. The remaining tiers preserve operational, evidence, design, and historical material without presenting it as a first-read path.
 
-## Orientation
+## Guides
 
 | Document | Description |
 |----------|-------------|
+| [Getting Started](getting-started.md) | First archive, first query, and the next documentation steps. |
 | [Installation](installation.md) | Source checkout, Nix flake, and managed NixOS/Home Manager install paths. |
-| [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
-| [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
-| [Design Direction](design/README.md) | Beads-first design doctrine and the standing domain-model references that survive it. |
-| [Query-Action Workflows](product/workflows.md) | Executable `find QUERY then ACTION` product contract for workflows, affordances, completions, and golden paths. |
-| [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
-| [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
-| [Internals](internals.md) | Working implementation reference and debugging landmarks. |
-| [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
+| [Onboarding](onboarding.md) | First-run source detection, configuration, daemon startup, and recovery. |
+| [Search & Query](search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
+| [Insights](insights.md) | Available derived views and their evidence boundaries. |
+| [Export](export.md) | Query-set reads and renderer formats for local export packages. |
+| [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
+| [Hooks](hooks.md) | Hook-event capture, configuration, and event catalog. |
+| [Cloud Agents](cloud-agents.md) | Privacy and setup boundaries for cloud-agent work. |
+| [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
+| [Maintenance](maintenance.md) | Operator guide for preview, plan, run, resume, and incident recovery. |
+| [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
+| [Provider Index](providers/index.md) | Concise provider guide entrypoint. |
+| [ChatGPT Provider](providers/chatgpt.md) | ChatGPT export detection and parser notes. |
+| [Claude.ai Provider](providers/claude-ai.md) | Claude web export detection and parser notes. |
+| [Claude Code Provider](providers/claude-code.md) | Claude Code session detection and parser notes. |
+| [Gemini Provider](providers/gemini.md) | Gemini/Drive acquisition and parser notes. |
+| [Codex Provider](providers/openai-codex.md) | Codex session detection and parser notes. |
 
-## User and Integration Surfaces
+## Reference
 
 | Document | Description |
 |----------|-------------|
 | [CLI Reference](cli-reference.md) | Generated command reference from live help output. |
-| [Search & Query](search.md) | Query grammar, retrieval lanes, ranking policy, and the typed SearchEnvelope contract. |
+| [MCP Reference](mcp-reference.md) | Generated MCP tool and contract reference. |
 | [Library API](library-api.md) | Async archive API, filters, and query patterns. |
 | [MCP Integration](mcp-integration.md) | Model Context Protocol server setup and usage. |
-| [Browser Capture](browser-capture.md) | Local browser extension capture for ChatGPT and Claude.ai sessions. |
-| [Generate](generate.md) | Synthetic archive generation, seed mode, and demo workflows. |
-| [Maintenance](maintenance.md) | Operator guide for preview/plan/run, resume, scope filters, and incident runbooks. |
-| [Providers](providers/README.md) | Provider-specific parsing and export-format notes. |
+| [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
+| [Glossary](glossary.md) | Plain-language translation of the internal taxonomy. |
+| [Provider, Origin, and Source Identity](provider-origin-identity.md) | Vocabulary map for provider-wire family, public origin, material source, and parser binding. |
+| [Provider Package Completeness](provider-completeness.md) | Readiness report for provider/importer package modes by origin and capture mode. |
+| [Material Protocol v1](material-protocol-v1.md) | Normalized-session interchange wire format. |
+| [Schema Annotations](schema-annotations.md) | Versioned annotation schemas and batch provenance. |
+| [Query Identity](query-identity.md) | Canonical query, query-run, and result-set reference identities. |
+| [CLI Output Schemas](schemas/cli-output/README.md) | Machine-readable CLI output schema catalog. |
+| [Projection Render Specification](projection-render-spec.md) | Projection and renderer contract for archive reads. |
+| [Web Route Readiness States](web-route-readiness-states.md) | Readiness-state semantics for web routes. |
 
-## Verification and Quality
+## Architecture and Internals
 
 | Document | Description |
 |----------|-------------|
-| [Developer Tools](devtools.md) | `devtools` guide for generated surfaces, validation, and repo hygiene. |
-| [Test Quality Workflows](test-quality-workflows.md) | Optional executable lane, mutation-campaign, and benchmark registries. |
-| [Release Readiness Gate](plans/release-readiness-gate.md) | Externally-presentable release gate, required checks, and release PR evidence contract. |
+| [Architecture](architecture.md) | System rings, ownership boundaries, and data flow. |
+| [Architecture Spine](architecture-spine.md) | Target shape, guardrails, and major decisions with rejected alternatives. |
+| [Architecture Hotspots](architecture-hotspots.md) | Execution control center hotspot map and decomposition sequence (polylogue-1r9c). |
+| [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
+| [Schema](schema.md) | Index and durable tier schema, FTS, vectors, and versioning. |
+| [Internals](internals.md) | Working implementation reference and debugging landmarks. |
+| [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
+| [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
+| [Security](security.md) | Security boundaries for local archives and readers. |
+| [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
+| [Cost Model](cost-model.md) | Cost, usage, cache, and subscription-credit accounting semantics. |
+| [Agent Forensics](agent-forensics.md) | Forensic investigation methods over agent work. |
+| [Repository Layout](repo-layout.md) | Every top-level entry and its purpose. |
+
+## Operations and Contributor Workflow
+
+| Document | Description |
+|----------|-------------|
+| [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
+| [Branch-Local Development Loop](dev-loop.md) | Daemon, web-shell, browser-capture, and extension debugging workflow. |
+| [Test Economics](test-economics.md) | Test-selection and verification cost model. |
+| [Test Quality Workflows](test-quality-workflows.md) | Executable mutation-campaign and benchmark registries. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
+
+## Demos, Evidence, and Product
+
+| Document | Description |
+|----------|-------------|
+| [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
+| [Proof Artifacts](proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
+| [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded field finding with oracle, sample frame, calibration, and caveats. |
+| [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
+| [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
+| [Query-Action Workflows](product/workflows.md) | Executable product contract for workflows, affordances, completions, and golden paths. |
+| [Demo Corpus Construct Audit](plans/demo-corpus-construct-audit.md) | Generated construct-coverage audit for the demo fixture world. |
+| [Release Readiness Gate](plans/release-readiness-gate.md) | Externally presentable release gate and required proof contract. |
+| [Demo Packet v2](examples/demo-packet-v2/README.md) | Worked private-data-free evidence packet. |
+| [Demo Tour Report](examples/demo-tour/report.md) | Recorded output and receipts from the demo tour. |
+| [UVX Installation Proof](examples/demo-tour/uvx-proof.md) | Recorded installation proof for the uvx distribution path. |
+| [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
+| [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
+| [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
+
+## Design Notes
+
+| Document | Description |
+|----------|-------------|
+| [Design Direction](design/README.md) | Beads-first design doctrine and standing domain-model references. |
+| [Agent-First MCP](design/agent-first-mcp.md) | Agent-facing MCP surface doctrine. |
+| [Archive Storytelling](design/archive-storytelling.md) | Narrative and artifact design for archives. |
+| [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
+| [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
+| [Incident 14:32 Proof World](design/incident-1432-proof-world.md) | Deterministic demo corpus and anti-circularity rules. |
+| [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
+| [Storage Twins Divergences](plans/STORAGE_TWINS_DIVERGENCES.md) | Documented sync/async storage backend divergences, tracked for the twins regression test. |
+| [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
+| [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
+| [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
+| [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
+| [Second Brain](design/second-brain.md) | Vision note for remembered work. |
+| [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
+| [Whole Product](design/whole-product.md) | Product vision and system relationships. |
+
+## Historical Records and Generated Artifacts
+
+| Document | Description |
+|----------|-------------|
+| [Closed-Issue Workload Audit](audits/2026-05-19-closed-issue-workload-audit.md) | Historical audit of closed-issue workload. |
+| [Cross-Surface Coherence Audit](audits/2026-05-20-cross-surface-coherence-audit.md) | Historical cross-surface coherence audit. |
+| [API Bypass Audit](audits/2026-05-25-api-bypass-audit.md) | Historical audit of API bypasses. |
+| [Daemon Loop Lock-Starvation Map](audits/2026-07-09-daemon-loop-lock-starvation-map.md) | Lock-starvation investigation record. |
+| [Hash Boundary Census](audits/2026-07-09-hash-boundary-census.md) | Hash-boundary investigation record. |
+| [Race Window Audit](audits/2026-07-09-race-window-audit.md) | Race-window investigation record. |
+| [Audit Record Index](audits/README.md) | Index of dated investigation records. |
+| [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
+| [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
+| [Query Pipeline Substrate Plan](plans/query-pipeline-substrate.md) | Historical/active query pipeline design plan. |
+| [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
+| [Topology Status](topology-status.md) | Generated module-topology status dashboard. |
 
 ## Contributor Workflow
 
@@ -48,3 +138,4 @@ Use this map when you need the complete repository documentation surface. The to
 | [Contributing](../CONTRIBUTING.md) | Branching, issues, PRs, squash-merge history, and repo policy. |
 | [Testing](../TESTING.md) | Baseline test matrix, protected surfaces, and verification entrypoints. |
 | [Agent Guide](../CLAUDE.md) | Agent memory and working rules. |
+| [Security Policy](../SECURITY.md) | Trust-boundary summary, supported versions, and vulnerability reporting contact. |

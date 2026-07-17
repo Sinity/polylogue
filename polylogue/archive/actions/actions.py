@@ -25,14 +25,17 @@ from polylogue.archive.actions.fields import (
 )
 from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin
 
 _CANONICAL_TOOL_NAMES = {
     "bash": "bash",
     "shell": "bash",
     "terminal": "bash",
     "run": "bash",
+    "exec": "bash",
     "exec_command": "bash",
+    "functions.exec": "bash",
+    "functions.exec_command": "bash",
     "shell_command": "bash",
     "spawn_agent": "task",
     "subagent": "task",
@@ -76,7 +79,7 @@ class Action:
     kind: ToolCategory
     tool_name: str
     tool_id: str | None
-    provider: Provider | None
+    origin: Origin | None
     affected_paths: tuple[str, ...]
     cwd_path: str | None
     branch_names: tuple[str, ...]
@@ -86,6 +89,15 @@ class Action:
     output_text: str | None
     search_text: str
     raw: Mapping[str, object]
+    #: Structural pass/fail from the paired tool_result's keystone columns
+    #: (``tool_result_is_error``/``tool_result_exit_code``, see
+    #: :func:`polylogue.archive.actions.parsing.tool_result_outcome`).
+    #: ``True``/``False`` is a genuinely structural verdict; ``None`` means
+    #: the origin never populated either column for this result -- not a
+    #: negative claim, since most origins are structurally uncovered here
+    #: (polylogue-9e5.3 audit). Consumers must not text-scan ``output_text``
+    #: to recover a verdict this field reports as ``None``.
+    tool_success: bool | None = None
 
     @property
     def normalized_tool_name(self) -> str:
@@ -137,7 +149,7 @@ def _build_action_from_message_fields(
         kind=category,
         tool_name=call.name,
         tool_id=call.id,
-        provider=call.provider,
+        origin=call.origin,
         affected_paths=affected_paths,
         cwd_path=cwd_path,
         branch_names=branch_names,
@@ -157,6 +169,7 @@ def _build_action_from_message_fields(
             output_text=output_text,
         ),
         raw=call.raw,
+        tool_success=call.success,
     )
 
 

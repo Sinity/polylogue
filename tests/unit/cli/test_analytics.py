@@ -1,4 +1,4 @@
-"""Tests for provider analytics product computation."""
+"""Tests for origin analytics product computation."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _archive(tmp_path: Path) -> Polylogue:
 
 
 async def _coverage(archive: Polylogue) -> list[ArchiveCoverageInsight]:
-    return await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="provider"))
+    return await archive.list_archive_coverage_insights(ArchiveCoverageInsightQuery(group_by="origin"))
 
 
 class TestArchiveCoverageInsight:
@@ -28,7 +28,7 @@ class TestArchiveCoverageInsight:
     def test_tool_use_percentage_with_data(self: object) -> None:
         """Tool use percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
-            source_name="test",
+            origin="test",
             session_count=100,
             message_count=500,
             user_message_count=200,
@@ -48,7 +48,7 @@ class TestArchiveCoverageInsight:
     def test_tool_use_percentage_zero_sessions(self: object) -> None:
         """Tool use percentage returns 0 when no sessions."""
         metrics = ArchiveCoverageInsight(
-            source_name="empty",
+            origin="empty",
             session_count=0,
             message_count=0,
             user_message_count=0,
@@ -68,7 +68,7 @@ class TestArchiveCoverageInsight:
     def test_thinking_percentage_with_data(self: object) -> None:
         """Thinking percentage is calculated correctly."""
         metrics = ArchiveCoverageInsight(
-            source_name="test",
+            origin="test",
             session_count=50,
             message_count=200,
             user_message_count=100,
@@ -88,7 +88,7 @@ class TestArchiveCoverageInsight:
     def test_thinking_percentage_zero_sessions(self: object) -> None:
         """Thinking percentage returns 0 when no sessions."""
         metrics = ArchiveCoverageInsight(
-            source_name="empty",
+            origin="empty",
             session_count=0,
             message_count=0,
             user_message_count=0,
@@ -137,7 +137,7 @@ class TestListArchiveCoverageInsights:
         result = await _coverage(archive)
 
         assert len(result) == 1
-        assert result[0].source_name == "claude-ai"
+        assert result[0].origin == "claude-ai-export"
         assert result[0].session_count == 1
         assert result[0].message_count == 2
         assert result[0].user_message_count == 1
@@ -173,9 +173,9 @@ class TestListArchiveCoverageInsights:
 
         assert len(result) == 2
         # ChatGPT has more sessions, should be first
-        assert result[0].source_name == "chatgpt"
+        assert result[0].origin == "chatgpt-export"
         assert result[0].session_count == 3
-        assert result[1].source_name == "claude-ai"
+        assert result[1].origin == "claude-ai-export"
         assert result[1].session_count == 2
 
     @pytest.mark.asyncio
@@ -652,6 +652,6 @@ class TestCrossProviderConsistency:
         )
         results = await _coverage(archive)
 
-        by_provider = {r.source_name: r for r in results}
-        assert by_provider["chatgpt"].tool_use_count == 1
-        assert by_provider["claude-ai"].tool_use_count == 1
+        by_provider = {r.origin: r for r in results}
+        assert by_provider["chatgpt-export"].tool_use_count == 1
+        assert by_provider["claude-ai-export"].tool_use_count == 1

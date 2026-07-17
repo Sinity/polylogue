@@ -1,0 +1,3 @@
+package-relative markdown links checked: 71
+package relative links: PASS
+Two proposed README artifacts use repository-relative links and were validated in their target repository patch contexts.

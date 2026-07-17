@@ -399,12 +399,39 @@ function _polyIsThinking(m) {
     || m.has_thinking === true;
 }
 
+function _polySemanticEntriesForMessage(m) {
+  // The daemon attaches the shared semantic transcript projection to every
+  // message.  Presence of ``semantic_entries`` is authoritative even when the
+  // array is empty: an empty array means the message was structurally absorbed
+  // into another entry, not that this leaf should re-classify raw role/text.
+  if (!m || !Array.isArray(m.semantic_entries)) return null;
+  if (typeof _polySemanticEntriesHtml !== 'function') return null;
+  return _polySemanticEntriesHtml(m);
+}
+
+function _polySemanticCardsForMessage(m) {
+  // Compatibility for older daemon payloads and isolated visual harnesses.
+  if (!m || !Array.isArray(m.semantic_cards) || !m.semantic_cards.length) return '';
+  if (typeof _polySemanticCardsHtml !== 'function') return '';
+  return _polySemanticCardsHtml(m);
+}
+
 function renderMessageBlocks(messages) {
   var convId = (state.selected && state.selected.id) || '';
   return (messages || []).map(function(m, idx) {
+    // A message fully absorbed into another message's semantic card (most
+    // often: a tool-result message paired by tool_id into the card built on
+    // its tool-use message) renders nothing of its own — its evidence is
+    // already inside that card's preview.
+    if (m && m.semantic_card_suppressed) return '';
     var role = (m.role || '').toLowerCase();
-    var isTool = _polyIsTool(m);
-    var isThinking = _polyIsThinking(m);
+    var semanticEntriesHtml = _polySemanticEntriesForMessage(m);
+    var hasSemanticEntries = semanticEntriesHtml !== null;
+    // Raw-role classification remains only as a compatibility fallback for
+    // payloads produced before semantic-transcript.v1.
+    var isTool = !hasSemanticEntries && _polyIsTool(m);
+    var isThinking = !hasSemanticEntries && _polyIsThinking(m);
+    var semanticCardsHtml = hasSemanticEntries ? '' : _polySemanticCardsForMessage(m);
     var tsHtml = m.timestamp
       ? '<span class="msg-ts" title="' + esc(m.timestamp) + '">'
         + new Date(m.timestamp).toLocaleTimeString() + '</span>'
@@ -416,7 +443,9 @@ function renderMessageBlocks(messages) {
     if (isTool) blockClass += ' tool-block';
     var anchor = m.anchor || ('message-' + (m.id || ''));
     var body;
-    if (isTool) body = _polyToolFoldHtml(m);
+    if (hasSemanticEntries) body = semanticEntriesHtml;
+    else if (semanticCardsHtml) body = semanticCardsHtml;
+    else if (isTool) body = _polyToolFoldHtml(m);
     else if (isThinking) body = _polyThinkingFoldHtml(m);
     else if (typeof _polyHasPaste === 'function' && _polyHasPaste(m)) {
       var bannerHtml = typeof _polyPasteBannerHtml === 'function' ? _polyPasteBannerHtml(m) : '';
@@ -426,7 +455,7 @@ function renderMessageBlocks(messages) {
     // MK3 attachment strip (#1199). Prepended above the body so the
     // cards stay visible regardless of fold variant. The hook stays
     // optional because not every message renderer includes attachments.
-    var attachmentStrip = (typeof _polyAttachmentStripHtml === 'function')
+    var attachmentStrip = (!hasSemanticEntries && typeof _polyAttachmentStripHtml === 'function')
       ? _polyAttachmentStripHtml(m) : '';
     if (attachmentStrip) body = attachmentStrip + body;
     var rail = _polyActionRailHtml(m, convId);

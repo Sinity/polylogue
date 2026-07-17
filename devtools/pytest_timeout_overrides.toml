@@ -1,0 +1,8 @@
+# Exceptions to pytest's repository-wide 300-second timeout default.
+# Every path/value pair must correspond to a live literal command override;
+# `devtools verify pytest-timeout-overrides` rejects stale entries.
+
+[[exception]]
+path = "devtools/coverage_gate.py"
+value = 600
+rationale = "The single-process coverage gate needs a bounded diagnostic budget for the full non-benchmark suite."

@@ -1,0 +1,152 @@
+[
+  {
+    "id": "workload-artifact-cache-integration",
+    "wave": 1,
+    "model": "gpt-5.6-terra",
+    "effort": "high",
+    "mission": "Adapt one realized named workload canary into a content-addressed, fail-closed, atomically published immutable cache using upstream workload/profile/build/archive identity and shared 1xc.14/b054 receipts; attach independent expected facts and report fixture/benchmark deletion candidates without deleting them in this survivor job. Do not recreate profiles, tiers, C-03, or receipt accounting.",
+    "required_reads": [
+      ".local/testsuite-diet/reconciliation/realized-baseline.json",
+      ".agent/scratch/testsuite_diet/dossiers/seeded-artifact-integrity.md",
+      "tests/conftest.py",
+      "tests/infra/corpus_fixtures.py",
+      "tests/infra/semantic_facts.py",
+      "polylogue/scenarios/corpus.py",
+      "polylogue/schemas/generation/workload_profiles.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "polylogue/schemas/field_stats/distributions.py",
+      "polylogue/schemas/synthetic/runtime.py",
+      "tests/unit/core/test_schema_workload_profiles.py"
+    ],
+    "write_files": [
+      "tests/conftest.py",
+      "tests/infra/corpus_artifacts.py",
+      "tests/infra/corpus_fixtures.py",
+      "tests/unit/core/test_corpus_artifacts.py"
+    ],
+    "avoid_files": [
+      "polylogue/schemas/generation/workload_profiles.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "polylogue/schemas/field_stats/distributions.py",
+      "polylogue/schemas/synthetic/runtime.py",
+      "tests/unit/core/test_schema_workload_profiles.py",
+      "tests/benchmarks/conftest.py"
+    ],
+    "acceptance": "The cache key extends rather than renames upstream workload/profile/build/archive identity; resource and cleanup evidence uses shared receipts; ingest failure/interruption/corruption cannot produce a hit; publication is atomic; independent canary facts validate the archive; clone mutation leaves the base unchanged; and b054.1.1.4-style production sensitivity is specified for independent certification. Do not edit upstream profiles/canaries or remove benchmark/scale consumers in this job.",
+    "focused_tests": [
+      "devtools test tests/unit/core/test_corpus_artifacts.py",
+      "devtools test -k seeded_db"
+    ]
+  },
+  {
+    "id": "exact-query-composition",
+    "wave": 2,
+    "model": "gpt-5.6-terra",
+    "effort": "high",
+    "mission": "Extend the realized C-03 exact-session actions canary and its workload/work receipt into an independent-fact composition law for exact membership, counts, partitions, pages, preview/apply identity, and irrelevant-growth work bounds; return proposed dominated cases for independent certification without deleting them in this survivor job.",
+    "required_reads": [
+      ".local/testsuite-diet/reconciliation/realized-baseline.json",
+      ".agent/scratch/testsuite_diet/dossiers/exact-query-selection.md",
+      "tests/infra/corpus_artifacts.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "tests/unit/core/test_schema_workload_profiles.py",
+      "polylogue/archive/query/expression.py",
+      "polylogue/archive/query/spec.py",
+      "polylogue/archive/query/plan.py",
+      "polylogue/archive/query/archive_execution.py",
+      "polylogue/cli/query.py",
+      "tests/infra/query_cases.py",
+      "tests/infra/surfaces.py",
+      "tests/unit/cli/test_query_expression.py",
+      "tests/unit/cli/test_query_exec_laws.py"
+    ],
+    "write_files": [
+      "tests/infra/query_cases.py",
+      "tests/infra/query_manifest_oracle.py",
+      "tests/infra/surfaces.py",
+      "tests/unit/cli/test_query_composition_laws.py",
+      "tests/unit/cli/test_query_exec_laws.py"
+    ],
+    "avoid_files": [
+      "tests/infra/corpus_artifacts.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "tests/unit/core/test_schema_workload_profiles.py",
+      "polylogue/mcp/server.py",
+      "tests/unit/mcp/test_server_surfaces.py"
+    ],
+    "acceptance": "Expected IDs come from facts attached to the C-03 workload without importing production lowering/SQL; the real repository, facade, CLI, and HTTP routes agree; the receipt names the C-03 global-first and exact-identity mutations for an isolated certification lane; unique parser, security, FTS, vector, lineage, cancellation, and terminal-unit obligations remain and no existing test is deleted in this job.",
+    "focused_tests": [
+      "devtools test tests/unit/cli/test_query_composition_laws.py",
+      "devtools test -k 'query_expression and (precedence or quoting or exact)'"
+    ]
+  },
+  {
+    "id": "convergence-restart-law",
+    "wave": 2,
+    "model": "gpt-5.6-terra",
+    "effort": "high",
+    "mission": "Use the realized partial-convergence and active-growing workload variants to build a deterministic real-SQLite convergence debt to restart to retry to quiescence law, compare it with uninterrupted execution under the same workload identity, and return internal call-order deletion candidates for independent certification without deleting them in this survivor job.",
+    "required_reads": [
+      ".local/testsuite-diet/reconciliation/realized-baseline.json",
+      ".agent/scratch/testsuite_diet/dossiers/convergence-restart-retry.md",
+      "tests/infra/corpus_artifacts.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "tests/infra/frozen_clock.py",
+      "polylogue/daemon/convergence.py",
+      "polylogue/daemon/convergence_stages.py",
+      "polylogue/sources/live/convergence_debt.py",
+      "polylogue/sources/live/convergence_debt_retry.py",
+      "tests/unit/daemon/test_daemon_convergence.py",
+      "tests/unit/daemon/test_convergence_stages.py"
+    ],
+    "write_files": [
+      "tests/infra/convergence_harness.py",
+      "tests/unit/daemon/test_convergence_restart_law.py",
+      "tests/unit/daemon/test_daemon_convergence.py",
+      "tests/unit/daemon/test_convergence_stages.py"
+    ],
+    "avoid_files": [
+      "tests/infra/corpus_artifacts.py",
+      "polylogue/schemas/generation/archive_workload_profile.py",
+      "polylogue/daemon/http.py",
+      "tests/unit/daemon/test_maintenance_endpoints.py"
+    ],
+    "acceptance": "Pending debt is durable and non-failure, restart/retry is scoped and idempotent, final public facts equal uninterrupted execution, debt/status reach quiescence, and the receipt names debt-persistence, false_means_pending, scoping, and retry mutations for isolated certification. No existing test is deleted in this job.",
+    "focused_tests": [
+      "devtools test tests/unit/daemon/test_convergence_restart_law.py"
+    ]
+  },
+  {
+    "id": "retired-temporal-adapter",
+    "wave": 2,
+    "model": "gpt-5.6-terra",
+    "effort": "high",
+    "mission": "Perform the certified deletion of only the confirmed retired temporal-conductor adapter, its direct test file, and its exact command-catalog entry. The refreshed dossier is the consumer/history certification receipt. Report generated references for coordinator repair without editing them.",
+    "required_reads": [
+      ".local/testsuite-diet/reconciliation/realized-baseline.json",
+      ".agent/scratch/testsuite_diet/dossiers/devtools-verification-subtraction.md",
+      "devtools/devloop_temporal.py",
+      "devtools/dev_loop.py",
+      "devtools/command_catalog.py",
+      "tests/unit/devtools/test_devloop_temporal.py",
+      "tests/unit/devtools/test_command_catalog.py"
+    ],
+    "write_files": [
+      "devtools/devloop_temporal.py",
+      "devtools/command_catalog.py",
+      "tests/unit/devtools/test_devloop_temporal.py"
+    ],
+    "avoid_files": [
+      "devtools/dev_loop.py",
+      "tests/unit/devtools/test_dev_loop.py",
+      "docs/devtools.md",
+      "devtools/verify_closure_matrix.py",
+      "devtools/scenario_coverage.py",
+      "devtools/verify_manifests.py"
+    ],
+    "acceptance": "Only the retired module, direct tests, and temporal-devloop command entry are removed; the live branch-local dev loop is untouched; the receipt names generated references and coordinator checks; no closed-loop verifier is edited.",
+    "focused_tests": [
+      "devtools test tests/unit/devtools/test_command_catalog.py"
+    ]
+  }
+]

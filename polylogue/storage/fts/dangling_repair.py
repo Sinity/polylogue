@@ -12,10 +12,12 @@ from polylogue.storage.fts.fts_lifecycle import (
     reset_message_fts_index_sync,
     restore_fts_triggers_sync,
 )
+from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
 )
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 BOUNDED_REPAIR_PRAGMAS = (
     "PRAGMA temp_store = FILE",
@@ -35,12 +37,6 @@ def configure_bounded_repair_connection(conn: sqlite3.Connection) -> None:
     """Keep large maintenance SQL from using the interactive write profile's RAM budget."""
     for pragma in BOUNDED_REPAIR_PRAGMAS:
         conn.execute(pragma)
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return bool(
-        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table_name,)).fetchone()
-    )
 
 
 def _message_trigger_names() -> tuple[str, ...]:
@@ -111,9 +107,9 @@ def _repair_session_work_events_fts_rows_sync(conn: sqlite3.Connection) -> tuple
         source_table="session_work_events",
         fts_table="session_work_events_fts",
         key_column="event_id",
-        insert_sql="""
+        insert_sql=f"""
             INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-            SELECT swe.event_id, swe.session_id, swe.work_event_type, swe.search_text
+            SELECT swe.event_id, swe.session_id, swe.work_event_type, {pl_fold_sql_expr("swe.search_text")}
             FROM session_work_events AS swe
             LEFT JOIN session_work_events_fts AS fts ON fts.event_id = swe.event_id
             WHERE fts.event_id IS NULL
@@ -127,9 +123,9 @@ def _repair_threads_fts_rows_sync(conn: sqlite3.Connection) -> tuple[int, int, i
         source_table="threads",
         fts_table="threads_fts",
         key_column="thread_id",
-        insert_sql="""
+        insert_sql=f"""
             INSERT INTO threads_fts (thread_id, root_id, text)
-            SELECT wt.thread_id, wt.thread_id AS root_id, wt.search_text
+            SELECT wt.thread_id, wt.thread_id AS root_id, {pl_fold_sql_expr("wt.search_text")}
             FROM threads AS wt
             LEFT JOIN threads_fts AS fts ON fts.thread_id = wt.thread_id
             WHERE fts.thread_id IS NULL

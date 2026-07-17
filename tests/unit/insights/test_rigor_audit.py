@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
+from polylogue.archive.semantic.pricing import CostBasisPayload
 from polylogue.insights.archive import (
+    CostRollupInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
@@ -31,8 +34,12 @@ from polylogue.insights.audit import (
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.registry import INSIGHT_REGISTRY
 from polylogue.insights.rigor import (
+    RigorFieldContract,
     get_rigor_contract,
+    invalid_nullable_field_contracts,
     list_rigor_contracts,
+    missing_numeric_field_coverage,
+    missing_numeric_item_models,
     resolve_payload,
     rigor_contract_names,
 )
@@ -72,7 +79,7 @@ def _profile(session_id: str = "c1") -> SessionProfileInsight:
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
-        source_name="claude-code",
+        origin="claude-code",
         provenance=_provenance(),
         evidence=SessionEvidencePayload(message_count=10, word_count=200),
         inference_provenance=_inference_provenance(),
@@ -86,7 +93,7 @@ def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight
     return SessionWorkEventInsight(
         event_id="e1",
         session_id="c1",
-        source_name="claude-code",
+        origin="claude-code",
         event_index=0,
         provenance=_provenance(),
         inference_provenance=_inference_provenance(),
@@ -105,7 +112,7 @@ def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
     return SessionPhaseInsight(
         phase_id="p1",
         session_id="c1",
-        source_name="claude-code",
+        origin="claude-code",
         phase_index=0,
         provenance=_provenance(),
         evidence=SessionPhaseEvidencePayload(),
@@ -170,6 +177,94 @@ def test_rigor_contract_lookup_round_trips() -> None:
     assert contract.fallback_markers == (("inference", "fallback_inference"),)
     assert contract.confidence_field == ("inference", "confidence")
     assert get_rigor_contract("not-a-real-insight") is None
+
+
+def test_cost_rollup_confidence_declares_priced_session_denominator() -> None:
+    """The public confidence value cannot be published without priced rows."""
+
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    assert contract.field_contracts == (
+        RigorFieldContract(
+            field_path=("confidence",),
+            provenance_class="derived",
+            denominator_field=("priced_session_count",),
+            evidence_tier="cost-pricing-rollup",
+        ),
+    )
+    assert missing_numeric_field_coverage() == ()
+
+
+def test_numeric_field_policy_rejects_unjustified_public_field() -> None:
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    missing_confidence = contract.model_copy(
+        update={
+            "field_contracts": (),
+            "field_exemptions": tuple(
+                exemption for exemption in contract.field_exemptions if exemption.field_path != ("confidence",)
+            ),
+        }
+    )
+    contracts = tuple(
+        missing_confidence if item.insight_name == "cost_rollups" else item for item in list_rigor_contracts()
+    )
+
+    assert missing_numeric_field_coverage(contracts) == (("cost_rollups", ("confidence",)),)
+
+
+def test_numeric_field_policy_discovers_new_registered_nested_numeric_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The policy reads the registry's production item model, not an allowlist.
+
+    Removing the recursive model walk or the descriptor's ``item_model``
+    wiring makes a new public metric bypass its rigor contract.
+    """
+
+    class ExtendedCostBasisPayload(CostBasisPayload):
+        unclassified_metric: int = 0
+
+    class ExtendedCostRollupInsight(CostRollupInsight):
+        basis: ExtendedCostBasisPayload = ExtendedCostBasisPayload()
+
+    original = INSIGHT_REGISTRY["cost_rollups"]
+    monkeypatch.setitem(INSIGHT_REGISTRY, "cost_rollups", replace(original, item_model=ExtendedCostRollupInsight))
+
+    assert missing_numeric_field_coverage() == (("cost_rollups", ("basis", "unclassified_metric")),)
+
+
+def test_nullable_contract_policy_rejects_non_nullable_registered_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A null-over-empty contract must target a production model that permits null."""
+
+    class NonNullableCostRollupInsight(CostRollupInsight):
+        confidence: float = 0.0
+
+    original = INSIGHT_REGISTRY["cost_rollups"]
+    monkeypatch.setitem(INSIGHT_REGISTRY, "cost_rollups", replace(original, item_model=NonNullableCostRollupInsight))
+
+    assert invalid_nullable_field_contracts() == (("cost_rollups", ("confidence",)),)
+
+
+def test_nullable_contract_policy_rejects_contract_that_disables_null_refusal() -> None:
+    """A field contract cannot opt out of its promised null-over-empty behavior."""
+
+    contract = get_rigor_contract("cost_rollups")
+    assert contract is not None
+    disabled_refusal = contract.model_copy(
+        update={
+            "field_contracts": (contract.field_contracts[0].model_copy(update={"nullable_when_ungrounded": False}),)
+        }
+    )
+    contracts = tuple(
+        disabled_refusal if item.insight_name == "cost_rollups" else item for item in list_rigor_contracts()
+    )
+
+    assert invalid_nullable_field_contracts(contracts) == (("cost_rollups", ("confidence",)),)
+
+
+def test_every_registered_insight_declares_its_item_model() -> None:
+    """Registry descriptors expose production response models to the policy."""
+
+    assert missing_numeric_item_models() == ()
 
 
 def test_phase_rigor_contract_is_evidence_only() -> None:

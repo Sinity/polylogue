@@ -23,8 +23,8 @@ from polylogue.archive.query.runtime_matching import (
 )
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.viewport.enums import ToolCategory
-from polylogue.core.enums import Origin, Provider
-from polylogue.types import SessionId
+from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 
 
 def _session() -> Session:
@@ -54,7 +54,7 @@ def _event(
         kind=kind,
         tool_name=tool_name,
         tool_id=None,
-        provider=Provider.CLAUDE_CODE,
+        origin=Origin.CLAUDE_CODE_SESSION,
         affected_paths=affected_paths,
         cwd_path=None,
         branch_names=(),

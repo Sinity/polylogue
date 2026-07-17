@@ -12,8 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 _DEFAULT_MAX_SESSIONS = 5
@@ -30,7 +29,34 @@ def _detail_includes_messages(detail_level: str) -> bool:
     return _DETAIL_INCLUDES_MESSAGES.get(detail_level, True)
 
 
-def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_context_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
+    @mcp.tool()
+    async def get_context_delivery(snapshot_ref: str, recipient_ref: str) -> str:
+        """Read the exact persisted context image for its recorded recipient.
+
+        The caller must supply the recipient object ref recorded at delivery.
+        A mismatch is intentionally indistinguishable from a missing receipt.
+        This tool audits an existing delivery; it never creates a context pack
+        or schedules automatic recall.
+        """
+
+        async def run() -> str:
+            from polylogue.mcp.payloads import MCPContextDeliveryPayload
+
+            receipt = await hooks.get_polylogue().get_context_delivery(
+                snapshot_ref,
+                recipient_ref=recipient_ref,
+            )
+            if receipt is None:
+                return hooks.error_json(
+                    "context delivery not found for recipient",
+                    code="not_found",
+                    tool="get_context_delivery",
+                )
+            return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(receipt), exclude_none=True)
+
+        return await hooks.async_safe_call("get_context_delivery", run)
+
     @mcp.tool()
     async def build_context_image(
         project_path: str | None = None,
@@ -91,12 +117,16 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         cwd: str | None = None,
         recent_files: tuple[str, ...] = (),
         limit: int = 5,
+        successor_session_id: str | None = None,
     ) -> str:
         """Compose a ContextPreamble for SessionStart context injection (#1494).
 
         Builds a typed preamble with session lineage, recent related sessions,
         and project state for Claude Code and Codex sessions. Designed for
         SessionStart hook scripts that inject context into new agent sessions.
+        When the harness has allocated the new session identity, pass it as
+        ``successor_session_id`` so the call-log row and resulting preamble are
+        queryable against the session that received the context.
         """
 
         async def run() -> str:
@@ -106,7 +136,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             poly = hooks.get_polylogue()
             preamble = await build_context_preamble_payload(
                 poly,
-                session_id="",
+                session_id=successor_session_id or "",
                 related_limit=hooks.clamp_limit(limit),
                 repo_path=repo_path,
                 cwd=cwd,
@@ -159,7 +189,11 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 preamble = ContextPreamble.model_validate(payload)
             return hooks.json_payload(preamble, exclude_none=True)
 
-        return await hooks.async_safe_call("compose_context_preamble", run)
+        return await hooks.async_safe_call(
+            "compose_context_preamble",
+            run,
+            session_id=successor_session_id,
+        )
 
 
 __all__ = ["register_context_tools"]

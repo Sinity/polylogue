@@ -34,42 +34,77 @@ devtools verify --all
 nix flake check
 ```
 
+### First-party browser credential journey
+
+The browser security journey launches the production daemon against a fresh,
+deterministic demo archive, then exercises list/read, user-state mutation, SSE
+reconnect, credential lifecycle states, and secret-leak sentinels. Install the
+locked Node dependencies once, install Chromium when the host has no compatible
+system Chrome, and run the dedicated suite:
+
+```bash
+cd webui
+npm ci
+npm run install:e2e-browser  # CI uses install:e2e-browser:ci
+npm run test:e2e
+```
+
+CI runs this journey in the `web-first-party-auth` job. Local NixOS development
+uses the system Chrome path discovered by `webui/playwright.config.ts`, so the
+browser install step is normally unnecessary after `npm ci`.
+
 `devtools verify` uses pytest-testmon for per-test affected selection. The
 seed command records `.cache/testmon/testmondata` plus
 `.cache/testmon/seed.json`; those files are local generated state and are not
 committed. If the seed is missing, the default command fails with setup
-guidance instead of silently running the whole suite.
+guidance instead of silently running the whole suite. Every seed writes
+`.cache/testmon/seed-attempt.json` before work begins. An interrupted attempt
+recovers its node ledger from the immutable run artifact when the outer process
+could not finalize the receipt, then resumes only its unseen, failed, or changed
+tests. Corrective code commits do not invalidate that attempt: pytest-testmon
+owns dependency-change selection, while the Python and marker-policy identity
+still prevents resuming against a different test corpus. `.cache/testmon/seed.json`
+is published only after every originally selected node has a failure-free row
+in the dependency database.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
-the affected-test selector and runs the selected default lane with a bounded
-worker pool (`-n 4` by default, override with `POLYLOGUE_PYTEST_WORKERS`) so
+the affected-test selector and runs the selected default lane with an adaptive
+worker pool (up to 12, override with `POLYLOGUE_PYTEST_WORKERS`) so
 a stale or genuinely broad affected set cannot spend the full timeout in one
 multi-GiB Python process. Because the default gate also applies marker filters
 for scale tiers, it passes `--testmon-forceselect` so pytest-testmon still
 selects affected tests instead of letting pytest marker selection expand the
-run. Full diagnostic and seed runs use the same worker override and also
-default to `-n 4` so database-heavy workers do not multiply memory and I/O
-pressure beyond the explicit broad-run lane.
+run. Full diagnostic and seed runs use the same policy, which budgets roughly
+768 MiB per worker, reserves host and tmpfs headroom, and reduces concurrency
+when memory pressure is elevated.
 
-Pytest temp databases default to `/realm/tmp/polylogue-pytest` so interrupted
-full or xdist runs do not leave multi-GiB `/dev/shm` directories resident in
-RAM. On btrfs scratch volumes, the harness best-effort marks that root with
-`chattr +C` so new per-run SQLite files avoid CoW amplification. Use
-`POLYLOGUE_PYTEST_TMPFS=1` only for explicit performance lanes that can afford
-tmpfs pressure. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` overrides both. Per-run
+Every collected test has a 120-second `pytest-timeout` budget. A test that
+genuinely needs longer must declare the exception at the test site with
+`@pytest.mark.timeout(<seconds>)`; a missing marker can never silently turn into
+an unbounded wait. The signal method is the repository default so timeout
+failures retain the responsible node and Python stacks in ordinary pytest
+output.
+
+Managed pytest temp databases default to a unique `/dev/shm/pytest-polylogue-*`
+run root because measured SQLite fsync traffic made the disk-backed lane more
+than 20 times slower. One shared adaptive budget is enforced across all xdist
+workers (512 MiB to 2 GiB). `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` is an explicit
+operator override. Per-run
 `pytest-polylogue-*` basetemps are removed at normal pytest shutdown, and
 pytest startup sweeps stale per-run dirs from both the configured root and
 legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept because
 they are small and reused.
 
-`devtools verify --seed-testmon` and the parallel full diagnostic may set
-`POLYLOGUE_PYTEST_TMPFS=1` automatically when the host has at least 10 GiB
-available memory and `/dev/shm` has at least 8 GiB free. This is deliberately
-limited to broad lanes: seed/full runs and default affected runs caused by
-harness/config changes are write-heavy enough that disk-backed basetemps can
-dominate runtime, while focused and ordinary affected runs stay on the normal
-scratch root unless the operator opts in.
+Managed verification refuses to start below 1 GiB available memory instead of
+falling back to the pathological disk lane. Passing-test roots are reclaimed at
+teardown; the external supervisor and parent runner independently remove the
+whole run root on completion or termination, with startup stale-root cleanup as
+recovery after an uncatchable process kill or reboot.
+
+An affected run that selects zero tests is accepted only when no executable,
+test, dependency, or harness path changed. A zero selection after such a change
+fails loudly with the changed paths instead of granting an empty green check.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon for affected-test selection.
@@ -91,13 +126,26 @@ and a postmortem diagnosis. The latest run is mirrored to
 - `.cache/verify/current-pytest-events/`
 - `.cache/verify/current-pytest-resources.jsonl`
 - `.cache/verify/current-pytest-postmortem.json`
+- `.cache/verify/current-pytest-containment.json`
 - `.cache/verify/current-pytest-output.log`
 
-The supervisor prints periodic heartbeat lines, drains pytest output
-incrementally so real progress resets the stall clock, samples the pytest
-process tree and host memory/pressure state, and terminates the whole pytest
-process group if the step exceeds `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default
-45 minutes) or produces no output for
+The devtools process drains pytest output, prints periodic heartbeat lines, and
+samples the pytest process tree and host memory/pressure state. A separate
+supervisor owns the pytest controller's process group, watches the devtools
+owner process, and enforces `POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S` (default 45
+minutes). Termination sends SIGTERM to that exact group, then SIGKILL after
+`POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S` (default 5 seconds). On Sinnix, the
+supervisor runs in a unique transient scope under the configured build slice;
+`KillMode=control-group` and a slightly later `RuntimeMaxSec` are the final
+boundary if ordinary cleanup cannot run. Other Linux hosts retain the external
+supervisor and process-group boundary and record that fallback honestly in the
+containment receipt. If transient scope creation fails in automatic mode, the
+runner records the failure and retries with that process-group boundary. The
+managed runner requires Linux process identities so it never substitutes an
+unsafe numeric-PGID kill on unsupported hosts. The devtools process
+independently enforces the same absolute deadline, including supervisor
+startup, and also requests group termination when
+pytest produces no output for
 `POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S` (default 10 minutes).
 `POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S` controls resource sampling cadence
 (default 2 seconds). Basetemp size is a recursive filesystem walk, so it is
@@ -120,8 +168,9 @@ focused selections. During or after a run, inspect
 `.cache/verify/current-pytest-progress.json`,
 `.cache/verify/current-pytest-selection.json`,
 `.cache/verify/current-pytest-summary.json`,
-`.cache/verify/current-pytest-events.jsonl`, and
-`.cache/verify/current-pytest-output.log` to see the active/latest test node,
+`.cache/verify/current-pytest-events.jsonl`,
+`.cache/verify/current-pytest-containment.json`,
+and `.cache/verify/current-pytest-output.log` to see the active/latest test node,
 selected/deselected node IDs, collection duration, slowest setup/call/teardown
 phases, captured output, and termination reason if a focused run stalls.
 
@@ -129,6 +178,72 @@ For optional lane, mutation-campaign, and benchmark inventories, see
 [docs/test-quality-workflows.md](docs/test-quality-workflows.md). Those registries are
 secondary navigation over executable checks; the source of truth for behavior is
 pytest plus the concrete `polylogue`/`devtools` commands they invoke.
+
+### Known limitation: collection-time-only imports are invisible to testmon
+
+`pytest-testmon` only builds a file-to-test dependency edge while a specific
+test is *running* (its `pytest_runtest_protocol` hookwrapper opens the tracing
+window). Anything a test module or `conftest.py` executes at **collection
+time** — a bare `from polylogue.x import Y` at the top of a test file, before
+any test in that file has started — falls outside every test's tracing
+window and is never recorded, even though the coverage.py summary for a
+normal `--cov` run legitimately counts those lines as executed. The result:
+declarative-only modules (`TypedDict`/dataclass/`Protocol`/enum/Pydantic
+model definitions, no behavior beyond class/field statements) that are only
+ever referenced via a top-level import in test files show **zero** rows in
+`.cache/testmon/testmondata`'s `file_fp` table, no matter how much of the
+file's statements a full-suite coverage run reports as covered. This is
+inherent to how testmon (and coverage-context-based selective testing in
+general) works — it is **not** dependency-graph staleness, and running
+`devtools verify --seed-testmon` does not fix it.
+
+Confirmed reproducible (2026-07-12, polylogue-csg7) with an isolated,
+freshly-seeded testmon run scoped to exactly one test file: after
+`TESTMON_DATAFILE=<scratch> pytest --testmon --testmon-noselect
+tests/unit/devtools/test_verify_manifests.py`, `polylogue/verification/manifests/models.py`
+still has 0 `file_fp` rows even though a `--cov` run over the same test file
+reports 80% statement coverage on that module — all of it from Pydantic
+model/field declarations executed when `devtools.verify_manifests` is
+imported at module-collection time; every uncovered line is inside a
+`@field_validator`/`@model_validator` method body, which only runs when
+`validate_manifest()` is actually called (no test in that file calls it).
+
+Cross-referencing a full-suite `coverage.json` (`--cov=polylogue`) against
+`file_fp` filenames finds **95 files** under `polylogue/` with nonzero
+covered statements but zero testmon dependency rows — largely `*_models.py`,
+`types.py`, `protocols.py`, `enums.py`, and `api/contracts/*.py`, i.e. modules
+whose test-suite touch points are import-only. Query:
+
+```python
+import json, sqlite3
+cov = json.load(open(".cache/coverage/coverage.json"))["files"]
+tm = {r[0] for r in sqlite3.connect(".cache/testmon/testmondata")
+      .execute("SELECT DISTINCT filename FROM file_fp")}
+gaps = [(f, d["summary"]["covered_lines"]) for f, d in cov.items()
+        if d["summary"]["covered_lines"] > 0 and f not in tm]
+```
+
+**Blast radius:** the default `devtools verify` gate (`--testmon
+--testmon-forceselect`) is the only local pre-merge signal for a change
+scoped to one of these files — `devtools test <file>` forwards a literal
+pytest selection and is not testmon-aware, so it does not share this gap
+(point it at the file's *owning test module*, not the changed source file).
+A change confined to one of these 95 files can select zero tests locally and
+still report a clean `devtools verify`. The heavy full-suite `devtools verify
+coverage` CI job (`.github/workflows/ci.yml`) does not use testmon selection
+and still catches such a regression, but only **post-merge** (it is
+intentionally off the per-PR gate) — so the exposure window is "merged before
+caught," not "never caught."
+
+**Mitigation:** there is no testmon configuration knob for this — it is
+upstream tool behavior. When changing a file that is purely declarative
+(only type/model/protocol definitions, no function bodies with real logic),
+do not trust "0 tests selected" from the default `devtools verify` gate as
+proof of safety; run the file's owning test module directly with `devtools
+test <test-file>`, and rely on `mypy --strict` (already in the default gate)
+to catch structural regressions in `TypedDict`/protocol shapes. See
+polylogue-csg7 for the investigation and a follow-up tracking item for making
+this gap machine-checkable.
 
 ## Test Suite Layout
 

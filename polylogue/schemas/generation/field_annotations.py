@@ -57,6 +57,48 @@ def _schema_node(value: JSONValue | object) -> JSONDocument | None:
     return value if isinstance(value, dict) else None
 
 
+def _observed_distribution_payload(field_stats: FieldStats) -> JSONDocument:
+    payload: JSONDocument = {
+        "documents": field_stats.total_samples,
+        "encountered_documents": field_stats.document_encountered_count,
+        "non_null_documents": field_stats.document_non_null_count,
+        "null_observations": field_stats.null_count,
+        "missing_documents": max(0, field_stats.total_samples - field_stats.document_encountered_count),
+        "type_counts": dict(sorted(field_stats.type_counts.items())),
+    }
+    distributions = {
+        "numeric": field_stats.numeric_distribution,
+        "string_length": field_stats.string_length_distribution,
+        "newline_count": field_stats.newline_distribution,
+        "array_length": field_stats.array_length_distribution,
+        "object_fanout": field_stats.object_fanout_distribution,
+    }
+    for name, distribution in distributions.items():
+        if distribution.count or distribution.non_finite_count:
+            payload[name] = distribution.to_payload()
+    if field_stats.ordered_pair_count:
+        payload["ordered_numeric_pairs"] = {
+            "count": field_stats.ordered_pair_count,
+            "nondecreasing_count": field_stats.ordered_increasing_pair_count,
+            "nondecreasing_rate": field_stats.monotonicity_score,
+        }
+    if field_stats.co_occurring_fields:
+        payload["co_occurring_fields"] = dict(sorted(field_stats.co_occurring_fields.items()))
+    if field_stats.categorical_distribution.count:
+        payload["categorical"] = field_stats.categorical_distribution.to_payload()
+    if field_stats.object_key_distribution.count:
+        payload["object_keys"] = field_stats.object_key_distribution.to_payload()
+    if field_stats.co_occurrence_distribution.count:
+        payload["co_occurrence_hashes"] = field_stats.co_occurrence_distribution.to_payload()
+    if field_stats.boolean_counts:
+        payload["boolean_counts"] = dict(sorted(field_stats.boolean_counts.items()))
+    if field_stats.detected_formats:
+        payload["format_counts"] = dict(sorted(field_stats.detected_formats.items()))
+    if field_stats.truncated_evidence:
+        payload["loss_inventory"] = dict(sorted(field_stats.truncated_evidence.items()))
+    return payload
+
+
 @overload
 def annotate_schema(
     schema: JSONDocument,
@@ -94,6 +136,7 @@ def annotate_schema(
 
     field_stats = stats.get(path)
     if field_stats:
+        schema_node["x-polylogue-observed-distribution"] = _observed_distribution_payload(field_stats)
         freq = field_stats.document_frequency
         if 0.0 < freq < 0.95:
             schema_node["x-polylogue-frequency"] = round(freq, 3)
@@ -128,7 +171,12 @@ def annotate_schema(
         if field_stats.num_min is not None and field_stats.num_max is not None:
             schema_node["x-polylogue-range"] = [field_stats.num_min, field_stats.num_max]
 
-        if field_stats.array_lengths:
+        if field_stats.array_length_distribution.count:
+            minimum = field_stats.array_length_distribution.minimum
+            maximum = field_stats.array_length_distribution.maximum
+            if minimum is not None and maximum is not None:
+                schema_node["x-polylogue-array-lengths"] = [int(minimum), int(maximum)]
+        elif field_stats.array_lengths:
             schema_node["x-polylogue-array-lengths"] = [
                 min(field_stats.array_lengths),
                 max(field_stats.array_lengths),

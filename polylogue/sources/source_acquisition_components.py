@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TypeAlias
 
+import ijson
+
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.config import Source
 from polylogue.core.enums import Provider
@@ -327,6 +329,8 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             context.provider_hint,
             truncated_tail_ok=blob_size > len(prefix),
         )
+        if detected_provider is Provider.UNKNOWN and context.source.name == "browser-capture":
+            detected_provider = _stream_browser_capture_provider(context.blob_store, blob_hash)
         from polylogue.storage.blob_publication import publication_receipt_id
 
         publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -346,6 +350,35 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
     )
+
+
+def _stream_browser_capture_provider(blob_store: BlobStore, blob_hash: str) -> Provider:
+    """Read the typed envelope provider without materializing a large capture.
+
+    Native browser captures can place a multi-megabyte ``raw_provider_payload``
+    before ``session.provider``.  Prefix detection therefore cannot prove the
+    provider even though the complete retained artifact can.  Parse the scalar
+    event stream until both the envelope kind and nested provider are known;
+    ijson keeps this bounded regardless of the native payload size.
+    """
+    capture_kind: str | None = None
+    provider: Provider | None = None
+    try:
+        with blob_store.open(blob_hash) as handle:
+            for prefix, event, value in ijson.parse(handle):
+                if event != "string":
+                    continue
+                if prefix == "polylogue_capture_kind":
+                    capture_kind = str(value)
+                elif prefix == "session.provider":
+                    provider = Provider.from_string(str(value))
+                if capture_kind is not None and provider is not None:
+                    break
+    except ijson.JSONError:
+        return Provider.UNKNOWN
+    if capture_kind != "browser_llm_session" or provider is None or provider is Provider.UNKNOWN:
+        return Provider.UNKNOWN
+    return provider
 
 
 def _stream_preserved_zip_entry(

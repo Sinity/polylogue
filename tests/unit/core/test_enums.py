@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from polylogue.archive.message.roles import Role
+from polylogue.archive.message.roles import ROLE_SQL_VALUES, Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
+    ROLE_SYNONYMS,
     BlockType,
     Origin,
     PasteBoundary,
@@ -33,6 +34,7 @@ def test_origin_values_match_archive_issue_contract() -> None:
         "gemini-cli-session",
         "hermes-session",
         "antigravity-session",
+        "beads-issue",
         "grok-export",
         "chatgpt-export",
         "claude-ai-export",
@@ -71,3 +73,32 @@ def test_provider_aliases_still_normalize_during_transition() -> None:
     assert Provider.from_string("openai") is Provider.CHATGPT
     assert Provider.from_string("claude") is Provider.CLAUDE_AI
     assert str(Provider.CODEX) == "codex"
+
+
+def test_role_synonyms_round_trip_through_normalize() -> None:
+    """Coupling test: every synonym in ROLE_SYNONYMS must normalize to the expected canonical role.
+
+    This ensures that ROLE_SYNONYMS (used for SQL filter expansion) and Role.normalize()
+    (used for canonicalization) remain synchronized as a single source of truth.
+    """
+    for role_name, synonyms in ROLE_SYNONYMS.items():
+        expected_role = Role(role_name)
+        for synonym in synonyms:
+            normalized = Role.normalize(synonym)
+            assert normalized == expected_role, (
+                f"Synonym {synonym!r} should normalize to {expected_role!r}, but got {normalized!r}"
+            )
+
+
+def test_role_sql_values_derived_from_role_synonyms() -> None:
+    """Verify that ROLE_SQL_VALUES is correctly derived from ROLE_SYNONYMS.
+
+    ROLE_SQL_VALUES should be generated from ROLE_SYNONYMS and contain all the same mappings.
+    """
+    for role, sql_values in ROLE_SQL_VALUES.items():
+        role_name = role.value
+        assert role_name in ROLE_SYNONYMS, f"Role {role_name!r} not found in ROLE_SYNONYMS"
+        expected_synonyms = ROLE_SYNONYMS[role_name]
+        assert set(sql_values) == expected_synonyms, (
+            f"ROLE_SQL_VALUES[{role!r}] should contain {expected_synonyms!r}, but got {set(sql_values)!r}"
+        )

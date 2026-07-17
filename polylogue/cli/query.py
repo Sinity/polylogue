@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import click
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.config import Config
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 
 def handle_query_mode(
@@ -108,8 +109,10 @@ async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
 
 async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
     """Async core of query execution."""
+    import_started_at = perf_counter()
     from polylogue.cli.archive_query import execute_archive_query
 
+    env.record_timing("archive-query-import", import_started_at)
     execute_archive_query(env, request)
 
 

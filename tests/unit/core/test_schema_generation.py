@@ -10,9 +10,14 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.cluster_collection import _collect_cluster_accumulators
+from polylogue.schemas.generation.models import _ProviderBundle
+from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.schemas.generation.provider_bundle_packages import _select_catalog_versions
 from polylogue.schemas.generation.workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
+from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.operator.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -27,6 +32,7 @@ from polylogue.schemas.operator.schema_inference import (
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from tests.infra.schema_access import schema_properties, schema_property, schema_values
+from tests.infra.workload_artifacts import SeededArchiveClone
 
 
 class TestProviderSchemaGeneration:
@@ -39,8 +45,8 @@ class TestProviderSchemaGeneration:
 
     @pytest.mark.slow
     @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "codex"])
-    def test_generate_schema_from_db(self, seeded_db: Path, provider: str) -> None:
-        result = generate_provider_schema(provider, db_path=seeded_db, max_samples=100)
+    def test_generate_schema_from_db(self, seeded_archive_writable: SeededArchiveClone, provider: str) -> None:
+        result = generate_provider_schema(provider, db_path=seeded_archive_writable.root / "index.db", max_samples=100)
         if result.sample_count > 0:
             assert result.success, f"Failed: {result.error}"
             assert result.schema is not None
@@ -57,20 +63,74 @@ class TestProviderSchemaGeneration:
         assert success.success
         assert success.provider == "test"
         assert success.sample_count == 10
-
         failure = GenerationResult(provider="test", schema=None, sample_count=0, error="no data")
         assert not failure.success
+
+
+def test_generation_records_aggregate_phase_receipt(seeded_archive_writable: SeededArchiveClone) -> None:
+    events: list[JSONDocument] = []
+    result = generate_provider_schema(
+        "chatgpt",
+        db_path=seeded_archive_writable.root / "index.db",
+        max_samples=10,
+        progress_callback=lambda _phase, payload: events.append(payload),
+    )
+
+    if result.sample_count == 0:
+        pytest.skip("seeded archive has no chatgpt samples")
+    assert result.success
+    assert result.phase_receipt["status"] == "succeeded"
+    phases = result.phase_receipt["phases"]
+    assert isinstance(phases, list)
+    assert {item["name"] for item in phases if isinstance(item, dict)} == {
+        "observe_and_cluster",
+        "assemble_packages",
+        "build_catalog",
+    }
+    assert {item["state"] for item in events} >= {"started", "completed", "progress"}
+    progress = next(item for item in events if item["state"] == "progress")
+    assert progress["estimate_status"] == "source_total_unavailable"
+    assert isinstance(progress["units_per_s"], float)
+
+
+def test_catalog_selection_preserves_latest_without_defaulting_to_rare_family() -> None:
+    def package(version: str, *, scopes: int, samples: int, first_seen: str) -> SchemaVersionPackage:
+        return SchemaVersionPackage(
+            provider="claude-code",
+            version=version,
+            anchor_kind="session_record_stream",
+            default_element_kind="session_record_stream",
+            first_seen=first_seen,
+            last_seen=first_seen,
+            bundle_scope_count=scopes,
+            sample_count=samples,
+        )
+
+    dominant = package("v1", scopes=943, samples=28_602, first_seen="2026-06-29T00:00:00+00:00")
+    rare_latest = package("v2", scopes=1, samples=45, first_seen="2026-07-14T00:00:00+00:00")
+
+    latest, default, recommended, rationale = _select_catalog_versions([dominant, rare_latest])
+
+    assert latest == "v2"
+    assert default == recommended == "v1"
+    assert rationale["recommended"] == {
+        "version": "v1",
+        "strategy": "coverage_first",
+        "rank_fields": ["bundle_scope_count", "sample_count", "last_seen", "version"],
+        "bundle_scope_count": 943,
+        "sample_count": 28_602,
+    }
 
 
 class TestLoadSamples:
     """Database-backed sample loading behavior."""
 
-    def test_load_limited_samples(self, seeded_db: Path) -> None:
-        samples = load_samples_from_db("chatgpt", db_path=seeded_db, max_samples=10)
+    def test_load_limited_samples(self, seeded_archive_writable: SeededArchiveClone) -> None:
+        samples = load_samples_from_db("chatgpt", db_path=seeded_archive_writable.root / "index.db", max_samples=10)
         assert len(samples) <= 10
 
-    def test_load_nonexistent_provider(self, seeded_db: Path) -> None:
-        assert load_samples_from_db("nonexistent-provider", db_path=seeded_db) == []
+    def test_load_nonexistent_provider(self, seeded_archive_writable: SeededArchiveClone) -> None:
+        assert load_samples_from_db("nonexistent-provider", db_path=seeded_archive_writable.root / "index.db") == []
 
     def test_load_limited_document_samples_stops_without_full_materialization(
         self,
@@ -330,7 +390,6 @@ class TestProfileClustering:
             "chatgpt",
             db_path=tmp_path / "unused.db",
             max_samples=None,
-            reservoir_size=8,
         )
 
         assert len(memberships) == 2
@@ -339,6 +398,120 @@ class TestProfileClustering:
         assert len(clusters) == 1
         acc = next(iter(clusters.values()))
         assert acc.sample_count == 2
+        assert acc.schema_sample_count == 2
+
+    def test_collect_cluster_accumulators_normalizes_merged_profile_family_ids(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        common = tuple(f"field:common-{index}" for index in range(10))
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": "1"},
+                schema_samples=[{"id": "1"}],
+                artifact_kind="session_document",
+                exact_structure_id="exact-1",
+                profile_tokens=(*common, "field:left-only"),
+            ),
+            SchemaUnit(
+                cluster_payload={"id": "2"},
+                schema_samples=[{"id": "2"}],
+                artifact_kind="session_document",
+                exact_structure_id="exact-2",
+                profile_tokens=(*common, "field:right-only"),
+            ),
+        ]
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling.iter_schema_units",
+            lambda *args, **kwargs: iter(units),
+        )
+
+        clusters, memberships, _sample_count, _artifact_counts = _collect_cluster_accumulators(
+            "chatgpt",
+            db_path=tmp_path / "unused.db",
+            max_samples=None,
+        )
+
+        assert len(clusters) == 1
+        final_family_id = next(iter(clusters))
+        assert {membership.profile_family_id for membership in memberships} == {final_family_id}
+
+    def test_journal_clustering_spills_profile_and_distinct_identity_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        common = tuple(f"field:common-{index}" for index in range(10))
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": str(index)},
+                schema_samples=[{"id": str(index)}],
+                artifact_kind="session_document",
+                bundle_scope=f"scope-{index}",
+                exact_structure_id=f"exact-{index}",
+                profile_tokens=(*common, f"field:variant-{index}"),
+            )
+            for index in range(2)
+        ]
+        monkeypatch.setattr("polylogue.schemas.sampling.iter_schema_units", lambda *args, **kwargs: iter(units))
+
+        with ObservationJournal.create(root=tmp_path / "journals") as journal:
+            clusters, memberships, _sample_count, _artifact_counts = _collect_cluster_accumulators(
+                "chatgpt",
+                db_path=tmp_path / "unused.db",
+                max_samples=None,
+                journal=journal,
+            )
+
+            assert len(clusters) == 1
+            final_family_id, accumulator = next(iter(clusters.items()))
+            assert accumulator.member_profiles == set()
+            assert accumulator.exact_structure_ids == set()
+            assert accumulator.bundle_scopes == set()
+            assert {membership.profile_family_id for membership in memberships} == {final_family_id}
+            cluster_memberships = journal.memberships(
+                profile_family_id=final_family_id,
+                include_samples=False,
+            )
+            assert list(cluster_memberships.iter_distinct_values("exact_structure_id")) == ["exact-0", "exact-1"]
+            assert list(cluster_memberships.iter_distinct_values("bundle_scope")) == ["scope-0", "scope-1"]
+
+    def test_profile_family_normalization_never_crosses_artifact_kinds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        profile = ("field:id", "field:content")
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": "one", "content": "a"},
+                schema_samples=[{"id": "one", "content": "a"}],
+                artifact_kind="session_document",
+                exact_structure_id="document-structure",
+                profile_tokens=profile,
+            ),
+            SchemaUnit(
+                cluster_payload={"id": "two", "content": "b"},
+                schema_samples=[{"id": "two", "content": "b"}],
+                artifact_kind="session_record_stream",
+                exact_structure_id="stream-structure",
+                profile_tokens=profile,
+            ),
+        ]
+        monkeypatch.setattr("polylogue.schemas.sampling.iter_schema_units", lambda *args, **kwargs: iter(units))
+
+        clusters, memberships, _sample_count, _artifact_counts = _collect_cluster_accumulators(
+            "chatgpt",
+            db_path=tmp_path / "unused.db",
+            max_samples=None,
+        )
+
+        assert {cluster.artifact_kind for cluster in clusters.values()} == {
+            "session_document",
+            "session_record_stream",
+        }
+        assert len({membership.profile_family_id for membership in memberships}) == 2
 
     def test_build_provider_bundle_captures_element_windows_and_bundle_scopes(
         self,
@@ -391,12 +564,88 @@ class TestProfileClustering:
         assert package.first_seen == "2026-01-01T00:00:00+00:00"
         assert package.last_seen == "2026-01-03T00:00:00+00:00"
         assert package.bundle_scope_count == 2
+        assert package.workload_profile_file == "workload-profile.json.gz"
+        workload_profile = bundle.package_workload_profiles[package.version]
+        assert workload_profile["profile_kind"] == "provider-package"
+        assert workload_profile["profile_id"]
+        assert workload_profile["provenance"] == {
+            "first_seen": "2026-01-01T00:00:00+00:00",
+            "last_seen": "2026-01-03T00:00:00+00:00",
+            "bundle_scope_count": 2,
+            "sample_count": 2,
+            "observation_window": {
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-03T00:00:00+00:00",
+            },
+        }
 
         element = package.elements[0]
         assert element.first_seen == "2026-01-01T00:00:00+00:00"
         assert element.last_seen == "2026-01-03T00:00:00+00:00"
         assert element.bundle_scope_count == 2
-        assert element.bundle_scopes == ["scope-a", "scope-b"]
+        assert element.bundle_scope_identities == [
+            bundle_scope_identity("scope-a"),
+            bundle_scope_identity("scope-b"),
+        ]
+        public_package = package.to_dict()
+        assert "bundle_scopes" not in public_package
+        assert "representative_paths" not in public_package
+        assert "scope-a" not in json.dumps(public_package)
+        assert "/tmp/one.json" not in json.dumps(public_package)
+
+    def test_journal_bundle_is_invariant_to_observation_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        units = [
+            SchemaUnit(
+                cluster_payload={"id": str(index)},
+                schema_samples=[{"id": str(index), "kind": "session"}],
+                artifact_kind="session_document",
+                bundle_scope=f"scope-{index}",
+                observed_at=f"2026-01-0{index + 1}T00:00:00+00:00",
+                exact_structure_id="session-shape",
+                profile_tokens=("field:id", "field:kind"),
+            )
+            for index in range(3)
+        ]
+
+        def build_in_order(observations: list[SchemaUnit]) -> _ProviderBundle:
+            monkeypatch.setattr(
+                "polylogue.schemas.sampling.iter_schema_units",
+                lambda *args, **kwargs: iter(observations),
+            )
+            return _build_provider_bundle(
+                "chatgpt",
+                db_path=tmp_path / "unused.db",
+                max_samples=None,
+                privacy_config=None,
+            )
+
+        forward = build_in_order(units)
+        reverse = build_in_order(list(reversed(units)))
+        assert forward.catalog is not None
+        assert reverse.catalog is not None
+        assert forward.catalog.to_dict()["packages"] == reverse.catalog.to_dict()["packages"]
+
+        def semantic_schemas(bundle: _ProviderBundle) -> object:
+            payload = json.loads(json.dumps(bundle.package_schemas))
+
+            def strip_generated_at(value: object) -> None:
+                if isinstance(value, dict):
+                    value.pop("x-polylogue-generated-at", None)
+                    for child in value.values():
+                        strip_generated_at(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        strip_generated_at(child)
+
+            strip_generated_at(payload)
+            return payload
+
+        assert semantic_schemas(forward) == semantic_schemas(reverse)
+        assert forward.package_workload_profiles == reverse.package_workload_profiles
 
 
 class TestCliMain:

@@ -364,14 +364,17 @@ def test_format_error_includes_nested_array_path() -> None:
 
 
 def test_looks_dynamic_key_matches_expected_identifier_patterns() -> None:
-    """Dynamic-key heuristic should match supported identifier families only."""
+    """Validation must share inference's dynamic-property contract."""
     validator = SchemaValidator({"type": "object"})
 
     assert validator._looks_dynamic_key("550e8400-e29b-41d4-a716-446655440000")
     assert validator._looks_dynamic_key("abcdef0123456789abcdef01")
     assert validator._looks_dynamic_key("msg-550e8400-e29b-41d4-a716-446655440000")
+    assert validator._looks_dynamic_key("What should happen after approval?")
+    assert validator._looks_dynamic_key("<source>\n/path</source>")
     assert not validator._looks_dynamic_key("title")
     assert not validator._looks_dynamic_key("message_text")
+    assert not validator._looks_dynamic_key("text/html")
 
 
 def test_available_providers(mock_schema_dir: Path) -> None:

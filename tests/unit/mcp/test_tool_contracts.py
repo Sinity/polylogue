@@ -31,6 +31,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.viewport import read_view_profile_payloads
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
+from polylogue.core.types import SessionId
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveEnrichmentProvenance,
@@ -60,11 +61,12 @@ from polylogue.mcp.archive_support import (
     archive_search_payload,
     archive_session_list_payload,
 )
-from polylogue.mcp.server_tools import _MCP_READ_TOOL_SPECS
+from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATION_BY_NAME
+from polylogue.mcp.payloads import MCPRootPayload
+from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, _json_payload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import TagMutationResult
-from polylogue.types import SessionId
 from tests.infra.mcp import (
     MCPServerUnderTest,
     invoke_surface,
@@ -476,6 +478,133 @@ class TestQueryTools:
         assert parsed["diagnostics"] is None
 
     @pytest.mark.asyncio
+    async def test_search_zero_hit_multi_term_diagnostics_report_filtered_term_counts(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="alpha", text="alpha evidence")
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="beta", text="beta evidence")
+
+        with _archive_config(archive_root):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="alpha beta",
+                origin="codex-session",
+            )
+
+        diagnostics = json.loads(result)["diagnostics"]
+        assert diagnostics["message"].startswith("No session matched all search terms")
+        assert {(reason["detail"], reason["count"]) for reason in diagnostics["reasons"]} == {
+            ("term=alpha", 1),
+            ("term=beta", 1),
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_exhausted_page_does_not_report_miss_diagnostics(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="both", text="alpha beta evidence")
+
+        with _archive_config(archive_root):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="alpha beta",
+                offset=1,
+            )
+
+        payload = json.loads(result)
+        assert payload["total"] == 1
+        assert payload["hits"] == []
+        assert payload["diagnostics"] is None
+
+    def test_list_sessions_coalesces_block_hits_and_carries_match_count(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(
+            archive_root,
+            provider=Provider.CODEX,
+            native_id="repeated",
+            text="needle first",
+            extra=(("repeated-2", "needle second"),),
+        )
+        _seed_archive(archive_root, provider=Provider.CODEX, native_id="other", text="needle third")
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["list_sessions"].fn,
+                contains="needle",
+                limit=10,
+            )
+
+        payload = json.loads(result)
+        assert [item["id"] for item in payload["items"]].count("codex-session:repeated") == 1
+        counts = {item["id"]: item["match_count"] for item in payload["items"]}
+        assert counts == {"codex-session:repeated": 2, "codex-session:other": 1}
+        assert all(item["match_count_is_exact"] is True for item in payload["items"])
+
+    def test_budget_envelope_stays_bounded_for_deep_metadata(self) -> None:
+        nested: object = "x" * 512
+        for _ in range(5):
+            nested = {f"field-{index}": nested for index in range(4)}
+
+        result = _json_payload(MCPRootPayload(root={"nested": nested}))
+
+        payload = json.loads(result)
+        assert payload["status"] == "response_budget_exceeded"
+        assert len(result.encode("utf-8")) <= MCP_RESPONSE_BUDGET_BYTES
+
+    def test_list_sessions_invalid_sort_enumerates_valid_values(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(mcp_server._tool_manager._tools["list_sessions"].fn, sort="started_at")
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == "sort"
+        assert error["valid_values"] == ["date", "tokens", "messages", "words", "longest", "random"]
+
+    def test_list_sessions_invalid_origin_enumerates_valid_values(self, mcp_server: MCPServerUnderTest) -> None:
+        result = invoke_surface(mcp_server._tool_manager._tools["list_sessions"].fn, origin="codxe-session")
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == "origin"
+        assert error["valid_values"] == [origin.value for origin in Origin]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("query", "field"), [("origin:codxe-session", "origin"), ("action:bogus", "action")])
+    async def test_search_dsl_invalid_closed_values_enumerate_valid_values(
+        self, mcp_server: MCPServerUnderTest, query: str, field: str
+    ) -> None:
+        result = await invoke_surface_async(mcp_server._tool_manager._tools["search"].fn, query=query)
+
+        error = json.loads(result)
+        assert error["code"] == "invalid_query"
+        assert error["field"] == field
+        assert error["valid_values"]
+
+    @pytest.mark.asyncio
+    async def test_search_envelope_affordance_catalog_is_opt_in(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+
+        with _archive_config(archive_root):
+            default = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+            )
+            opted_in = await invoke_surface_async(
+                mcp_server._tool_manager._tools["search"].fn,
+                query="hello",
+                include_affordances=True,
+            )
+
+        assert json.loads(default)["action_affordances"] == []
+        assert json.loads(opted_in)["action_affordances"]
+
+    @pytest.mark.asyncio
     async def test_search_total_reflects_native_hit_count(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root, text="semantic planning notes for the refactor")
@@ -616,7 +745,7 @@ class TestQueryTools:
         mock_poly.neighbor_candidates.assert_awaited_once_with(
             session_id="target",
             query=None,
-            provider="codex",
+            origin="codex-session",
             limit=3,
             window_hours=24,
         )
@@ -635,7 +764,6 @@ class TestArchiveTools:
                         session_id="codex-session:native-1",
                         native_id="native-1",
                         origin="codex-session",
-                        provider=Provider.CODEX,
                         title="Copied",
                         created_at=None,
                         updated_at=None,
@@ -791,6 +919,126 @@ class TestArchiveTools:
         assert payload["origin"] == "codex-session"
         assert payload["messages"][0]["blocks"][0]["text"] == "hello from mcp"
 
+    @pytest.mark.asyncio
+    async def test_archive_get_session_over_budget_replays_as_bounded_messages(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.write import (
+            ArchiveBlockRow,
+            ArchiveMessageRow,
+            ArchiveSessionEnvelope,
+        )
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, provider=Provider.CODEX, native_id="oversized", text="e" * 5000)
+        with _archive_config(archive_root), patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.archive_get_session = AsyncMock(
+                return_value=ArchiveSessionEnvelope(
+                    session_id=session_id,
+                    native_id="oversized",
+                    origin="codex-session",
+                    title="Oversized",
+                    active_leaf_message_id=f"{session_id}:m1",
+                    messages=(
+                        ArchiveMessageRow(
+                            message_id=f"{session_id}:m1",
+                            native_id="m1",
+                            role="user",
+                            position=0,
+                            variant_index=0,
+                            is_active_path=True,
+                            is_active_leaf=True,
+                            blocks=(
+                                ArchiveBlockRow(
+                                    block_id=f"{session_id}:m1:0",
+                                    message_id=f"{session_id}:m1",
+                                    block_type="text",
+                                    text="x" * 30_000,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+            mock_get_polylogue.return_value = mock_poly
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["archive_get_session"].fn,
+                session_id=session_id,
+            )
+
+        payload = json.loads(raw)
+        assert payload["continuation"] == {
+            "tool": "get_messages",
+            "arguments": {
+                "session_id": session_id,
+                "limit": 3,
+                "max_chars_per_message": 4096,
+                "excerpt": True,
+            },
+            "reason": "The full session exceeded the MCP response budget; read a bounded message page instead.",
+        }
+        with _archive_config(archive_root):
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_messages_resource_over_budget_replays_as_bounded_messages(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, provider=Provider.CODEX, native_id="resource", text="r" * 30_000)
+
+        with _archive_config(archive_root):
+            raw = await invoke_surface_async(
+                mcp_server._resource_manager._templates["polylogue://messages/{conv_id}"].fn,
+                conv_id=session_id,
+            )
+
+        payload = json.loads(raw)
+        assert payload["continuation"]["tool"] == "get_messages"
+        with _archive_config(archive_root):
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
+
+    @pytest.mark.asyncio
+    async def test_list_corrections_over_budget_replays_with_character_cap(
+        self, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.insights.feedback import CorrectionKind, LearningCorrection
+        from tests.infra.frozen_clock import fixed_now
+
+        correction = LearningCorrection(
+            session_id="codex-session:correction",
+            kind=CorrectionKind.SUMMARY_OVERRIDE,
+            payload={"summary": "c" * 30_000},
+            note="n" * 30_000,
+            created_at=fixed_now(),
+        )
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_corrections = AsyncMock(return_value=[correction])
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_corrections"].fn,
+                session_id=correction.session_id,
+            )
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert json.loads(replay).get("status") != "response_budget_exceeded"
+
 
 class TestGetSessionSummaryTool:
     def test_get_summary_returns_session(self, tmp_path: Path, mcp_server: MCPServerUnderTest) -> None:
@@ -809,6 +1057,21 @@ class TestGetSessionSummaryTool:
         assert conv["id"] == session_id
         assert conv["message_count"] == 2
         assert "messages" not in conv
+
+    def test_get_summary_includes_bounded_content_orientation(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_with_semantic_messages(archive_root)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(mcp_server._tool_manager._tools["get_session_summary"].fn, id=session_id)
+
+        summary = json.loads(result)["content_summary"]
+        assert summary["counts"]["messages"] == 3
+        assert summary["first_authored_user_excerpt"] == "typed human prompt"
+        assert summary["last_authored_user_excerpt"] == "typed human prompt"
+        assert summary["phase_count"] == 0
 
     def test_get_not_found(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
@@ -831,6 +1094,67 @@ class TestGetSessionSummaryTool:
             result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, session_id=session_id)
 
         assert json.loads(result)["messages"][0]["text"] == long_text
+
+    def test_get_messages_honors_per_message_character_cap_and_excerpt(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        text = "opening-" + ("middle-" * 20) + "closing"
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="excerpt", text=text)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                max_chars_per_message=40,
+                excerpt=True,
+            )
+
+        message = json.loads(result)["messages"][0]
+        assert len(message["text"]) <= 40
+        assert message["text"].startswith("opening-")
+        assert message["text"].endswith("closing")
+        assert all(block.get("text") == "" for block in message["content_blocks"])
+
+    def test_get_messages_excerpt_centers_the_requested_match(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        text = "opening-" + ("before-" * 30) + "needle evidence" + ("after-" * 30) + "closing"
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="match-excerpt", text=text)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(
+                mcp_server._tool_manager._tools["get_messages"].fn,
+                session_id=session_id,
+                max_chars_per_message=80,
+                excerpt=True,
+                match_query="needle",
+            )
+
+        message = json.loads(result)["messages"][0]
+        assert len(message["text"]) <= 80
+        assert "needle evidence" in message["text"]
+        assert not message["text"].startswith("opening-")
+        assert not message["text"].endswith("closing")
+        assert all(block.get("text") == "" for block in message["content_blocks"])
+
+    def test_get_messages_over_budget_returns_replayable_envelope(
+        self, tmp_path: Path, mcp_server: MCPServerUnderTest
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root, native_id="oversized", text="x" * 30_000)
+
+        with _archive_config(archive_root):
+            result = invoke_surface(mcp_server._tool_manager._tools["get_messages"].fn, session_id=session_id)
+
+        envelope = json.loads(result)
+        assert envelope["status"] == "response_budget_exceeded"
+        assert envelope["budget_exceeded"] is True
+        assert envelope["continuation"]["tool"] == "get_messages"
+        assert envelope["continuation"]["arguments"]["session_id"] == session_id
+        assert envelope["continuation"]["arguments"]["max_chars_per_message"] == 4096
+        assert len(result.encode("utf-8")) <= envelope["budget_bytes"]
 
     @pytest.mark.parametrize(
         ("kwargs", "expected_texts"),
@@ -1047,11 +1371,12 @@ class TestGetSessionSummaryTool:
 
 
 class TestReadViewProfilesTool:
-    def test_read_tools_use_registered_specs(self, mcp_server: MCPServerUnderTest) -> None:
-        for name, spec in _MCP_READ_TOOL_SPECS.items():
-            tool = mcp_server._tool_manager._tools[name]
-            assert tool.fn.__name__ == spec.name
-            assert tool.fn.__doc__ == spec.description
+    def test_read_tool_uses_declared_registration_metadata(self, mcp_server: MCPServerUnderTest) -> None:
+        declaration = MCP_TOOL_DECLARATION_BY_NAME["list_read_view_profiles"]
+        tool = mcp_server._tool_manager._tools[declaration.name]
+
+        assert tool.fn.__name__ == declaration.name
+        assert tool.fn.__doc__ == declaration.description
 
     def test_list_read_view_profiles_uses_facade_contract(self, mcp_server: MCPServerUnderTest) -> None:
         profiles = read_view_profile_payloads()
@@ -1164,7 +1489,7 @@ class TestInsightTools:
         insight = SessionProfileInsight(
             session_id="conv-1",
             logical_session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -1185,13 +1510,14 @@ class TestInsightTools:
         payload = json.loads(raw)
         assert payload["insight_kind"] == "session_profile"
         assert payload["session_id"] == "conv-1"
+        assert payload["provenance"]["time_confidence"] == "unknown"
 
     @pytest.mark.asyncio
     async def test_insight_list_tools_use_archive_queries(self, mcp_server: MCPServerUnderTest) -> None:
         profile = SessionProfileInsight(
             session_id="conv-1",
             logical_session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             title="Profiled Session",
             semantic_tier="merged",
             provenance=_provenance(),
@@ -1220,7 +1546,7 @@ class TestInsightTools:
         work_event = SessionWorkEventInsight(
             event_id="evt-1",
             session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             event_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -1234,7 +1560,7 @@ class TestInsightTools:
         phase = SessionPhaseInsight(
             phase_id="phase-1",
             session_id="conv-1",
-            source_name="claude-code",
+            origin="claude-code",
             phase_index=0,
             provenance=_provenance(),
             inference_provenance=_inference_provenance(),
@@ -1274,9 +1600,9 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         coverage = ArchiveCoverageInsight(
-            group_by="provider",
-            bucket="claude-code",
-            source_name="claude-code",
+            group_by="origin",
+            bucket="claude-code-session",
+            origin="claude-code-session",
             session_count=1,
             message_count=2,
             user_message_count=1,
@@ -1293,10 +1619,10 @@ class TestInsightTools:
         )
         session_cost = SessionCostInsight(
             session_id="conv-root",
-            source_name="claude-code",
+            origin="claude-code",
             title="Root Thread",
             estimate=CostEstimatePayload(
-                source_name="claude-code",
+                origin="claude-code-session",
                 session_id="conv-root",
                 model_name="claude-sonnet-4-5",
                 normalized_model="claude-sonnet-4-5",
@@ -1308,7 +1634,7 @@ class TestInsightTools:
             provenance=_provenance(),
         )
         cost_rollup = CostRollupInsight(
-            source_name="claude-code",
+            origin="claude-code",
             model_name="claude-sonnet-4-5",
             normalized_model="claude-sonnet-4-5",
             session_count=1,
@@ -1420,11 +1746,11 @@ class TestInsightTools:
         assert cost_rollups_payload["limit"] == 5
         assert tool_usage_payload["truncated"] is False
         assert tool_usage_payload["limit"] is None
-        assert mock_poly.list_session_profile_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "provider"
-        assert mock_poly.list_archive_coverage_insights.await_args.args[0].provider == "claude-code"
-        assert mock_poly.list_tool_usage_insights.await_args.args[0].provider == "claude-code"
+        assert mock_poly.list_session_profile_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_session_tag_rollup_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_archive_coverage_insights.await_args.args[0].group_by == "origin"
+        assert mock_poly.list_archive_coverage_insights.await_args.args[0].origin == "claude-code-session"
+        assert mock_poly.list_tool_usage_insights.await_args.args[0].origin == "claude-code-session"
         assert mock_poly.list_tool_usage_insights.await_args.args[0].limit is None
 
     @pytest.mark.asyncio
@@ -1435,10 +1761,10 @@ class TestInsightTools:
         def cost(session_id: str) -> SessionCostInsight:
             return SessionCostInsight(
                 session_id=session_id,
-                source_name="claude-code",
+                origin="claude-code",
                 title=f"Session {session_id}",
                 estimate=CostEstimatePayload(
-                    source_name="claude-code",
+                    origin="claude-code-session",
                     session_id=session_id,
                     model_name="claude-sonnet-4-5",
                     normalized_model="claude-sonnet-4-5",
@@ -1470,7 +1796,7 @@ class TestInsightTools:
         assert payload["truncated"] is True
         assert [item["session_id"] for item in payload["items"]] == ["conv-0", "conv-1"]
         query = mock_poly.list_session_cost_insights.await_args.args[0]
-        assert query.provider == "claude-code"
+        assert query.origin == "claude-code-session"
         assert query.limit is None
         assert query.offset == 0
 
@@ -1766,6 +2092,75 @@ class TestMutationTools:
 
         assert json.loads(result) == {"claude-ai": 2}
         mock_poly.list_tags.assert_called_once_with(origin="claude-ai-export")
+
+    @pytest.mark.asyncio
+    async def test_list_tags_over_budget_replays_a_bounded_deterministic_page(
+        self, mcp_server: MCPServerUnderTest
+    ) -> None:
+        tags = {f"tag-{index:03d}-{'x' * 300}": index for index in range(100)}
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value=tags)
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["list_tags"].fn,
+                limit=100,
+            )
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert payload["continuation"]["arguments"]["limit"] == 3
+        assert len(json.loads(replay)) == 3
+
+    @pytest.mark.asyncio
+    async def test_tags_resource_over_budget_replays_through_paged_tool(self, mcp_server: MCPServerUnderTest) -> None:
+        tags = {f"tag-{index:03d}-{'x' * 300}": index for index in range(100)}
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_tags = AsyncMock(return_value=tags)
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(mcp_server._resource_manager._resources["polylogue://tags"].fn)
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["continuation"]["tool"] == "list_tags"
+        assert payload["continuation"]["arguments"] == {"limit": 3, "offset": 0}
+        assert len(json.loads(replay)) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_annotations_over_budget_replays_with_item_cap(self, mcp_server: MCPServerUnderTest) -> None:
+        annotation = {
+            "annotation_id": "annotation-1",
+            "target_type": "session",
+            "target_id": "codex-session:annotation",
+            "session_id": "codex-session:annotation",
+            "message_id": "",
+            "note_text": "a" * 30_000,
+            "created_at": "2026-07-12T00:00:00+00:00",
+            "updated_at": "2026-07-12T00:00:00+00:00",
+        }
+        with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+            mock_poly = make_polylogue_mock()
+            mock_poly.list_annotations = AsyncMock(return_value=[annotation])
+            mock_get_polylogue.return_value = mock_poly
+            raw = await invoke_surface_async(mcp_server._tool_manager._tools["list_annotations"].fn)
+            payload = json.loads(raw)
+            replay = await invoke_surface_async(
+                mcp_server._tool_manager._tools[payload["continuation"]["tool"]].fn,
+                **payload["continuation"]["arguments"],
+            )
+
+        assert payload["status"] == "response_budget_exceeded"
+        assert payload["continuation"]["arguments"]["max_chars_per_item"] == 512
+        replay_payload = json.loads(replay)
+        assert replay_payload["items"][0]["note_text"] == "a" * 512
 
     def test_get_metadata_success(self, mcp_server: MCPServerUnderTest) -> None:
         with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:

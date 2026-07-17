@@ -25,5 +25,13 @@ anti-grep control:
   control session: session:codex-session:demo-anti-grep
 
 source material:
-  raw_id: c0bcedce8ec536029fd8bb1ee0e5d5bf017dc1fadfb7c1cd3eed1eb6bece57a0
+  raw_id: d5513a27ef4a35603881e2907ff5e6dff3e0146bf222c36ed5ef032dc58479c2
   blob_sha256: 9fd0dbdb080058070935924534a903cc63a8dcba571f6b2734f92a96576b59d7
+
+completion-claim experiment:
+  sample manifest: 238eeeabdcb413a36ff031f62c5bff95a02160db2488e432fdd106014947d783
+  denominator: 2
+unsupported by structural evidence: 0 (0.0%)
+neutral prior outcome: 0 (0.0%)
+contradicted then repaired: 1 (50.0%)
+contradicted without recorded repair: 1 (50.0%)

@@ -101,7 +101,7 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
 
     target = "polylogue.storage.repository.archive.sessions.RepositoryArchiveSessionMixin.list_by_query"
     with patch(target, side_effect=AssertionError("messages loaded")) as spy:
-        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(provider="claude-code"))
+        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin="claude-code-session"))
         assert spy.call_count == 0
 
     total = sum(rollup.total_usd for rollup in rollups)
@@ -112,3 +112,6 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
             merged_status_counts[key] = merged_status_counts.get(key, 0) + value
     assert merged_status_counts.get("exact", 0) == 1
     assert merged_status_counts.get("unavailable", 0) == 1
+    unavailable = next(rollup for rollup in rollups if rollup.unavailable_session_count)
+    assert unavailable.priced_session_count == 0
+    assert unavailable.confidence is None

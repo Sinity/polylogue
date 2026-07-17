@@ -1,0 +1,43 @@
+# Session Chronicle
+
+- Sessions: 1
+- Edge limit: 8
+- Body policy: authored-dialogue
+
+## Map the demo lineage base context.
+
+- Session: `codex-session:demo-lineage-fork`
+- Origin: codex-session
+- Matching prose messages: 4
+- Included: 4
+- Omitted middle messages: 0
+
+### First Messages
+
+### 2026-07-04T10:00:01+00:00 - user / message
+
+Map the demo lineage base context.
+
+`codex-session:demo-lineage-parent:parent-u0`
+
+### 2026-07-04T10:00:02+00:00 - assistant / message
+
+I have the base context and can branch the analysis.
+
+`codex-session:demo-lineage-parent:parent-a1`
+
+### 2026-07-04T10:01:03+00:00 - user / message
+
+Now take the forked branch and audit construct validity.
+
+`codex-session:demo-lineage-fork:fork-u2`
+
+### 2026-07-04T10:01:04+00:00 - assistant / message
+
+The fork diverges into demo corpus construct checks.
+
+`codex-session:demo-lineage-fork:fork-a3`
+
+### Last Messages
+
+_No distinct matching prose in the last edge._

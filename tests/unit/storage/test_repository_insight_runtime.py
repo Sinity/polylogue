@@ -45,7 +45,7 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
         assert await repo.get_session_profile("conv-1") == "profile:record"
         assert await repo.get_session_profiles_batch(["conv-1"]) == {"conv-1": "profile:record-a"}
         assert await repo.list_session_profiles(
-            provider="claude-code",
+            origin="claude-code-session",
             since="2026-01-01",
             until="2026-01-02",
             first_message_since="2026-01-01T00:00:00Z",
@@ -67,7 +67,7 @@ async def test_repository_insight_profile_reads_build_typed_queries() -> None:
         assert await repo.list_session_enrichment_records(query="enrichment") == ["record-a", "record-b"]
 
     list_query = queries._list_session_profiles_query.await_args_list[0].args[0]
-    assert list_query.provider == "claude-code"
+    assert list_query.origin == "claude-code-session"
     assert list_query.first_message_since == "2026-01-01T00:00:00Z"
     assert list_query.session_date_until == "2026-01-02"
     assert list_query.min_wallclock_seconds == 300
@@ -129,7 +129,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
         assert await repo.get_session_phases("conv-1") == ["phase:phase-record"]
         assert await repo.list_session_work_events(
             session_id="conv-1",
-            provider="claude-code",
+            origin="claude-code-session",
             since="2026-01-01",
             until="2026-01-02",
             session_date_since="2026-01-01",
@@ -142,7 +142,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
         assert await repo.list_session_work_event_records(query="editor") == ["event-record"]
         assert await repo.list_session_phases(
             session_id="conv-1",
-            provider="claude-code",
+            origin="claude-code-session",
             since="2026-01-01",
             until="2026-01-02",
             kind="planning",
@@ -158,7 +158,7 @@ async def test_repository_insight_thread_and_timeline_reads_build_typed_queries(
 
     timeline_query = queries._list_session_work_events_query.await_args_list[0].args[0]
     assert timeline_query.session_id == "conv-1"
-    assert timeline_query.provider == "claude-code"
+    assert timeline_query.origin == "claude-code-session"
     assert timeline_query.heuristic_label == "implementation"
     assert timeline_query.session_date_since == "2026-01-01"
     assert timeline_query.session_date_until == "2026-01-02"
@@ -178,14 +178,14 @@ async def test_repository_insight_summary_reads_build_typed_queries() -> None:
     repo = _Repo(queries)
 
     assert await repo.list_session_tag_rollup_records(
-        provider="claude-code",
+        origin="claude-code-session",
         since="2026-01-01",
         until="2026-01-02",
         query="tag",
     ) == ["tag-row"]
 
     tag_query = queries._list_session_tag_rollup_rows_query.await_args.args[0]
-    assert tag_query.provider == "claude-code"
+    assert tag_query.origin == "claude-code-session"
     assert tag_query.query == "tag"
 
 
@@ -297,8 +297,8 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
         assert await repo.get_known_source_cursors() == {
             "inbox": {"st_dev": 1, "st_ino": 2, "st_size": 3, "mtime_ns": 4}
         }
-        assert await repo.reset_parse_status(provider="chatgpt", source_names=["inbox"]) == 3
-        assert await repo.reset_validation_status(provider="chatgpt", source_names=["inbox"]) == 4
+        assert await repo.reset_parse_status(origin="chatgpt", source_names=["inbox"]) == 3
+        assert await repo.reset_validation_status(origin="chatgpt", source_names=["inbox"]) == 4
         assert await repo.get_raw_sessions_batch(["raw-1"]) == ["a"]
         assert await repo.get_raw_blob_sizes(["raw-1"]) == [("a", 12)]
         assert await repo.get_raw_session_states(["raw-1"]) == {"a": "state"}
@@ -328,17 +328,17 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
     )
     mock_mtimes.assert_awaited_once_with(conn)
     mock_cursors.assert_awaited_once_with(conn)
-    mock_reset_parse.assert_awaited_once_with(conn, provider="chatgpt", source_names=["inbox"], transaction_depth=7)
+    mock_reset_parse.assert_awaited_once_with(conn, origin="chatgpt", source_names=["inbox"], transaction_depth=7)
     mock_reset_validation.assert_awaited_once_with(
         conn,
-        provider="chatgpt",
+        origin="chatgpt",
         source_names=["inbox"],
         transaction_depth=7,
     )
     mock_batch.assert_awaited_once_with(conn, ["raw-1"])
     mock_blob_sizes.assert_awaited_once_with(conn, ["raw-1"])
     mock_states.assert_awaited_once_with(conn, ["raw-1"])
-    mock_count.assert_awaited_once_with(conn, provider="chatgpt")
+    mock_count.assert_awaited_once_with(conn, origin="chatgpt")
 
 
 @pytest.mark.asyncio
@@ -361,7 +361,7 @@ async def test_repository_raw_streams_iterators() -> None:
             return_value=_aiter([("raw-a", 1), ("raw-b", 2)]),
         ) as mock_iter_headers,
     ):
-        sessions = [record async for record in repo.iter_raw_sessions(provider="chatgpt", limit=2)]
+        sessions = [record async for record in repo.iter_raw_sessions(origin="chatgpt", limit=2)]
         headers = [
             header
             async for header in repo.iter_raw_headers(
@@ -376,7 +376,7 @@ async def test_repository_raw_streams_iterators() -> None:
 
     assert sessions == ["raw-a", "raw-b"]
     assert headers == [("raw-a", 1), ("raw-b", 2)]
-    mock_iter_raw.assert_called_once_with(conn, provider="chatgpt", limit=2)
+    mock_iter_raw.assert_called_once_with(conn, origin="chatgpt", limit=2)
     mock_iter_headers.assert_called_once_with(
         conn,
         source_paths=["inbox"],

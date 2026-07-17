@@ -88,7 +88,7 @@ def run_machine_entry(
         extract_command,
         wants_json,
     )
-    from polylogue.errors import PolylogueError
+    from polylogue.core.errors import PolylogueError
 
     if not wants_json(argv):
         try:

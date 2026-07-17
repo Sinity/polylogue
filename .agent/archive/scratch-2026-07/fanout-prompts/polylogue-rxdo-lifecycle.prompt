@@ -1,0 +1,96 @@
+You are one lane of a parallel fanout on the Polylogue repo.
+Worktree /realm/worktrees/polylogue-rxdo-lifecycle is your root; NEVER cd to
+/realm/project/polylogue. Branch: feature/fanout/rxdo-lifecycle.
+
+════════════════════════════════════════════════════════════════════════
+MISSION — polylogue-rxdo.4: AssertionKind.FINDING
+════════════════════════════════════════════════════════════════════════
+A finding is a durable CLAIM WITH EVIDENCE — (n, statistic, query_ref,
+result_set_ref, expected) — produced by a detector/agent/analysis, stored
+as an assertion row so the ENTIRE existing lifecycle is reused with zero
+new lifecycle code: candidate default → judge_assertion_candidate
+accept/reject/defer/supersede → judgment recorded as assertion → promotion
+flips the inject gate. The pathology pattern in
+polylogue/storage/user_write.py is your template — read it first and
+mirror it (upsert_findings_as_assertions mirroring the pathology writer).
+
+READ FIRST: bd show polylogue-rxdo.4 --json (design field = the value_json
+schema spec), bd show polylogue-rxdo --json (epic context),
+bd show polylogue-rxdo.9 --json (rigor-mechanisms spike — you are NOT
+implementing it, but finding.v1 must not foreclose it), and
+polylogue/storage/user_write.py (the pathology writer you mirror).
+
+THE SCHEMA (finding.v1, from the bead — bead wins on conflict):
+value_json schema polylogue.finding.v1:
+  finding_kind: query-delta | finding-drift | measure | pathology |
+                claim-vs-evidence
+  statistic: {op, value, unit}
+  n: int                      (denominator honesty is non-negotiable)
+  query_ref, result_set_ref   (evidence refs)
+  baseline/current refs       (for delta kinds)
+  expected: {measure, op, value}  (OPTIONAL — this is the pre-registration
+            hook: an expectation recorded BEFORE evaluation; rxdo.5's
+            findings-as-tests and the rxdo.9 rigor spike build on it.
+            Design the field so richer expectation shapes — bands,
+            tolerances, direction-only — can be added additively.)
+Defaults: status=candidate, visibility=private,
+  context_policy={"inject":false,"promotion_required":true} — machine
+  findings NEVER auto-inject (recursive-safety spine; a finding injected
+  into agent context that then generates more findings is the loop this
+  kills).
+Deterministic finding id = hash(claim key + target + value + sorted
+  evidence refs + detector ref) — re-materialization with identical inputs
+  MUST produce zero new rows (idempotency AC).
+Evidence-laundering guard: findings carry source query/result refs so a
+  report renderer can warn on circular evidence ancestry.
+
+REGISTRATION TRAPS (the real cost — the bead corrects its own corpus
+design on this): adding the enum member needs NO user-tier migration
+(AssertionKind column is schema-free TEXT by design). But you MUST:
+  - regenerate `devtools render openapi` + `devtools render
+    cli-output-schemas` (the AssertionKind enum is embedded in both);
+  - add FINDING to ASSERTION_CLAIM_KINDS (find where that lives);
+  - add the user_audit surface entry (the every-kind invariant in the
+    user_audit test will fail without it — that failure is your friend);
+  - `render all --check` exits 1 even printing per-surface "sync OK" —
+    grep its output for "out of sync", never trust the tail line.
+
+REF-FORMAT COORDINATION: the rxdo-substrate lane (running concurrently)
+owns the ref grammar (query:<hash>, query-run:qr_<id>, result-set:<id>)
+and the ObjectRef kind registrations; its FIRST pushed commit on
+feature/fanout/rxdo-substrate is the contract. Poll for it
+(git fetch origin && git log origin/feature/fanout/rxdo-substrate) before
+hardcoding ref parsing; until it lands, treat refs as opaque strings
+behind one tiny validation function you can tighten in a follow-up commit.
+scope_ref/author_ref values MUST use registered ObjectRef kinds (prior
+lane got bitten: 'insight:' style registered kinds only — do not invent
+'finding-detector:' without registering it).
+
+FOOTPRINT
+OWN: polylogue/storage/user_write.py (finding writer), the AssertionKind
+enum + its registration sites, generated-schema regen commits,
+tests/unit/storage/ + tests/unit/user (wherever assertion tests live).
+AVOID: migrations (substrate lane owns user.db v5; FINDING needs none),
+archive/query/** and daemon/convergence* (language lane), MCP tool
+additions (NONE this wave — findings surface through existing
+list_assertion_claims/judgment tools; if a gap exists, note it as
+follow-up instead of adding a tool — new MCP tools require
+EXPECTED_TOOL_NAMES + contract updates and are out of scope),
+storage/sqlite/queries/** + protocols.py + api (provider-origin lane's
+atomic sweep in flight — use origin vocabulary in any new code).
+
+VERIFICATION: focused user_write tests (upsert idempotency: identical
+re-run → zero new rows; judgment queue visibility; ref resolution;
+never-inject default enforced), user_audit every-kind invariant green,
+render all --check grepped for "out of sync". devtools verify --quick
+before every push. Anti-vacuity statements per test in the PR.
+
+KNOWN HAZARDS: GitHub Actions all-jobs-fail-at-init (billing) — ignore.
+basetemp may escape to /tmp from worktrees (ra3w) — override under
+/realm/tmp. bd auto-import noise (gxjh) — sequence bd calls. Pre-commit
+rejection → fix + NEW commit, never --amend/--no-verify. NO compat shims
+anywhere (operator rule: zero external users).
+
+PROCESS: commit+push every chunk. One PR (Ref polylogue-rxdo.4). Do not
+merge; do not close beads. Per-AC status in the PR body. Finish with one
+adversarial self-review iteration, then the final AC matrix.

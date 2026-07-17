@@ -12,12 +12,15 @@ CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
+    "lab policy backlog-hygiene",
     "lab policy demo-packet-registry",
+    "lab policy demo-tour-freshness",
     "lab policy docs-drift",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
     "lab policy timestamp-doctrine",
     "lab provider completeness",
+    "lab probe bead-pr-reconciliation",
     "lab probe capture-regression",
     "lab probe cost-reconciliation",
     "lab probe pipeline",
@@ -33,6 +36,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab schema roundtrip",
     "lab snapshot read-surface",
     "lab test-economics",
+    "lab testmon-proof",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -171,6 +175,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "generated surfaces",
         "Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries.",
         "devtools.render_quality_reference",
+    ),
+    CommandSpec(
+        "render mcp-equivalence",
+        "generated surfaces",
+        "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",
+        "devtools.render_mcp_equivalence",
+        use_when=(
+            "Refresh or verify MCP discovery names, input/output contracts, role gates, operation owners, "
+            "Python parity expectations, and disjoint migration ownership after changing the compatibility surface."
+        ),
+        examples=("devtools render mcp-equivalence", "devtools render mcp-equivalence --check"),
+    ),
+    CommandSpec(
+        "render mcp-tool-index",
+        "generated surfaces",
+        "Render the generated exhaustive tool-name appendix into docs/mcp-reference.md.",
+        "devtools.render_mcp_tool_index",
+        use_when=(
+            "Keep every registered MCP tool name individually reachable from the docs tree "
+            "(tests/infra/mcp.py:EXPECTED_TOOL_NAMES) after adding or removing a tool, so "
+            "`devtools verify docs-coverage` stays clean without hand-duplicating the list."
+        ),
+        examples=("devtools render mcp-tool-index", "devtools render mcp-tool-index --check"),
     ),
     CommandSpec(
         "render product-workflows",
@@ -326,6 +353,33 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "lab testmon-proof",
+        "verification lab",
+        "Prove real testmon affected selection against a semantic production mutation.",
+        "devtools.testmon_mutation_proof",
+        use_when=(
+            "Validate the affected-test harness itself: a disposable copy of a real Polylogue module "
+            "and existing route test is seeded, semantically mutated, edge-severed, restored, and checked "
+            "for bounded unrelated-change selection."
+        ),
+        examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
+    ),
+    CommandSpec(
+        "lab pytest-witness-repetitions",
+        "verification lab",
+        "Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts.",
+        "devtools.pytest_witness_repetitions",
+        use_when=(
+            "Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog "
+            "lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary "
+            "managed pytest/supervisor path; failures and timeouts are retained rather than retried."
+        ),
+        examples=(
+            "devtools lab pytest-witness-repetitions",
+            "devtools lab pytest-witness-repetitions --attempts 2 --xdist-workers 3 --json",
+        ),
+    ),
+    CommandSpec(
         "bench ingest-amplification",
         "benchmarking",
         "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
@@ -362,6 +416,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench coordination-latency",
+        "benchmarking",
+        "Measure compact coordination status p50/p95 with raw stage samples.",
+        "devtools.coordination_latency_probe",
+        examples=("devtools bench coordination-latency --samples 21 --out .local/coordination-latency.json",),
+    ),
+    CommandSpec(
         "lab snapshot read-surface",
         "verification lab",
         "Capture and compare archive read-surface snapshots.",
@@ -373,6 +434,53 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab snapshot read-surface capture --out .local/self-verify/baseline.json",
             "devtools lab snapshot read-surface compare .local/self-verify/baseline.json .local/self-verify/candidate.json --json",
+        ),
+    ),
+    CommandSpec(
+        "workspace index-fast-forward",
+        "workspace",
+        "Apply a declared clone-first index.db fast-forward with receipts and rollback.",
+        "devtools.index_fast_forward",
+        use_when=(
+            "Upgrade a quiesced supported derived index without raw replay: reflink an inactive generation, "
+            "apply declared canonical schema/FTS deltas, validate structural equivalence on the clone, "
+            "then separately activate or roll back. Semantic-reparse deltas deliberately require rebuild/reprocess."
+        ),
+        examples=(
+            "devtools workspace index-fast-forward plan --source /path/to/index.db",
+            "devtools workspace index-fast-forward clone-upgrade --source /path/to/index.db --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json --restart",
+            "devtools workspace index-fast-forward rollback --receipt /path/to/receipt.json --restart",
+        ),
+    ),
+    CommandSpec(
+        "workspace archive-schema-fast-forward",
+        "workspace",
+        "Clone-forward the v35 archive tiers without raw replay.",
+        "devtools.archive_schema_fast_forward",
+        use_when=(
+            "Advance a stopped, verified v35 archive through the declared source/user durable migrations "
+            "and derived v36/index plus v2/embeddings clones. The existing verified backup remains valid: "
+            "the durable runner verifies active path plus bytes/version rather than inode identity."
+        ),
+        examples=(
+            "devtools workspace archive-schema-fast-forward prepare --archive-root /realm/db/polylogue --staging-root /realm/staging/polylogue-schema-forward --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
+            "devtools workspace archive-schema-fast-forward activate --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace index-v37-fast-forward",
+        "workspace",
+        "Clone-forward index v36 to v37 by retiring derived caches without raw replay.",
+        "devtools.index_v37_fast_forward",
+        use_when=(
+            "Advance a stopped exact-shape v36 index to v37. The actuator reflink-clones the active generation, "
+            "drops only the three retired run-projection caches, proves surviving schema and row-count parity, "
+            "then separately atomically activates the proven generation."
+        ),
+        examples=(
+            "devtools workspace index-v37-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools workspace index-v37-fast-forward activate --receipt /path/to/receipt.json",
         ),
     ),
     CommandSpec(
@@ -391,6 +499,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace worktree-gc --json",
             "devtools workspace worktree-gc --apply",
             "devtools workspace worktree-gc --apply --force",
+        ),
+    ),
+    CommandSpec(
+        "demo real-slice-screen",
+        "workspace",
+        "Read-only extraction + privacy screening of a candidate real-archive session slice.",
+        "devtools.proof_world_real_slice",
+        use_when=(
+            "Assembling a candidate real-archive slice for the shared demo proof world "
+            "(polylogue-212.11): pulls sessions read-only via the Polylogue API, flattens them "
+            "to text, and screens for secret/credential and PII-adjacent patterns before any "
+            "operator decides to fold the slice into a shared fixture. Never mutates the source "
+            "archive and never writes into polylogue/scenarios/ on its own."
+        ),
+        examples=(
+            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
+            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "--refs-file refs.txt --out .agent/scratch/real-slice",
         ),
     ),
     CommandSpec(
@@ -466,6 +593,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace scale-regression",
             "devtools workspace scale-regression --json",
             "devtools workspace scale-regression --workdir .cache/scale-regression --keep --json",
+        ),
+    ),
+    CommandSpec(
+        "workspace raw-authority-scale-proof",
+        "workspace",
+        "Run bounded raw-authority replay to a two-census fixed point.",
+        "devtools.raw_authority_scale_proof",
+        use_when=(
+            "Generate a receipt-backed raw-authority scenario before a live replay gate. "
+            "Use explicit July-15-shaped component/raw arguments for the contained scale run."
+        ),
+        examples=(
+            "devtools workspace raw-authority-scale-proof --json",
+            "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 --expanded-raws 21398 --pass-limit 64 --keep --json",
         ),
     ),
     CommandSpec(
@@ -698,6 +839,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench help-latency",
+        "benchmarking",
+        "Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2).",
+        "devtools.help_latency_probe",
+        use_when=(
+            "Catch CLI import-tax regressions continuously. Runs `polylogue <cmd> --help` for a curated "
+            "set of root and nested subcommands as fresh subprocesses and compares the minimum wall time "
+            "against the 700ms cold-CLI budget from the 20d.14 interactive SLO tier. Fails when any "
+            "'required' target exceeds budget; 'informational' targets (currently `ops maintenance`, "
+            "known slow pending a lazy-import refactor) are reported but never block."
+        ),
+        examples=(
+            "devtools bench help-latency",
+            "devtools bench help-latency --json",
+            "devtools bench help-latency --repeats 5 --out .local/help-latency.json",
+        ),
+    ),
+    CommandSpec(
         "verify manifests",
         "verification",
         "Verify internal consistency across all docs/plans/*.yaml manifest files.",
@@ -720,6 +879,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "'polylogued run --enable-api' / 'polylogue run --source'."
         ),
         examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
+    ),
+    CommandSpec(
+        "verify docs-coverage",
+        "verification",
+        "Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree.",
+        "devtools.verify_docs_coverage",
+        use_when=(
+            "Catch doc drift in the other direction from doc-commands: a real public surface "
+            "(CLI command, MCP tool, config key, stable daemon route) shipped with zero doc-tree "
+            "mention. Fails naming the exact missing entry (polylogue-3tl.9). Pre-existing gaps "
+            "are tracked in docs/plans/docs-coverage-baseline.yaml as a ratchet, not an allowlist "
+            "to extend."
+        ),
+        examples=("devtools verify docs-coverage", "devtools verify docs-coverage --json"),
     ),
     CommandSpec(
         "verify ci-workflows",
@@ -759,6 +932,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
+        "lab policy backlog-hygiene",
+        "verification lab",
+        "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
+        "devtools.verify_backlog_hygiene",
+        use_when=(
+            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 15 checks "
+            "over the Beads export catching dangling dependency refs, blocks-cycles, missing "
+            "horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance "
+            "criteria, unlabeled non-epic beads, epics with no members or description, stale "
+            "'adopted' decisions left open, duplicate titles, and bead ids named but never "
+            "created -- catches backlog structure drift before it needs an archaeology sweep "
+            "to recover, instead of only a manually-invoked script."
+        ),
+        examples=(
+            "devtools lab policy backlog-hygiene",
+            "devtools lab policy backlog-hygiene --json",
+            "devtools lab policy backlog-hygiene --fresh",
+        ),
+    ),
+    CommandSpec(
         "lab policy demo-packet-registry",
         "verification lab",
         "Verify every registered 212 demo has a conforming Demo Finding Packet.",
@@ -771,6 +964,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "or malformed packet before it silently drops out of the demo shelf."
         ),
         examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
+    ),
+    CommandSpec(
+        "lab policy demo-tour-freshness",
+        "verification lab",
+        "Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts.",
+        "devtools.verify_demo_tour_freshness",
+        use_when=(
+            "Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, "
+            "report, per-step command output, recording tape) and the committed copies under "
+            "docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). "
+            "Runs the real tour (~10s), so it lives in the lab tier rather than --quick."
+        ),
+        examples=("devtools lab policy demo-tour-freshness",),
     ),
     CommandSpec(
         "lab policy docs-drift",
@@ -830,6 +1036,31 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify test-clock-hygiene", "devtools verify test-clock-hygiene --json"),
     ),
     CommandSpec(
+        "verify pytest-timeout-overrides",
+        "verification",
+        "Verify explicit pytest timeout overrides are positive, bounded, and justified.",
+        "devtools.verify_pytest_timeout_overrides",
+        use_when=(
+            "Check AST-parsed @pytest.mark.timeout decorators and managed pytest command literals. "
+            "Values above the pyproject default require an exact manifest rationale."
+        ),
+        examples=("devtools verify pytest-timeout-overrides", "devtools verify pytest-timeout-overrides --json"),
+    ),
+    CommandSpec(
+        "verify degrade-loudly",
+        "verification",
+        "Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure.",
+        "devtools.verify_degrade_loudly",
+        use_when=(
+            "Enforce the degrade-loudly doctrine (polylogue-cpf.4): a broad except-handler "
+            "(Exception/BaseException/*.Error) in derived-read, status, or probe code that "
+            "swallows the exception with no log call and no re-raise is indistinguishable from "
+            "'no data' to a reader. New silent sites must add a log call, or add a typed signal "
+            "plus a rationale entry in docs/plans/degrade-loudly-allowlist.yaml."
+        ),
+        examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
+    ),
+    CommandSpec(
         "release verify-distribution",
         "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
@@ -839,6 +1070,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and smoke installed runtime console scripts."
         ),
         examples=("devtools release verify-distribution",),
+    ),
+    CommandSpec(
+        "lab probe bead-pr-reconciliation",
+        "verification lab",
+        "Surface beads whose referenced PR merged but the bead is still open.",
+        "devtools.verify_bead_pr_reconciliation",
+        use_when=(
+            "After a merge-heavy stretch (a Workflow campaign, a merge train, or just several PRs "
+            "landed close together), check for beads left open by a PR that referenced them -- catches "
+            "the reconciliation gap where workers/agents are barred from closing beads themselves and no "
+            "follow-up pass ever ran (2026-07-14: a 55-bead campaign left every bead open despite ~20 "
+            "PRs merging clean). Advisory only -- reports candidates for a human/agent AC check, never "
+            "auto-closes and never fails a gate."
+        ),
+        examples=(
+            "devtools lab probe bead-pr-reconciliation",
+            "devtools lab probe bead-pr-reconciliation --since 2026-07-01 --json",
+            "devtools lab probe bead-pr-reconciliation --limit 50",
+        ),
     ),
     CommandSpec(
         "lab probe cost-reconciliation",

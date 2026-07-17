@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import random
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.observation import SchemaUnit
@@ -15,6 +14,9 @@ from polylogue.schemas.registry import ClusterManifest
 
 if TYPE_CHECKING:
     from polylogue.schemas.redaction_report import SchemaReport
+
+
+GenerationProgressCallback: TypeAlias = Callable[[str, JSONDocument], None]
 
 
 @dataclass
@@ -31,6 +33,7 @@ class GenerationResult:
     cluster_count: int = 0
     package_count: int = 0
     artifact_counts: dict[str, int] = field(default_factory=dict)
+    phase_receipt: JSONDocument = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -42,6 +45,7 @@ class _ProviderBundle:
     result: GenerationResult
     catalog: SchemaPackageCatalog | None = None
     package_schemas: dict[str, dict[str, JSONDocument]] = field(default_factory=dict)
+    package_workload_profiles: dict[str, JSONDocument] = field(default_factory=dict)
     manifest: ClusterManifest | None = None
 
 
@@ -64,11 +68,9 @@ class _ClusterAccumulator:
     representative_paths: list[str] = field(default_factory=list)
     profile_token_counts: Counter[str] = field(default_factory=Counter)
     member_profiles: set[tuple[str, ...]] = field(default_factory=set)
-    reservoir_samples: list[Mapping[str, object]] = field(default_factory=list)
-    reservoir_conv_ids: list[str | None] = field(default_factory=list)
-    rng: random.Random = field(default_factory=lambda: random.Random(42))
     exact_structure_ids: set[str] = field(default_factory=set)
     bundle_scopes: set[str] = field(default_factory=set)
+    source_family_ids: set[str] = field(default_factory=set)
     first_seen: str | None = None
     last_seen: str | None = None
 
@@ -84,8 +86,9 @@ class _PackageAccumulator:
     provider: str
     anchor_family_id: str
     anchor_kind: str
-    memberships: list[_UnitMembership] = field(default_factory=list)
+    memberships: Sequence[_UnitMembership] = field(default_factory=list)
     bundle_scopes: set[str] = field(default_factory=set)
+    journal_bundle_scope_count: int | None = None
     representative_paths: list[str] = field(default_factory=list)
     profile_family_ids: set[str] = field(default_factory=set)
     first_seen: str | None = None
@@ -95,7 +98,7 @@ class _PackageAccumulator:
 @dataclass(frozen=True)
 class ClusterCollectionResult:
     clusters: dict[str, _ClusterAccumulator]
-    memberships: list[_UnitMembership]
+    memberships: Sequence[_UnitMembership]
     sample_count: int
     artifact_counts: dict[str, int]
 

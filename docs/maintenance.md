@@ -334,6 +334,81 @@ structural (missing columns, corrupted index file, or a broken write path).
 Stop the daemon, restore from backup or rebuild the affected index tier, and
 open an issue with the probe output attached.
 
+### Inspecting a raw-authority census
+
+Raw source-to-index convergence records an immutable census in `source.db`.
+Status and daemon receipts expose a bounded summary plus a URI such as
+`polylogue://raw-authority-census/census:42:.../0`. Resolve that same URI from
+the CLI without copying every plan into the status payload:
+
+```bash
+polylogue ops maintenance raw-authority-census \
+  'polylogue://raw-authority-census/census:42:.../0' \
+  --output-format json
+```
+
+The response includes bounded before/postflight plan summaries, counts,
+digests, and a `detail_query_handle` for each plan. It deliberately does not
+inline raw-ID lists, witnesses, preconditions, application receipts, or blocker
+documents: one authority component may contain thousands of each.
+`next_query_handle` advances across the plan inventory. `--limit` is bounded to
+1–500; `--offset` can override the offset encoded in the URI.
+
+Resolve a census or plan detail handle as bounded canonical-JSON text chunks:
+
+```bash
+polylogue ops maintenance raw-authority-detail \
+  'polylogue://raw-authority-detail/census:42:.../raw-replay:.../current/0' \
+  --chunk-chars 16384 \
+  --output-format json
+```
+
+The first `current/0` read returns digest-bound continuation handles. If the
+underlying outcome or blocker changes between chunks, the old continuation
+fails closed; restart from the record's `current/0` handle.
+
+Concatenate `chunk` values by following `next_query_handle`, then verify the
+reconstructed document against `document_sha256`. The chunk size is bounded to
+256–65,536 characters. MCP clients resolve both census and detail URIs through
+their matching resource templates, so CLI and MCP expose the same complete but
+bounded ledger.
+
+Every receipt identifies its `mode` (`census`, `dry_run`, or `apply`), whether
+the parser census was `quiescent`, and its lifecycle. Apply receipts remain
+`planned` until every selected immutable plan has an outcome; startup recovery
+then validates exact source, application/membership, accepted-head, and session
+postconditions before marking an interrupted pass `executed`. Readiness never
+reports a `planned` row as the latest completed census and exposes its pending
+count separately. Finalization also proves that every retryable or
+carried-forward plan has the identical immutable ID in the postflight census;
+a partially applied component cannot be mislabeled as unchanged work.
+
+Parser census itself advances through a bounded number of authority components
+per pass. If uncensused components remain, the pass persists a non-quiescent
+zero-plan census receipt and returns without replay; a later daemon tick resumes
+from the per-raw current-parser receipts. Immutable plans are published only
+after the complete transitive census is quiescent.
+
+Raw-authority preview is the narrow exception to the generic read-only preview
+rule above: it may durably record source-tier parser/census observations so a
+moved-path component has one crash-safe identity across preview and apply. It
+never selects or applies an index replay plan.
+
+A stale precondition or incomplete application receipt creates a durable,
+fail-closed blocker. After inspecting the census URI and current evidence,
+explicitly reopen replanning with a recorded rationale:
+
+```bash
+polylogue ops maintenance raw-authority-blocker-resolve \
+  --blocker-id 'raw-authority-blocker:...' \
+  --reason 'reviewed current source/index evidence; replan from this state' \
+  --yes
+```
+
+Resolution never applies the stale plan. It stores the replacement plan
+witness in the resolution receipt; the next ordinary convergence pass plans
+and validates current evidence normally.
+
 ### Draining the convergence-debt queue
 
 **Symptoms.** `polylogue ops diagnostics workload` reports a non-trivial

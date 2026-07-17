@@ -20,6 +20,7 @@ import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.types import SessionId
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
@@ -45,6 +46,12 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.services.parsing_models import ParseResult
+from polylogue.sinex.models import PublicationMode, ReceiptState
+from polylogue.sinex.transport import (
+    LocalReferenceTransport,
+    clear_configured_transport_factory,
+    register_configured_transport_factory,
+)
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -64,7 +71,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import SessionId
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
@@ -130,6 +136,156 @@ def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
     assert row is not None
 
 
+def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Primary authority must be established before any local read projection."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-primary",
+        source_name="codex",
+        source_path="/sources/primary.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:primary-unconfirmed",
+        content_hash="primary-unconfirmed",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-primary",
+                "codex-session:primary-unconfirmed",
+                role="assistant",
+                text="must remain hidden",
+                content_hash="msg-primary",
+                sort_key=1.0,
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+    transport = LocalReferenceTransport(fault_fn=lambda _request_id, _attempt: ReceiptState.RAW_ACCEPTED)
+    register_configured_transport_factory(lambda: transport)
+    try:
+        summary = _process_ingest_batch_sync(
+            [raw_record],
+            db_path=archive_root / "index.db",
+            archive_root_str=str(archive_root),
+            blob_root_str=str(archive_root / "blob"),
+            validation_mode="advisory",
+            ingest_workers=1,
+            measure_ingest_result_size=False,
+            publication_mode=PublicationMode.PRIMARY,
+        )
+    finally:
+        clear_configured_transport_factory()
+
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert index_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "source.db") as source_conn:
+        assert source_conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone() == (1,)
+    assert summary.publication_deferred_raw_ids == {raw_record.raw_id}
+    assert summary.publication_payloads_by_raw_id == {}
+    assert summary.publication_payload_bytes == 0
+
+
+def test_primary_transport_resolution_precedes_index_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingTransportError(RuntimeError):
+        pass
+
+    opened = False
+
+    def missing_transport() -> NoReturn:
+        raise MissingTransportError("primary transport is not configured")
+
+    def unexpected_open(_path: Path) -> sqlite3.Connection:
+        nonlocal opened
+        opened = True
+        raise AssertionError("index connection must not open before transport resolution")
+
+    monkeypatch.setattr(ingest_batch_core, "resolve_configured_transport", missing_transport)
+    monkeypatch.setattr(ingest_batch_core, "_open_sync_connection", unexpected_open)
+
+    with pytest.raises(MissingTransportError, match="not configured"):
+        _process_ingest_batch_sync(
+            [],
+            db_path=tmp_path / "archive" / "index.db",
+            archive_root_str=str(tmp_path / "archive"),
+            blob_root_str=str(tmp_path / "archive" / "blob"),
+            validation_mode="advisory",
+            ingest_workers=1,
+            measure_ingest_result_size=False,
+            publication_mode=PublicationMode.PRIMARY,
+        )
+
+    assert not opened
+
+
+def test_primary_mode_projects_revision_after_allowed_durable_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-primary-confirmed",
+        source_name="codex",
+        source_path="/sources/primary-confirmed.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:primary-confirmed",
+        content_hash="primary-confirmed",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-primary-confirmed",
+                "codex-session:primary-confirmed",
+                role="assistant",
+                text="durably visible",
+                content_hash="msg-primary-confirmed",
+                sort_key=1.0,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+    register_configured_transport_factory(LocalReferenceTransport)
+    try:
+        summary = _process_ingest_batch_sync(
+            [raw_record],
+            db_path=archive_root / "index.db",
+            archive_root_str=str(archive_root),
+            blob_root_str=str(archive_root / "blob"),
+            validation_mode="advisory",
+            ingest_workers=1,
+            measure_ingest_result_size=False,
+            publication_mode=PublicationMode.PRIMARY,
+        )
+    finally:
+        clear_configured_transport_factory()
+
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+        assert index_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone() == (1,)
+    assert summary.publication_deferred_raw_ids == set()
+
+
 class _FakeConnectionBackend:
     def __init__(self, connection: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]) -> None:
         self._connection = connection
@@ -139,16 +295,20 @@ class _FakeConnectionBackend:
 
 
 class _FakeBulkBackend:
-    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[object]]) -> None:
+    def __init__(self, connection: Callable[[], AbstractAsyncContextManager[None]]) -> None:
         self._connection = connection
 
-    def bulk_connection(self) -> AbstractAsyncContextManager[object]:
+    def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         return self._connection()
 
 
 class _FakeRawStateRepository:
     def __init__(self, update_raw_state: AsyncMock) -> None:
         self._update_raw_state = update_raw_state
+
+    @property
+    def source_backend(self) -> None:
+        return None
 
     async def update_raw_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> object:
         return await self._update_raw_state(raw_id, state=state)
@@ -1527,6 +1687,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         archive_root_str: str,
         blob_root_str: str,
         validation_mode: str,
+        publication_mode: str,
         ingest_workers: int | None,
         measure_ingest_result_size: bool,
         force_write: bool,
@@ -1541,6 +1702,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
                 "archive_root_str": archive_root_str,
                 "blob_root_str": blob_root_str,
                 "validation_mode": validation_mode,
+                "publication_mode": publication_mode,
                 "ingest_workers": ingest_workers,
                 "measure_ingest_result_size": measure_ingest_result_size,
                 "force_write": force_write,
@@ -1567,6 +1729,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
     assert seen["archive_root_str"] == str(archive_root)
     assert seen["blob_root_str"] == str(expected_blob_root)
     assert seen["blob_root_str"] != str(ambient_blob_root)
+    assert seen["publication_mode"] == "off"
 
 
 def test_iter_ingest_results_sync_bounds_in_flight_process_results(

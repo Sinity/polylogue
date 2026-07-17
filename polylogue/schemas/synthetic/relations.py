@@ -88,7 +88,7 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
     consistency.
     """
 
-    def __init__(self, schema: SchemaRecord) -> None:
+    def __init__(self, schema: SchemaRecord, *, max_string_length: int | None = None) -> None:
         self.fk_graph = ForeignKeyGraph()
         self.time_deltas: list[TimeDeltaConstraint] = []
         self.mutual_exclusions: list[MutualExclusionGroup] = []
@@ -96,6 +96,7 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
         self._time_delta_cls = TimeDeltaConstraint
         self._mutual_exclusion_cls = MutualExclusionGroup
         self._string_length_cls = StringLengthConstraint
+        self._max_synthetic_string_length = max_string_length
 
         self._parse_foreign_keys(schema)
         self._parse_time_deltas(schema)

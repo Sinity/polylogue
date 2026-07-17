@@ -11,14 +11,14 @@ Current registry snapshot:
 - contract lanes: `28`
 - live lanes: `19`
 - composite lanes: `24`
-- mutation campaigns: `19`
+- mutation campaigns: `18`
 - benchmark campaigns: `7`
 - synthetic benchmark campaigns: `6`
-- scenario projections: `111`
+- scenario projections: `110`
 - inferred corpus scenarios: `8`
   - benchmark-campaign: `7`
   - inferred-corpus-scenario: `8`
-  - mutation-campaign: `19`
+  - mutation-campaign: `18`
   - synthetic-benchmark: `6`
   - validation-lane: `71`
 
@@ -87,15 +87,19 @@ devtools lab lanes --lane live-archive-smoke --dry-run
 Polylogue uses two schema-evolution regimes (see
 [Schema Versioning Model](internals.md#schema-versioning-model)):
 durable tiers use explicit additive migrations with a backup gate, while
-derived tiers rebuild or blue-green replace from source evidence.
+derived tiers rebuild or blue-green replace from source evidence, except for
+declared, clone-validated SQL fast-forwards for non-semantic deltas; they
+prove structural clone equivalence, not parser-content equivalence.
 `devtools lab policy schema-versioning` enforces that policy boundary:
 
 - It scans derived-tier storage modules for upgrade-shaped helpers
   (`build_vN_to_vM`, `_apply_version_upgrade_plan`, `upgrade_vN_to_vM`,
   `migrate_vN_*`, `ensure_schema_upgrades_vN`).
+- It requires every index schema bump since the supported compatibility floor
+  to declare its delta class before it can ship.
 - It allows numbered SQL resources only under durable migration roots:
   `polylogue/storage/sqlite/migrations/{source,user}/`.
-- If a derived upgrade helper or invalid migration resource is found,
+- If a derived upgrade helper, undeclared index delta, or invalid migration resource is found,
   the lint fails.
 
 The lint runs as part of `devtools verify --lab`, not the fast default path:
@@ -241,8 +245,7 @@ Durable mutation ledgers live under `.local/mutation-campaigns/`; workflow polic
 | `daemon-http` | `polylogue/daemon/http.py` | `tests/unit/daemon/test_daemon_http.py` | Daemon HTTP API endpoint handler contracts |
 | `drive-client` | `polylogue/sources/drive/source.py`<br>`polylogue/sources/drive/gateway.py`<br>`polylogue/sources/drive/auth.py`<br>`polylogue/sources/drive/__init__.py` | `tests/unit/sources/test_drive_source_client.py`<br>`tests/unit/sources/test_drive_gateway.py`<br>`tests/unit/sources/test_drive_auth.py`<br>`tests/unit/sources/test_drive_ops.py` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `filters` | `polylogue/archive/filter/filters.py` | `tests/unit/core/test_filters_props.py` | SessionFilter semantics and summary/picker contracts |
-| `fts5` | `polylogue/storage/search_providers/fts5.py` | `tests/unit/storage/test_fts5.py` | FTS5 query escaping and session search semantics |
-| `hybrid` | `polylogue/storage/search_providers/hybrid.py` | `tests/unit/storage/test_hybrid.py`<br>`tests/unit/storage/test_hybrid_laws.py` | Hybrid search fusion and ranked-session resolution |
+| `hybrid` | `polylogue/storage/search_providers/hybrid.py` | `tests/unit/core/test_filters_props.py`<br>`tests/unit/archive/test_query_search_runtime.py` | Reciprocal Rank Fusion — the shared ranking primitive production hybrid retrieval composes directly (polylogue-a7xr.10 removed the unproven FTS5Provider/HybridSearchProvider classes and their fts5/hybrid campaigns; only reciprocal_rank_fusion in hybrid.py remains). |
 | `json` | `polylogue/core/json.py` | `tests/unit/core/test_json.py` | JSON serialization and parser laws |
 | `models` | `polylogue/archive/models.py` | `tests/unit/core/test_models.py`<br>`tests/unit/core/test_message_laws.py`<br>`tests/unit/core/test_session_semantics.py` | Message/Session semantic helpers and pairing logic |
 | `pipeline-services` | `polylogue/pipeline/services` | `tests/unit/pipeline/test_acquisition_streams.py`<br>`tests/unit/pipeline/test_parsing_service.py`<br>`tests/unit/pipeline/test_indexing.py`<br>`tests/unit/pipeline/test_ingest_batch.py`<br>`tests/unit/pipeline/test_stage_independence.py`<br>`tests/unit/pipeline/test_resilience.py` | Acquire/validate/parse planning and stage contracts |
@@ -324,8 +327,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `mutation-campaign` | `daemon-http` | — | — | — | — | `mutation` | Daemon HTTP API endpoint handler contracts |
 | `mutation-campaign` | `drive-client` | — | — | — | — | `mutation` | Drive auth, transport, JSON payload parsing, and ingest attachment contracts |
 | `mutation-campaign` | `filters` | — | — | — | — | `mutation` | SessionFilter semantics and summary/picker contracts |
-| `mutation-campaign` | `fts5` | — | — | — | — | `mutation` | FTS5 query escaping and session search semantics |
-| `mutation-campaign` | `hybrid` | — | — | — | — | `mutation` | Hybrid search fusion and ranked-session resolution |
+| `mutation-campaign` | `hybrid` | — | — | — | — | `mutation` | Reciprocal Rank Fusion — the shared ranking primitive production hybrid retrieval composes directly (polylogue-a7xr.10 removed the unproven FTS5Provider/HybridSearchProvider classes and their fts5/hybrid campaigns; only reciprocal_rank_fusion in hybrid.py remains). |
 | `mutation-campaign` | `json` | — | — | — | — | `mutation` | JSON serialization and parser laws |
 | `mutation-campaign` | `models` | — | — | — | — | `mutation` | Message/Session semantic helpers and pairing logic |
 | `mutation-campaign` | `pipeline-services` | — | — | — | — | `mutation` | Acquire/validate/parse planning and stage contracts |
@@ -402,7 +404,7 @@ These projections explain which executable lanes, inferred fixture scenarios, or
 | `validation-lane` | `runtime-substrate-hardening` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `contract`<br>`maintenance`<br>`live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`preview` | Full runtime-substrate validation lane covering local contracts plus bounded live archive checks |
 | `validation-lane` | `runtime-substrate-live` | `retrieval-band-readiness-loop`<br>`embedding-status-query-loop`<br>`session-query-loop`<br>`session-insight-status-query-loop`<br>`message-fts-readiness-loop` | `embedding_metadata_rows`<br>`embedding_status_rows`<br>`message_embedding_vectors`<br>`session_insight_readiness`<br>`retrieval_band_readiness`<br>`embedding_status_results`<br>`message_fts`<br>`session_query_results`<br>`session_insight_status_results`<br>`archive_readiness` | `project-retrieval-band-readiness`<br>`query-embedding-status`<br>`cli.json-contract`<br>`query-sessions`<br>`query-session-insight-status`<br>`project-archive-readiness` | — | `live`<br>`embeddings`<br>`readiness`<br>`retrieval`<br>`insights`<br>`status`<br>`maintenance`<br>`preview` | Bounded live archive lane for runtime-substrate checks, maintenance checks, and memory budgets |
 | `validation-lane` | `scale-fast` | — | — | — | — | — | Fast storage scale budgets |
-| `validation-lane` | `scale-regression` | — | `session_profile`<br>`session_runs`<br>`raw_sessions`<br>`archive_tiers` | `materialize-session-insights`<br>`materialize-run-projection`<br>`project-archive-readiness` | — | `contract`<br>`scale`<br>`storage`<br>`regression` | Seeded large-archive-shaped regression probe for real-scale archive bugs |
+| `validation-lane` | `scale-regression` | — | `session_profile`<br>`run_projection`<br>`raw_sessions`<br>`archive_tiers` | `materialize-session-insights`<br>`materialize-run-projection`<br>`project-archive-readiness` | — | `contract`<br>`scale`<br>`storage`<br>`regression` | Seeded large-archive-shaped regression probe for real-scale archive bugs |
 | `validation-lane` | `scale-slow` | — | — | — | — | — | Slow local storage scale budgets |
 | `validation-lane` | `scale-stretch` | — | — | — | — | — | Combined fast and slow storage scale budgets |
 | `validation-lane` | `schema-explain-contract` | `schema-explain-query-loop` | `schema_packages`<br>`schema_explanation_results` | `query-schema-explanations` | — | `contract`<br>`schema`<br>`devtools` | Devtools schema package explanation surface and runtime projection coverage |

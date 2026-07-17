@@ -17,12 +17,12 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: |
 | Sessions | 15 |
 | Messages | 62 indexed |
-| Blocks | 106 |
+| Blocks | 105 |
 | Session profiles | 15 |
 | Origins | aistudio-drive, chatgpt-export, claude-ai-export, claude-code-session, codex-session |
-| Run rows | 16 |
-| Observed-event rows | 49 |
-| Context-snapshot rows | 16 |
+| Run rows | 15 |
+| Observed-event rows | 37 |
+| Context-snapshot rows | 15 |
 
 ## Declared Source Families
 
@@ -66,18 +66,18 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Subagent links (`subagent_links`) | 1 | 1 | `ok` |
 | Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
-| Run projection rows (`run_projection_rows`) | 16 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 49 | 1 | `ok` |
-| Context snapshot rows (`context_snapshot_rows`) | 16 | 1 | `ok` |
+| Run projection rows (`run_projection_rows`) | 15 | 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | 37 | 1 | `ok` |
+| Context snapshot rows (`context_snapshot_rows`) | 15 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
 | Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
-| Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
+| Error terminal-state rows (`error_terminal_state_rows`) | 1 | 1 | `ok` |
 | Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
 | Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 36 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 35 | 1 | `ok` |
 | Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
 | Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 

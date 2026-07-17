@@ -1,0 +1,43 @@
+You are lane polylogue-fastforward-mech of a parallel fanout on the Polylogue repo.
+Worktree = your root: /realm/worktrees/polylogue-fastforward-mech. NEVER cd to /realm/project/polylogue
+(a hook will abort commits; the canonical checkout belongs to the coordinator).
+Branch: you are already on a dedicated feature branch; confirm with
+`git branch --show-current` before the first commit.
+
+MISSION
+Productize derived-tier fast-forward plans (polylogue-9rw0; read it + the fanout-prep doc section 'v35 rebuild'). Each index bump declares a delta class (constraint/view/index-only vs semantic-reparse); non-semantic deltas get a generated SQL fast-forward validated by equivalence sampling on a reflink clone. Codify what the live v32->v35 fast-forward just did manually; add the policy lint so bumps without a declared class fail devtools lab policy schema-versioning. Live exercise: ma2 (FK-supporting index for web_content_constructs cleanup) is an index-only delta — ship it THROUGH the new mechanism as its first proof.
+
+BEADS (read each with `bd show polylogue-<id>` INCLUDING notes before coding;
+prework packets under .agent/scratch/corpus-gpt-pro-2026-07-07/ are
+accelerators, not authority — anchors are from 2026-07-06, re-verify against
+your checkout):
+- polylogue-9rw0 [open]: Derived-tier fast-forward plans: declared delta classes + validated SQL fast-forwards
+- polylogue-ma2 [open]: Add FK-supporting index for web_content_constructs message cleanup
+
+FILE OWNERSHIP
+OWN (you may modify): polylogue/storage/sqlite/lifecycle*; devtools/ (policy); tests/unit/storage/
+AVOID (another lane owns these; do not touch): archive_tiers DDL semantics
+Generated surfaces (docs/cli-reference.md, docs/plans/topology-target.yaml,
+openapi/cli-output schemas, EXPECTED_TOOL_NAMES): regenerate ONLY if your
+change requires it, in a separate commit, and expect the coordinator to
+re-run regeneration at merge time.
+
+VERIFICATION (worker-owned — coordinator runs broad gates, you run these):
+devtools lab policy schema-versioning + focused lifecycle tests
+Anti-vacuity requirement: for every test you add, state in the PR body which
+production dependency it exercises and which implementation mutation or
+removal would make it fail. Toy replicas, test-only validators, and mocks
+that only prove their own wrapping will be rejected.
+
+DISCIPLINE
+- Commit every logical chunk immediately (worktree cleanup discards
+  uncommitted work). Push after each commit.
+- Do NOT run `bd close`/`bd update --claim`; report per-bead AC status
+  (satisfied / deferred / misframed) in your final message AND the PR body.
+- Do NOT merge your PR; open it with Summary/Problem/Solution/Verification
+  sections and `Ref polylogue-<id>` lines, then stop.
+- If a bead turns out to be already-done, stale-claimed, or blocked by
+  missing substrate, say so explicitly and move to the next bead rather
+  than improvising scope.
+- Archive safety: never export POLYLOGUE_ARCHIVE_ROOT to the live archive
+  (/home/sinity/.local/share/polylogue); tests use isolated roots.

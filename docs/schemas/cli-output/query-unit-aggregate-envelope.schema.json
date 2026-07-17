@@ -41,7 +41,8 @@
             "file",
             "run",
             "observed-event",
-            "context-snapshot"
+            "context-snapshot",
+            "delegation"
           ],
           "title": "Unit",
           "type": "string"
@@ -60,6 +61,18 @@
   "additionalProperties": false,
   "description": "Grouped count envelope for explicit terminal query-unit aggregate pipelines such as `messages where text:timeout | group by role | count`. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitAggregateEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Continuation"
+    },
     "items": {
       "items": {
         "$ref": "#/$defs/QueryUnitAggregateRowPayload"
@@ -153,6 +166,30 @@
       "title": "Query",
       "type": "string"
     },
+    "query_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query Ref"
+    },
+    "result_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Ref"
+    },
     "total": {
       "title": "Total",
       "type": "integer"
@@ -166,7 +203,8 @@
         "file",
         "run",
         "observed-event",
-        "context-snapshot"
+        "context-snapshot",
+        "delegation"
       ],
       "title": "Unit",
       "type": "string"

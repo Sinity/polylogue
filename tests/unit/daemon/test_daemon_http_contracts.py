@@ -85,6 +85,8 @@ REQUIRED_STATUS_KEYS: frozenset[str] = frozenset(
         "last_ingestion_batch",
         "fts_readiness",
         "raw_materialization_readiness",
+        "raw_frontier_integrity",
+        "status_snapshot",
         "embedding_readiness",
         "memory",
         "health",
@@ -183,6 +185,34 @@ def _archive_state_hash(archive_root: Path) -> str:
     return h.hexdigest()
 
 
+def test_cli_query_post_forwards_root_request_to_daemon_compiler() -> None:
+    """The UDS-only envelope carries raw root flags, not a client-built SQL query."""
+
+    body = json.dumps(
+        {
+            "params": {
+                "query": ["repo:polylogue", "sqlite locking"],
+                "origin": "codex-session",
+                "limit": 3,
+            }
+        }
+    ).encode()
+    handler = _make_handler("POST", "/api/cli/query", body=body)
+    observed: dict[str, dict[str, list[str]]] = {}
+
+    def capture(params: dict[str, list[str]]) -> None:
+        observed["params"] = params
+
+    handler._handle_list_sessions = capture  # type: ignore[method-assign]
+    handler._handle_cli_query()
+
+    assert observed["params"] == {
+        "origin": ["codex-session"],
+        "limit": ["3"],
+        "query": ['repo:polylogue "sqlite locking"'],
+    }
+
+
 # ---------------------------------------------------------------------------
 # 1. Status envelope contracts
 # ---------------------------------------------------------------------------
@@ -218,6 +248,45 @@ class TestStatusEnvelopeContract:
         actual_keys - REQUIRED_STATUS_KEYS
         # Extra keys are allowed (forward-compat) but worth recording so
         # we notice when new fields are added without docs.
+
+    def test_status_route_fails_closed_when_cached_payload_omits_frontier(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.daemon.status_snapshot import refresh_status_snapshot
+
+        refresh_status_snapshot(
+            payload={
+                "ok": True,
+                "daemon_liveness": True,
+                "claim_guard": {
+                    "converged": {
+                        "claim": "converged",
+                        "value": True,
+                        "reason": "ready",
+                        "signal": "raw_frontier_integrity",
+                    }
+                },
+            }
+        )
+        handler = _make_handler("GET", "/api/status")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["ok"] is False
+        snapshot = payload["status_snapshot"]
+        frontier = payload["raw_frontier_integrity"]
+        components = payload["component_readiness"]
+        claim_guard = payload["claim_guard"]
+        assert isinstance(snapshot, dict)
+        assert isinstance(frontier, dict)
+        assert isinstance(components, dict)
+        assert isinstance(claim_guard, dict)
+        assert snapshot["state"] == "fresh"
+        assert frontier["overall_status"] == "unknown"
+        assert components["raw_frontier_integrity"]["state"] == "unknown"
+        assert claim_guard["converged"]["value"] is False
 
     def test_component_state_envelope_has_documented_subsystems(
         self,
@@ -257,6 +326,7 @@ class TestStatusEnvelopeContract:
             "daemon_ingest",
             "daemon_watcher",
             "embeddings",
+            "raw_frontier_integrity",
             "raw_materialization",
             "search",
         } <= set(component_readiness)
@@ -648,6 +718,14 @@ class TestPrivacyContract:
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
         assert sentinel not in WEB_SHELL_HTML
+
+    def test_web_shell_usage_cost_preserves_unknown_and_known_subtotal(self) -> None:
+        """The current web rewrite boundary must not coerce absent price to zero."""
+        from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+        assert "statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))" in WEB_SHELL_HTML
+        assert "if (value === null || value === undefined || value === '') return 'unknown';" in WEB_SHELL_HTML
+        assert "var n = Number(value || 0);" not in WEB_SHELL_HTML
 
     def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
         """Dogfood regression (2026-07-08): loadStatus()'s success path set

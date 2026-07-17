@@ -20,6 +20,7 @@ from typing import Literal, TypeVar
 
 from pydantic import Field, field_validator, model_validator
 
+from polylogue.archive.actions.parsing import tool_result_outcome
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.refs import EvidenceRef, ObjectRef
@@ -503,6 +504,7 @@ def compile_session_digest(
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
         session_digest_events=events,
+        is_resume=session.is_continuation,
     )
     role_counts = dict(Counter(_role_value(message) for message in messages))
     normal_read = _normal_read_text(messages)
@@ -571,10 +573,11 @@ def compile_session_run_projection(
 
     ``compile_session_digest`` builds several presentation-heavy products
     (resume markdown, forensic index, size metrics, decision candidates) that
-    are irrelevant when the session-insight materializer only needs
-    ``session_runs`` / ``session_observed_events`` / ``session_context_snapshots``.
-    This helper keeps the run-projection semantics shared while avoiding that
-    extra work in daemon convergence.
+    are irrelevant when the caller only needs run/observed-event/
+    context-snapshot counts (e.g. rebuild.py's insight_materialization
+    ledger stamp -- the rows themselves are source-derived on read by
+    ``run_projection_relations.py``, not materialized). This helper keeps
+    the run-projection semantics shared while avoiding that extra work.
     """
 
     messages = list(session.messages)
@@ -601,6 +604,7 @@ def compile_session_run_projection(
         tool_summaries=tool_summaries,
         subagent_reports=subagent_reports,
         session_digest_events=events,
+        is_resume=session.is_continuation,
     )
 
 
@@ -2303,13 +2307,12 @@ def _tool_status(is_error: int | None, exit_code: int | None) -> Literal["ok", "
 
     Exit code is authoritative when present; otherwise the boolean is_error
     flag decides. NULL on both means unknown — never a fabricated positive
-    inferred from output text (#2482).
+    inferred from output text (#2482). Delegates to
+    :func:`polylogue.archive.actions.parsing.tool_result_outcome`, the
+    canonical implementation (polylogue-b0b), so this precedence rule has a
+    single source of truth instead of two copies that can drift.
     """
-    if exit_code is not None:
-        return "ok" if exit_code == 0 else "failed"
-    if is_error is not None:
-        return "failed" if is_error else "ok"
-    return "unknown"
+    return tool_result_outcome(is_error, exit_code)
 
 
 def _tool_handler_kind(

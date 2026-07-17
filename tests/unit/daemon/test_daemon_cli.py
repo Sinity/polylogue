@@ -18,9 +18,12 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
+from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
@@ -50,6 +53,48 @@ def test_polylogued_version_option_reports_version() -> None:
 
     assert result.exit_code == 0
     assert result.output.startswith("polylogued, version ")
+
+
+def test_polylogued_health_json_runs_against_isolated_workspace(workspace_env: dict[str, Path]) -> None:
+    """Health CLI returns structured output without requiring a live daemon."""
+    result = CliRunner().invoke(main, ["health", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    assert "overall_status" in payload
+    assert isinstance(payload["alerts"], list)
+
+
+def test_polylogued_health_error_json_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI health propagates an unhealthy aggregate through its process status."""
+    monkeypatch.setattr(
+        "polylogue.daemon.cli.check_health",
+        lambda *, tiers: DaemonHealth(overall_status=HealthSeverity.ERROR, checked_at="2026-07-13T00:00:00+00:00"),
+    )
+
+    result = CliRunner().invoke(main, ["health", "--format", "json"])
+
+    assert result.exit_code == 1
+    payload = loads(result.output)
+    assert isinstance(payload, dict)
+    assert payload["overall_status"] == "error"
+
+
+def test_polylogued_health_expensive_flag_selects_all_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The expensive convenience flag must request all health tiers."""
+    observed: list[set[HealthTier]] = []
+
+    def _check_health(*, tiers: set[HealthTier]) -> DaemonHealth:
+        observed.append(tiers)
+        return DaemonHealth(overall_status=HealthSeverity.OK, checked_at="2026-07-13T00:00:00+00:00")
+
+    monkeypatch.setattr("polylogue.daemon.cli.check_health", _check_health)
+
+    result = CliRunner().invoke(main, ["health", "--expensive", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert observed == [{HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}]
 
 
 @pytest.mark.contract
@@ -99,6 +144,8 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
 
 
 def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
         ("index.db", ArchiveTier.INDEX),
@@ -107,8 +154,11 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     ):
         initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
         conn.commit()
+    inspect_raw_authority_frontier(
+        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
+    )
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -126,16 +176,16 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["archive_root"] == str(tmp_path)
     assert storage["configured_archive_root"] == str(tmp_path)
     assert storage["archive_root_matches_configured"] is True
-    assert storage["archive_ready"] is True
     assert storage["final_shape_ready"] is True
-    assert storage["archive_schema_ready"] is True
     assert storage["schema_mismatches"] == []
+    assert storage["archive_schema_ready"] is True
+    assert storage["archive_ready"] is True
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
         "source": SOURCE_SCHEMA_VERSION,
         "index": INDEX_SCHEMA_VERSION,
-        "embeddings": 1,
+        "embeddings": EMBEDDINGS_SCHEMA_VERSION,
         "user": USER_SCHEMA_VERSION,
         "ops": 1,
     }
@@ -443,11 +493,15 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -489,13 +543,31 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["restore_sample_size"] = sample_size
         return FakeRestoreResult()
 
-    def fake_repair_raw_materialization(config: Config, *, dry_run: bool, raw_artifact_limit: int) -> FakeResult:
+    def fake_repair_raw_materialization(
+        config: Config,
+        *,
+        dry_run: bool,
+        raw_artifact_limit: int,
+        max_payload_bytes: int,
+    ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
         calls["render_root"] = config.render_root
         calls["dry_run"] = dry_run
         calls["raw_artifact_limit"] = raw_artifact_limit
+        calls["max_payload_bytes"] = max_payload_bytes
         return FakeResult()
+
+    def fake_recover(config: Config) -> tuple[str, ...]:
+        order.append("recover-frontier")
+        calls["recover_archive_root"] = config.archive_root
+        return ()
+
+    def fake_converge(config: Config, *, limit: int) -> int:
+        order.append("frontier")
+        calls["frontier_archive_root"] = config.archive_root
+        calls["frontier_limit"] = limit
+        return 3
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
@@ -504,9 +576,14 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         fake_restore_direct_blob_reference_debt,
     )
     monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", fake_repair_raw_materialization)
+    monkeypatch.setattr(
+        "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
+        fake_recover,
+    )
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", fake_converge)
 
-    assert daemon_cli._drain_raw_materialization_once(limit=11) == 7
-    assert order == ["restore", "materialize"]
+    assert daemon_cli._drain_raw_materialization_once(limit=11) == 10
+    assert order == ["restore", "recover-frontier", "materialize", "frontier"]
     assert calls == {
         "restore_db_path": tmp_path / "archive" / "source.db",
         "restore_dry_run": False,
@@ -516,6 +593,179 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "render_root": tmp_path / "render",
         "dry_run": False,
         "raw_artifact_limit": 11,
+        "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        "recover_archive_root": tmp_path / "archive",
+        "frontier_archive_root": tmp_path / "archive",
+        "frontier_limit": 8,
+    }
+
+
+def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    outcome = RawReplayPlanOutcome(
+        plan_id="raw-replay:stable",
+        input_raw_ids=("raw-a",),
+        status=RawReplayPlanStatus.EXECUTED,
+        reason="applied",
+        next_action="none",
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"x" * 16)
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=1,
+            detail="done",
+            metrics={
+                "raw_materialization_candidate_count": 1.0,
+                "raw_materialization_remaining_candidate_count": 0.0,
+            },
+            plan_outcomes=(outcome,),
+        )
+    )
+
+    assert events == [
+        (
+            "raw_materialization_pass",
+            {
+                "pass_id": f"raw-materialization:{(b'x' * 16).hex()}",
+                "success": True,
+                "repaired_count": 1,
+                "detail": "done",
+                "metrics": {
+                    "raw_materialization_candidate_count": 1.0,
+                    "raw_materialization_remaining_candidate_count": 0.0,
+                },
+                "plan_outcome_count": 1,
+                "plan_outcome_sample": [outcome.to_summary_dict()],
+                "plan_outcome_sample_truncated": False,
+            },
+        )
+    ]
+
+
+def test_raw_materialization_pass_emits_zero_work_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"z" * 16)
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=0,
+            detail="Executable raw replay converged",
+            metrics={"raw_materialization_candidate_count": 0.0},
+            plan_outcomes=(),
+        )
+    )
+
+    assert events[0][1]["success"] is True
+    assert events[0][1]["plan_outcome_count"] == 0
+    assert events[0][1]["plan_outcome_sample"] == []
+    assert events[0][1]["plan_outcome_sample_truncated"] is False
+
+
+def test_raw_materialization_pass_bounds_outcome_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    outcomes = tuple(
+        RawReplayPlanOutcome(
+            plan_id=f"plan:{index}",
+            input_raw_ids=(f"raw:{index}",),
+            status=RawReplayPlanStatus.CARRIED_FORWARD,
+            reason="not selected in bounded pass",
+            next_action="retry later",
+        )
+        for index in range(9)
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=True,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=outcomes,
+        )
+    )
+
+    assert events[0][1]["plan_outcome_count"] == 9
+    assert len(cast(list[object], events[0][1]["plan_outcome_sample"])) == 8
+    assert events[0][1]["plan_outcome_sample_truncated"] is True
+
+
+def test_raw_materialization_pass_projects_durable_census_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr(os, "urandom", lambda _size: b"c" * 16)
+    census = SimpleNamespace(
+        census_id="census:2:inventory:residual",
+        sequence_no=2,
+        inventory_digest="a" * 64,
+        residual_digest="b" * 64,
+        plan_count=3,
+        post_inventory_digest="c" * 64,
+        post_residual_digest="d" * 64,
+        post_plan_count=2,
+        executable_plan_count=1,
+        residual_plan_count=2,
+        predecessor_census_id="census:1:inventory:residual",
+        mode="apply",
+        lifecycle_status="completed",
+        quiescent=True,
+        fixed_point=False,
+        query_handle="polylogue://raw-authority-census/census:2:inventory:residual/0",
+    )
+
+    daemon_cli._emit_raw_materialization_pass(
+        SimpleNamespace(
+            success=False,
+            repaired_count=0,
+            detail="bounded",
+            metrics={},
+            plan_outcomes=(),
+            census_receipt=census,
+        )
+    )
+
+    assert events[0][1]["census"] == {
+        "census_id": census.census_id,
+        "sequence_no": 2,
+        "inventory_digest": "a" * 64,
+        "residual_digest": "b" * 64,
+        "plan_count": 3,
+        "post_inventory_digest": "c" * 64,
+        "post_residual_digest": "d" * 64,
+        "post_plan_count": 2,
+        "executable_plan_count": 1,
+        "residual_plan_count": 2,
+        "predecessor_census_id": census.predecessor_census_id,
+        "mode": "apply",
+        "lifecycle_status": "completed",
+        "quiescent": True,
+        "fixed_point": False,
+        "query_handle": census.query_handle,
     }
 
 
@@ -662,12 +912,16 @@ def test_periodic_raw_materialization_convergence_treats_sqlite_lock_as_retry(
         sleep_calls += 1
         raise asyncio.CancelledError
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
         pytest.raises(asyncio.CancelledError),
@@ -686,13 +940,17 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
 
     calls: list[str] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         task = asyncio.create_task(
             daemon_cli._periodic_raw_materialization_convergence_after(catch_up_complete=catch_up_complete)
         )
@@ -707,6 +965,24 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
     assert calls == ["drain"]
 
 
+def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == daemon_cli._RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
+        raise asyncio.CancelledError
+
+    async def fail_run_sync(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("raw maintenance must not acquire the writer ahead of pending browser capture")
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: True)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+
 def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -714,13 +990,17 @@ def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
 
     calls: list[str] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         task = asyncio.create_task(
             daemon_cli._periodic_session_insight_convergence_after(catch_up_complete=catch_up_complete)
         )
@@ -743,7 +1023,7 @@ def test_periodic_session_insight_convergence_bursts_successful_backlog(
     drains: list[int] = []
     sleeps: list[float] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> int:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
         drains.append(len(drains))
         return 100 if len(drains) <= 2 else 0
 
@@ -754,7 +1034,11 @@ def test_periodic_session_insight_convergence_bursts_successful_backlog(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
@@ -775,12 +1059,16 @@ def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
     async def fake_sleep(_seconds: float) -> None:
         raise asyncio.CancelledError
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
         pytest.raises(asyncio.CancelledError),
@@ -804,7 +1092,8 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     async def fake_sleep(_seconds: float) -> None:
         return None
 
-    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+    async def fake_run_sync(actor: str, func: object, *args: object, **kwargs: object) -> object:
+        assert actor == "maintenance.wal_checkpoint"
         calls.append((func, args, kwargs))
         raise asyncio.CancelledError
 
@@ -812,7 +1101,11 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_wal_checkpoint())
@@ -831,7 +1124,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     calls: list[str] = []
     drained = asyncio.Event()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         calls.append("drain")
         drained.set()
         return 0
@@ -839,7 +1132,11 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 60)
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            daemon_cli,
+            "daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(daemon_cli._periodic_convergence_check((), catch_up_complete=catch_up_complete))
         await asyncio.sleep(0)
@@ -861,11 +1158,15 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         raise RuntimeError("unexpected convergence retry failure")
 
     with (
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         patch.object(daemon_cli.logger, "info") as info,
         patch.object(daemon_cli.logger, "warning") as warning,
     ):
@@ -2088,7 +2389,8 @@ def test_periodic_db_optimize_targets_archive_root_tiers(
     async def fake_sleep(_seconds: float) -> None:
         return None
 
-    async def fake_to_thread(func: object, *args: object, **kwargs: object) -> object:
+    async def fake_run_sync(actor: str, func: object, *args: object, **kwargs: object) -> object:
+        assert actor == "maintenance.db_optimize"
         calls.append((func, args, kwargs))
         raise asyncio.CancelledError
 
@@ -2096,7 +2398,11 @@ def test_periodic_db_optimize_targets_archive_root_tiers(
 
     with (
         patch("asyncio.sleep", side_effect=fake_sleep),
-        patch("asyncio.to_thread", side_effect=fake_to_thread),
+        patch.object(
+            daemon_cli,
+            "daemon_write_coordinator",
+            return_value=SimpleNamespace(run_sync=fake_run_sync),
+        ),
         pytest.raises(asyncio.CancelledError),
     ):
         asyncio.run(daemon_cli._periodic_db_optimize())
@@ -2338,6 +2644,75 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         )
 
     assert stopped == [True]
+
+
+def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The degraded daemon heartbeat must not depend on index.db existing."""
+    from polylogue.daemon import cli as daemon_cli
+
+    calls: list[str] = []
+    actors: list[str] = []
+
+    class Lifecycle:
+        def heartbeat(self) -> None:
+            calls.append("heartbeat")
+
+    class Coordinator:
+        async def run_sync(self, actor: str, function: object, /, *args: object, **kwargs: object) -> object:
+            actors.append(actor)
+            assert callable(function)
+            return function(*args, **kwargs)
+
+    async def exercise() -> None:
+        monkeypatch.setattr(daemon_cli, "_daemon_lifecycle", Lifecycle())
+        monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+        task = asyncio.create_task(daemon_cli._periodic_lifecycle_heartbeat(interval_s=0))
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+                if calls:
+                    break
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+
+    assert calls
+    assert actors == ["daemon.lifecycle.heartbeat"]
+
+
+def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed forensic start must not strand the daemon's mutual-exclusion lock."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class Coordinator:
+        async def run_sync(self, _actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("ops unavailable")
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return True
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+
+    with pytest.raises(RuntimeError, match="ops unavailable"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert not (tmp_path / "daemon.pid").exists()
 
 
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
@@ -2902,6 +3277,13 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     def fail_background_work(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("schema-blocked daemon must not start DB background work")
 
+    lifecycle_tick_started = False
+
+    async def lifecycle_heartbeat() -> None:
+        nonlocal lifecycle_tick_started
+        lifecycle_tick_started = True
+        await asyncio.Event().wait()
+
     server = FakeServer()
     critical = HealthAlert(
         check_name="schema_version",
@@ -2914,6 +3296,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_check_schema_version_fast", return_value=critical),
         patch.object(daemon_cli, "_periodic_wal_checkpoint", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lifecycle_heartbeat),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
@@ -2937,3 +3320,4 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
 
     assert server.shutdown_called is False
     assert server.close_called is True
+    assert lifecycle_tick_started is True

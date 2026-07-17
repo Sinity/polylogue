@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -83,7 +84,10 @@ def snapshot_sqlite_database(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.unlink(missing_ok=True)
     source_uri = f"{source.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(source_uri, uri=True) as source_conn, sqlite3.connect(destination) as destination_conn:
+    with (
+        closing(sqlite3.connect(source_uri, uri=True)) as source_conn,
+        closing(sqlite3.connect(destination)) as destination_conn,
+    ):
         source_conn.backup(destination_conn)
 
 

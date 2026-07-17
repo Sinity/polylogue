@@ -172,6 +172,7 @@ class TestEmptyPayloads:
         assert payload["readiness_tag"] == "q-missing"
         assert payload["materialized"] is False
         assert payload["profile"] is None
+        assert payload["provenance"] is None
 
     def test_empty_work_event_panel_is_q_missing(self) -> None:
         payload = _work_event_panel_payload([])
@@ -213,7 +214,7 @@ class TestEmptyPayloads:
                     event_id="event-1",
                     event_index=0,
                     session_id="claude-code-session:ins-1",
-                    source_name="claude-code",
+                    origin="claude-code-session",
                     evidence=_Dump(),
                     inference=_Dump(),
                     provenance=SimpleNamespace(materializer_version=1),
@@ -236,7 +237,7 @@ class TestEmptyPayloads:
                     phase_id="phase-1",
                     phase_index=0,
                     session_id="codex-session:ins-1",
-                    source_name="codex",
+                    origin="codex-session",
                     evidence=_Dump(),
                     inference=_Dump(),
                     provenance=SimpleNamespace(materializer_version=1),

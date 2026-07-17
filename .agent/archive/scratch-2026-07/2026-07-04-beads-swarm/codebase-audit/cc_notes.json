@@ -1,0 +1,156 @@
+[
+{
+"id": "polylogue-ahqd",
+"title": "Observe MCP write adoption after role rollout",
+"has_design": false,
+"has_acc": true,
+"notes": "Coordination program update 2026-07-04: ahqd remains the fresh-agent MCP adoption proof, now under polylogue-s7ae. Expand the observation to include coordination MCP affordances once s7ae.1/pj8 land: at minimum an agent should call a status/self or work-item packet prompt/tool plus one benign write affordance. This is deployment-sensitive; run after pre-deployment MCP/hook batch is complete and live profiles are refreshed."
+},
+{
+"id": "polylogue-pj8",
+"title": "Agent query cookbook: MCP prompts + skill recipes as the discoverability layer",
+"has_design": true,
+"has_acc": false,
+"notes": "Coordination program update 2026-07-04: pj8 is now part of polylogue-s7ae. Its MCP prompts/skill recipes should include agent coordination intents over the shared envelope: agent_status, agent_self, work_item/current packet, coordination_hazards, addressed_messages, and handoff. Keep prompts curated and intent-named; do not expose a giant catalog. Complete MCP prompt/tool code and generated contracts before any deployment batch is requested; if only deployment remains, record that explicitly and move on."
+},
+{
+"id": "polylogue-k8k",
+"title": "Investigate Sinnix scope wrapper latency for lightweight Polylogue CLI reads",
+"has_design": false,
+"has_acc": false,
+"notes": "Executable upgrade (2026-07-04 sidecar):\nProduct question: is the 45s wrapper latency a transient host/systemd issue or a durable wrapper-policy bug that makes lightweight Polylogue reads unusable from the devshell?\nLikely files/modules/repos: /realm/project/sinnix/scripts/sinnix-direnvrc, sinnix-scope wrappers, Polylogue devshell wrapper generation, and the polylogue CLI entrypoint only for timing comparison. This may require a Sinnix-side fix; keep Polylogue bead as the evidence/coordination record and create a Sinnix follow-up if the root cause lives there.\nMeasurement matrix: run each command at least 3 warm times and record wall/user/sys: (1) python -m polylogue --help or a cheap read, (2) uv run polylogue equivalent if applicable, (3) devshell polylogue wrapper, (4) sinnix-scope background -- polylogue equivalent, (5) systemd-run/sinnix-scope trivial command such as true. Capture current host pressure once with sinnix-observe or systemd/cgroup evidence if latency reproduces.\nArtifact shape: short table with median/min/max, wrapper path resolved with command -v/type -a, scope unit/journal evidence for one slow run, and classification: systemd startup, active host pressure, wrapper policy, or Polylogue import floor.\nAcceptance detail: before/after timing shows lightweight reads bypass or materially reduce scope overhead while heavy import/rebuild/db scans remain contained; if no durable bug reproduces, close with the timing artifact and root-cause classification rather than changing policy.\nVerification command: rerun the timing matrix after any Sinnix/devshell change, plus a heavy-command smoke showing the containment wrapper still applies where intended."
+},
+{
+"id": "polylogue-p5g",
+"title": "polylogue judge: interactive candidate triage in the terminal",
+"has_design": true,
+"has_acc": false,
+"notes": "JUDGMENT BUDGET (2026-07-03 doctrine pass): the queue is the system's one human tax \u2014 design to a budget: expected items/day surfaced in the queue header, auto-expiry of candidates unjudged after 60d (expiry is itself information, recorded), a queue-age health line in bare status, and per-kind caps already present in the proposers (1jc, 37t.10). If judging exceeds ~5 min/day at full instrumentation, the proposers are too chatty \u2014 tune them, not the judge."
+},
+{
+"id": "polylogue-o21",
+"title": "Extension-point ergonomics: declare-once registries, scaffolds, actionable completeness errors",
+"has_design": true,
+"has_acc": false,
+"notes": "CONTRACT-FIRST SPLIT (pace, 2026-07-03): dependents need the DeclarationSpec SHAPE, not the full sweep. Slice 1 (size:S, unblocks everything): define the declaration dataclass + registry protocol + one pilot extension point (MCP tools), publish the pattern doc. Slices 2..n: per-extension-point sweeps, parallelizable, non-blocking. Dependents may build against the protocol from slice 1 day one."
+},
+{
+"id": "polylogue-mhx.4",
+"title": "Semantic recall leg in context compilation: the memory actually retrieves",
+"has_design": true,
+"has_acc": false,
+"notes": "Coherence (2026-07-03): the recall leg registers as a ContextSource under the context scheduler (37t child) \u2014 it proposes scored items; the scheduler owns budget arbitration. Drop this bead's own budget mechanics in favor of the source protocol."
+},
+{
+"id": "polylogue-da1",
+"title": "Provider format-drift sentinel: detect upstream export-shape changes from live ingest",
+"has_design": true,
+"has_acc": false,
+"notes": "HIBERNATION FLOOR (2026-07-03): the sentinel + capture spooling are the two components engineered above product reliability \u2014 they are what makes six months of neglect safe (EVIDENCE-ONLY rung of the degraded-modes doctrine: raw bytes keep landing even when parsers break). Sentinel alerting must not depend on the daemon's healthy operation for its own delivery path (last-resort: a status-line marker the operator sees on any polylogue invocation). Pair with capture-completeness (3uw) \u2014 shape drift here, volume drift there."
+},
+{
+"id": "polylogue-x7d",
+"title": "Unify root query row rendering contracts",
+"has_design": true,
+"has_acc": false,
+"notes": "Informativeness spec (2026-07-03 CLI UX pass): unified result rows should carry, beyond title/origin/date: outcome badge (from structural terminal state: completed/failed/abandoned/unknown), cost (when priced provenance exists), relative time (2h ago), repo/cwd basename, and message count \u2014 the columns that let an operator triage without opening anything. Display-title synthesis (30h) feeds the title cell. Column set consistent across find results, read --all listings, and select pickers; --format json carries the same fields under the same names (schema-checked)."
+},
+{
+"id": "polylogue-37t.7",
+"title": "Close the failure loop: verify postmortem -> next session's context seed",
+"has_design": false,
+"has_acc": false,
+"notes": "Raw-log 06-28 addition: session-cut recovery DRILLS as the test discipline \u2014 deliberately kill sessions mid-work (chaos-lane style, yeq) and measure whether the next session recovers unprompted from injected context alone. Recovery rate under drills is the loop's honest KPI and generates uplift-experiment subjects for free."
+},
+{
+"id": "polylogue-x4s",
+"title": "Express devloop state in Polylogue substrate (dogfood target)",
+"has_design": true,
+"has_acc": false,
+"notes": "Migration ladder (2026-07-03, operator: migrate from bespoke devloop gradually to native ways): rung 1 \u2014 beads-native work loop (session<->bead links bead) replaces ACTIVE-LOOP.md's 'what am I doing' with bd claims + archive evidence; rung 2 \u2014 OPERATING-LOG.md entries become work-event/assertion writes (rii.1 write leg + 37t.2 notation) rendered back as a log view, file retired when the view is strictly better; rung 3 \u2014 DEMO-RADAR/handoff packets become read-packages + resume briefs (yps freshness metadata already landed); rung 4 \u2014 devloop-status becomes a polylogue status profile + bd ready join (the script already shells to both; the join moves substrate-side). Each rung retires its file in the same PR that ships the replacement (surgical renewal, no deprecation theater). The .agent/ scripts shrink to thin aliases and eventually to docs."
+},
+{
+"id": "polylogue-20d.6",
+"title": "Live full-ingest catch-up latency + WAL shape",
+"has_design": true,
+"has_acc": false,
+"notes": "SLO framing (2026-07-03): the user-facing contract for this work is ingest-to-searchable latency \u2014 a session appears in find/webui within ~10s of the JSONL write (budget owned by the interactive SLO tier, 20d.14). That chain is hook/watcher debounce -> parse -> store -> FTS -> cache invalidation (20d.12) -> SSE announce (20d.13); measure end-to-end with a synthetic session write on the seeded corpus, not just parse_s in isolation. The 0.2 files/s figure is the batch-catchup lane; the live single-session lane is the one that must feel instant."
+},
+{
+"id": "polylogue-fs1.4",
+"title": "Report: polylogue forensics for Hermes sessions",
+"has_design": true,
+"has_acc": false,
+"notes": "Executable upgrade (2026-07-04 sidecar):\nClassification: blocked on polylogue-fs1.1 for real Hermes state.db ingestion, but the report contract can be made executable now against synthetic/fixture sessions and later rerun on real Hermes rows.\nProduct question: can Polylogue produce a cold-reader forensic report that explains one Hermes/agent session better than the runtime itself, using canonical archive facts rather than a silo export?\nLikely modules/surfaces: read/query surfaces under polylogue/cli/read or command inventory, session topology/logical-session APIs, session_provider_usage_events/cost rollups, actions/tool timing readers, git/local footprint helpers, demo fixture/scenario generators, docs/demo shelf. Prefer a named report/read view that composes existing primitives; avoid a Hermes-only data path.\nArtifact shape: markdown + JSON report with the five existing sections, each section carrying source_refs/query names and missing-data caveats. Demo package must include sanitized fixture/session id, one command, expected runtime under 2 minutes, and a README snippet.\nAcceptance detail: for fixture data, each section has at least one asserted fact and one source reference; for missing Hermes fields, the report emits explicit unavailable/caveat rows rather than prose guesses; once fs1.1 lands, rerun against a real Hermes session and record diff between fixture and real coverage.\nVerification commands: focused unit/visual/demo command for the report surface, plus devtools render all --check if docs/README/demo surfaces are touched. If the implementation adds a new CLI command or view, verify command inventory and generated docs through devtools render all."
+},
+{
+"id": "polylogue-bfv",
+"title": "Advisory hooks: archive-informed PreToolUse/UserPromptSubmit responses",
+"has_design": true,
+"has_acc": false,
+"notes": "Coherence (2026-07-03): advisories are the mid-session-moment ContextSource with a one-item budget; the scheduler's global cooldown/dedup state replaces this bead's bespoke cooldowns (latency budget + fail-open stay here)."
+},
+{
+"id": "polylogue-0aj",
+"title": "Declared write-effects chain: post-commit effects as registry entries",
+"has_design": true,
+"has_acc": false,
+"notes": "CONTRACT-FIRST SPLIT (pace): slice 1 (size:S): WriteEffect protocol + registry walking the three existing effects behavior-identically \u2014 unblocks 5wp, mhx catch-up scheduling, 20d.12 invalidation to register effects in parallel. Slice 2: phase enforcement + failure policies."
+},
+{
+"id": "polylogue-2n6",
+"title": "Harness remote-control lane: drive Claude Code / Codex sessions from Polylogue surfaces",
+"has_design": true,
+"has_acc": false,
+"notes": "Raw-log 05-12 addition: expose the remote-control lane to AGENTS via MCP (not just operator surfaces) \u2014 agents managing agent sessions (spawn/resume/prompt) makes the fleet programmable and composes with mission control + the blackboard channel. Same attributability posture as 27p (every control action archived with its authoring session). Codex leg via the AppServer (ox0)."
+},
+{
+"id": "polylogue-b1n",
+"title": "WebUI-driven posting: operator drives web chats from the workbench",
+"has_design": true,
+"has_acc": false,
+"notes": "Scope note (2026-07-03): 'input directly from webui' includes NEW chat creation, not only posting into existing captured chats \u2014 the composer should offer target = existing session OR new conversation on a chosen provider. Attachment upload rides the ptx attachment support."
+},
+{
+"id": "polylogue-uiw",
+"title": "Origin breadth: enumerate the target set + generic openai-chat-shape detector",
+"has_design": true,
+"has_acc": false,
+"notes": "Horizon expansion (operator ask 2026-07-03): the target enumeration should cover the full current field, ranked by user-base x format-stability x acquisition cost: IDE-agent harnesses (Cursor, Windsurf, Cline/Roo task logs, Aider chat history, OpenHands trajectories, Zed), web chats beyond current capture (DeepSeek web, Mistral le Chat, Perplexity, Poe, Meta AI \u2014 extension-adapter pattern per fs1.8), and the openai-chat-json long tail (open-webui, LM Studio, llama.cpp server). BEYOND-CHAT AI work, same system-of-record thesis: ComfyUI workflow/history JSON (the operator runs it \u2014 image-gen sessions are AI sessions), whisper-server transcription jobs (voice sessions). These two are exploratory: they stress the session model (no dialogue turns) \u2014 evaluate whether they fit sessions/blocks honestly or need a sibling artifact kind rather than forcing the fit. OTel-GenAI ingest (0cg) remains the multiplier that may cover several harnesses for free \u2014 check each candidate for OTel emission before writing a parser."
+},
+{
+"id": "polylogue-jnj.10",
+"title": "Make the completion system and DSL discoverable at point of use",
+"has_design": true,
+"has_acc": false,
+"notes": "Post-invocation affordances (2026-07-03 CLI UX pass): success paths should teach the next step, not only failures \u2014 after a find with results, one tty-only hint line: how to read the top hit, how to narrow (then-connector), how to open in the workbench (cross-surface handoff bead). After read: how to see changes view / cost / lineage. Same restraint budget as empty-result guidance (jnj.12): one line, suppressed under --plain/--format json/non-tty."
+},
+{
+"id": "polylogue-bby.6",
+"title": "Interaction debt: replace window.prompt(); de-drift the JS renderer",
+"has_design": true,
+"has_acc": false,
+"notes": "Superseded-in-part (2026-07-03): webui v2 replaces the inline-JS extraction for application code \u2014 do not invest in extracting the old SPA's JS beyond what live fixes need; the window.prompt fix and CSS token extraction (shared with v2) remain valid. Renderer-contract concern moves to v2's shared-spec snapshot tests."
+},
+{
+"id": "polylogue-dab",
+"title": "Stop materializing run-projection cache rows; drop DDL after parity",
+"has_design": false,
+"has_acc": false,
+"notes": "Recovered stale-agent audit 2026-07-04: confirmed the remaining shape after polylogue-x5l. Persisted-only repository reads used to live in session_insight_run_projection_reads.py -> SQLiteQueryStoreInsightRunProjectionMixin -> RepositoryInsightRunProjectionReadMixin; terminal query lowerers already had source-derived CTEs in archive_tiers/archive.py. The audit's smallest plan matches x5l and is now mostly closed: shared source-derived relation builders plus cache-optional materialized branches. Remaining dab scope should stay narrowly after parity: stop writers/readiness/repair debt, remove materialized cache DDL in a schema bump, and preserve terminal/repository absent-table regressions. Do not reintroduce async-only SQL copies or catch no-such-table as control flow."
+},
+{
+"id": "polylogue-jnj.8",
+"title": "Rationalize root onboarding, tutorial, and reader launcher",
+"has_design": false,
+"has_acc": false,
+"notes": "First-run polish scope (2026-07-03 basics pass): the fresh-machine path is part of this bead's onboarding rationalization \u2014 bare polylogue on an empty/absent archive should offer the guided path: init archive (archive-plan/init), wire hooks (d1y), seed the demo as a playground, point at the tour (3tl.2). One screen, numbered choices, each a real command it prints before running (teach the CLI while doing). Config wizardry stays minimal per the configuration doctrine bead (b5l): defaults should make init near-zero-question."
+},
+{
+"id": "polylogue-20d.8",
+"title": "Bound claim-vs-evidence regen latency (43s on live archive)",
+"has_design": false,
+"has_acc": false,
+"notes": "Observed during polylogue-sru.5: claim-vs-evidence live regeneration took repeated full archive passes of ~1:25-1:39 for 5,000 inspected failures even when only marker predicates/labels changed. Add a cheap re-score/relabel path over an existing frozen sample/report so calibration and marker tuning do not require rescanning the active archive or rewriting all demo artifacts."
+}
+]

@@ -40,7 +40,10 @@
         "provider_family": "chatgpt",
         "message_id": "m-attachment",
         "block_id": "b-image",
-        "block_index": 0
+        "block_index": 0,
+        "tool_id": "b-image",
+        "attachment_id": "b-image",
+        "material_origin": "unknown"
       },
       "fields": [
         {
@@ -58,7 +61,7 @@
       ],
       "previews": [],
       "caveats": [
-        "attachment bytes are not embedded in the transcript card"
+        "attachment bytes are not embedded in the transcript document"
       ],
       "summary": "diagram.png"
     }

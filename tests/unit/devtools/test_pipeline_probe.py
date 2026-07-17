@@ -90,6 +90,10 @@ def test_build_budget_report_accounts_for_recorded_child_rss() -> None:
     assert report["observed_peak_rss_self_mb"] == 70.0
     assert report["observed_peak_rss_children_mb"] == 40.0
     assert report["violations"] == ["peak RSS 110.0 MiB exceeded budget 100.0 MiB"]
+    receipt = _require_json_object(report["workload_receipt"])
+    assert _json_path(receipt, "spec", "measurement_scope") == "process-tree"
+    [budget_result] = _require_json_array(receipt["budget_results"])
+    assert _require_json_object(budget_result)["verdict"] == "exceeded"
 
 
 def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path) -> None:

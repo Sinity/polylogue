@@ -15,6 +15,7 @@ from polylogue.daemon.web_shell_selection import (
     SELECTION_PREVIEW_HTML,
     SELECTION_TOOLBAR_HTML,
 )
+from polylogue.daemon.web_shell_semantic_cards import SEMANTIC_CARD_CSS, SEMANTIC_CARD_JS
 from polylogue.daemon.web_shell_similar import SIMILAR_JS
 from polylogue.daemon.web_shell_workspace import WORKSPACE_CSS, WORKSPACE_HTML, WORKSPACE_JS
 
@@ -237,6 +238,7 @@ __WORKSPACE_CSS__
 __READER_CSS__
 __PASTE_CSS__
 __ATTACHMENT_CSS__
+__SEMANTIC_CARD_CSS__
 __COORDINATION_CSS__
 .tool-block { border-left: 2px solid var(--role-tool); padding-left: 12px; margin: 2px 0; }
 .tool-block .tool-summary { font-size: var(--small); color: var(--text-muted); cursor: pointer; padding: 3px 0; }
@@ -436,6 +438,7 @@ __WORKSPACE_HTML__
     <span class="hint"><kbd>Esc</kbd> clear</span>
     <span class="hint"><kbd>?</kbd> help</span>
     <span class="spacer" style="flex:1"></span>
+    <span id="auth-state" class="hint" role="status" aria-live="polite"></span>
     <span id="footer-result" style="font-size:10px"></span>
   </div>
 </div>
@@ -467,7 +470,7 @@ var state = {
   origin: '', query: '', offset: 0, limit: 100, total: 0,
   // Cached /api/status envelope (evidence-cockpit redesign): the landing
   // view reads totals/readiness from here instead of a second fetch.
-  status: {}, facets: null, inspectorTab: 'info',
+  status: {}, overview: undefined, facets: null, inspectorTab: 'info',
   facetError: '',
   marks: {}, annotations: {}, savedViews: [], workspaces: [], userStateError: '',
   mode: 'single', stackPayload: null, comparePayload: null,
@@ -492,7 +495,7 @@ var state = {
   // on demand when the Insights inspector tab is opened. Holds the
   // ``GET /api/insights/sessions/{id}`` envelope: ``{kinds: {profile,
   // timeline, phases, threads}, include, session_id, origin}``.
-  insightsPanels: {},
+  insightsPanels: {}, evidenceSummaries: {},
   // Per-session collapsed-section toggles for the Insights tab.
   // Keyed as ``"<session_id>:<kind>"``; default = expanded.
   insightsCollapsed: {},
@@ -521,6 +524,7 @@ var state = {
   // records route, status, duration, request id, and a bounded response summary
   // without storing raw archive payloads.
   apiDebug: {counter: 0, last: null},
+  webAuth: {state: 'uninitialized', expiresAt: '', bootstrapPromise: null, lastFailure: ''},
   // IA redesign (evidence-cockpit): the active primary-nav verb. 'search' is
   // the historical single-workbench behavior (sidebar + landing/session
   // detail + inspector); 'analyze'/'audit'/'remember' swap #main for an
@@ -572,14 +576,81 @@ function rememberApiDebug(entry) {
   renderApiDebugChip();
 }
 
+var WEB_AUTH_FAILURES = [
+  'web_credential_missing',
+  'web_credential_invalid',
+  'web_credential_expired',
+  'web_credential_revoked',
+  'web_credential_wrong_origin',
+  'web_credential_insufficient_scope'
+];
+
+function setWebAuthState(next, detail) {
+  state.webAuth.state = next;
+  if (next.indexOf('web_credential_') === 0) state.webAuth.lastFailure = next;
+  if (detail && detail.expires_at) state.webAuth.expiresAt = detail.expires_at;
+  document.documentElement.dataset.webAuthState = next;
+  var chip = document.getElementById('auth-state');
+  if (chip) chip.textContent = next === 'ready' ? 'auth: ready' : 'auth: ' + next.replace('web_credential_', '');
+  window.dispatchEvent(new CustomEvent('polylogue:web-auth-state', {
+    detail: {state: next, recoverable: WEB_AUTH_FAILURES.indexOf(next) >= 0}
+  }));
+}
+
+async function bootstrapWebCredential() {
+  if (state.webAuth.bootstrapPromise) return state.webAuth.bootstrapPromise;
+  setWebAuthState('bootstrapping');
+  state.webAuth.bootstrapPromise = (async function() {
+    var response = await fetch('/api/web-auth/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: {'X-Polylogue-Web-Client': '1'}
+    });
+    var payload = {};
+    try { payload = await response.json(); } catch(_) {}
+    if (!response.ok) {
+      var code = payload.error || 'web_credential_missing';
+      setWebAuthState(code);
+      var error = new Error(code);
+      error.status = response.status;
+      error.code = code;
+      throw error;
+    }
+    var credential = payload.credential || {};
+    setWebAuthState(credential.state || 'ready', credential);
+    return credential;
+  })();
+  try {
+    return await state.webAuth.bootstrapPromise;
+  } finally {
+    state.webAuth.bootstrapPromise = null;
+  }
+}
+
+async function ensureWebCredential() {
+  var expiresAt = state.webAuth.expiresAt ? Date.parse(state.webAuth.expiresAt) : 0;
+  if (state.webAuth.state === 'ready' && (!expiresAt || expiresAt - Date.now() > 1000)) return;
+  await bootstrapWebCredential();
+}
+
 async function requestJSON(url, opts) {
   opts = opts || {};
+  if (!opts.skipWebAuth) await ensureWebCredential();
   var method = opts.method || 'GET';
   var requestId = nextApiRequestId();
-  var headers = Object.assign({'X-Request-ID': requestId}, opts.headers || {});
-  var requestOpts = Object.assign({}, opts, {method: method, headers: headers});
+  var headers = Object.assign({'X-Request-ID': requestId, 'X-Polylogue-Web-Client': '1'}, opts.headers || {});
+  var requestOpts = Object.assign({}, opts, {
+    method: method,
+    headers: headers,
+    credentials: 'same-origin',
+    referrerPolicy: 'no-referrer'
+  });
   var timeoutMs = Number(opts.timeoutMs || 0);
   delete requestOpts.timeoutMs;
+  delete requestOpts.skipWebAuth;
+  delete requestOpts.webAuthRetried;
   var timeoutId = null;
   var timedOut = false;
   var relayAbort = null;
@@ -622,6 +693,8 @@ async function requestJSON(url, opts) {
   var duration = Math.round(nowMs() - started);
   var responseRequestId = response.headers && response.headers.get ? response.headers.get('X-Request-ID') : '';
   var summary = summarizeApiBody(text);
+  var responsePayload = null;
+  try { responsePayload = text ? JSON.parse(text) : {}; } catch(_) {}
   rememberApiDebug({
     ok: response.ok,
     method: method,
@@ -633,15 +706,24 @@ async function requestJSON(url, opts) {
     response_summary: summary
   });
   if (!response.ok) {
+    var authCode = responsePayload && responsePayload.error;
+    if (WEB_AUTH_FAILURES.indexOf(authCode) >= 0) {
+      setWebAuthState(authCode);
+      if (authCode !== 'web_credential_wrong_origin' && !opts.webAuthRetried) {
+        await bootstrapWebCredential();
+        return requestJSON(url, Object.assign({}, opts, {webAuthRetried: true}));
+      }
+    }
     var error = new Error(String(response.status));
     error.status = response.status;
+    error.code = authCode || '';
     error.request_id = requestId;
     error.response_summary = summary;
     throw error;
   }
   if (!text) return {};
   try {
-    return JSON.parse(text);
+    return responsePayload || JSON.parse(text);
   } catch(e) {
     rememberApiDebug({
       ok: false,
@@ -928,10 +1010,21 @@ async function loadSession(id, updateURL) {
   state.comparePayload = null;
   state.selectedLoadError = null;
   if (updateURL !== false) pushSingleURL(id);
-  var route = '/api/sessions/' + encodeURIComponent(id);
+  var route = '/api/sessions/' + encodeURIComponent(id) + '?shape=summary';
+  var messagesRoute = '/api/sessions/' + encodeURIComponent(id) + '/messages?limit=100&offset=0';
   setRouteState('sessionDetail', {state: 'loading', route: route, error: '', status: ''});
   try {
-    var data = await fetchJSON(route, {timeoutMs: 10000});
+    var payloads = await Promise.all([fetchJSON(route, {timeoutMs: 10000}), fetchJSON(messagesRoute, {timeoutMs: 10000})]);
+    var data = payloads[0];
+    data.messages = payloads[1].messages || [];
+    data.semantic_entries = payloads[1].semantic_entries || data.semantic_entries || [];
+    data.total = payloads[1].total;
+    // Prefix-sharing sessions persist only their divergent tail in the
+    // summary row, while the message route recomposes the logical transcript.
+    // Reader-facing counts must describe the same composed session rendered
+    // below the header, never the stored tail alone.
+    data.message_count = payloads[1].total;
+    data.message_page = {limit: payloads[1].limit, offset: payloads[1].offset};
     state.selected = data;
     setRouteState('sessionDetail', {state: 'ready', route: route, status: '200', error: ''});
   } catch(e) {
@@ -949,7 +1042,32 @@ function loadSessionFromError() {
   var route = rs.route || '';
   var prefix = '/api/sessions/';
   if (route.indexOf(prefix) !== 0) return;
-  loadSession(decodeURIComponent(route.slice(prefix.length)), true);
+  loadSession(decodeURIComponent(route.slice(prefix.length).split('?')[0]), true);
+}
+
+async function loadMoreSessionMessages() {
+  var c = state.selected;
+  if (!c || !c.id || c.messagePageLoading || !c.messages || c.messages.length >= Number(c.total || 0)) return;
+  c.messagePageLoading = true;
+  c.messagePageError = null;
+  var offset = c.messages.length;
+  var route = '/api/sessions/' + encodeURIComponent(c.id) + '/messages?limit=100&offset=' + offset;
+  renderMain();
+  try {
+    var payload = await fetchJSON(route, {timeoutMs: 10000});
+    var existing = {};
+    c.messages.forEach(function(message) { existing[message.id] = true; });
+    (payload.messages || []).forEach(function(message) {
+      if (!existing[message.id]) { c.messages.push(message); existing[message.id] = true; }
+    });
+    c.total = payload.total;
+    c.message_page = {limit: payload.limit, offset: payload.offset};
+    if (Array.isArray(payload.semantic_entries)) c.semantic_entries = payload.semantic_entries;
+  } catch(e) {
+    c.messagePageError = routeErrorDetails(e, route);
+  }
+  c.messagePageLoading = false;
+  renderMain();
 }
 
 async function loadSessionRaw(id) {
@@ -1565,21 +1683,46 @@ function landingVerbCard(title, body, onclickJs) {
   return '<div class="verb-card" onclick="' + escAttr(onclickJs) + '"><h4>' + esc(title) + '</h4><p>' + esc(body) + '</p></div>';
 }
 
-// Archive landing: rendered in #main when the Search verb has no session
-// selected. Every number comes from the already-loaded /api/status snapshot
-// (state.status, cached by loadStatus()) and the already-loaded session list
-// (state.sessions) -- no dedicated landing route exists or is required.
+// Archive landing uses its dedicated bounded aggregate rather than stitching
+// status and a broad session-list response client-side.
 function renderLandingView() {
-  var status = state.status || {};
-  var readiness = status.component_readiness || {};
-  var recent = (state.sessions || []).slice(0, 6);
+  var overview = state.overview;
+  if (overview === undefined) {
+    if (typeof loadOverview === 'function') {
+      loadOverview();
+      return '<div class="main-empty"><h3>Loading archive overview…</h3></div>';
+    }
+    // Isolated renderer harnesses do not install the loader. Keep this pure
+    // compatibility projection so snapshot tests can exercise the function;
+    // the live shell always has loadOverview() and never takes this branch.
+    var legacyStatus = state.status || {};
+    overview = {
+      totals: {sessions: legacyStatus.total_sessions, messages: legacyStatus.total_messages},
+      readiness: legacyStatus.component_readiness || {},
+      recent: (state.sessions || []).slice(0, 6)
+    };
+  }
+  if (overview && overview.error) return renderInlineRouteFailure('Archive overview unavailable', overview.details, 'retryOverview()');
+  var totals = overview.totals || {};
+  var readiness = overview.readiness || {};
+  var recent = overview.recent || [];
+  var snapshot = overview.status_snapshot || {};
   var html = '<div class="landing">';
   html += '<div class="landing-hero"><h1>Keep the receipts for AI work.</h1>'
     + '<p>Search every archived session, analyze usage and cost, audit claims against structural '
     + 'evidence, and remember reviewed judgment across Claude, Codex, ChatGPT, Gemini, and more.</p></div>';
+  if (snapshot.state && snapshot.state !== 'fresh') {
+    var snapshotBits = [];
+    var snapshotAge = Number(snapshot.age_s);
+    if (Number.isFinite(snapshotAge)) snapshotBits.push(Math.round(snapshotAge) + 's old');
+    if (snapshot.refresh_error) snapshotBits.push(snapshot.refresh_error);
+    html += '<div class="main-empty q-' + escAttr(snapshot.state === 'stale' ? 'stale' : 'partial') + '" data-overview-snapshot-state="'
+      + escAttr(snapshot.state) + '"><h3>Overview readiness is ' + esc(snapshot.state) + '</h3><p>'
+      + esc(snapshotBits.join(' · ') || 'Freshness is unavailable; totals may not reflect current daemon state.') + '</p></div>';
+  }
   html += '<div class="stat-row">'
-    + statTile('Sessions', status.total_sessions != null ? Number(status.total_sessions).toLocaleString() : null)
-    + statTile('Messages', status.total_messages != null ? Number(status.total_messages).toLocaleString() : null)
+    + statTile('Sessions', totals.sessions != null ? Number(totals.sessions).toLocaleString() : null)
+    + statTile('Messages', totals.messages != null ? Number(totals.messages).toLocaleString() : null)
     + statTile('Search index', readinessLabel((readiness.search || {}).state))
     + statTile('Embeddings', readinessLabel((readiness.embeddings || {}).state))
     + '</div>';
@@ -1610,6 +1753,14 @@ function renderLandingView() {
   html += '</div>';
   return html;
 }
+
+async function loadOverview() {
+  var route = '/api/overview';
+  try { state.overview = await fetchJSON(route, {timeoutMs: 5000}); }
+  catch(e) { state.overview = {error: true, details: routeErrorDetails(e, route)}; }
+  if (!state.selected && state.activeView === 'search') renderMain();
+}
+function retryOverview() { state.overview = undefined; renderMain(); }
 
 function renderVerbView(view) {
   var headerEl = document.getElementById('conv-header');
@@ -1667,6 +1818,7 @@ function renderAnalyzePanel() {
   var html = '<div class="verb-panel">';
   html += '<div class="panel-section"><h3>Archive-wide estimate</h3><div class="stat-row">'
     + statTile('Catalog API-equivalent', formatUsd(data.catalog_api_equivalent_usd))
+    + statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))
     + statTile('Logical (deduped)', formatUsd(data.logical_catalog_api_equivalent_usd))
     + statTile('Provider-priced (stored)', formatUsd(data.stored_provider_priced_usd))
     + '</div></div>';
@@ -1911,15 +2063,28 @@ function renderMain() {
     msgEl.innerHTML = readViewSelector + renderReadViewExecution(c, state.selectedReadView);
     return;
   }
+  var sessionSemanticEntries = semanticSessionEntriesHtml(c);
   if (!c.messages) {
-    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>Loading messages...</h3></div>';
+    msgEl.innerHTML = readViewSelector + sessionSemanticEntries
+      + '<div class="main-empty"><h3>Loading messages...</h3></div>';
     return;
   }
   if (c.messages.length === 0) {
-    msgEl.innerHTML = readViewSelector + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
+    msgEl.innerHTML = readViewSelector + sessionSemanticEntries
+      + '<div class="main-empty"><h3>No messages</h3><p>This session has no message content.</p></div>';
     return;
   }
-  msgEl.innerHTML = readViewSelector + renderEvidenceStrip(c) + messageBlocksHtml(c.messages);
+  var pageControl = '';
+  if (c.messagePageError) {
+    pageControl = renderInlineRouteFailure('More messages unavailable', c.messagePageError, 'loadMoreSessionMessages()');
+  } else if (c.messagePageLoading) {
+    pageControl = '<div class="main-empty q-partial"><h3>Loading more messages…</h3></div>';
+  } else if (c.messages.length < Number(c.total || 0)) {
+    pageControl = '<div class="main-empty"><p>' + esc(String(c.messages.length)) + ' of ' + esc(String(c.total))
+      + ' messages loaded.</p><button class="user-action" onclick="loadMoreSessionMessages()">Load more messages</button></div>';
+  }
+  msgEl.innerHTML = readViewSelector + sessionSemanticEntries + renderEvidenceStrip(c)
+    + messageBlocksHtml(c.messages) + pageControl;
 }
 
 function renderReadViewExecution(c, viewId) {
@@ -2065,20 +2230,21 @@ function renderCorrelationReadView(payload) {
   return html;
 }
 
+function semanticSessionEntriesHtml(session) {
+  if (typeof _polySemanticSessionEntriesHtml !== 'function') return '';
+  return _polySemanticSessionEntriesHtml(session);
+}
+
 function messageBlocksHtml(messages) {
-  // Delegates to the MK3 reader slice (#1202) which owns per-message
-  // action rails, fold policies (tool / thinking / code), and the
-  // keyboard-focused message card. Defined in web_shell_reader.py.
+  // Delegates framing to the MK3 reader slice while semantic entry
+  // classification remains authoritative in rendering/semantic_cards.py.
   return renderMessageBlocks(messages);
 }
 
-// Session evidence strip (session-as-work-not-chat redesign): a compact
-// summary of tool activity and structural outcomes rendered above the
-// transcript, sourced from the same /api/insights/sessions/{id} envelope
-// already used by the Insights inspector tab (kind=timeline carries the
-// keystone tool_result_is_error/exit_code-derived event.inference.kind --
-// command_succeeded/command_failed/test_passed/test_failed -- computed in
-// insights/transforms.py). No new API surface; this is presentation order.
+// Compatibility adapter for isolated visual harnesses that still inject the
+// historical insights envelope. The live reader does not call the broad
+// insights route for this strip; renderEvidenceStrip consumes the bounded
+// evidence-summary cache populated below.
 function evidenceStripToolCounts(insightsBody) {
   var kinds = (insightsBody && insightsBody.kinds) || {};
   var events = (kinds.timeline && kinds.timeline.events) || [];
@@ -2089,41 +2255,81 @@ function evidenceStripToolCounts(insightsBody) {
     else if (kind === 'command_succeeded' || kind === 'test_passed') ok++;
     else other++;
   });
-  var toolUseCount = null;
   var profile = kinds.profile && kinds.profile.profile;
-  if (profile && profile.tool_use_count != null) toolUseCount = profile.tool_use_count;
-  return {ok: ok, failed: failed, other: other, total: events.length, tool_use_count: toolUseCount};
+  return {
+    ok: ok, failed: failed, other: other, total: events.length,
+    tool_use_count: profile && profile.tool_use_count != null ? profile.tool_use_count : null
+  };
 }
 
+// Session evidence strip (session-as-work-not-chat redesign): a compact
+// summary of tool activity, structural outcomes, cost, and capped lineage
+// refs rendered above the transcript. The live reader consumes the bounded
+// /api/sessions/{id}/evidence-summary projection; the Insights timeline
+// adapter below exists only for isolated legacy renderer harnesses.
 function renderEvidenceStrip(c) {
   if (!c || !c.id) return '';
-  var data = state.insightsPanels[c.id];
+  var data = state.evidenceSummaries && state.evidenceSummaries[c.id];
+  if (data === undefined && state.insightsPanels && state.insightsPanels[c.id]) {
+    var legacyCounts = evidenceStripToolCounts(state.insightsPanels[c.id]);
+    var legacyCost = (state.costPanels && state.costPanels[c.id]) || {};
+    data = {
+      tool_calls: legacyCounts.tool_use_count,
+      outcomes: {ok: legacyCounts.ok, failed: legacyCounts.failed, unknown: legacyCounts.other},
+      cost: {total_usd: legacyCost.total_usd, confidence_tag: legacyCost.confidence_tag}
+    };
+  }
   if (data === undefined) {
-    if (typeof loadInsightsPanel === 'function') loadInsightsPanel(c.id);
+    if (typeof loadEvidenceSummary === 'function') loadEvidenceSummary(c.id);
     return '<div class="evidence-strip muted">Loading evidence summary…</div>';
   }
-  if (data && data.error) return ''; // the Evidence/Insights tabs already surface this failure with retry.
-  var counts = evidenceStripToolCounts(data);
-  var chips = [];
-  if (counts.tool_use_count != null) {
-    chips.push('<span class="chip">' + esc(String(counts.tool_use_count)) + ' tool call' + (counts.tool_use_count === 1 ? '' : 's') + '</span>');
+  if (data && data.error) {
+    return renderInlineRouteFailure(
+      'Evidence summary unavailable',
+      data.details,
+      "retryEvidenceSummary('" + escJsAttr(c.id) + "')"
+    );
   }
-  if (counts.total > 0) {
-    chips.push('<span class="chip q-canonical" title="Structurally successful outcomes (exit_code/is_error)">' + esc(String(counts.ok)) + ' ok</span>');
+  var counts = data.outcomes || {};
+  var chips = [];
+  if (data.tool_calls != null) {
+    chips.push('<span class="chip">' + esc(String(data.tool_calls)) + ' tool call' + (data.tool_calls === 1 ? '' : 's') + '</span>');
+  }
+  if ((counts.ok || counts.failed || counts.unknown) > 0) {
+    chips.push('<span class="chip q-canonical" title="Structurally successful outcomes (exit_code/is_error)">' + esc(String(counts.ok || 0)) + ' ok</span>');
     if (counts.failed > 0) {
       chips.push('<span class="chip q-unresolved" title="Structurally failed outcomes (exit_code/is_error)">' + esc(String(counts.failed)) + ' failed</span>');
     }
   } else {
     chips.push('<span class="chip q-missing" title="No structured work-event evidence materialized for this session">no work events</span>');
   }
-  var costPanel = state.costPanels[c.id];
-  if (costPanel && !costPanel.error && costPanel.total_usd !== undefined) {
-    var costTag = costPanel.confidence_tag || 'q-unavailable';
-    chips.push('<span class="chip ' + esc(costTag) + '" title="Session cost">' + esc(formatUsd(costPanel.total_usd)) + '</span>');
+  var cost = data.cost || {};
+  if (cost.total_usd !== undefined && cost.total_usd !== null) {
+    chips.push('<span class="chip ' + esc(cost.confidence_tag || 'q-unavailable') + '" title="Session cost">' + esc(formatUsd(cost.total_usd)) + '</span>');
+  }
+  var lineageRefs = Array.isArray(data.lineage_refs) ? data.lineage_refs : [];
+  if (lineageRefs.length) {
+    chips.push('<span class="chip q-inferred" title="Bounded structural lineage references">'
+      + esc(String(lineageRefs.length)) + ' lineage ref' + (lineageRefs.length === 1 ? '' : 's') + '</span>');
   }
   var branchChip = renderTopologyBranchChip(c);
   if (branchChip) chips.push(branchChip);
   return '<div class="evidence-strip" aria-label="Session evidence summary">' + chips.join('') + '</div>';
+}
+
+async function loadEvidenceSummary(id) {
+  var route = '/api/sessions/' + encodeURIComponent(id) + '/evidence-summary';
+  try { state.evidenceSummaries[id] = await fetchJSON(route, {timeoutMs: 5000}); }
+  catch(e) { state.evidenceSummaries[id] = {error: true, details: routeErrorDetails(e, route)}; }
+  if (state.selected && state.selected.id === id) renderMain();
+}
+
+function retryEvidenceSummary(id) {
+  delete state.evidenceSummaries[id];
+  if (state.selected && state.selected.id === id) {
+    loadEvidenceSummary(id);
+    renderMain();
+  }
 }
 
 // --- Topology branch chip + parent-chain stack (#1203) ----------------
@@ -2427,7 +2633,9 @@ function retryCostPanel(id) {
 }
 
 function formatUsd(value) {
-  var n = Number(value || 0);
+  if (value === null || value === undefined || value === '') return 'unknown';
+  var n = Number(value);
+  if (!Number.isFinite(n)) return 'unknown';
   if (n === 0) return '$0.00';
   if (n < 0.01) return '$' + n.toFixed(4);
   if (n < 1) return '$' + n.toFixed(3);
@@ -3027,6 +3235,7 @@ loadSessions().then(function() {
   if (cid) selectSession(cid, false);
 });
 loadFacets();
+loadOverview();
 loadReadViewProfiles();
 loadUserState();
 loadStatus();
@@ -3036,6 +3245,7 @@ __REALTIME_JS__
 __READER_JS__
 __PASTE_JS__
 __ATTACHMENT_JS__
+__SEMANTIC_CARD_JS__
 </script>
 </body>
 </html>""".replace("__WORKSPACE_CSS__", WORKSPACE_CSS)
@@ -3056,6 +3266,8 @@ __ATTACHMENT_JS__
     .replace("__PASTE_JS__", PASTE_JS)
     .replace("__ATTACHMENT_CSS__", ATTACHMENT_CSS)
     .replace("__ATTACHMENT_JS__", ATTACHMENT_JS)
+    .replace("__SEMANTIC_CARD_CSS__", SEMANTIC_CARD_CSS)
+    .replace("__SEMANTIC_CARD_JS__", SEMANTIC_CARD_JS)
     .replace("__COORDINATION_CSS__", COORDINATION_CSS)
     .replace("__COORDINATION_JS__", COORDINATION_JS)
 )

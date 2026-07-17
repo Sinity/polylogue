@@ -12,6 +12,7 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import ContentHash, SessionId
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
@@ -28,7 +29,6 @@ from polylogue.storage.search_providers.hybrid_sessions import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
-from polylogue.types import ContentHash, SessionId
 from tests.infra.live_ingest import ingest_session
 
 
@@ -53,28 +53,28 @@ class _FakeQueries(SQLiteQueryStore):
         self,
         query: str,
         limit: int = 20,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
     ) -> SessionSearchResult:
-        del query, limit, providers
+        del query, limit, origins
         return self.hits
 
     async def search_action_session_hits(
         self,
         query: str,
         limit: int = 20,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
     ) -> SessionSearchResult:
-        del query, limit, providers
+        del query, limit, origins
         return self.hits
 
     async def search_session_evidence_hits(
         self,
         query: str,
         limit: int = 20,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchEvidenceRow]:
-        del query, limit, providers, since
+        del query, limit, origins, since
         return [
             SessionSearchEvidenceRow(
                 session_id=hit.session_id,
@@ -94,10 +94,10 @@ class _FakeQueries(SQLiteQueryStore):
         self,
         query: str,
         limit: int = 20,
-        providers: list[str] | None = None,
+        origins: list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchEvidenceRow]:
-        del query, limit, providers, since
+        del query, limit, origins, since
         return self.attachment_hits or []
 
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
@@ -252,7 +252,7 @@ async def test_repository_search_summary_hits_keep_evidence_and_session_order() 
     )
     repo = _FakeRepo(queries)
 
-    summary_hits = await repo.search_summary_hits("storage", limit=5, providers=["chatgpt"], since="2025-01-01")
+    summary_hits = await repo.search_summary_hits("storage", limit=5, origins=["chatgpt-export"], since="2025-01-01")
 
     assert queries.last_batch_ids == ["conv-b", "conv-a"]
     assert [hit.session_id for hit in summary_hits] == ["conv-b", "conv-a"]
@@ -285,7 +285,7 @@ async def test_repository_search_summary_hits_prioritize_attachment_identity_evi
     )
     repo = _FakeRepo(queries)
 
-    summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, providers=["gemini"])
+    summary_hits = await repo.search_summary_hits("drive-file-1", limit=5, origins=["aistudio-drive"])
 
     assert queries.last_batch_ids == ["conv-a", "conv-b"]
     assert [hit.session_id for hit in summary_hits] == ["conv-a", "conv-b"]
@@ -340,7 +340,7 @@ async def test_gemini_drive_attachment_id_is_searchable_after_parse_and_prepare(
             backend=backend,
         )
 
-        hits = await repo.search_summary_hits(query, limit=5, providers=["gemini"])
+        hits = await repo.search_summary_hits(query, limit=5, origins=["aistudio-drive"])
     finally:
         await repo.close()
 

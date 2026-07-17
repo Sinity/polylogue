@@ -8,7 +8,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 
 class ConvergenceDebtStageSummary(BaseModel):
@@ -76,7 +82,13 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 return None
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # Falls through to convergence_debt_summary_info()'s bare
+        # ConvergenceDebtSummary() default, which reports zero debt — the
+        # same shape as a genuinely converged archive. Log loudly so a
+        # transient ops.db failure isn't mistaken for "no debt"
+        # (polylogue-cpf.4).
+        logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
 
     items = [
@@ -144,27 +156,6 @@ def _summary_from_parts(
         family_summaries=family_summaries,
         recent=recent,
     )
-
-
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
 
 
 def _iso_from_epoch_ms(value: object) -> str:

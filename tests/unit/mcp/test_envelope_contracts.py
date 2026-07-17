@@ -63,6 +63,13 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "get_messages": ("envelope", frozenset({"messages", "total"})),
     "list_read_view_profiles": ("envelope", frozenset({"read_views", "total"})),
     "list_assertion_claims": ("envelope", frozenset({"items", "total", "limit"})),
+    "list_assertion_candidates": ("envelope", frozenset({"items", "total", "limit"})),
+    "list_assertion_candidate_reviews": ("envelope", frozenset({"items", "total", "limit"})),
+    "join_typed_annotations": (
+        "envelope",
+        frozenset({"rows", "groups", "selected_annotation_count", "joined_count"}),
+    ),
+    "named_source_freshness": "single_object",
     "explain_query_expression": "single_object",
     "query_completions": "single_object",
     "action_affordances": "single_object",
@@ -78,6 +85,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # ------- blackboard (#1697) -------
     "blackboard_list": ("envelope", frozenset({"items", "total"})),
     "blackboard_post": "operation_result",
+    "capture_assertion_candidate": "single_object",
     # ------- mutation list -------
     "list_tags": "stats_map",  # RootModel[dict[tag, count]]; small, by design
     "list_marks": ("envelope", frozenset({"items", "total"})),
@@ -87,6 +95,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "list_workspaces": ("envelope", frozenset({"items", "total"})),
     # ------- single record -------
     "get_session_summary": "single_object",
+    "get_context_delivery": "single_object",
     "compile_context": "single_object",
     "archive_get_session": "single_object",
     "get_metadata": "single_object",
@@ -114,6 +123,7 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "tool_call_latency_distribution": "single_object",
     "workflow_shape_distribution": "single_object",
     # ------- mutation tools -------
+    "import_annotation_batch": "single_object",
     "add_tag": "operation_result",
     "add_mark": "operation_result",
     "remove_tag": "operation_result",
@@ -130,6 +140,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     "set_metadata": "operation_result",
     "delete_metadata": "operation_result",
     "delete_session": "operation_result",
+    "judge_assertion_candidate": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
+    "judge_assertion_candidates": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
     # ------- learning corrections (#1131) -------
     "record_correction": "operation_result",
     "list_corrections": ("envelope", frozenset({"corrections", "total"})),
@@ -413,6 +425,34 @@ class TestSessionTreeResourceShapeMatchesTool:
                 f"session-tree resource leaked paginated-query field {forbidden!r}: "
                 f"resource and tool envelope shapes have drifted apart"
             )
+
+
+def test_action_affordance_capability_resource_matches_catalog(read_server: MCPServerUnderTest) -> None:
+    """The opt-in catalog is available once without inflating search results."""
+    from tests.infra.mcp import invoke_surface
+
+    result = invoke_surface(_resource(read_server, "polylogue://capabilities/action-affordances"))
+
+    payload = json.loads(result)
+    assert payload["action_affordances"]
+
+
+def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
+    read_server: MCPServerUnderTest,
+) -> None:
+    """Discovery must teach protocol roles and executable query grammar together."""
+    from tests.infra.mcp import invoke_surface
+
+    result = invoke_surface(_resource(read_server, "polylogue://capabilities/query"))
+    payload = json.loads(result)
+    root = payload
+
+    assert root["mcp_algebra"]["read_transactions"]
+    assert root["mcp_algebra"]["resources"]
+    assert root["mcp_algebra"]["prompts"]
+    assert root["grammar"]["terminal_sources"]
+    assert root["grammar"]["terminal_form"] == "<terminal-source> where <predicate>"
+    assert all("authority" in unit and "coverage" in unit for unit in root["units"])
 
 
 class TestResourceErrorEnvelopes:

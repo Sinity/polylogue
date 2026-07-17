@@ -110,20 +110,25 @@ domains:
 
   - domain: storage_fts5
     production_modules:
-      - polylogue/storage/search_providers/fts5.py
       - polylogue/storage/fts/
     covering_tests:
-      - tests/unit/storage/test_fts5.py
       - tests/unit/storage/test_archive_search_contracts.py
     notes: >
-      covered — FTS5 query, rebuild, trigger lifecycle, search contracts
+      covered — FTS5 rebuild, trigger lifecycle, search contracts.
+      FTS5Provider (search_providers/fts5.py) removed polylogue-a7xr.10:
+      zero production consumers, production FTS queries the tables directly.
 
   - domain: storage_hybrid
     production_modules:
       - polylogue/storage/search_providers/hybrid.py
     covering_tests:
-      - tests/unit/storage/test_hybrid_laws.py
-    notes: covered — RRF fusion, deduplication, limit edge cases
+      - tests/unit/core/test_filters_props.py
+      - tests/unit/archive/test_query_search_runtime.py
+    notes: >
+      covered — RRF fusion property laws, deduplication, limit edge cases.
+      HybridSearchProvider removed polylogue-a7xr.10: zero production
+      consumers; only reciprocal_rank_fusion remains, composed directly by
+      production hybrid retrieval.
 
   - domain: tags
     production_modules:

@@ -380,3 +380,72 @@ def test_effective_config_payload_reports_embedding_enabled_without_key(
         for diag in diagnostics
         if isinstance(diag, dict)
     )
+
+
+def test_effective_config_payload_accepts_wired_sinex_mode_without_noop_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    """A recognized backed mode is no longer described as an unwired no-op.
+
+    Production-route ingest and daemon tests exercise the actual service
+    construction. This guards the operator-facing config surface against
+    regressing to the stale `sinex_mode_not_yet_wired` warning.
+    """
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text('[sinex]\nmode = "mirror"\n', encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    resolved = load_polylogue_config(config_path=cfg_path)
+    assert resolved.sinex_mode == "mirror"
+    payload = effective_config_payload(resolved)
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert not any(diag.get("code") == "sinex_mode_not_yet_wired" for diag in diagnostics if isinstance(diag, dict))
+
+
+def test_effective_config_payload_reports_sinex_mode_unrecognized_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text('[sinex]\nmode = "bogus"\n', encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "sinex_mode_unrecognized" and diag.get("severity") == "error"
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
+
+
+def test_effective_config_payload_sinex_mode_off_is_silent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    """Default (and explicit) off mode gets no sinex diagnostic noise."""
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert not any(
+        isinstance(diag, dict) and str(diag.get("code", "")).startswith("sinex_mode_") for diag in diagnostics
+    )

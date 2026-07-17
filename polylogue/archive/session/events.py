@@ -6,11 +6,11 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin
 from polylogue.core.json import json_document
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.sources import source_name_to_origin
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.types import MessageId, SessionEventId, SessionId
+from polylogue.core.types import MessageId, SessionEventId, SessionId
 
 
 class SessionEvent(BaseModel):
@@ -34,13 +34,7 @@ class SessionEvent(BaseModel):
     def coerce_origin(cls, value: object) -> Origin:
         if isinstance(value, Origin):
             return value
-        if isinstance(value, Provider):
-            return origin_from_provider(value)
-        text = str(value) if value is not None else "unknown"
-        try:
-            return Origin(text)
-        except ValueError:
-            return origin_from_provider(Provider.from_string(text))
+        return Origin.from_string(source_name_to_origin(value))
 
     @field_validator("timestamp", mode="before")
     @classmethod

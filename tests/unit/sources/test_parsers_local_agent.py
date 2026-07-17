@@ -765,6 +765,10 @@ def test_agent_sidecars_are_classified_as_non_session() -> None:
         "~/.gemini/antigravity/brain/session/task.md.resolved.1",
         provider=Provider.ANTIGRAVITY,
     )
+    hermes_sqlite_evidence = classify_artifact_path(
+        "~/.hermes/sessions/verification_evidence.db",
+        provider=Provider.HERMES,
+    )
 
     assert logs is not None
     assert logs.parse_as_session is False
@@ -774,6 +778,10 @@ def test_agent_sidecars_are_classified_as_non_session() -> None:
     assert antigravity_pb.parse_as_session is False
     assert antigravity_resolved is not None
     assert antigravity_resolved.parse_as_session is False
+    assert hermes_sqlite_evidence is not None
+    assert hermes_sqlite_evidence.parse_as_session is False
+    assert hermes_sqlite_evidence.schema_eligible is False
+    assert hermes_sqlite_evidence.reason == "Hermes SQLite evidence sidecar"
 
 
 def test_runtime_provider_identity_keeps_gemini_surfaces_distinct() -> None:

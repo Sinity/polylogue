@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-03",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "subsumed_foundation_retained",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "410f7d2493a956c44eee713367deb04a3ffa9d4bcde27b00d6a9551cfba67d09",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "beads-03-mcp-read-migration-r01.zip",
+      "sha256": "195e7f898c298c29a39006247e2836e981b51549ce92ba46a43db938c4365830",
+      "size_bytes": 76818,
+      "custody_path": "beads/results/beads-03/a01/raw/beads-03-mcp-read-migration-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "current-master reconciliation found the core MCP declaration/registration implementation landed independently as PR #3004; the package no longer applies because it overlaps that implementation",
+  "beads": [
+    "polylogue-t46.8",
+    "polylogue-t46.8.2"
+  ],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [
+    "ed44be18f"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
+  "verification_receipts": [
+    "fresh origin/master at 47fe1cb: both beads-02 and beads-03 apply checks conflict on existing declaration, adapter, renderer, generated-equivalence, and registration paths"
+  ],
+  "notes": "Retained as a positive design and proof input: it describes per-family read migration, no-wrapper FastMCP registration, compatibility witnesses, and representative query/ObjectRef/topology/timeline production routes. Current source already provides the shared declaration substrate. It must not be misrepresented as completing default-surface collapse, semantic tool retirement, shared bounded transaction adoption, URI resources/prompts, cold-model discovery, or incident-scale cancellation/cleanup; those remain polylogue-t46.8.2 scope."
+}

@@ -228,7 +228,7 @@ async def test_correlate_sessions_delegates_to_facade(mcp_server: MCPServerUnder
     mock_poly.correlate_sessions.assert_awaited_once_with(
         metric_x="message_count",
         metric_y="word_count",
-        provider="claude-code",
+        origin="claude-code-session",
         since=None,
         until=None,
     )

@@ -10,7 +10,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import resolve_provider_config
-from polylogue.schemas.observation_models import SchemaUnit
+from polylogue.schemas.observation_models import ObservationTerminalRecorder, SchemaUnit
 from polylogue.schemas.sampling_db import (
     _iter_samples_from_db,
     _iter_schema_units_from_db,
@@ -29,6 +29,7 @@ def iter_schema_units(
     db_path: Path | None = None,
     max_samples: int | None = None,
     full_corpus: bool = False,
+    terminal_recorder: ObservationTerminalRecorder | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield schema units for a provider from DB, with session fallback."""
     source_name = Provider.from_string(source_name)
@@ -45,6 +46,7 @@ def iter_schema_units(
             config=config,
             max_samples=max_samples,
             full_corpus=full_corpus,
+            terminal_recorder=terminal_recorder,
         ):
             yielded_any = True
             yield unit

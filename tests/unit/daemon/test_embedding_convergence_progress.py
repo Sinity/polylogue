@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,14 +19,18 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(
 ) -> None:
     calls: list[str] = []
 
-    async def fake_to_thread(_func: object, *_args: object, **_kwargs: object) -> object:
+    async def fake_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
+        assert actor == "maintenance.embedding_backlog"
         calls.append("drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
         monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        monkeypatch.setattr(
+            "polylogue.daemon.write_coordinator.daemon_write_coordinator",
+            lambda: SimpleNamespace(run_sync=fake_run_sync),
+        )
         monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
         task = asyncio.create_task(
             embedding_backlog.periodic_embedding_backlog_check(catch_up_complete=catch_up_complete)

@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from polylogue.core.tool_identity import extract_mcp_server
 from polylogue.insights.archive import PaginatedInsightQuery
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
@@ -30,39 +31,18 @@ from polylogue.insights.archive_models import (
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.queries.tool_usage import (
-        ToolUsageProviderCoverageRow,
+        ToolUsageOriginCoverageRow,
         ToolUsageRow,
     )
 
 TOOL_USAGE_INSIGHT_VERSION = 1
 """Insight materializer version for ``tool_usage`` envelopes."""
 
-_MCP_TOOL_PREFIX = "mcp__"
-
-
-def extract_mcp_server(tool_name: str) -> str | None:
-    """Return the MCP server identity prefix of a tool name, if any.
-
-    MCP tool names follow the ``mcp__<server>__<tool>`` convention used by
-    Claude Code, Codex, and the Polylogue MCP catalog. The server segment
-    is the second underscored component. ``None`` is returned for tool
-    names that do not match this shape so downstream callers can keep the
-    coverage signal honest instead of inventing a synthetic server.
-    """
-
-    if not tool_name or not tool_name.startswith(_MCP_TOOL_PREFIX):
-        return None
-    remainder = tool_name[len(_MCP_TOOL_PREFIX) :]
-    if "__" not in remainder:
-        return None
-    server, _, _ = remainder.partition("__")
-    return server or None
-
 
 class ToolUsageEntry(ArchiveInsightModel):
     """One per-(origin, tool, action_kind) rollup row."""
 
-    source_name: str
+    origin: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -77,7 +57,7 @@ class ToolUsageEntry(ArchiveInsightModel):
 class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-origin tool-data coverage signal."""
 
-    source_name: str
+    origin: str
     session_count: int
     action_count: int
     distinct_tool_count: int
@@ -86,7 +66,7 @@ class ToolUsageCoverageEntry(ArchiveInsightModel):
     has_affected_paths_signal: bool
     has_output_text_signal: bool
     data_available: bool
-    """True when the provider exposes any action rows in the archive."""
+    """True when the origin exposes any action rows in the archive."""
 
 
 class ToolUsageInsight(ArchiveInsightModel):
@@ -94,7 +74,7 @@ class ToolUsageInsight(ArchiveInsightModel):
 
     The envelope itself is a single insight item. Each call returns
     exactly one ``ToolUsageInsight`` containing every aggregation entry
-    and every provider coverage entry resolved by the query. This shape
+    and every origin coverage entry resolved by the query. This shape
     keeps usage and coverage atomically consistent — readers never see
     one half without the other.
     """
@@ -103,11 +83,11 @@ class ToolUsageInsight(ArchiveInsightModel):
     insight_kind: str = "tool_usage"
     materializer_version: int = TOOL_USAGE_INSIGHT_VERSION
     entries: tuple[ToolUsageEntry, ...] = ()
-    provider_coverage: tuple[ToolUsageCoverageEntry, ...] = ()
+    origin_coverage: tuple[ToolUsageCoverageEntry, ...] = ()
     total_call_count: int = 0
     total_distinct_tools: int = 0
-    providers_with_data: int = 0
-    providers_without_data: int = 0
+    origins_with_data: int = 0
+    origins_without_data: int = 0
     has_coverage_gaps: bool = False
     provenance: ArchiveInsightProvenance
 
@@ -115,12 +95,12 @@ class ToolUsageInsight(ArchiveInsightModel):
 class ToolUsageInsightQuery(PaginatedInsightQuery):
     """Query parameters for ``list_tool_usage_insights``.
 
-    ``provider`` and ``tool`` narrow the returned aggregation entries but
+    ``origin`` and ``tool`` narrow the returned aggregation entries but
     never the coverage map — coverage gaps are always reported across all
-    providers so a narrowed query never hides them.
+    origins so a narrowed query never hides them.
     """
 
-    provider: str | None = None
+    origin: str | None = None
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
@@ -131,7 +111,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
 def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     tool_name = row["normalized_tool_name"]
     return ToolUsageEntry(
-        source_name=row["source_name"],
+        origin=row["origin"],
         normalized_tool_name=tool_name,
         action_kind=row["action_kind"],
         call_count=row["call_count"],
@@ -144,10 +124,10 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     )
 
 
-def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverageEntry:
+def _tool_usage_coverage(row: ToolUsageOriginCoverageRow) -> ToolUsageCoverageEntry:
     action_count = row["action_count"]
     return ToolUsageCoverageEntry(
-        source_name=row["source_name"],
+        origin=row["origin"],
         session_count=row["session_count"],
         action_count=action_count,
         distinct_tool_count=row["distinct_tool_count"],
@@ -162,7 +142,7 @@ def _tool_usage_coverage(row: ToolUsageProviderCoverageRow) -> ToolUsageCoverage
 def build_tool_usage_insight(
     *,
     rows: Sequence[ToolUsageRow],
-    coverage_rows: Sequence[ToolUsageProviderCoverageRow],
+    coverage_rows: Sequence[ToolUsageOriginCoverageRow],
     query: ToolUsageInsightQuery,
     materialized_at: str,
 ) -> ToolUsageInsight:
@@ -170,39 +150,39 @@ def build_tool_usage_insight(
 
     Pure function — extracted so tests can exercise filtering, MCP-server
     derivation, and coverage-flag derivation without standing up a
-    database. Query filters apply only to ``entries``; ``provider_coverage``
+    database. Query filters apply only to ``entries``; ``origin_coverage``
     stays exhaustive so coverage gaps are never hidden when a reader
     narrows the result set.
     """
 
     entries = [_tool_usage_entry(row) for row in rows]
-    if query.provider:
-        entries = [entry for entry in entries if entry.source_name == query.provider]
+    if query.origin:
+        entries = [entry for entry in entries if entry.origin == query.origin]
     if query.tool:
         entries = [entry for entry in entries if entry.normalized_tool_name == query.tool]
     if query.mcp_server:
         entries = [entry for entry in entries if entry.mcp_server == query.mcp_server]
     if query.action_kind:
         entries = [entry for entry in entries if entry.action_kind == query.action_kind]
-    entries.sort(key=lambda entry: (-entry.call_count, entry.source_name, entry.normalized_tool_name))
+    entries.sort(key=lambda entry: (-entry.call_count, entry.origin, entry.normalized_tool_name))
     if query.offset:
         entries = entries[query.offset :]
     if query.limit is not None:
         entries = entries[: query.limit]
 
     coverage = tuple(_tool_usage_coverage(row) for row in coverage_rows)
-    providers_with_data = sum(1 for entry in coverage if entry.data_available)
-    providers_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
+    origins_with_data = sum(1 for entry in coverage if entry.data_available)
+    origins_without_data = sum(1 for entry in coverage if not entry.data_available and entry.session_count > 0)
     total_calls = sum(entry.call_count for entry in entries)
-    distinct_tools = len({(entry.source_name, entry.normalized_tool_name) for entry in entries})
+    distinct_tools = len({(entry.origin, entry.normalized_tool_name) for entry in entries})
     return ToolUsageInsight(
         entries=tuple(entries),
-        provider_coverage=coverage,
+        origin_coverage=coverage,
         total_call_count=total_calls,
         total_distinct_tools=distinct_tools,
-        providers_with_data=providers_with_data,
-        providers_without_data=providers_without_data,
-        has_coverage_gaps=providers_without_data > 0,
+        origins_with_data=origins_with_data,
+        origins_without_data=origins_without_data,
+        has_coverage_gaps=origins_without_data > 0,
         provenance=ArchiveInsightProvenance(
             materializer_version=TOOL_USAGE_INSIGHT_VERSION,
             materialized_at=materialized_at,

@@ -4,7 +4,7 @@
 
 Polylogue uses a query-first grammar over archive units. Bare tokens are
 full-text terms, field clauses narrow the selected unit, explicit
-`sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots where ...`
+`sessions/messages/actions/blocks/files/assertions/runs/observed-events/context-snapshots/delegations where ...`
 forms opt into Boolean predicates,
 and trailing CLI verbs render or mutate the selected session set. The same
 query semantics — filters, retrieval lanes, ranking policy, and typed response
@@ -15,13 +15,16 @@ Quick links:
 - [Retrieval Lanes](#retrieval-lanes) — `dialogue`, `actions`, `hybrid`,
   `semantic`, and the default lexical `auto` lane.
 - [Terminal Unit Queries](#terminal-unit-queries) — `messages/actions/blocks/
-  files/assertions/runs/observed-events/context-snapshots where ...` row
+  files/assertions/runs/observed-events/context-snapshots/delegations where ...` row
   results.
 - [Ranking Policy](#ranking-policy) — current `mixed-bm25-rrf-vector`
   policy and version contract.
 - [SearchEnvelope Contract](#searchenvelope-contract) — the typed
   response shape shared across surfaces ([#1266](https://github.com/Sinity/polylogue/issues/1266)).
 - [FTS5 Syntax](#fts5-syntax) — boolean, phrase, and prefix queries.
+- [Searchable Content Coverage](#searchable-content-coverage) — exactly
+  which block fields FTS indexes, and which (e.g. `Write`/`Edit` tool
+  file bodies) it does not.
 - [Facets (Scoped vs Global)](#facets-scoped-vs-global) — aggregate
   counts with both views ([#1269](https://github.com/Sinity/polylogue/issues/1269)).
 
@@ -34,7 +37,7 @@ through the same typed AST and query planner:
 ```text
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
-unit-query         ::= ("messages" | "actions" | "blocks" | "files" | "assertions" | "runs" | "observed-events" | "context-snapshots") "where" predicate
+unit-query         ::= ("messages" | "actions" | "blocks" | "files" | "assertions" | "runs" | "observed-events" | "context-snapshots" | "delegations") "where" predicate
 pipeline-query     ::= unit-query ("|" pipeline-stage)+
                      | "sessions" "where" predicate "|" unit-query ("|" pipeline-stage)*
 
@@ -111,6 +114,7 @@ polylogue assertions where 'kind:decision AND status:active AND text:review'
 polylogue runs where 'role:subagent AND status:completed AND agent:Explore'
 polylogue observed-events where 'delivery_state:acted_on AND text:#2100'
 polylogue context-snapshots where 'boundary:session_start AND session.repo:polylogue'
+polylogue delegations where 'mapping_state:resolved AND instruction:review'
 ```
 
 Pipeline stages can either decorate a direct terminal row query or scope one
@@ -143,12 +147,11 @@ currently support `sort by time [asc|desc]`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
-`runs`, `observed-events`, and `context-snapshots` are SQL-backed terminal rows
-over source-derived archive relations plus any non-duplicate materialized
-projection enrichments. Main runs, `session_started` events, tool-finished
-events, and session-start context snapshots are computed directly from
-`sessions` and `blocks`; richer digest-derived rows can still come from
-`session_runs`, `session_observed_events`, and `session_context_snapshots`.
+`runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed terminal rows
+over source-derived archive relations (polylogue-dab): main runs,
+`session_started` events, tool-finished events, and session-start context
+snapshots are computed directly from `sessions` and `blocks`, with no
+separate materialized cache table.
 These units support `sort by time`, `limit`, and `offset` and are usable as
 `exists run(...)` / `exists observed-event(...)` /
 `exists context-snapshot(...)` session selectors. They do not yet expose
@@ -270,7 +273,7 @@ one child row matching the nested predicate.
 Structural units also accept `session.<field>` predicates for the owning
 session fields that their lowerer can evaluate. SQL-backed units can use the
 full session filter surface, including action/tool/path/feature predicates.
-`runs`, `observed-events`, and `context-snapshots` are SQL-backed over the
+`runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed over the
 materialized run-projection tables, so they too accept the full session filter
 surface (e.g. `session.repo`, `session.tool`, `session.path`) alongside their
 own fields above. Count and date session
@@ -323,6 +326,7 @@ polylogue --format json assertions where kind:decision AND status:active AND tex
 polylogue --format json runs where role:subagent AND status:completed AND agent:Explore
 polylogue --format json observed-events where delivery_state:acted_on AND text:#2100
 polylogue --format json context-snapshots where boundary:session_start AND session.repo:polylogue
+polylogue --format json delegations where mapping_state:resolved AND instruction:review
 polylogue --format json messages where text:timeout | group by role | count
 ```
 
@@ -362,7 +366,7 @@ non-empty `tool_path`. It returns one row per owning session and normalized path
 with action counts and first/last tool-use refs. It is not a global filesystem
 inventory and does not claim that a file still exists on disk.
 
-`runs`, `observed-events`, and `context-snapshots` are SQL-backed row sources
+`runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed row sources
 over source-derived archive relations, with materialized projection tables used
 only for richer non-duplicate rows that are not cheap local projections of
 `sessions` and `blocks`. They are both terminal unit sources (`runs where ...`)
@@ -443,15 +447,24 @@ polylogue read session:codex-session:abc123 --format json
 polylogue read message:codex-session:abc123:m1 --format json
 polylogue read block:codex-session:abc123:m1:0 --format json
 polylogue read assertion:assertion-id --format json
+polylogue read delegation:claude-code-session:parent:message:0 --format json
 ```
 
 The same `PublicRefResolutionPayload` is exposed by
 `Polylogue.resolve_ref()`, MCP `resolve_ref`, and daemon
 `GET /api/refs/resolve?ref=...`. The resolver supports session, message,
-block, assertion, and runtime projection refs (`run`, `observed-event`,
+block, assertion, delegation, and runtime projection refs (`run`, `observed-event`,
 `context-snapshot`) when the addressed object exists. Unsupported or missing
 refs return a bounded unresolved payload with caveats; they never widen into a
 session search.
+
+Delegation refs resolve to an explicit evidence card. The card preserves the
+complete recorded instruction while separately bounding the parent-side
+dispatch result, actual child-session excerpt, parent context, and parent
+follow-up with per-window/per-excerpt truncation markers. Ordinary
+`delegations where ...` rows expose only previews, SHA-256 hashes, structural
+mapping/result states, and evidence refs; they do not claim child success,
+utility, or parent use.
 
 ## Outbound OTel Projection
 
@@ -591,7 +604,7 @@ a concrete lane — see below).
 | `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
 | `semantic` | Pure vector similarity over Voyage-4 embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
-Implementation: `polylogue/storage/search_providers/fts5.py`,
+Implementation: `polylogue/storage/search/query_builders.py`,
 `polylogue/storage/search_providers/hybrid.py`,
 `polylogue/storage/search_providers/sqlite_vec_support.py`.
 
@@ -600,10 +613,24 @@ Implementation: `polylogue/storage/search_providers/fts5.py`,
 #### `dialogue` (FTS5 lexical)
 
 - Backed by SQLite FTS5's BM25 implementation against `messages_fts`.
-- Tokenizer is `unicode61` — case-insensitive for ASCII, Unicode-aware
-  tokenization. **Porter stemming is not available** in this SQLite build,
-  so `refactor` and `refactoring` are distinct tokens. Use prefix queries
-  (`refactor*`) when you want morphological breadth.
+- Tokenizer is `unicode61 remove_diacritics 2` — case-insensitive for ASCII,
+  Unicode-aware tokenization, and folds ordinary combining-mark diacritics
+  (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) so a plain-ASCII query finds accented
+  content and vice versa. **Porter stemming is not available** in this
+  SQLite build, so `refactor` and `refactoring` are distinct tokens. Use
+  prefix queries (`refactor*`) when you want morphological breadth.
+- `ł`/`Ł` (Latin L with stroke) has no Unicode decomposition, so
+  `remove_diacritics` cannot reach it. `pl_fold`
+  (`polylogue/storage/fts/pl_fold.py`) closes that specific gap: it folds
+  `ł`/`Ł` into indexed text before FTS insertion and into `MATCH` query text
+  in `escape_fts5_query`, so `latwo`/`zrobilem` finds seeded
+  `łatwo`/`zrobiłem` (polylogue-9jsi). The same tokenizer and fold apply to
+  the `threads_fts` and `session_work_events_fts` insight-search surfaces,
+  including full rebuild, missing-row repair, and dangling-row repair paths.
+  A trigram fallback lane for further recall (beyond word-boundary tokens)
+  is deliberately not part of this fold — see polylogue-xul7 (tracked
+  follow-up) for a measured, benchmarked trigram lane before any such lane
+  ships or is defaulted on.
 - Raw score is **BM25**: lower is better in SQLite FTS5, values are
   typically negative, and they are **not comparable across queries**.
 - Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,
@@ -897,6 +924,63 @@ Column filters restrict matches:
 polylogue 'text:css {session_id claude-code}: refactor'
 ```
 
+## Searchable Content Coverage
+
+`blocks.search_text` — the generated column FTS5 indexes — concatenates a
+**fixed subset** of block fields, not the whole block. Anything outside that
+subset is invisible to the ranked `dialogue`/`actions`/`hybrid` lanes,
+`--contains`, `contains:`, and bare-text queries, even though the underlying
+data is stored and readable through other surfaces (`read`, `select`, direct
+block/action reads). The live definition lives in
+`polylogue/storage/sqlite/archive_tiers/index.py` (`blocks.search_text
+GENERATED ALWAYS AS (...)`); this table is drift-checked against that
+expression by
+`tests/unit/pipeline/test_search_text_coverage_contract.py`.
+
+| Source | In `search_text` (FTS-searchable) | Notes |
+|---|---|---|
+| `blocks.text` — message prose, `thinking`/`reasoning` block content, `tool_result` output | Yes | Every text-bearing block type stores its content in this column, so thinking/reasoning text and tool-result stdout/stderr/output are all searchable today. |
+| `blocks.tool_name` | Yes | Tool identifier string (`Write`, `Bash`, `Edit`, ...). |
+| `tool_input.$.command` | Yes | Shell/exec command lines (`Bash`, `exec_command`-style tools). |
+| `tool_input.$.file_path` | Yes | Primary path argument for file-oriented tools. |
+| `tool_input.$.path` | Yes | Alternate path key used by some tools (`Grep`, `Glob`). |
+| `tool_input.$.content` — file bodies a **`Write`** tool call authored | **No** | The full text an agent wrote into a new/overwritten file is excluded from `search_text`. A distinctive string that only appears inside a Write body returns zero FTS hits. |
+| `tool_input.$.old_string` / `tool_input.$.new_string` — **`Edit`** tool bodies | **No** | Same gap as Write: edited code is excluded unless it also happens to appear in prose, a `tool_result` echo, or one of the indexed fields above. |
+| Any other `tool_input` key (`pattern`, `description`, `url`, ...) | **No** | Only the three `json_extract` paths above are concatenated into `search_text`; every other key is excluded regardless of tool. |
+
+**Dedicated action-evidence lane:** when you know an agent wrote or edited a
+specific string into a file body, use the query DSL's action `text` predicate.
+It searches the action's raw `tool_input` JSON (as well as normalized action
+fields and output), so it covers `Write`'s `content` and `Edit`'s
+`old_string`/`new_string` without putting those bodies in FTS:
+
+```bash
+polylogue 'actions where tool:write AND text:"needle"'
+polylogue 'sessions where exists action(tool:edit AND text:"needle")'
+```
+
+This is an unindexed `LIKE` filter, not FTS; constrain it by action, path,
+session scope, or time on large archives. For direct `index.db` inspection,
+the equivalent JSON-aware SQL probe is:
+
+```sql
+SELECT block_id, session_id, tool_name,
+       json_extract(tool_input, '$.file_path') AS file_path
+FROM blocks
+WHERE tool_name IN ('Write', 'Edit')
+  AND (
+    json_extract(tool_input, '$.content') LIKE '%needle%'
+    OR json_extract(tool_input, '$.old_string') LIKE '%needle%'
+    OR json_extract(tool_input, '$.new_string') LIKE '%needle%'
+  );
+```
+
+Extending `search_text` itself to cover `$.content` was considered and
+deliberately deferred (see polylogue-013x) because Write bodies can be large
+enough to meaningfully bloat the FTS index, and that tradeoff needs a size
+probe against a live archive plus a derived-tier index rebuild before it is
+decided, not a silent schema bump.
+
 ## Output Formats
 
 | Format | Description |
@@ -976,3 +1060,8 @@ When a query returns no results:
 4. Check FTS index health: `polylogued status` shows `fts_readiness`
 5. Run `polylogue ops doctor` for schema and index integrity
 6. If using `--similar`, ensure embeddings are built (check `polylogue ops embed status --detail` for embedding readiness/coverage)
+7. If you know an agent wrote or edited a specific string into a file (a
+   `Write`/`Edit` tool body), FTS will not find it. Use the action-evidence
+   query path documented in
+   [Searchable Content Coverage](#searchable-content-coverage), such as
+   `actions where tool:write AND text:"needle"`.

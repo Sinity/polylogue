@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
+    looks_like_beads_interaction,
     looks_like_hook_event,
     looks_like_hook_event_stream,
     looks_like_record_entry,
@@ -35,6 +37,19 @@ def classify_artifact_path(
         return None
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
+    if provider_token is Provider.HERMES and inner_name in {
+        "verification_evidence.db",
+        "verification_evidence.sqlite",
+        "verification_evidence.sqlite3",
+    }:
+        return ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind.METADATA_DOCUMENT,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Hermes SQLite evidence sidecar",
+        )
     if provider_token is Provider.ANTIGRAVITY:
         if inner_name.endswith(".md.metadata.json"):
             return None
@@ -98,7 +113,7 @@ def classify_artifact(
     if explicit is not None:
         return explicit
 
-    if isinstance(payload, list):
+    if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
         return _classify_list(payload, provider=provider_token, source_path=source_path)
     if isinstance(payload, dict):
         return _classify_dict(payload, provider=provider_token, source_path=source_path)
@@ -113,7 +128,7 @@ def classify_artifact(
 
 
 def _classify_list(
-    payload: list[JSONValue],
+    payload: Sequence[JSONValue],
     *,
     provider: Provider,
     source_path: str | Path | None,
@@ -140,6 +155,16 @@ def _classify_list(
             reason="hook event stream",
         )
 
+    if provider is Provider.BEADS and dict_items and all(looks_like_beads_interaction(item) for item in dict_items):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=False,
+            default_priority=120,
+            reason="Beads interaction-history stream",
+        )
+
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
         kind = ArtifactKind.SUBAGENT_SESSION_STREAM if subagent else ArtifactKind.SESSION_RECORD_STREAM
@@ -162,7 +187,7 @@ def _classify_list(
             reason="bundle of session documents",
         )
 
-    if looks_metadataish_list(payload):
+    if looks_metadataish_list(payload):  # type: ignore[arg-type]
         return ArtifactClassification(
             provider=provider,
             kind=ArtifactKind.METADATA_DOCUMENT,
@@ -188,6 +213,16 @@ def _classify_dict(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
+    if provider is Provider.BEADS and looks_like_beads_interaction(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_RECORD_STREAM,
+            parse_as_session=True,
+            schema_eligible=False,
+            default_priority=120,
+            reason="Beads interaction-history record",
+        )
+
     if provider is Provider.ANTIGRAVITY and _is_antigravity_markdown_export(payload):
         return ArtifactClassification(
             provider=provider,
@@ -206,6 +241,25 @@ def _classify_dict(
             schema_eligible=True,
             default_priority=120,
             reason="Hermes state.db SQLite archive marker",
+        )
+
+    # Deferred import: `sources.parsers.hermes_spans` sits downstream of
+    # `sources/__init__.py` (drive -> dispatch -> decoders -> decoder_zip),
+    # which itself imports back from `archive.artifact_taxonomy` -- a
+    # module-level import here creates a circular import the moment this
+    # package is the first one initialized. See
+    # `_archive_reconcile_hermes_session_lifecycle` in `api/archive.py` for
+    # the same deferred-import pattern used to break an equivalent cycle.
+    from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
+
+    if provider is Provider.HERMES and looks_like_atif_payload(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.SESSION_DOCUMENT,
+            parse_as_session=True,
+            schema_eligible=True,
+            default_priority=110,
+            reason="Hermes NeMo Relay ATIF trajectory export (schema_version/session_id/steps)",
         )
 
     if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):

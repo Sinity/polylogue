@@ -88,7 +88,7 @@ async def test_get_ancestors_returns_root_to_parent_refs(workspace_env: dict[str
     assert all(isinstance(ref, SessionRef) for ref in ancestors)
     assert [str(ref.session_id) for ref in ancestors] == [_native("root"), _native("continuation")]
     # Each ref carries provider/title context so callers do not re-fetch.
-    assert ancestors[0].source_name == "claude-code"
+    assert ancestors[0].origin == "claude-code-session"
     assert ancestors[0].title == "Root"
     assert ancestors[0].depth == 0
     # Root has no ancestors.

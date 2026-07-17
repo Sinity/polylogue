@@ -20,7 +20,6 @@ from mcp.server.fastmcp import FastMCP
 
 from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.archive.query.plan import SessionQueryPlan
-from polylogue.core.enums import Provider
 from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.mcp.server_tools import register_query_tools
@@ -62,12 +61,12 @@ def test_search_schema_matches_dataclass_fields(schemas: SchemaMap) -> None:
     )
 
 
-def test_list_sessions_schema_matches_dataclass_fields_excluding_query(
+def test_list_sessions_schema_matches_supported_request_fields(
     schemas: SchemaMap,
 ) -> None:
     schema = schemas["list_sessions"]
     properties = set(schema.get("properties", {}).keys())
-    expected = _dataclass_field_names() - {"query"}
+    expected = _dataclass_field_names() - {"query", "include_affordances"}
     assert properties == expected, (
         "list_sessions inputSchema drifted from MCPSessionQueryRequest. "
         f"missing={sorted(expected - properties)}, extra={sorted(properties - expected)}"
@@ -144,7 +143,60 @@ def test_archive_list_sessions_routes_near_session_to_query_executor(monkeypatch
 
     assert observed == {"similar_session_id": "seed-session", "archive_root": Path("/archive")}
     assert payload.items == ()
-    assert payload.total == 0
+    assert payload.total is None
+
+
+def test_archive_list_sessions_stops_after_requested_distinct_page() -> None:
+    summaries = {
+        "codex-session:first": ArchiveSessionSummary(
+            session_id="codex-session:first",
+            native_id="first",
+            origin="codex-session",
+            title="First",
+            created_at=None,
+            updated_at=None,
+            message_count=1,
+            word_count=10,
+            tags=(),
+        ),
+        "codex-session:second": ArchiveSessionSummary(
+            session_id="codex-session:second",
+            native_id="second",
+            origin="codex-session",
+            title="Second",
+            created_at=None,
+            updated_at=None,
+            message_count=1,
+            word_count=10,
+            tags=(),
+        ),
+    }
+
+    def hit(session_id: str) -> ArchiveSessionSearchHit:
+        return ArchiveSessionSearchHit(
+            rank=1,
+            session_id=session_id,
+            block_id=f"{session_id}:block",
+            message_id=f"{session_id}:message",
+            origin="codex-session",
+            title=summaries[session_id].title,
+            snippet="needle",
+        )
+
+    archive = MagicMock()
+    archive.count_search_sessions.return_value = 3
+    archive.search_summaries.side_effect = [[hit("codex-session:first"), *[hit("codex-session:second")] * 249]]
+    archive.read_summary.side_effect = summaries.__getitem__
+    spec = MCPSessionQueryRequest(contains="needle", limit=2).build_spec(_clamp_limit)
+
+    payload = archive_session_list_payload(archive, spec)
+
+    assert [item.id for item in payload.items] == ["codex-session:first", "codex-session:second"]
+    assert payload.total == 3
+    assert payload.next_offset == 2
+    assert [item.match_count for item in payload.items] == [1, 249]
+    assert all(item.match_count_is_exact is False for item in payload.items)
+    assert archive.search_summaries.call_count == 1
 
 
 def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,7 +204,6 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
         session_id="codex-session:near-result",
         native_id="near-result",
         origin="codex-session",
-        provider=Provider.CODEX,
         title="Nearby",
         created_at=None,
         updated_at=None,
@@ -166,7 +217,6 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
         block_id="block-1",
         message_id="message-1",
         origin=summary.origin,
-        provider=Provider.CODEX,
         title=summary.title,
         snippet="nearby match",
     )

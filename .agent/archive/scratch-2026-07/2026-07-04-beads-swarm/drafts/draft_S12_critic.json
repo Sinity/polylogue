@@ -1,0 +1,127 @@
+{
+  "role": "adversarial-completeness-critic",
+  "inputs_read": {
+    "findings": ["D01","D02","D03","D04","D05","D06","D07","D08","D09","D10","D11","D12","D13","D14","D15","D16","E2","E3","E5","E6","N2"],
+    "drafts": [],
+    "note": "No draft_*.json present at critic time; adjudication is over the 21 findings files. Apply pass must re-check against live bd state (see missed[] apply-hazard)."
+  },
+  "contradictions": [
+    {
+      "id": "polylogue-0ns",
+      "conflict": "Parent assignment disagreement. D06 reparent 0ns -> 1xc (scale-bug class); D15 reparent 0ns -> 1xc; D13 reparent 0ns -> mhx (embedding-lifecycle, overlaps mhx.6 DRAIN SCOPING). All three cite the same code fact (embed_archive_session_sync unbounded per-session).",
+      "adjudication": "Parent under 1xc (2 agents + the swarm focus-hint both put it there; the defect is a scale-only bug, which is 1xc's charter). Add a relates-to edge 0ns <-> mhx.6 to preserve the embedding-drain overlap D13 correctly flags. D13's own text concedes the cross-link fallback, so this satisfies all three."
+    },
+    {
+      "id": "1xc-gap-beads (insight-rebuild-chunking / run_ref-sibling-audit / scale-regression-lane)",
+      "conflict": "D06 and D16 INDEPENDENTLY propose the same three new children of 1xc. Priority disagreement on the third: D06 = scale-regression lane P1; D16 = P2. Titles/design near-identical (chunking = P1 bug in both; PK-sibling-audit = P1 task in both).",
+      "adjudication": "Create each of the three ONCE (dedupe D06/D16). insight-rebuild-chunking = P1 bug; run_ref-sibling-audit = P1 task; scale-regression-lane = P2 (D16 wins: it is an enabler/regression lane, tier-2 in the frame 'proof > enablers > correctness'; the two correctness bugs stay P1). Use D06's fuller design text (it has the 6h7/20d.15/b5l reconciliation note)."
+    },
+    {
+      "id": "polylogue-6mv / polylogue-lnd / polylogue-jgp",
+      "conflict": "Decision-bead lifecycle. D16 wants these three (plus f94) CLOSED as resolved-decisions-still-open. D01 treats 6mv and lnd as LIVE: split 6mv's Sinex-emitter residual into a new task bead, add lnd->7fj revisit-dep. N2 wants 6mv KEPT as a Polylogue decision + cross-ref to sinex-4j2/zi6.",
+      "adjudication": "Do NOT hard-close from the swarm (closing a bead is operator territory; operator memory: 'no #NNN = abandonment'). Reconcile: keep the decision beads, but (a) split 6mv's emitter residual into a task gated on rii write-leg + Sinex restore (D01/D16 agree it is separable work), (b) add lnd relates-to/revisit 7fj (D01), (c) add 6mv cross-ref to sinex-4j2/sinex-zi6 (N2). Whether to then close the now-emptied decision beads is a CHECKPOINT for the operator, not an auto-apply."
+    },
+    {
+      "id": "devloop-cluster (lio / x4s / 6il / avg)",
+      "conflict": "Three incompatible homes. D01 -> new 'Beads/devloop work-evidence rail' epic (lio + 4c0/7fj/kph/6mv-emitter). E6 -> new 'Devloop expressed in the substrate' epic (x4s/6il/lio/avg). D15 -> reparent x4s under existing rii. N2 -> lio stays standalone, narrow to Polylogue-side + xref sinex-hlv.",
+      "adjudication": "Do NOT create a new epic for this cluster (operator dropped the #1807 umbrella: 'doctrine lives in docs'; two competing new-epic proposals is itself the ceremony signal). Reparent x4s under rii (D15, concrete existing home). Keep lio/6il/avg standalone and just fill their specs (D04/E6 underspecified entries). lio gets the sinex-hlv cross-ref (N2). This resolves all four proposals without a new umbrella."
+    },
+    {
+      "id": "polylogue-3gd",
+      "conflict": "D15 reparent 3gd -> 37t. E6 split 3gd into its OWN epic+children ('unapologetically LARGE cross-repo layer'). E6 also flags a 3gd<->7aw ownership overlap (both migrate a global-CLAUDE.md section).",
+      "adjudication": "Compatible if sequenced: split 3gd into an epic with E6's 3 children, AND parent that epic under 37t as a sub-epic (D15). Resolve the overlap E6 named: 3gd owns the injected activation chapter (destination); 7aw's 'migrate + retire one static section' clause depends_on 3gd rather than duplicating it. Item 3gd(3) 'one-month adoption/decay review' stays a later decision child, not shippable now."
+    },
+    {
+      "id": "polylogue-37t.11",
+      "conflict": "Edge-type disagreement for wiring downstream injectors to the arbiter. D02 wants blocks/depends-on from mhx.4/rvh/1hj/bfv/s7ae/4smp -> 37t.11. D15 wants relates-to from 3gd/bfv/1hj/rvh/mhx.4/gjg/1jc -> 37t.11.",
+      "adjudication": "Use blocks where 37t.11 must define the budget/arbitration BEFORE the leg can be wired (D02's injection legs: mhx.4/rvh/1hj/bfv); use relates-to for the softer/adoption beads (3gd/gjg/1jc). Union the two agent edge-sets. This is low-risk metadata; not a real conflict, just pick the stronger edge per pair."
+    }
+  ],
+  "overreach_drop": [
+    {
+      "id": "D01 new-epic: 'Beads/devloop work-evidence rail'",
+      "verdict": "DROP (do not auto-create). Self-hedged 'Medium confidence: only propose if orchestrator agrees.' Groups two decision beads (lnd,6mv) + beads-ingestion (7fj) + kph under a fresh umbrella — exactly the umbrella-ceremony the operator killed with #1807 ('doctrine lives in docs'). Keep the underlying edges (lnd->7fj) but no new epic."
+    },
+    {
+      "id": "D15 new-epics: substrate-consolidation + interop-breadth + ops-resilience",
+      "verdict": "HOLD, do not auto-create (operator checkpoint). Creating 3-4 new epics in one apply pass is a backlog restructure, not hygiene. Only the config-doctrine epic (y4c spine + 4 already-orphaned dependents 3xx/y8w/6kh/1jc) has a strong single-signal justification and could be applied as 'promote y4c to epic'. The other three group loosely-related refactors by theme (the operator dislikes invented structure) — route to operator, don't apply blind."
+    },
+    {
+      "id": "E6 + D01 new-epic for the devloop cluster",
+      "verdict": "DROP the new-epic framing (see contradictions#devloop). Reparent x4s->rii and specify the rest standalone instead. Two agents independently reaching for a new epic here is the tell that the cluster is real but the epic is not warranted."
+    },
+    {
+      "id": "D03 reorg: reparent ap7/1lm under fnm",
+      "verdict": "DOWNGRADE to link-only. D03 self-labels 'Low confidence — they may be intentionally standalone.' Apply the relates-to edges (rlsb->ap7, rlsb->1lm) that D03 also proposes; do NOT reparent ap7/1lm into fnm without operator confirmation."
+    }
+  ],
+  "checkpoint": [
+    {
+      "item": "1xc decomposition",
+      "detail": "Reparent {ma2, 0ns, 6wnh, xy95, xgw, fie} under 1xc + create the 3 gap beads. High consensus (D06+D15+D16) so likely safe, but it materially populates a P1 epic from an empty shell and pulls 6 orphans — ack before applying. D06 explicitly REJECTED pulling iec/hiu/b5l/exb; honor that exclusion.",
+      "risk": "structural-reparent"
+    },
+    {
+      "item": "Decision-bead close/retype",
+      "detail": "f94 retype decision->task (D16); 6mv/lnd/jgp close-as-resolved (D16, CONTESTED by D01/N2 — see contradictions). Closing/retyping beads changes tracker state; operator sign-off required.",
+      "risk": "state-change / contested"
+    },
+    {
+      "item": "Type reclassifications",
+      "detail": "7aw feature->epic + 5-child decompose (D12/E6); 20d.4 task->bug (D08); gjg task->epic (D05). Retypes + decomposition change the shape of committed operator-authored beads.",
+      "risk": "retype"
+    },
+    {
+      "item": "E6 epic-splits",
+      "detail": "ox0, oxz, yeq, t0p, 27m each split single-task->epic+children. All grounded in the bead's OWN '(1)(2)(3) sub-lanes' design text, so defensible, but each creates 2-4 new child beads — batch review before applying.",
+      "risk": "structural-create"
+    },
+    {
+      "item": "s7ae.1 close / s7ae.2 -> in_progress",
+      "detail": "E3 found commit 32ff31651 already lands s7ae.1's full AC and half of s7ae.2. E3 conditions the s7ae.1 close on resolving the full-verify gap (its proposed s7ae.2 child). Advance s7ae.2 to in_progress with the partial-shipment note; do NOT close s7ae.1 until the verify classification exists.",
+      "risk": "close in_progress bead / conditioned"
+    },
+    {
+      "item": "jnj.5 reparent out of jnj",
+      "detail": "D10 lifts the P2 area:security bug out of the P3 hygiene epic to standalone. Moving a security bug's priority home is a deliberate act; keep a relates-to link to jnj.",
+      "risk": "structural-reparent"
+    },
+    {
+      "item": "GH issue closures (E5) are NOT apply-pass items",
+      "detail": "E5's six 'gh-should-close' (#2472/#2473/#2474/#2480/#2481/#1807) are operator GitHub actions, explicitly 'Do NOT touch GH from this swarm.' Exclude from the bead-mutation apply; forward as an operator advisory. Also E5's 20d.4 title-reword (#1860 citation) IS an in-tracker additive edit and can be applied."
+    },
+    {
+      "item": "Frame-touching priority raises",
+      "detail": "37t.4 P2->P1 (D02), 20d.15 P2->P1 (D06), fs1.1 P3->P2 (D12), 3tl.4 P3->P2 (D07), bby P3->P2 (D11), pf1 P3->P2 (D06), 1ty P3->P2 (D16). All reversible and none DROP a P1, so low-risk — but they reshuffle ready-frontier ordering; apply as a batch and eyeball the resulting `bd ready`.",
+      "risk": "priority-shift-reversible"
+    }
+  ],
+  "missed": [
+    {
+      "gap": "Work-evidence / beads-ingestion cluster (4c0, 7fj, kph) under-audited",
+      "detail": "Only D01 touched these, and only inside its dropped rail-epic proposal. 7fj (beads-history ingestion) is a live blocker for lnd's 'revisit when beads ingestion lands' and is the substrate several decisions defer to. No agent gave 4c0/7fj/kph an execution-grade design/acceptance pass. Recommend a targeted follow-up audit before they silently rot."
+    },
+    {
+      "gap": "No reconciled home for the devloop cluster (lio/x4s/6il/avg)",
+      "detail": "Three agents produced three different reorg answers (D01 rail-epic, E6 devloop-epic, D15 x4s->rii, N2 lio-standalone). The swarm surfaced the cluster but produced no single decision. I adjudicated it above (no new epic; x4s->rii; rest standalone+specs), but the apply pass should treat that as the canonical resolution rather than applying three conflicting proposals."
+    },
+    {
+      "gap": "w79 (session-profile convergence) unaudited but load-bearing",
+      "detail": "E2's proposed tf2-v24-rerun and E2/E6's b5l notes both cite 'session-profile convergence (w79/b5l/1xc)' as the blocker gating multiple demo regenerations. No domain agent audited w79 itself. If it is the convergence gate for the top-of-frame legibility artifacts, it deserves its own execution-grade check."
+    },
+    {
+      "gap": "Apply-pass hazard: dirty .beads/issues.jsonl",
+      "detail": "git status shows M .beads/issues.jsonl and E3 confirms commit 32ff31651 already advanced s7ae.1 in the tracker AFTER the swarm's beads snapshot (21:05) was taken. The apply pass MUST re-read live bd state (or re-run the export) before mutating, or it will clobber the coordination-commit edits and the s7ae.1/s7ae.2 status the reality agent verified."
+    },
+    {
+      "gap": "No agent verified proposed gap-beads against existing beads for duplication beyond their own domain",
+      "detail": "D06 and D16 independently invented the same three 1xc children (caught here). Lower risk but: D12's per-model-partitioning bug, D09's tool_episodes, and the E2 tf2-rerun should each be grepped against the full 333-bead set once before creation, since domain agents only saw their slice."
+    }
+  ],
+  "corroborated_safe": [
+    "mhx dangling deps emb-targets->mhx.2 / emb-eval->mhx.3: identified identically by D13 AND D15 — high-confidence, apply.",
+    "1xc empty-epic defect: flagged by D06, D15, D16 independently — real, apply the decomposition (checkpoint above).",
+    "Every P1/ready-P2 underspecified bead (missing design/acceptance) proposals are additive-only and non-conflicting across domains — safe to apply as ADDITIVE field fills, not rewrites.",
+    "E5 GH↔bead reconciliation: 36/37 open GH map to beads, only dropped #1807 unmapped — no untracked-work gap, no new beads warranted."
+  ]
+}

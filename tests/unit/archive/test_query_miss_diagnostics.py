@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, diagnose_query_miss
+from polylogue.archive.query.miss_diagnostics import (
+    QueryMissDiagnostics,
+    diagnose_named_source_miss,
+    diagnose_query_miss,
+)
+from polylogue.archive.query.source_freshness import NamedSourceFreshness
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.stats import ArchiveStats
 from polylogue.config import Config
@@ -32,7 +37,7 @@ async def test_diagnose_query_miss_reports_empty_archive_scope() -> None:
     assert _codes(diagnostics) == ["archive_empty"]
     assert diagnostics.archive_session_count == 0
     assert diagnostics.raw_session_count == 0
-    repo.get_raw_session_count.assert_awaited_once_with(provider=None)
+    repo.get_raw_session_count.assert_awaited_once_with(origin=None)
 
 
 @pytest.mark.asyncio
@@ -53,7 +58,7 @@ async def test_diagnose_query_miss_reports_raw_backlog_for_selected_origin() -> 
     assert _codes(diagnostics) == ["archive_empty", "raw_ingest_backlog"]
     assert diagnostics.archive_session_count == 0
     assert diagnostics.raw_session_count == 2
-    repo.get_raw_session_count.assert_awaited_once_with(provider="claude-ai")
+    repo.get_raw_session_count.assert_awaited_once_with(origin="claude-ai-export")
 
 
 @pytest.mark.asyncio
@@ -109,3 +114,35 @@ async def test_diagnose_query_miss_falls_back_to_matching_absence() -> None:
 
     assert _codes(diagnostics) == ["no_matching_session"]
     assert diagnostics.reasons[0].count == 5
+
+
+@pytest.mark.parametrize(
+    ("stage", "code"),
+    [
+        ("unseen", "named_source_unseen"),
+        ("acquired-unparsed", "named_source_acquired_unparsed"),
+        ("parsed-unindexed", "named_source_parsed_unindexed"),
+        ("indexed-unconverged", "named_source_indexed_unconverged"),
+        ("searchable", "named_source_searchable"),
+    ],
+)
+def test_named_source_miss_diagnostics_distinguish_pipeline_stage(stage: str, code: str) -> None:
+    freshness = SimpleNamespace(
+        source_path="/exact/source.jsonl",
+        stage=SimpleNamespace(value=stage),
+        operational_state=SimpleNamespace(value="idle"),
+        cursor=SimpleNamespace(excluded=False, pending_bytes=0),
+        retry=SimpleNamespace(reason=None),
+        index=SimpleNamespace(session_count_lower_bound=1, broken_head=False),
+        raw_revisions=(object(),),
+    )
+
+    diagnostics = diagnose_named_source_miss(cast(NamedSourceFreshness, freshness))
+
+    assert _codes(diagnostics) == [code]
+    detail = diagnostics.reasons[0].detail or ""
+    assert f"stage={stage}" in detail
+    assert "source_indexed_session_lower_bound=1" in detail
+    assert "source_raw_revision_sample_count=1" in detail
+    assert diagnostics.archive_session_count is None
+    assert diagnostics.raw_session_count is None

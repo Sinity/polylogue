@@ -9,7 +9,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.core.payload_coercion import optional_str as _optional_str
+from polylogue.core.payload_coercion import required_str as _required_str
+from polylogue.core.payload_coercion import row_float as _row_float
+from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+logger = get_logger(__name__)
 
 
 class CatchupStageEvent(BaseModel):
@@ -174,7 +181,8 @@ def _recent_stage_events(dbf: Path) -> list[CatchupStageEvent]:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("catchup live stage-event query failed for %s: %s", dbf, exc, exc_info=True)
         return []
     return [_catchup_stage_event_from_row(row) for row in rows]
 
@@ -200,7 +208,8 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("catchup archive stage-event query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [_archive_catchup_stage_event_from_row(row) for row in rows]
 
@@ -338,40 +347,6 @@ def _ratio(numerator: float | int, denominator: float | int) -> float:
     if denominator <= 0:
         return 0.0
     return float(numerator) / float(denominator)
-
-
-def _required_str(value: object) -> str:
-    return value if isinstance(value, str) else str(value)
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _row_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int | float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
-
-
-def _row_float(value: object) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
 
 
 def _int_attr(item: object, name: str) -> int:

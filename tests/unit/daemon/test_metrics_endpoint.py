@@ -35,6 +35,7 @@ from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 
 if TYPE_CHECKING:
@@ -139,7 +140,26 @@ class TestFormatMetricsExpositionShape:
 
     def test_build_info_exposes_version_label(self, tmp_path: Path) -> None:
         body = format_metrics(tmp_path / "missing.db")
-        assert "polylogue_daemon_build_info{version=" in body
+        assert re.search(r'polylogue_daemon_build_info\{[^}]*\bversion="[^"]+"', body)
+
+    def test_build_info_exposes_full_revision_and_dirty_labels(self, tmp_path: Path) -> None:
+        """polylogue-6rvt: the metric must carry the full (untruncated) build
+        revision plus an explicit dirty flag, not just the human version
+        string — dashboards/attestation join on ``revision``, not
+        ``version``."""
+        from polylogue.version import VERSION_INFO
+
+        body = format_metrics(tmp_path / "missing.db")
+        match = re.search(r"polylogue_daemon_build_info\{([^}]*)\} 1", body)
+        assert match is not None, body
+        labels = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
+        assert labels["version"] == VERSION_INFO.version
+        assert labels["revision"] == (VERSION_INFO.commit or "unknown")
+        assert labels["dirty"] in {"true", "false"}
+        assert labels["dirty"] == ("true" if VERSION_INFO.dirty else "false")
+        # Never truncated to a short/collision-prone prefix.
+        if labels["revision"] != "unknown":
+            assert len(labels["revision"]) == 40
 
     def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -154,7 +174,7 @@ class TestFormatMetricsExpositionShape:
         ):
             initialize_archive_database(tmp_path / filename, tier)
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
             conn.commit()
 
         body = format_metrics(tmp_path / "index.db")

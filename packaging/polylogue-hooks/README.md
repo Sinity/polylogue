@@ -1,8 +1,8 @@
 # polylogue-hooks
 
 Hook adapter for [Polylogue](https://github.com/sinity/polylogue) — captures
-Claude Code and Codex session lifecycle events into the Polylogue daemon's
-sidecar directory.
+Claude Code and Codex session lifecycle events into Polylogue's durable pending
+spool. The daemon records each envelope before acknowledging it.
 
 This distribution is a pure-stdlib Python implementation of the
 `polylogue-hook` console script. It has **no runtime dependencies** and is safe

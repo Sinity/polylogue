@@ -1061,6 +1061,128 @@ def test_chatgpt_archive_contract_fields() -> None:
     assert active.duration_ms == 2500
 
 
+def test_chatgpt_generation_timing_uses_one_authoritative_reasoning_owner() -> None:
+    """Repeated run-wide metadata must not multiply one Pro generation."""
+    nodes = [
+        _branch_node("u1", "user", "Do the work", parent=None, children=["thought"]),
+        _branch_node("thought", "assistant", "working", parent="u1", children=["recap"]),
+        _branch_node("recap", "assistant", "reasoning summary", parent="thought", children=["answer"]),
+        _branch_node("answer", "assistant", "substantive answer", parent="recap", children=[]),
+    ]
+    nodes[1]["message"]["content"]["content_type"] = "thoughts"
+    nodes[1]["message"]["metadata"] = {"reasoning_start_time": 1784164544.946}
+    nodes[2]["message"]["content"]["content_type"] = "reasoning_recap"
+    nodes[2]["message"]["metadata"] = {
+        "reasoning_start_time": 1784164541.690012,
+        "reasoning_end_time": 1784169732.588194,
+        "finished_duration_sec": 5190,
+    }
+    nodes[3]["message"]["metadata"] = {
+        "reasoning_start_time": 1784164544.946,
+        "finished_duration_sec": 5190,
+    }
+    payload = {
+        "id": "pro-generation",
+        "title": "Long Pro generation",
+        "mapping": {node["id"]: node for node in nodes},
+        "current_node": "answer",
+    }
+
+    session = chatgpt_parse(payload, "fallback-id")
+    by_id = {message.provider_message_id: message for message in session.messages}
+    lifecycle = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+
+    assert by_id["recap"].duration_ms == 5_190_000
+    assert by_id["thought"].duration_ms is None
+    assert by_id["answer"].duration_ms is None
+    assert session.reported_duration_ms == 5_190_000
+    assert len(lifecycle) == 1
+    assert lifecycle[0].source_message_provider_id == "recap"
+    assert lifecycle[0].payload == {
+        "state": "completed",
+        "evidence_source": "provider_native",
+        "fidelity": "exact",
+        "duration_semantics": "provider_reported_elapsed",
+        "elapsed_duration_ms": 5_190_000,
+        "started_at_ms": 1_784_164_541_690,
+        "ended_at_ms": 1_784_169_732_588,
+    }
+
+
+def test_chatgpt_generation_timing_is_invariant_to_equivalent_provider_timestamp_wires() -> None:
+    """Offset-equivalent provider times keep exact units and provenance.
+
+    This kills timezone-strip/local-wall calculations and the representative
+    duration-unit mutation that stores provider seconds as milliseconds
+    without multiplying by 1000.  It also prevents provider-reported elapsed
+    time from being relabeled as observed wall, inferred gap, or model compute.
+    """
+
+    def parse_timing(start: str, end: str) -> ParsedSession:
+        node = _branch_node("recap", "assistant", "summary", parent=None, children=[])
+        node["message"]["content"]["content_type"] = "reasoning_recap"
+        node["message"]["metadata"] = {
+            "reasoning_start_time": start,
+            "reasoning_end_time": end,
+            "finished_duration_sec": 5190,
+        }
+        return chatgpt_parse(
+            {"id": "equivalent-timing", "mapping": {"recap": node}, "current_node": "recap"},
+            "fallback-id",
+        )
+
+    utc_session = parse_timing(
+        "2026-07-15T20:30:00.123456Z",
+        "2026-07-15T21:56:30.123456Z",
+    )
+    offset_session = parse_timing(
+        "2026-07-15T22:30:00.123456+02:00",
+        "2026-07-16T06:56:30.123456+09:00",
+    )
+
+    assert utc_session.reported_duration_ms == offset_session.reported_duration_ms == 5_190_000
+    assert utc_session.messages[0].duration_ms == offset_session.messages[0].duration_ms == 5_190_000
+    assert utc_session.session_events == offset_session.session_events
+    assert len(utc_session.session_events) == 1
+    payload = utc_session.session_events[0].payload
+    assert payload == {
+        "state": "completed",
+        "evidence_source": "provider_native",
+        "fidelity": "exact",
+        "duration_semantics": "provider_reported_elapsed",
+        "elapsed_duration_ms": 5_190_000,
+        "started_at_ms": 1_784_147_400_123,
+        "ended_at_ms": 1_784_152_590_123,
+    }
+    assert not ({"wall_elapsed_ms", "displayed_elapsed_ms", "inferred_gap_ms", "model_compute_ms"} & payload.keys())
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_duration_ms"),
+    [
+        ({"reasoning_start_time": 10.0, "reasoning_end_time": 12.25}, 2250),
+        ({"reasoning_start_time": 12.0, "reasoning_end_time": 10.0}, None),
+        ({"finished_duration_sec": -3}, None),
+        ({"finished_duration_sec": "pending"}, None),
+    ],
+)
+def test_chatgpt_generation_timing_fallback_rejects_malformed_values(
+    metadata: dict[str, object], expected_duration_ms: int | None
+) -> None:
+    node = _branch_node("recap", "assistant", "summary", parent=None, children=[])
+    node["message"]["content"]["content_type"] = "reasoning_recap"
+    node["message"]["metadata"] = metadata
+
+    session = chatgpt_parse(
+        {"id": "timing-edge", "mapping": {"recap": node}, "current_node": "recap"},
+        "fallback-id",
+    )
+
+    assert session.messages[0].duration_ms == expected_duration_ms
+    assert session.reported_duration_ms == expected_duration_ms
+    assert len(session.session_events) == (1 if expected_duration_ms is not None else 0)
+
+
 # ---------------------------------------------------------------------------
 # #1744 — non-`parts` content is preserved (code interpreter, execution output)
 # ---------------------------------------------------------------------------

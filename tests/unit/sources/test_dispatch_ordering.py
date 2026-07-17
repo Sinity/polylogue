@@ -31,6 +31,28 @@ def _payload(obj: object) -> object:
 ADVERSARIAL_CATALOG: list[tuple[object, Provider, str]] = []
 
 
+# ── Beads interaction vs loose session-record probes ──────────────
+#
+# Beads interaction rows may carry generic identifiers that resemble runtime
+# records.  Their complete structural signature is stronger and must win before
+# the Pydantic/dict-key session probes below.
+ADVERSARIAL_CATALOG.append(
+    (
+        {
+            "id": "int-1",
+            "kind": "field_change",
+            "created_at": "2026-07-08T20:14:36Z",
+            "issue_id": "polylogue-7fj",
+            "extra": {},
+            "sessionId": "not-a-codex-session",
+            "parentUuid": "runtime-shaped-noise",
+        },
+        Provider.BEADS,
+        "beads interaction vs loose runtime probes: complete Beads structural detector runs before Pydantic/dict-key probes",
+    )
+)
+
+
 # ── claude-code record stream vs codex envelope ───────────────────
 #
 # Both Claude Code JSONL and Codex session files are JSON records with

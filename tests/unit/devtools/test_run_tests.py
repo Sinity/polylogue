@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -111,7 +112,26 @@ def test_managed_env_sets_repo_roots() -> None:
     assert env["POLYLOGUE_ROOT"] == str(run_tests.ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(run_tests.ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(run_tests.ROOT / ".cache" / "pycache")
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(run_tests.ROOT)
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(run_tests.ROOT / PYTEST_EVENTS_PATH)
     assert env["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(run_tests.ROOT / PYTEST_SELECTION_PATH)
     assert env["POLYLOGUE_PYTEST_SUMMARY_PATH"] == str(run_tests.ROOT / PYTEST_SUMMARY_PATH)
     assert Path(env["POLYLOGUE_ROOT"]).is_dir()
+
+
+def test_managed_env_replaces_cloud_basetemp_with_local_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise devtools test's child environment, not conftest in isolation."""
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/tmp/polylogue-pytest")
+
+    env = run_tests._managed_env()
+
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in env
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+
+
+def test_managed_env_preserves_explicit_custom_basetemp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(tmp_path))
+
+    env = run_tests._managed_env()
+
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(tmp_path)

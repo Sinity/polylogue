@@ -1,0 +1,43 @@
+bd create Security & privacy: the archive can forget on purpose and never leaks secrets rc=0
+  -> polylogue-kwsb : Security & privacy: the archive can forget on purpose and ne
+bd update polylogue-jnj.5 rc=0
+bd update polylogue-27m rc=0
+bd update polylogue-jsy rc=0
+bd create Operational resilience: recoverable, restorable, survives daemon death and deploy rc=0
+  -> polylogue-8jg9 : Operational resilience: recoverable, restorable, survives da
+bd update polylogue-4be rc=0
+bd update polylogue-peo rc=0
+bd update polylogue-s8q rc=0
+bd update polylogue-cpf rc=0
+bd create Doctrine lint: reject TEXT timestamps in new durable DDL rc=0
+  -> polylogue-cpf.1 : Doctrine lint: reject TEXT timestamps in new durable DDL
+bd create Doctrine: writer-class docstring convention + layering check rc=0
+  -> polylogue-cpf.2 : Doctrine: writer-class docstring convention + layering check
+bd create Doctrine: injected-context trust deny-lexicon tripwire fixture rc=0
+  -> polylogue-cpf.3 : Doctrine: injected-context trust deny-lexicon tripwire fixtu
+bd comment polylogue-cpf rc=0
+bd create Standing backlog-hygiene invariant lint (bd devloop gate) rc=0
+  -> polylogue-8jg9.1 : Standing backlog-hygiene invariant lint (bd devloop gate)
+bd create Durable-tier additive migration framework: backup-gate + numbered runner contract rc=0
+  -> polylogue-z7rv : Durable-tier additive migration framework: backup-gate + num
+bd create Adopt manifest-declared coverage gaps as tracked beads (retire gh#590 umbrella) rc=0
+  -> polylogue-9e5.17 : Adopt manifest-declared coverage gaps as tracked beads (reti
+bd create Blob-GC lease/orphan concurrency test (the acquire->commit race) rc=0
+  -> polylogue-8jg9.2 : Blob-GC lease/orphan concurrency test (the acquire->commit r
+bd create Wire atheris fuzz targets into CI rc=0
+  -> polylogue-9e5.18 : Wire atheris fuzz targets into CI
+bd create Reconcile schema-versioning docs + retire superseded execution-plan.md rc=0
+  -> polylogue-3tl.13 : Reconcile schema-versioning docs + retire superseded executi
+bd update polylogue-f94 rc=0
+bd update polylogue-gjg rc=0
+bd update polylogue-20d.4 rc=0
+bd update polylogue-7aw rc=0
+bd close polylogue-jgp rc=0
+bd close polylogue-6mv rc=0
+bd close polylogue-lnd rc=0
+bd comment polylogue-fs1.7 rc=0
+bd comment polylogue-k8k rc=0
+bd comment polylogue-lio rc=0
+bd comment polylogue-37t.4 rc=0
+
+=== SUMMARY (LIVE) created=11 ===

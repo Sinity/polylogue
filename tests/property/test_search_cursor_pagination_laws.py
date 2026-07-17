@@ -16,12 +16,12 @@ from hypothesis import strategies as st
 from polylogue.archive.query.search_hits import session_search_hit_from_summary
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.surfaces.payloads import (
     SessionSearchHitPayload,
     build_search_envelope,
     decode_search_cursor,
 )
-from polylogue.types import SessionId
 
 
 def _payload(conv_id: str, rank: int, score: float) -> SessionSearchHitPayload:

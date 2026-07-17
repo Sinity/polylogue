@@ -60,7 +60,7 @@ def coerce_node_limit(raw: str | None) -> int | None:
 def _node_dict(node: TopologyNode) -> dict[str, object]:
     return {
         "session_id": str(node.session_id),
-        "source_name": node.source_name,
+        "origin": node.origin,
         "title": node.title,
         "depth": node.depth,
         "is_root": node.is_root,

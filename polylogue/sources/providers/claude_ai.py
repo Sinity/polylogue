@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from polylogue.archive.message.roles import Role
 from polylogue.archive.viewport.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace, ToolCall
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 ClaudeAIObject: TypeAlias = dict[str, object]
@@ -69,7 +70,7 @@ class ClaudeAIChatMessage(BaseModel):
             id=self.uuid,
             timestamp=self.parsed_timestamp,
             role=self.role_normalized,
-            provider=Provider.CLAUDE_AI,
+            origin=origin_from_provider(Provider.CLAUDE_AI),
         )
 
     def to_content_blocks(self) -> list[ContentBlock]:

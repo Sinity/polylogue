@@ -1,0 +1,2 @@
+{"payload": {"forked_from_id": "demo-lineage-parent", "id": "demo-lineage-subagent", "source": {"subagent": {"thread_spawn": {"agent_role": "Explore", "depth": 1, "parent_thread_id": "demo-lineage-parent"}}}, "timestamp": "2026-07-04T10:02:00Z"}, "type": "session_meta"}
+{"payload": {"content": [{"text": "Subagent report: lineage fixture has a parent, a fork, and a resolved child link.", "type": "output_text"}], "id": "subagent-a0", "role": "assistant", "timestamp": "2026-07-04T10:02:01Z", "type": "message"}, "type": "response_item"}

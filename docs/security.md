@@ -36,23 +36,36 @@ loopback ports.
 
 | Endpoint | Method | Risk | Auth | Origin |
 |---|---|---|---|---|
-| `/api/status` | GET | Read-only metadata | Token (when configured) | Any |
-| `/api/health`, `/api/health/check` | GET | Health probe | Token (when configured) | Any |
-| `/api/sessions`, `/api/sessions/:id`, `/.../messages`, `/.../raw` | GET | Read session data | Token | Any |
-| `/api/facets` | GET | Read-only aggregations | Token | Any |
-| `/api/sources` | GET | Returns absolute filesystem paths to authenticated callers | Token | Any |
-| `/api/raw_artifacts/:id` | GET | Returns raw session payload | Token | Any |
-| `/api/reset` | POST | **Destructive** — resets archive state | Token | Same-origin |
-| `/api/ingest` | POST | **Mutating** — schedules ingestion | Token | Same-origin |
-| `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Token | Same-origin |
+| `/api/web-auth/session` | POST/DELETE | Mint/rotate or revoke a browser credential | Exact-origin bootstrap; current web credential for revoke | Exact origin |
+| `/api/status` | GET | Read-only metadata | Bearer or web credential (when configured) | Credential-bound |
+| `/api/health`, `/api/health/check` | GET | Health probe | Bearer or web credential (when configured) | Credential-bound |
+| `/api/sessions`, `/api/sessions/:id`, `/.../messages`, `/.../raw` | GET | Read session data | Bearer or web credential | Credential-bound |
+| `/api/facets` | GET | Read-only aggregations | Bearer or web credential | Credential-bound |
+| `/api/sources` | GET | Returns absolute filesystem paths to authenticated callers | Bearer or web credential | Credential-bound |
+| `/api/raw_artifacts/:id` | GET | Returns raw session payload | Bearer or web credential | Credential-bound |
+| `/api/reset` | POST | **Destructive** — resets archive state | Bearer only when auth is configured | Exact origin |
+| `/api/ingest` | POST | **Mutating** — schedules ingestion | Bearer only when auth is configured | Exact origin |
+| `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Bearer only when auth is configured | Exact origin |
 
 ## Mitigations
 
-1. **Bearer token auth.** When `--api-auth-token` is configured, every
-   request — including from loopback — must present a matching
-   `Authorization: Bearer <token>` header. The pure-logic check lives
-   at `polylogue/daemon/http.py:_check_auth_logic` and is invoked by
-   `_dispatch_get` and `do_POST` before any handler runs.
+1. **Separate machine and browser credentials.** When `--api-auth-token`
+   is configured, machine clients present `Authorization: Bearer <token>`.
+   The first-party shell instead rotates a short-lived `read`/`user_state`/
+   `events` credential through `POST /api/web-auth/session`. It can update
+   marks, annotations, saved views, recall packs, and workspaces, but archive
+   reset, ingest, and maintenance operations remain machine-bearer capabilities.
+   The opaque value
+   is stored in an `HttpOnly; SameSite=Strict; Path=/` cookie; the daemon keeps
+   only its SHA-256 digest. It is never returned in JSON or accepted in a URL.
+   Credential-shaped query parameters are rejected with `400
+   credential_in_query`; route metadata and disconnect logs omit query strings
+   entirely, including values under unrecognized parameter names.
+   Missing, invalid, expired, revoked, wrong-origin, and insufficient-scope
+   decisions use explicit response codes. The lifecycle lives in
+   `polylogue/daemon/web_auth.py`; fetch and EventSource consume the same cookie.
+   The digest registry prunes on issue/validate/revoke and enforces hard global
+   and per-origin record bounds, so rotation cannot create unbounded retention.
 
 2. **Loopback-only by default.** The daemon binds to `127.0.0.1` by
    default. The "loopback" predicate is the shared
@@ -63,20 +76,12 @@ loopback ports.
    enforcement lives in `polylogue/daemon/cli.py` and rejects either
    missing flag at startup.
 
-3. **Origin allowlist for mutating endpoints.** POST endpoints reject
-   requests whose `Origin` header points to a non-loopback host. The
-   loopback host definition is shared with the browser-capture
-   receiver via `polylogue/core/loopback.py:is_loopback_host` (which
-   the receiver uses for bind validation); the daemon HTTP API
-   additionally uses `is_loopback_origin` from the same module to
-   parse browser-supplied `Origin` headers. Both follow RFC 5735: the
-   entire `127.0.0.0/8` block, `::1`, and the literal `localhost`
-   name (both `http` and `https` schemes). The `Origin` parser rejects
-   malformed bracketed IPv6 forms such as `http://[::1].evil.com` or
-   `http://[::1]:bad`. This is the CSRF boundary: a hostile page
-   loaded in the user's browser cannot POST to the daemon even if it
-   somehow learned the bearer token, because the browser attaches its
-   own `Origin`. The check lives at
+3. **Exact origin for browser credentials and mutations.** A loopback origin
+   on a different port is still a different origin. Bootstrap therefore
+   requires the browser `Origin` authority to match `Host` exactly, credentials
+   are bound to that canonical origin, and mutation requests repeat the exact
+   authority check. Missing `Origin` remains valid for trusted non-browser
+   bearer clients. The checks live in `polylogue/daemon/web_auth.py` and
    `polylogue/daemon/http.py:_check_cross_origin`.
 
 4. **No CORS preflight.** `OPTIONS` requests return `405 Method Not
@@ -131,6 +136,157 @@ no local process other than the paired extension can read receiver
 state or post captures. `--browser-capture-allow-no-auth` is the
 explicit, logged opt-out (polylogue-gnie).
 
+## Excision and Secret Hygiene
+
+"The archive can forget on purpose" (polylogue-27m). Two related but
+distinct mechanisms live under `polylogue/security/`:
+
+### Candidate-only secret detection
+
+`polylogue/security/secret_scan.py` finds credential-shaped spans
+(AWS/GitHub/Slack/OpenAI/Anthropic key shapes, PEM private-key headers, JWTs,
+and an entropy-filtered generic `key=value` rule) in captured content and
+records them as `AssertionKind.SECRET_CANDIDATE` assertions. This is a
+**triage aid, not a leak-prevention boundary** — it is fully consistent with
+"Raw artifacts are not content-redacted" above: the scanner does not gate or
+redact reads, it surfaces candidates for an operator to review and, if
+warranted, excise.
+
+`polylogue ops scan-secrets --session <id>` is the production entrypoint
+(`scan_session_for_secret_candidates`, `polylogue/cli/commands/
+scan_secrets.py`): it reads the session's block text/tool-input from
+`index.db`, scans it, and writes candidates into `user.db`. Without this
+caller the regex/entropy rules and the write path exist but nothing in the
+running archive ever invokes them (fix-round note, 2026-07-14).
+
+- The scanner **never returns, stores, or logs the matched literal**. Callers
+  only ever see a SHA-256 fingerprint (one-way, for idempotent re-detection),
+  a byte length, a pattern id, and span offsets into the source text.
+- Written assertions use `author_kind="detector"`, which the shared
+  `upsert_assertion` write chokepoint unconditionally coerces to
+  `status=CANDIDATE` with `{"inject": false, "promotion_required": true}` —
+  a detector can never self-promote a finding to authoritative/injectable
+  context (the same invariant `PATHOLOGY`/`TRANSFORM_CANDIDATE` findings use).
+- Coverage: `tests/unit/security/test_secret_scan.py`,
+  `tests/unit/cli/test_scan_secrets.py` (also the
+  `devtools test -k secret_candidate` anchor cited by
+  `docs/plans/security-privacy-coverage.yaml`).
+
+### Local excision (standalone/off mode — authoritative)
+
+`polylogue ops excise --session <id> --reason "..."` (`--dry-run` to
+preview, `--yes` to apply) removes a session across every local tier:
+
+1. `embeddings.db` — the session's message vectors (if embedded).
+2. `index.db` — `sessions` cascades to `messages`/`blocks`/`session_links`
+   via `ON DELETE CASCADE`; the FTS triggers clean the contentless search
+   index automatically.
+3. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
+   `raw_session_memberships`/`raw_membership_census`), then a durable
+   removed-hash marker is recorded in the new `excised_content` table
+   (migration `011_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 11) for
+   *every distinct blob hash* grouped under that raw ingestion's `ref_id` —
+   not just the raw payload's own hash. `blob_refs` shares one `ref_id`
+   across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a
+   session's inline attachments (whose content hash can differ from the raw
+   payload's) each get their own non-resurrection marker too.
+4. `user.db` — content-bearing assertions targeting the excised
+   session/messages/blocks are removed, and one durable
+   `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,
+   removed hashes, per-tier counts).
+
+**Ordinary re-ingest cannot resurrect excised content.** The removed-hash
+marker is consulted at *both* acquire-time raw-session write functions in
+`polylogue/storage/sqlite/archive_tiers/source_write.py` — they must gate
+identically, or one route silently resurrects excised content:
+
+- `write_source_raw_session` (payload held in memory) — used by the CLI
+  import path via `parse_sources_archive`.
+- `write_source_raw_session_blob_ref` (payload already published as a blob,
+  not held in memory) — used by the daemon's memory-bounded streaming path
+  for multi-GiB files, via `sources.live.batch.LiveBatchProcessor.
+  _ingest_full_records_archive`.
+
+A re-acquire attempt whose payload hashes to a recorded `removed_hash` raises
+`ContentExcisedError` from either function; the batch orchestration layer
+(`pipeline/services/archive_ingest.py:write_pair` for the CLI path,
+`sources/live/batch.py:_ingest_full_records_archive` for the daemon path)
+catches this specifically and skips just that one file (counted in
+`ParseResult.excised_skips` / `_ArchiveFullWriteResult.excised_skips`
+respectively) rather than aborting the whole ingest run.
+
+**Lineage safety.** Excising a session that is a prefix-sharing lineage
+*parent* (see `session_links`/`branch_point_message_id` in the top-level
+architecture notes) would otherwise delete the bytes a child session's
+composed transcript depends on. `apply_session_excision` detects the full
+transitive set of prefix-sharing dependents and refuses
+(`LineageDependentsError`) unless the caller passes `cascade_lineage=True`
+(CLI: `--cascade-lineage`), in which case the whole lineage — the session and
+every dependent — is excised together so no composed read is left broken.
+`plan_session_excision`/`--dry-run` surfaces the dependent session ids up
+front so this is never a surprise at apply time.
+
+**Attachments referenced from elsewhere.** `attachment_refs.session_id`/
+`message_id` carry `ON DELETE CASCADE` to `sessions`/`messages`, so deleting
+the excised session's row already removes only its own attachment
+references — a content-hash-deduplicated `attachments` row still referenced
+by a different, non-excised session's `attachment_refs` is untouched.
+Excision never deletes shared attachment metadata still in legitimate use
+elsewhere; it only unlinks the excised session's own reference to it (and
+marks that raw ingestion's attachment blob hash durably excised, per the
+`source.db` step above).
+
+Blob *bytes* are never force-unlinked out from under a lease by excision
+itself: removing the `blob_refs`/`raw_sessions` rows un-references the blob,
+and the existing reference-counted blob GC (`polylogue/storage/blob_gc.py`)
+reclaims the physical bytes on its next run using its own lease discipline.
+
+Coverage: `tests/unit/security/test_excision.py`, including a real
+`parse_sources_archive` round trip (synthetic-corpus fixture, not a hand-
+rolled JSONL literal) proving the batch-skip behavior end to end.
+
+### Mirror/primary lifecycle (Sinex-backed modes — mechanism only)
+
+When Polylogue is Sinex-backed (mirror or primary mode — see the
+Sinex-backed evidence mode work tracked separately), local excision cannot be
+authoritative on its own: another replica may still hold the content.
+`polylogue/security/lifecycle.py` implements the **local half** of that
+lifecycle:
+
+- `polylogue ops excise --mode mirror|primary --yes` writes a durable
+  lifecycle-request/outbox row as an `AssertionKind.EXCISION_REQUEST`
+  assertion in `user.db` — **never in `ops.db`**, so deleting or resetting
+  the disposable ops tier cannot erase a pending request.
+- The request state machine (`pending -> acknowledged -> confirmed`, or
+  `pending -> rejected`, both terminal) is driven by
+  `drive_lifecycle_request` against any `ExcisionLifecycleContract`
+  implementation. `SinexContractFake` is a fault-injecting **test-only**
+  implementation — it can drop N requests (simulated network loss) or force
+  a rejection.
+- **Primary mode invalidates the local replica only after a `confirmed`
+  state** (`apply_primary_invalidation_if_confirmed`); a rejected, still-
+  pending, or unknown request always returns `success=False` with an
+  explicit reason and never touches the archive. A network fault leaves the
+  request `pending` (retryable), never silently reinterpreted as a
+  rejection or a confirmation.
+- A "process restart" is modeled in tests by constructing a **new**
+  `SinexContractFake` instance and re-driving the same durable request id —
+  the outcome is identical because the durable row, not the client's
+  in-memory state, is authoritative.
+
+**Explicit non-goal:** this bead (polylogue-27m) does not claim a real Sinex
+purge, a clean Sinex rebuild, disconnected-replica closure, or a backup-
+restore proof — `polylogue ops excise --mode mirror|primary` only records
+the durable local request today; nothing in this repository yet drives it
+against a real Sinex confirmation. Binding this mechanism to Sinex's real
+`privacy_invalidation_scope`, purge authority, and non-resurrection proof
+across backups/replicas is tracked separately (polylogue-303r.6) and a
+contract-fake-only test run must never be read as satisfying that scope.
+
+Coverage: `tests/unit/security/test_excision_lifecycle.py` (network-loss
+retry, restart-recovers-from-durable-row, `ops.db`-deletion survival,
+rejection-cannot-report-success, confirm-gated invalidation).
+
 ## Non-Threats
 
 Out of scope:
@@ -157,3 +313,9 @@ Out of scope:
   security matrix.
 - `tests/unit/daemon/test_daemon_cli_remote_bind.py` — remote-bind
   refusal coverage.
+- `polylogue/security/secret_scan.py`, `polylogue/security/excision.py`,
+  `polylogue/security/lifecycle.py` — excision and secret-hygiene mechanics
+  (polylogue-27m).
+- `tests/unit/security/test_secret_scan.py`,
+  `tests/unit/security/test_excision.py`,
+  `tests/unit/security/test_excision_lifecycle.py`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import hmac
 import json
 import os
@@ -22,13 +23,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
-from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES, read_view_http_capability_payloads
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
-from polylogue.core.loopback import is_loopback_host, is_loopback_origin
-from polylogue.core.sources import source_name_to_origin
+from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -36,6 +38,20 @@ from polylogue.daemon.events import (
 )
 from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
+from polylogue.daemon.web_auth import (
+    WEB_CREDENTIAL_SCOPES,
+    WebCredentialBootstrapPayload,
+    WebCredentialDecision,
+    WebCredentialRegistry,
+    WebCredentialRevocationPayload,
+    WebCredentialRevokedPayload,
+    WebCredentialScope,
+    credential_cookie,
+    exact_origin_allowed,
+    expired_credential_cookie,
+    read_web_credential_cookie,
+    same_origin_from_headers,
+)
 from polylogue.daemon.web_shell_attachments import (
     LibraryEntry,
     attachment_to_envelope,
@@ -53,8 +69,15 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
 )
-from polylogue.errors import DatabaseError, PolylogueError
 from polylogue.logging import get_logger
+from polylogue.rendering.semantic_card_placement import (
+    SemanticCardPlacement,
+    semantic_card_placement_for_messages,
+)
+from polylogue.rendering.semantic_cards import (
+    lineage_descriptor_from_archive_envelope,
+    lineage_descriptor_from_session,
+)
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import (
@@ -83,11 +106,12 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
 
 logger = get_logger(__name__)
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
+_COORDINATION_CACHE_TTL_S = 2.0
 
 RouteMethod = Literal["GET", "POST", "DELETE"]
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
@@ -124,6 +148,14 @@ class _StaticPostRoute:
     segments: tuple[str, ...]
     handler_name: str
     passes_path: bool = False
+
+
+@dataclass(frozen=True)
+class _CoordinationCacheEntry:
+    """One short-lived coordination response held only by the daemon."""
+
+    payload: JSONDocument
+    expires_at: float
 
 
 _FACET_EXPENSIVE_FAMILIES = ("repos", "action_types")
@@ -166,6 +198,37 @@ def _socket_peer_disconnected(connection: object | None) -> bool:
     except OSError:
         return True
     return bool(data == b"")
+
+
+def _web_privacy_safe_projection(payload: object, *archive_roots: Path | None) -> object:
+    """Drop archive identity and redact configured-root text from web payloads.
+
+    CLI/operator DTOs intentionally retain diagnostic paths. The browser
+    projection is a separate public boundary, including free-form caveats and
+    serialized error details where a path could otherwise reappear.
+    """
+    roots = tuple(
+        {
+            root_text
+            for archive_root in archive_roots
+            if archive_root is not None
+            for root_text in (str(archive_root), str(archive_root.resolve()))
+        }
+    )
+
+    def project(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {str(key): project(child) for key, child in value.items() if key != "archive_root"}
+        if isinstance(value, tuple | list):
+            return [project(child) for child in value]
+        if isinstance(value, str):
+            for root in roots:
+                if root:
+                    value = value.replace(root, "[archive]")
+            return value
+        return value
+
+    return project(payload)
 
 
 def _route_segments(pattern: str) -> tuple[str, ...]:
@@ -238,6 +301,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/health/check", "_handle_health_check"),
         _static_get_route("/api/health", "_handle_health"),
         _static_get_route("/api/status", "_handle_status", passes_params=True),
+        _static_get_route("/api/overview", "_handle_overview"),
         _static_get_route("/api/dev-loop", "_handle_dev_loop"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
@@ -264,11 +328,12 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
 
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     return (
-        _parameterized_get_route("/api/sessions/:id", "_handle_get_session"),
+        _parameterized_get_route("/api/sessions/:id", "_handle_get_session", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/read", "_handle_get_session_read", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
         _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
+        _parameterized_get_route("/api/sessions/:id/evidence-summary", "_handle_get_session_evidence_summary"),
         _parameterized_get_route("/api/sessions/:id/provenance", "_handle_get_session_provenance", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/topology", "_handle_get_session_topology", passes_params=True),
         _parameterized_get_route(
@@ -328,11 +393,22 @@ def _dev_loop_payload() -> JSONDocument:
 
 def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
     return (
+        _StaticPostRoute(
+            "/api/telemetry/mcp-calls",
+            ("api", "telemetry", "mcp-calls"),
+            "_handle_mcp_call_log",
+        ),
         _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
         _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
     )
+
+
+def _cli_read_post_routes() -> tuple[_StaticPostRoute, ...]:
+    """Read-only POST routes whose request bodies carry CLI parameter maps."""
+
+    return (_StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),)
 
 
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
@@ -347,11 +423,14 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/live"),
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
+        ("POST", "/api/web-auth/session"),
+        ("DELETE", "/api/web-auth/session"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
     routes.extend(("POST", route.pattern) for route in _observability_post_routes())
     routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
+    routes.extend(("POST", route.pattern) for route in _cli_read_post_routes())
     routes.extend(user_state_http.user_state_route_patterns())
     return tuple(routes)
 
@@ -372,9 +451,10 @@ def _web_reader_archive_root() -> Path | None:
         if not path.exists():
             return None
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            logger.warning("web-reader archive-root version probe failed for %s: %s", path, exc, exc_info=True)
             return None
         if version != ARCHIVE_VERSION_BY_TIER[tier]:
             return None
@@ -395,12 +475,34 @@ def _utc_timestamp_json() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+_CREDENTIAL_QUERY_PARAMETERS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "api_token",
+        "auth_token",
+        "bearer_token",
+        "client_secret",
+        "credential",
+        "id_token",
+        "password",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
+
+
 def _public_route_from_request_path(raw_path: str) -> str:
-    parsed = urlparse(raw_path)
-    route = parsed.path or "/"
-    if parsed.query:
-        route = f"{route}?{parsed.query}"
-    return route
+    """Project a request to route identity without reflecting query values."""
+
+    return urlparse(raw_path).path or "/"
+
+
+def _request_path_for_log(raw_path: str) -> str:
+    """Keep all query values, including misnamed secrets, out of daemon logs."""
+
+    return urlparse(raw_path).path or "/"
 
 
 def _route_readiness_payload(
@@ -485,7 +587,7 @@ def _archive_datetime_to_ms(value: datetime | None) -> int | None:
 _SCOPE_FILTER_KEYS = frozenset(
     {
         "session_ids",
-        "provider",
+        "origin",
         "source_family",
         "source_root",
         "time_range",
@@ -601,7 +703,7 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
     estimate = insight.estimate
     return {
         "session_id": insight.session_id,
-        "origin": source_name_to_origin(insight.source_name),
+        "origin": insight.origin,
         "model_name": estimate.model_name,
         "normalized_model": estimate.normalized_model,
         "status": estimate.status,
@@ -719,6 +821,9 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),
+        "input_high_water_mark": getattr(prov, "input_high_water_mark", None),
+        "input_high_water_mark_source": getattr(prov, "input_high_water_mark_source", None),
+        "time_confidence": getattr(prov, "time_confidence", "unknown"),
     }
 
 
@@ -758,7 +863,7 @@ def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str,
     }
 
 
-def _profile_panel_payload(profile: Any) -> dict[str, object]:
+def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     """Project a ``SessionProfile`` into the JSON shape served by the reader.
 
     Uses :meth:`SessionProfile.to_dict` for fidelity to the substrate shape
@@ -769,6 +874,7 @@ def _profile_panel_payload(profile: Any) -> dict[str, object]:
         "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
         "materialized": True,
         "profile": body,
+        "provenance": _provenance_dict(provenance),
     }
 
 
@@ -777,6 +883,7 @@ def _empty_profile_panel_payload() -> dict[str, object]:
         "readiness_tag": "q-missing",
         "materialized": False,
         "profile": None,
+        "provenance": None,
     }
 
 
@@ -788,7 +895,7 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
                 "event_id": ev.event_id,
                 "event_index": int(ev.event_index),
                 "session_id": ev.session_id,
-                "origin": source_name_to_origin(ev.source_name),
+                "origin": ev.origin,
                 "evidence": ev.evidence.model_dump(mode="json"),
                 "inference": ev.inference.model_dump(mode="json"),
                 "provenance": _provenance_dict(ev.provenance),
@@ -810,7 +917,7 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
                 "phase_id": ph.phase_id,
                 "phase_index": int(ph.phase_index),
                 "session_id": ph.session_id,
-                "origin": source_name_to_origin(ph.source_name),
+                "origin": ph.origin,
                 "evidence": ph.evidence.model_dump(mode="json"),
                 "inference": _optional_model_dump(ph.inference),
                 "provenance": _provenance_dict(ph.provenance),
@@ -1079,40 +1186,79 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "api_host", "127.0.0.1")
 
     @property
+    def _web_credentials(self) -> WebCredentialRegistry:
+        return self.server.web_credentials
+
+    @property
     def _client_host(self) -> str:
         """Extract client IP from the request."""
-        # The client_address is (host, port) from the underlying socket.
-        return str(self.client_address[0])
+        client_address: object = self.client_address
+        return str(client_address[0]) if isinstance(client_address, tuple) else "127.0.0.1"
 
-    _SSE_ROUTE_PATH = "/api/events"
+    def _web_credential_token(self) -> str | None:
+        return read_web_credential_cookie(self.headers.get("Cookie", ""))
 
-    def _check_auth(self) -> bool:
-        """Validate the Authorization header against the daemon token.
+    def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
+        return self._web_credentials.validate(
+            self._web_credential_token(),
+            required_scope=required_scope,
+            host_header=self.headers.get("Host", ""),
+            origin_header=self.headers.get("Origin", ""),
+            referer_header=self.headers.get("Referer", ""),
+            fetch_site=self.headers.get("Sec-Fetch-Site", ""),
+        )
+
+    def _is_web_client_request(self) -> bool:
+        return self.headers.get("X-Polylogue-Web-Client", "") == "1" or bool(self.headers.get("Sec-Fetch-Site", ""))
+
+    def _send_web_credential_error(self, decision: WebCredentialDecision) -> None:
+        status = (
+            HTTPStatus.FORBIDDEN
+            if decision.state in {"web_credential_wrong_origin", "web_credential_insufficient_scope"}
+            else HTTPStatus.UNAUTHORIZED
+        )
+        self._send_error(status, decision.state, extra_headers=decision.response_headers())
+
+    def _check_auth(self, required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
+        """Validate a machine bearer or a scoped first-party web credential.
 
         When no token is configured the API is open (local dev default).
         When a token IS configured, all clients — including localhost —
         must present it. Loopback is not a security boundary when a
         browser on the same host can reach the daemon.
 
-        The ``access_token`` query parameter is accepted as a fallback
-        ONLY on the SSE route (``/api/events``) — ``EventSource`` cannot
-        set custom headers, so it is the sole legitimate use case.
-        Accepting it broadly would leak bearer tokens into server logs,
-        proxies, and the ``Referer`` header on every other route.
+        Native ``EventSource`` receives the same HttpOnly cookie as fetch, so
+        no credential is ever accepted from a query parameter.
         """
         auth_header = self.headers.get("Authorization", "")
-        parsed = urlparse(self.path)
-        if not auth_header and self._auth_token and parsed.path == self._SSE_ROUTE_PATH:
-            qs_params = parse_qs(parsed.query)
-            qs_token = qs_params.get("access_token", [None])[0]
-            if qs_token:
-                auth_header = f"Bearer {qs_token}"
-        result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
-        if not result.allowed:
-            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
-        return result.allowed
+        if not self._auth_token:
+            return True
+        if auth_header:
+            result = _check_auth_logic(self._auth_token, self._client_host, auth_header)
+            if not result.allowed:
+                self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            return result.allowed
+        if allow_web and self._web_credential_token():
+            decision = self._web_credential_decision(required_scope)
+            if decision.allowed:
+                return True
+            self._send_web_credential_error(decision)
+            return False
+        if allow_web and self._is_web_client_request():
+            decision = self._web_credentials.validate(
+                None,
+                required_scope=required_scope,
+                host_header=self.headers.get("Host", ""),
+                origin_header=self.headers.get("Origin", ""),
+                referer_header=self.headers.get("Referer", ""),
+                fetch_site=self.headers.get("Sec-Fetch-Site", ""),
+            )
+            self._send_web_credential_error(decision)
+            return False
+        self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        return False
 
-    def _check_host_admission(self) -> bool:
+    def _check_host_admission(self, *, credential_request: bool = False) -> bool:
         """Reject requests whose Host header does not name this daemon.
 
         See :func:`_check_host_admission_logic` for the rationale. Applied
@@ -1132,7 +1278,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         host_header = self.headers.get("Host", "")
         if _check_host_admission_logic(host_header, self._api_host):
             return True
-        self._send_error(HTTPStatus.FORBIDDEN, "host_not_allowed")
+        if credential_request:
+            self._send_web_credential_error(WebCredentialDecision(False, "web_credential_wrong_origin"))
+        else:
+            self._send_error(HTTPStatus.FORBIDDEN, "host_not_allowed")
         return False
 
     # ------------------------------------------------------------------
@@ -1180,6 +1329,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self._send_request_id_header()
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _send_json_with_cookie(
+        self,
+        status: HTTPStatus,
+        payload: object,
+        *,
+        set_cookie: str,
+        credential_state: str,
+    ) -> None:
+        """Send public lifecycle JSON while isolating protected cookie transport."""
+
+        raw = _json_bytes(payload)
+        self.send_response(status.value)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Set-Cookie", set_cookie)
+        self.send_header("X-Polylogue-Web-Credential-State", credential_state)
         self._send_request_id_header()
         self.end_headers()
         self.wfile.write(raw)
@@ -1204,7 +1379,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _send_error(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+    def _send_error(
+        self,
+        status: HTTPStatus,
+        code: str,
+        detail: str | None = None,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         """Emit the canonical daemon error envelope.
 
         Every daemon error response shares one machine-output contract
@@ -1217,6 +1399,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(
             status,
             QueryErrorPayload(error=code, detail=detail).model_dump(mode="json"),
+            extra_headers=extra_headers,
         )
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
@@ -1332,6 +1515,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """Dispatch GET requests via route table."""
         if not self._check_host_admission():
             return
+        if self._reject_credential_query():
+            return
 
         # Web shell is the only unauthenticated endpoint (localhost only).
         if (
@@ -1391,7 +1576,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             handle_metrics(self, active_index_db_path())
             return
 
-        if not self._check_auth():
+        required_scope: WebCredentialScope = "events" if path == ["api", "events"] else "read"
+        if not self._check_auth(required_scope):
             return
 
         static_route = next((route for route in _static_get_routes() if tuple(path) == route.segments), None)
@@ -1439,7 +1625,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             path, params = self._parse_path()
             self._dispatch_get(path, params)
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="GET", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="GET",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
+
+    def _reject_credential_query(self) -> bool:
+        names = {
+            key.lower()
+            for key, _value in parse_qsl(urlparse(self.path).query, keep_blank_values=True)
+            if key.lower() in _CREDENTIAL_QUERY_PARAMETERS
+        }
+        if not names:
+            return False
+        self._send_error(
+            HTTPStatus.BAD_REQUEST,
+            "credential_in_query",
+            "credentials must use Authorization or the protected first-party cookie",
+        )
+        return True
 
     def _check_cross_origin(self) -> bool:
         """Reject browser cross-origin POSTs to mutating endpoints.
@@ -1448,9 +1654,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         False if the Origin header indicates a cross-origin browser request.
         """
         origin = self.headers.get("Origin", "")
-        if not origin:
-            return True  # Not a browser request
-        if is_loopback_origin(origin):
+        if exact_origin_allowed(origin, self.headers.get("Host", "")):
             return True
         self._send_error(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
@@ -1460,18 +1664,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if is_loopback_host(self._api_host) and is_loopback_host(self._client_host):
             return True
-        return self._check_auth()
+        return self._check_auth(allow_web=False)
 
     def do_POST(self) -> None:
         try:
             self._do_post_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="POST", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="POST",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
 
     def _do_post_impl(self) -> None:
         path, params = self._parse_path()
+        web_auth_request = path == ["api", "web-auth", "session"]
 
-        if not self._check_host_admission():
+        if not self._check_host_admission(credential_request=web_auth_request):
+            return
+        if self._reject_credential_query():
+            return
+
+        if web_auth_request:
+            self._handle_web_auth_bootstrap()
             return
 
         # OTLP receiver endpoints (#1321) gated on the explicit
@@ -1490,7 +1706,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not load_polylogue_config().observability_enabled:
                 self._send_error(HTTPStatus.NOT_FOUND, "not_found")
                 return
-            if not is_loopback_host(self._api_host) and not self._check_auth():
+            if not is_loopback_host(self._api_host) and not self._check_auth(allow_web=False):
                 return
             handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
             with self._write_gate(f"http.otlp.{path[1]}"):
@@ -1500,17 +1716,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     handler()
             return
 
-        if not self._check_auth():
-            return
-        if not self._check_cross_origin():
-            return
-
         authenticated_route = next(
             (route for route in _authenticated_post_routes() if tuple(path) == route.segments), None
         )
         if authenticated_route is not None:
+            # Archive control operations remain machine-client capabilities.
+            # A first-party shell cookie can mutate user overlays, but cannot
+            # reset, ingest, or run maintenance against the archive.
+            if not self._check_auth(allow_web=False):
+                return
+            if not self._check_cross_origin():
+                return
             handler = cast(Callable[..., None], getattr(self, authenticated_route.handler_name))
             mutating_actor = {
+                "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
                 "_handle_ingest": "http.ingest",
                 "_handle_maintenance_run": "http.maintenance.run",
@@ -1522,6 +1741,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 else:
                     handler()
             return
+        cli_read_route = next((route for route in _cli_read_post_routes() if tuple(path) == route.segments), None)
+        if cli_read_route is not None:
+            if not self._check_auth("read"):
+                return
+            handler = cast(Callable[..., None], getattr(self, cli_read_route.handler_name))
+            handler()
+            return
+        if not self._check_auth("user_state"):
+            return
+        if not self._check_cross_origin():
+            return
         if path[:2] == ["api", "user"]:
             with self._write_gate(f"http.user.{path[2] if len(path) > 2 else 'unknown'}.post"):
                 if user_state_http.dispatch_post(self, path[2:]):
@@ -1532,14 +1762,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             self._do_delete_impl()
         except self._CLIENT_DISCONNECT as exc:
-            logger.debug("daemon.http.client_disconnected", method="DELETE", path=self.path, error=repr(exc))
+            logger.debug(
+                "daemon.http.client_disconnected",
+                method="DELETE",
+                path=_request_path_for_log(self.path),
+                error=repr(exc),
+            )
 
     def _do_delete_impl(self) -> None:
         path, params = self._parse_path()
+        web_auth_request = path == ["api", "web-auth", "session"]
 
-        if not self._check_host_admission():
+        if not self._check_host_admission(credential_request=web_auth_request):
             return
-        if not self._check_auth():
+        if self._reject_credential_query():
+            return
+
+        if web_auth_request:
+            self._handle_web_auth_revoke()
+            return
+
+        if not self._check_auth("user_state"):
             return
         if not self._check_cross_origin():
             return
@@ -1553,6 +1796,60 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
     # Web shell
     # ------------------------------------------------------------------
+
+    def _handle_web_auth_bootstrap(self) -> None:
+        """Rotate a short-lived first-party credential into an HttpOnly cookie."""
+
+        if not (is_loopback_host(self._api_host) and is_loopback_host(self._client_host)):
+            self._send_web_credential_error(WebCredentialDecision(False, "web_credential_wrong_origin"))
+            return
+        origin = same_origin_from_headers(
+            self.headers.get("Origin", ""),
+            self.headers.get("Host", ""),
+        )
+        if origin is None:
+            self._send_error(
+                HTTPStatus.FORBIDDEN,
+                "web_credential_wrong_origin",
+                extra_headers={
+                    "Cache-Control": "no-store",
+                    "X-Polylogue-Web-Credential-State": "web_credential_wrong_origin",
+                },
+            )
+            return
+        issued = self._web_credentials.issue(
+            origin,
+            previous_token=self._web_credential_token(),
+            scopes=WEB_CREDENTIAL_SCOPES,
+        )
+        self._send_json_with_cookie(
+            HTTPStatus.CREATED,
+            WebCredentialBootstrapPayload(credential=issued.public_payload()).model_dump(mode="json"),
+            set_cookie=credential_cookie(
+                issued.token,
+                ttl_s=self._web_credentials.ttl_s,
+                secure=issued.origin.startswith("https://"),
+            ),
+            credential_state="ready",
+        )
+
+    def _handle_web_auth_revoke(self) -> None:
+        """Revoke the current first-party credential and clear its cookie."""
+
+        decision = self._web_credential_decision("user_state")
+        if not decision.allowed:
+            self._send_web_credential_error(decision)
+            return
+        self._web_credentials.revoke(self._web_credential_token())
+        origin = self.headers.get("Origin", "")
+        self._send_json_with_cookie(
+            HTTPStatus.OK,
+            WebCredentialRevocationPayload(
+                credential=WebCredentialRevokedPayload(),
+            ).model_dump(mode="json"),
+            set_cookie=expired_credential_cookie(secure=origin.startswith("https://")),
+            credential_state="web_credential_revoked",
+        )
 
     def _serve_web_shell(self) -> None:
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
@@ -1571,8 +1868,58 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         raw_view = self._get_param(params, "view", "status") or "status"
         view = raw_view if raw_view in {"status", "self", "work-item", "conflicts", "handoff"} else "status"
         limit = self._get_int(params, "limit", 10)
-        payload = build_coordination_envelope(view=cast(Any, view), limit=max(1, min(limit, 50)))
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
+        bounded_limit = max(1, min(limit, 50))
+        fresh = self._get_bool(params, "fresh")
+        cache_key = (view, bounded_limit)
+        server = cast(Any, self.server)
+        started_at = monotonic()
+        entry: _CoordinationCacheEntry | None = None
+        cache_owner = False
+        if not fresh:
+            with server.coordination_cache_lock:
+                while True:
+                    candidate = server.coordination_cache.get(cache_key)
+                    if candidate is not None and candidate.expires_at > monotonic():
+                        entry = candidate
+                        break
+                    if candidate is not None:
+                        del server.coordination_cache[cache_key]
+                    if cache_key not in server.coordination_cache_building:
+                        server.coordination_cache_building.add(cache_key)
+                        cache_owner = True
+                        break
+                    server.coordination_cache_condition.wait()
+        if entry is None:
+            try:
+                payload = model_json_document(
+                    build_coordination_envelope(view=cast(Any, view), limit=bounded_limit), exclude_none=True
+                )
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache[cache_key] = _CoordinationCacheEntry(
+                            payload=payload,
+                            expires_at=monotonic() + _COORDINATION_CACHE_TTL_S,
+                        )
+            finally:
+                if cache_owner:
+                    with server.coordination_cache_lock:
+                        server.coordination_cache_building.discard(cache_key)
+                        server.coordination_cache_condition.notify_all()
+            cache_state = "bypass" if fresh else "miss"
+        else:
+            payload = entry.payload
+            cache_state = "hit"
+        elapsed_ms = (monotonic() - started_at) * 1000
+        self._send_json(
+            HTTPStatus.OK,
+            payload,
+            extra_headers={
+                "Cache-Control": "no-store",
+                "Server-Timing": f"coordination;dur={elapsed_ms:.1f}",
+                "X-Polylogue-Coordination-Cache": cache_state,
+                "X-Polylogue-Coordination-Freshness": f"ttl={_COORDINATION_CACHE_TTL_S:g}s; fresh=1 bypasses",
+            },
+        )
 
     @daemon_safe_handler
     def _handle_paste_browser(self, params: dict[str, list[str]]) -> None:
@@ -1760,14 +2107,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {"ok": False, "status": health.overall_status, "alerts": len(health.alerts)},
                 )
-        except Exception:
+        except Exception as exc:
+            # Response detail stays generic; the reason goes to the daemon log.
+            logger.warning("health endpoint: check raised %s: %s", type(exc).__name__, exc)
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 {"ok": False, "status": "error", "detail": "health check failed"},
             )
 
     def _handle_health(self) -> None:
+        from polylogue.config import load_polylogue_config
         from polylogue.paths import active_index_db_path
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO
 
         dbp = active_index_db_path()
         db_size = dbp.stat().st_size if dbp.exists() else 0
@@ -1787,23 +2139,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not dbp.exists():
                 quick_check_ok = False
             else:
-                with sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25) as conn:
+                with contextlib.closing(sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=0.25)) as conn:
                     conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         except (OSError, sqlite3.Error):
             quick_check_ok = False
 
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "ok": quick_check_ok,
-                "db_size_bytes": db_size,
-                "wal_size_bytes": wal_size,
-                "disk_free_bytes": disk_free,
-                "blob_dir_size_bytes": 0,
-                "quick_check": "pass" if quick_check_ok else "error",
-                "quick_check_age_s": None,
-            },
-        )
+        overview: dict[str, object] = {
+            "ok": quick_check_ok,
+            "db_size_bytes": db_size,
+            "wal_size_bytes": wal_size,
+            "disk_free_bytes": disk_free,
+            "blob_dir_size_bytes": 0,
+            "quick_check": "pass" if quick_check_ok else "error",
+            "quick_check_age_s": None,
+            "archive_root": str(load_polylogue_config().archive_root),
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "daemon_version": POLYLOGUE_VERSION,
+            "commit": VERSION_INFO.commit,
+            "started_at": getattr(self.server, "started_at", None),
+        }
+        self._send_json(HTTPStatus.OK, overview)
 
     # ------------------------------------------------------------------
     # Handlers: status
@@ -1812,21 +2167,95 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_status(self, params: dict[str, list[str]] | None = None) -> None:
         latest_event_id = get_latest_event_id()
-        etag = f'W/"events-{latest_event_id}"'
+        status = get_status_snapshot_payload()
+        status["last_event_id"] = latest_event_id
+        with contextlib.suppress(Exception):
+            from polylogue.daemon.status import _check_daemon_liveness
+
+            status["daemon_liveness"] = _check_daemon_liveness()
+        snapshot = status.get("status_snapshot")
+        snapshot_state = str(snapshot.get("state") or "missing") if isinstance(snapshot, Mapping) else "missing"
+        snapshot_captured_at = (
+            str(snapshot.get("captured_at") or "missing") if isinstance(snapshot, Mapping) else "missing"
+        )
+        etag_material = json.dumps(
+            [
+                latest_event_id,
+                snapshot_state,
+                snapshot_captured_at,
+                status.get("ok"),
+                status.get("daemon_liveness"),
+                status.get("daemon_write_coordinator"),
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        etag_digest = hashlib.sha256(etag_material).hexdigest()[:24]
+        etag = f'W/"status-{etag_digest}"'
         if_none_match = self.headers.get("If-None-Match", "")
         if if_none_match and if_none_match == etag:
             self.send_response(HTTPStatus.NOT_MODIFIED.value)
             self.send_header("ETag", etag)
             self.end_headers()
             return
-        status = get_status_snapshot_payload()
-        if isinstance(status, dict):
-            status["last_event_id"] = latest_event_id
-            with contextlib.suppress(Exception):
-                from polylogue.daemon.status import _check_daemon_liveness
-
-                status["daemon_liveness"] = _check_daemon_liveness()
         self._send_json(HTTPStatus.OK, status, extra_headers={"ETag": etag})
+
+    @daemon_safe_handler
+    def _handle_overview(self) -> None:
+        """Return one bounded, privacy-safe cockpit landing projection."""
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
+            origin_rows = archive._conn.execute(
+                "SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin"
+            ).fetchall()
+            total_sessions = int(archive.count_sessions())
+            total_messages = int(archive._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            recent = archive.list_summaries(limit=6, offset=0)
+        status = get_status_snapshot_payload()
+        snapshot = status.get("status_snapshot")
+        components = status.get("component_readiness")
+        readiness: dict[str, dict[str, object]] = (
+            {
+                str(name): {"state": value.get("state", "unknown")}
+                for name, value in components.items()
+                if isinstance(value, Mapping)
+            }
+            if isinstance(components, Mapping)
+            else {}
+        )
+        origins: dict[str, int] = {str(row[0]): int(row[1]) for row in origin_rows}
+        snapshot_payload: dict[str, object] = (
+            {
+                "state": snapshot.get("state", "unknown"),
+                "captured_at": snapshot.get("captured_at"),
+                "age_s": snapshot.get("age_s"),
+                "refresh_error": snapshot.get("refresh_error"),
+            }
+            if isinstance(snapshot, Mapping)
+            else {"state": "unknown", "captured_at": None, "age_s": None, "refresh_error": None}
+        )
+        overview: dict[str, object] = {
+            "mode": "cockpit-overview",
+            "totals": {"sessions": total_sessions, "messages": total_messages, "origins": origins},
+            "readiness": readiness,
+            "status_snapshot": snapshot_payload,
+            "recent": [self._archive_summary_payload(summary) for summary in recent],
+            "recent_limit": 6,
+        }
+        from polylogue.paths import archive_root as configured_archive_root
+
+        self._send_json(
+            HTTPStatus.OK,
+            _web_privacy_safe_projection(overview, archive_root, configured_archive_root()),
+        )
 
     @daemon_safe_handler
     def _handle_dev_loop(self) -> None:
@@ -2002,7 +2431,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.expression import compile_expression
         from polylogue.archive.query.search_hits import search_query_text
         from polylogue.archive.query.spec import QuerySpecError, parse_query_date
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         # Parse/lower only the ``query`` param through the shared expression path
         # so DSL clauses like ``origin:codex has:paste since:7d`` map to the
@@ -2151,7 +2579,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             or has_thinking
         )
 
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             # Resolve an ``id:`` clause once, up front, so both branches share one
             # miss/ambiguous policy. list_summaries/search_summaries resolve the
             # token internally and raise KeyError (miss) / ValueError (ambiguous);
@@ -2245,14 +2678,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             action.model_dump(mode="json") for action in query_result_action_affordance_payloads()
                         ],
                     }
-                route_state_name, route_state_reason = _session_list_state(len(hits), filtered=True)
+                total = self._run_archive_bounded_query(
+                    archive,
+                    deadline_s=None,
+                    compute=lambda: archive.count_search_sessions(
+                        fts_query,
+                        session_id=resolved_session_id,
+                        **_filter_kw,  # type: ignore[arg-type]
+                    ),
+                )
+                route_state_name, route_state_reason = _session_list_state(total, filtered=True)
                 payload: dict[str, object] = {
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
                     "ranking_policy_version": "1",
                     "hits": [self._archive_search_hit_payload(hit) for hit in hits],
-                    "total": len(hits),
+                    "total": total,
                     "limit": limit,
                     "offset": offset,
                     "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
@@ -2333,8 +2775,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "updated_at": summary.updated_at,
             "message_count": summary.message_count,
             "word_count": summary.word_count,
-            "repo": None,
-            "cwd_display": None,
+            "repo": summary.git_repository_url,
+            "cwd_display": next(iter(summary.working_directories), None),
             "tags": list(summary.tags),
             "flags": None,
             "summary": None,
@@ -2370,10 +2812,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
-    def _handle_get_session(self, conv_id: str) -> None:
+    def _handle_get_session(self, conv_id: str, params: dict[str, list[str]]) -> None:
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            result = self._do_archive_get_session(archive_root, conv_id)
+            result = (
+                self._do_archive_get_session_summary(archive_root, conv_id)
+                if self._get_param(params, "shape") == "summary"
+                else self._do_archive_get_session(archive_root, conv_id)
+            )
             if result is None:
                 self._send_error(HTTPStatus.NOT_FOUND, "not_found")
                 return
@@ -2388,6 +2834,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         self._send_json(HTTPStatus.OK, result)
+
+    def _do_archive_get_session_summary(self, archive_root: Path, conv_id: str) -> object | None:
+        """Read detail metadata without hydrating a session transcript."""
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
+            try:
+                summary = archive.read_summary(archive.resolve_session_id(conv_id))
+            except KeyError:
+                return None
+        payload = self._archive_summary_payload(summary)
+        payload.update(
+            {
+                "display_title": payload["title"],
+                "branch_type": None,
+                "parent_id": None,
+                "model": None,
+                "total": payload["message_count"],
+            }
+        )
+        return payload
 
     async def _do_get_session(self, poly: Polylogue, conv_id: str) -> object:
         conv = await poly.get_session(conv_id)
@@ -2405,6 +2875,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         for msg in conv.messages:
             for att in msg.attachments or []:
                 session_attachments.append(attachment_to_envelope(att, session_id=session_id, message_id=msg.id))
+        # Semantic transcript cards (#ap7): the same provider-neutral shell /
+        # file-edit / task / attachment registry the CLI renders to Markdown
+        # (``cli/messages.py``), projected per-message for the web reader.
+        card_placement = semantic_card_placement_for_messages(
+            conv.messages.to_list(),
+            session_id=session_id,
+            provider_family=conv.origin,
+            lineage=lineage_descriptor_from_session(conv),
+        )
         return {
             "id": session_id,
             "title": conv.title,
@@ -2428,6 +2907,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
                     "material_origin": _material_origin_value(msg),
+                    "duration_ms": msg.duration_ms,
+                    "parent_message_id": msg.parent_id,
+                    "variant_index": msg.branch_index,
                     "word_count": msg.word_count,
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
@@ -2436,6 +2918,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         msg.text,
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     ),
+                    "semantic_entries": card_placement.entries_for(str(msg.id)),
+                    "semantic_cards": card_placement.cards_for(str(msg.id)),
+                    "semantic_card_suppressed": card_placement.is_suppressed(str(msg.id)),
                     "attachments": [
                         attachment_to_envelope(att, session_id=session_id, message_id=msg.id)
                         for att in (msg.attachments or [])
@@ -2444,6 +2929,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 for msg in conv.messages
             ],
             "attachments": session_attachments,
+            "semantic_entries": list(card_placement.session_entries),
             "tags": conv.tags,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
@@ -2457,9 +2943,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
 
     def _do_archive_get_session(self, archive_root: Path, conv_id: str) -> object | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)
@@ -2472,7 +2961,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         updated_at = summary.updated_at
         word_count = summary.word_count
         target_ref = TargetRefPayload.session(session_id)
-        messages = [self._archive_message_payload(session_id, message) for message in envelope.messages]
+        card_placement = self._archive_semantic_card_placement(envelope)
+        messages = [
+            self._archive_message_payload(
+                session_id,
+                message,
+                semantic_entries=card_placement.entries_for(str(message.message_id)),
+                semantic_cards=card_placement.cards_for(str(message.message_id)),
+                semantic_card_suppressed=card_placement.is_suppressed(str(message.message_id)),
+            )
+            for message in envelope.messages
+        ]
         # Flatten per-message attachments plus session-level orphan attachments
         # into one session-level list, mirroring the archive detail handler
         # so the inspector tab and the session envelope share one source of
@@ -2505,16 +3004,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "word_count": word_count,
             "messages": messages,
             "attachments": session_attachments,
+            "semantic_entries": list(card_placement.session_entries),
             "tags": list(summary.tags),
-            "branch_type": None,
-            "parent_id": None,
-            "repo": None,
-            "cwd_display": None,
+            "branch_type": envelope.branch_type,
+            "parent_id": envelope.parent_session_id,
+            "repo": envelope.git_repository_url,
+            "cwd_display": next(iter(envelope.working_directories), None),
             "model": None,
             "flags": None,
             "summary": None,
             "total": len(messages),
         }
+
+    def _archive_semantic_card_placement(self, envelope: ArchiveSessionEnvelope) -> SemanticCardPlacement:
+        """Place the archive's exact composed rows through the shared renderer."""
+
+        return semantic_card_placement_for_messages(
+            envelope.messages,
+            session_id=envelope.session_id,
+            provider_family=envelope.origin,
+            lineage=lineage_descriptor_from_archive_envelope(envelope),
+        )
 
     def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
         from polylogue.api.archive import _archive_attachment_to_domain
@@ -2528,7 +3038,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             for att in message.attachments
         ]
 
-    def _archive_message_payload(self, session_id: str, message: ArchiveMessageRow) -> dict[str, object]:
+    def _archive_message_payload(
+        self,
+        session_id: str,
+        message: ArchiveMessageRow,
+        *,
+        semantic_entries: Sequence[JSONDocument] = (),
+        semantic_cards: Sequence[JSONDocument] = (),
+        semantic_card_suppressed: bool = False,
+    ) -> dict[str, object]:
         message_id = str(message.message_id)
         text = "\n\n".join(str(block.text) for block in message.blocks if block.text)
         has_paste = bool(message.has_paste)
@@ -2542,11 +3060,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "timestamp": message.occurred_at,
             "message_type": message.message_type,
             "material_origin": message.material_origin,
+            "duration_ms": message.duration_ms,
+            "parent_message_id": message.parent_message_id,
+            "variant_index": message.variant_index,
+            "is_active_path": message.is_active_path,
+            "is_active_leaf": message.is_active_leaf,
+            "source_session_id": message.source_session_id,
+            "inherited_prefix": (
+                message.source_session_id != session_id if message.source_session_id is not None else None
+            ),
             "word_count": message.word_count,
             "has_tool_use": bool(message.has_tool_use),
             "has_thinking": bool(message.has_thinking),
             "has_paste_evidence": has_paste,
             "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
+            "semantic_entries": list(semantic_entries),
+            "semantic_cards": list(semantic_cards),
+            "semantic_card_suppressed": semantic_card_suppressed,
             "attachments": self._archive_message_attachments(session_id, message),
         }
 
@@ -2598,6 +3128,85 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.NOT_FOUND, "not_found")
             return
         self._send_json(HTTPStatus.OK, result)
+
+    @daemon_safe_handler
+    def _handle_get_session_evidence_summary(self, conv_id: str) -> None:
+        """Return bounded structural counts for the reader evidence strip."""
+        archive_root = _web_reader_archive_root()
+        if archive_root is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
+            return
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
+            try:
+                session_id = archive.resolve_session_id(conv_id)
+                summary = archive.read_summary(session_id)
+                envelope = archive.read_session(session_id)
+            except KeyError:
+                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
+                return
+            # Prefix-sharing sessions persist a divergent tail but the reader
+            # renders ArchiveStore's composed logical transcript. Query the
+            # canonical blocks/actions relations over those composed message
+            # identities, so evidence describes the same transcript.
+            message_ids_json = json.dumps([message.message_id for message in envelope.messages])
+            tool_calls = int(
+                archive._conn.execute(
+                    "SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_use' "
+                    "AND message_id IN (SELECT value FROM json_each(?))",
+                    (message_ids_json,),
+                ).fetchone()[0]
+            )
+            outcome_row = archive._conn.execute(
+                """SELECT
+                          COALESCE(SUM(outcome = 'ok'), 0),
+                          COALESCE(SUM(outcome = 'failed'), 0),
+                          COALESCE(SUM(outcome = 'unknown'), 0)
+                   FROM (
+                     SELECT CASE
+                       WHEN exit_code IS NOT NULL AND exit_code <> 0 THEN 'failed'
+                       WHEN exit_code = 0 THEN 'ok'
+                       WHEN is_error = 1 THEN 'failed'
+                       WHEN is_error = 0 THEN 'ok'
+                       ELSE 'unknown'
+                     END AS outcome
+                     FROM actions WHERE message_id IN (SELECT value FROM json_each(?))
+                   )""",
+                (message_ids_json,),
+            ).fetchone()
+            try:
+                lineage_rows = archive._conn.execute(
+                    "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id LIMIT 20",
+                    (session_id,),
+                ).fetchall()
+            except sqlite3.Error:
+                logger.warning("session evidence summary could not read lineage refs for %s", conv_id, exc_info=True)
+                lineage_rows = []
+
+        async def _cost(poly: Polylogue) -> object:
+            return await self._do_get_session_cost(poly, conv_id)
+
+        cost_payload = self._sync_run(_cost)
+        cost = cost_payload if isinstance(cost_payload, Mapping) else {"total_usd": None, "confidence_tag": "q-missing"}
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "mode": "session-evidence-summary",
+                "session_id": session_id,
+                "origin": summary.origin,
+                "tool_calls": tool_calls,
+                "outcomes": {"ok": int(outcome_row[0]), "failed": int(outcome_row[1]), "unknown": int(outcome_row[2])},
+                "cost": {"total_usd": cost.get("total_usd"), "confidence_tag": cost.get("confidence_tag", "q-missing")},
+                "lineage_refs": [
+                    {"session_id": str(row[0]), "kind": str(row[1]), "status": str(row[2])} for row in lineage_rows
+                ],
+                "lineage_limit": 20,
+            },
+        )
 
     async def _do_get_session_cost(self, poly: Polylogue, conv_id: str) -> object:
         from polylogue.insights.archive import SessionCostInsightQuery
@@ -2673,6 +3282,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
+            from polylogue.insights.archive import SessionProfileInsight
             from polylogue.storage.insights.session.profiles import hydrate_session_profile
 
             try:
@@ -2686,7 +3296,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 # surface q-missing rather than 503 the whole envelope.
                 profile_record = None
             profile = hydrate_session_profile(profile_record) if profile_record is not None else None
-            panel = _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
+            profile_insight = (
+                SessionProfileInsight.from_record(profile_record, tier="evidence")
+                if profile_record is not None
+                else None
+            )
+            panel = (
+                _profile_panel_payload(profile, profile_insight.provenance)
+                if profile is not None and profile_insight is not None
+                else _empty_profile_panel_payload()
+            )
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
             # :func:`polylogue.insights.provenance.is_stale` helper so the
@@ -2882,12 +3501,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         origin = self._get_param(params, "origin")
         limit = self._get_int(params, "limit", 25)
         detail = self._get_param(params, "detail", "headline") or "headline"
+        from polylogue.paths import archive_root as configured_archive_root
 
         async def _get(poly: Polylogue) -> object:
             report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
             return report.to_dict()
 
-        result = self._sync_run(_get)
+        result = _web_privacy_safe_projection(self._sync_run(_get), configured_archive_root())
         self._send_json(HTTPStatus.OK, result)
 
     @daemon_safe_handler
@@ -2897,7 +3517,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.expression import ExpressionCompileError
         from polylogue.archive.query.spec import clamp_query_limit
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         expression = self._get_param(params, "expression") or ""
         limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
@@ -2936,15 +3555,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 message_type=self._get_param(params, "message_type"),
             )
         except ExpressionCompileError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_query", "message": str(exc)})
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_query", str(exc))
             return
         archive_root = _web_reader_archive_root()
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
 
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
-            payload = query_unit_envelope(archive, request)
+        from polylogue.archive.query.execution_control import (
+            QueryExecutionContext,
+            QueryTimeoutError,
+            classify_unit_expression_workload,
+            execute_archive_read_sync,
+        )
+
+        # The handler thread is dedicated, so the read runs in place; the
+        # execution context supplies the deadline and shares the process-wide
+        # admission controller with the async surfaces (polylogue-z9gh.1).
+        ctx = QueryExecutionContext.create(
+            query_text=expression,
+            workload_class=classify_unit_expression_workload(expression),
+            owner_ref="http.query_units",
+        )
+        try:
+            payload = execute_archive_read_sync(
+                archive_root,
+                lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
+                ctx=ctx,
+                read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
+            )
+        except QueryTimeoutError:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
+            return
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 
@@ -2967,7 +3609,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 exact_fts=self._get_bool(params, "exact_fts"),
             )
         )
-        self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
+        self._send_json(
+            HTTPStatus.OK,
+            _web_privacy_safe_projection(payload.model_dump(mode="json", exclude_none=True), archive_root),
+        )
 
     @daemon_safe_handler
     def _handle_import_explain(self, params: dict[str, list[str]]) -> None:
@@ -3298,8 +3943,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_messages(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        limit = self._get_int(params, "limit", 50)
-        offset = self._get_int(params, "offset", 0)
+        from polylogue.archive.query.spec import clamp_query_limit
+
+        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+        offset = max(0, self._get_int(params, "offset", 0))
 
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
@@ -3325,6 +3972,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             offset=offset,
         )
         session_id = str(conv_id)
+        session = await poly.get_session(conv_id)
+        source_messages = session.messages.to_list() if session is not None else messages
+        placement = semantic_card_placement_for_messages(
+            source_messages,
+            session_id=session_id,
+            provider_family=session.origin if session is not None else None,
+            lineage=lineage_descriptor_from_session(session) if session is not None else None,
+        )
         return {
             "messages": [
                 {
@@ -3337,10 +3992,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
                     "material_origin": _material_origin_value(msg),
+                    "duration_ms": msg.duration_ms,
+                    "parent_message_id": msg.parent_id,
+                    "variant_index": msg.branch_index,
                     "word_count": msg.word_count,
+                    "has_tool_use": bool(msg.has_tool_use),
+                    "has_thinking": bool(msg.has_thinking),
+                    "has_paste_evidence": bool(msg.has_paste),
+                    "paste_spans": envelope_paste_spans(msg.text, has_paste=bool(msg.has_paste)),
+                    "semantic_entries": placement.entries_for(str(msg.id)),
+                    "semantic_cards": placement.cards_for(str(msg.id)),
+                    "semantic_card_suppressed": placement.is_suppressed(str(msg.id)),
+                    "attachments": [
+                        attachment_to_envelope(att, session_id=session_id, message_id=msg.id)
+                        for att in (msg.attachments or [])
+                    ],
                 }
                 for msg in messages
             ],
+            "semantic_entries": list(placement.session_entries),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -3353,9 +4023,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
+        with archive_read_context(
+            archive_root,
+            operation="http.archive.read",
+            arguments={"path": getattr(self, "path", "")},
+            projection="http-read",
+        ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session(session_id)
@@ -3363,8 +4036,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return {"messages": [], "total": 0, "limit": limit, "offset": offset}
         messages = list(envelope.messages)
         page = messages[offset : offset + limit]
+        placement = self._archive_semantic_card_placement(envelope)
         return {
-            "messages": [self._archive_message_payload(envelope.session_id, message) for message in page],
+            "messages": [
+                self._archive_message_payload(
+                    envelope.session_id,
+                    message,
+                    semantic_entries=placement.entries_for(str(message.message_id)),
+                    semantic_cards=placement.cards_for(str(message.message_id)),
+                    semantic_card_suppressed=placement.is_suppressed(str(message.message_id)),
+                )
+                for message in page
+            ],
+            "semantic_entries": list(placement.session_entries),
             "total": len(messages),
             "limit": limit,
             "offset": offset,
@@ -3558,6 +4242,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
 
     @daemon_safe_handler
+    def _handle_cli_query(self) -> None:
+        """Serve a root-request parameter map through the daemon query compiler.
+
+        The CLI sends exactly :meth:`RootModeRequest.query_params` rather than
+        reconstructing a query string itself.  This preserves the daemon as
+        the owner of structured-query lowering while keeping the transport
+        payload deliberately small and stdlib-friendly.
+        """
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 65_536:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            raw_params = body["params"]
+            if not isinstance(raw_params, dict):
+                raise TypeError("params must be an object")
+            from polylogue.cli.root_request import RootModeRequest, _expression_from_query_terms
+
+            request = RootModeRequest.from_params(raw_params)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        params: dict[str, list[str]] = {}
+        for key, value in request.params.items():
+            if value is None or value is False:
+                continue
+            if isinstance(value, tuple | list):
+                params[str(key)] = [str(item) for item in value]
+            elif value is True:
+                params[str(key)] = ["1"]
+            else:
+                params[str(key)] = [str(value)]
+        expression = _expression_from_query_terms(request.query_terms)
+        if expression:
+            params["query"] = [expression]
+        self._handle_list_sessions(params)
+
+    @daemon_safe_handler
     def _handle_reset(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -3602,6 +4327,83 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------------
     # Handlers: ingest
     # ------------------------------------------------------------------
+
+    @daemon_safe_handler
+    def _handle_mcp_call_log(self) -> None:
+        """Persist one MCP call event through the daemon's writer gate."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 16_384:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            call_id = str(body["call_id"])
+            tool_name = str(body["tool_name"])
+            session_id_raw = body.get("session_id")
+            session_id = None if session_id_raw is None else str(session_id_raw)
+            session_ids_raw = body.get("session_ids", [])
+            if not isinstance(session_ids_raw, list):
+                raise TypeError("session_ids must be a list")
+            session_ids = tuple(str(value) for value in session_ids_raw)
+            started_at_ms = int(body["started_at_ms"])
+            finished_at_ms = int(body["finished_at_ms"])
+            success = body["success"]
+            error_detail_raw = body.get("error_detail")
+            error_detail = None if error_detail_raw is None else str(error_detail_raw)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if (
+            not isinstance(body, dict)
+            or not call_id
+            or len(call_id) > 128
+            or not tool_name
+            or len(tool_name) > 256
+            or (session_id is not None and len(session_id) > 2048)
+            or len(session_ids) > 256
+            or any(not value or len(value) > 2048 for value in session_ids)
+            or not isinstance(success, bool)
+            or finished_at_ms < started_at_ms
+            or (error_detail is not None and len(error_detail) > 512)
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        from polylogue.paths import active_index_db_path
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
+        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+        ops_db = active_index_db_path().with_name("ops.db")
+        with open_daemon_connection(ops_db) as conn:
+            table_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name IN ('mcp_call_log', 'mcp_call_session_refs')
+                    """
+                ).fetchone()[0]
+            )
+        if table_count != 2:
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
+        try:
+            with open_daemon_connection(ops_db) as conn:
+                record_mcp_call(
+                    conn,
+                    call_id=call_id,
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    session_ids=session_ids,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                    success=success,
+                    error_detail=error_detail,
+                )
+        except ValueError:
+            self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
 
     @daemon_safe_handler
     def _handle_otlp_post(self, path: list[str]) -> None:
@@ -3843,10 +4645,13 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         auth_token: str | None = None,
         api_host: str = "127.0.0.1",
         write_bridge: DaemonWriteThreadBridge | None = None,
+        web_credentials: WebCredentialRegistry | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
+        self.started_at = datetime.now(UTC).isoformat()
+        self.web_credentials = web_credentials or WebCredentialRegistry()
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:
             self._owned_write_runtime = _StandaloneWriteRuntime()
@@ -3858,6 +4663,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         self.archive_query_admission: threading.BoundedSemaphore = threading.BoundedSemaphore(
             _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
+        self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
+        self.coordination_cache_lock = threading.Lock()
+        self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
+        self.coordination_cache_building: set[tuple[str, int]] = set()
 
     def server_close(self) -> None:
         # cancel_futures=True drops any still-queued (not yet started) work
@@ -3869,7 +4678,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
         # unbounded) and unchanged from today's plain-thread behavior.
         self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
-        owned_write_runtime = self._owned_write_runtime
+        owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         self._owned_write_runtime = None
         if owned_write_runtime is not None:
             owned_write_runtime.close()

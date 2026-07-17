@@ -33,6 +33,8 @@ import pytest
 
 from polylogue.storage.embeddings import materialization
 from polylogue.storage.embeddings.materialization import _record_archive_embedding_success
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,20 +45,6 @@ class _FakeCfg:
     embedding_model: str
 
 
-# Mirrors polylogue/storage/sqlite/archive_tiers/embeddings.py::EMBEDDINGS_DDL,
-# minus the vec0 virtual table and message_embeddings_meta (not needed to
-# exercise this race).
-_EMBEDDING_STATUS_DDL = """
-CREATE TABLE embedding_status (
-    session_id                 TEXT PRIMARY KEY,
-    origin                     TEXT NOT NULL DEFAULT '',
-    message_count_embedded     INTEGER NOT NULL DEFAULT 0 CHECK(message_count_embedded >= 0),
-    last_embedded_at_ms        INTEGER,
-    needs_reindex              INTEGER NOT NULL DEFAULT 0 CHECK(needs_reindex IN (0, 1)),
-    error_message              TEXT
-) STRICT;
-"""
-
 # Verbatim from _reconcile_embedding_config_change (convergence_stages.py:676),
 # the bulk mark issued when a configured model/dimension change is detected.
 _BULK_MARK_NEEDS_REINDEX_SQL = "UPDATE embedding_status SET needs_reindex = 1, error_message = NULL"
@@ -65,7 +53,13 @@ _BULK_MARK_NEEDS_REINDEX_SQL = "UPDATE embedding_status SET needs_reindex = 1, e
 def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute(_EMBEDDING_STATUS_DDL)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+    except sqlite3.OperationalError as exc:
+        conn.close()
+        if "vec0" in str(exc) or "sqlite-vec" in str(exc):
+            pytest.skip("sqlite-vec extension is unavailable")
+        raise
     conn.commit()
     return conn
 

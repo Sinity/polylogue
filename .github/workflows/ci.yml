@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
@@ -33,6 +33,20 @@ jobs:
       - run: uv run devtools verify public-claims --json
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
+
+  interactive-pty:
+    # PTY tests need a controlling terminal and must not share xdist workers.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - run: uv run pytest -q -n 0 tests/unit/cli/test_interactive_cli.py
+        env:
+          POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
 
   test:
     # The full non-integration suite runs single-process under coverage
@@ -56,7 +70,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --frozen
@@ -79,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
@@ -90,11 +104,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen
       - run: uv run pytest -q tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+
+  web-first-party-auth:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev --frozen
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+        working-directory: webui
+      - run: npm run install:e2e-browser:ci
+        working-directory: webui
+      - run: npm run test:e2e
+        working-directory: webui
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
 
@@ -107,7 +144,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - run: uv sync --extra dev --frozen

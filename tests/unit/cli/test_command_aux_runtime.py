@@ -58,7 +58,7 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     summary = MagicMock()
     summary.session_id = "conv-1"
     summary.title = "Test Conv"
-    summary.provider = MagicMock(value="claude-code")
+    summary.origin = "claude-code-session"
 
     stats_by_groups = {
         "repo": {"polylogue": 4},

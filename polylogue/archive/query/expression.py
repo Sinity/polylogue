@@ -42,12 +42,14 @@ and explicit Boolean session predicates:
     blocks where type:code AND text:timeout
     messages where time >= 2026-01-01T00:00:00+00:00
     sessions where repo:polylogue | messages where role:assistant | group by role | count | sort by count desc
+    assertions where kind:annotation AND value.score:>=4
+    exists assertion(value.status:approved)
 
-Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots where ...`` predicates are executable
+Unit-scoped ``messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots/delegations where ...`` predicates are executable
 in two shared paths: ``compile_expression`` keeps the compatibility session
 selector behavior by lowering them to correlated ``exists <unit>(...)``
 predicates, while terminal query-unit surfaces preserve the selected unit and
-return raw message/action/block/assertion/file/observed-event/context-snapshot rows from the same predicate semantics.
+return raw message/action/block/assertion/file/observed-event/context-snapshot/delegation rows from the same predicate semantics.
 SQL-backed terminal units also support exact ``group by FIELD | count``
 aggregate pipelines for the closed aggregate fields declared in this module,
 plus aggregate ``sort by count|key [asc|desc]`` before ``limit``/``offset``.
@@ -56,6 +58,20 @@ instead of discarding pipeline stages while lowering to a session selector.
 They also support ``time >= VALUE``, ``time <= VALUE``, and
 ``time between A and B`` predicates over the same row timestamp used by
 ``sort by time``.
+
+The ``assertion`` unit additionally supports typed JSON-path predicates over
+``value.<dotted.path>`` (polylogue-rxdo.7), since the plain ``value`` field is
+a substring match over the whole JSON blob and cannot express label
+analytics: ``value.score:>=4``, ``value.rubric.confidence:<0.5``, and plain
+equality ``value.status:approved``; combine multiple paths the same way any
+other field predicate combines, with ``AND``/``OR``
+(``value.score:>=4 AND value.status:approved``). Comparison operators (``>``,
+``>=``, ``<``, ``<=``) require a numeric right-hand side and compare the
+extracted scalar as a number; ``=`` (the default when no operator is given)
+compares the raw extracted scalar, so string/boolean/integer labels still
+match by value. The path is restricted to dotted identifier segments (no
+SQLite JSON-path wildcards or array indexing) and is only accepted for the
+``assertion`` unit -- other units reject ``value.*`` fields as unknown.
 
 Unknown fields and unsupported structured forms fail loudly. The Lark grammar
 in this module is the query grammar. Compact field/text clauses and explicit
@@ -88,10 +104,11 @@ Public API
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from lark import Lark, Token, Transformer, v_args
 from lark.exceptions import UnexpectedInput, VisitError
@@ -119,6 +136,7 @@ from polylogue.archive.query.metadata import (
     query_unit_field_names,
     structural_query_fields,
     structural_query_units,
+    terminal_query_source_list,
     terminal_query_source_pairs,
     terminal_query_unit,
 )
@@ -143,7 +161,9 @@ from polylogue.archive.query.spec import (
     normalize_retrieval_lane,
 )
 from polylogue.core.enums import Origin
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
+from polylogue.core.query_identity import query_ref, query_run_ref, result_set_ref
+from polylogue.core.refs import ObjectRef
 
 
 def _count_field_regex() -> str:
@@ -262,6 +282,115 @@ class QueryExpressionAST:
 
     clauses: tuple[_LexToken, ...]
     boolean_predicate: QueryPredicate | None = None
+    ref_operand: RefOperand | None = None
+
+
+RelationGrain = Literal[
+    "session",
+    "message",
+    "action",
+    "block",
+    "assertion",
+    "file",
+    "run",
+    "observed-event",
+    "context-snapshot",
+    "delegation",
+]
+RefEvaluationMode = Literal["re-evaluate", "retained", "resolver-defined"]
+
+
+@dataclass(frozen=True)
+class RefOperand:
+    """A provenance-preserving operand, never a textual query expansion."""
+
+    reference: ObjectRef
+    grain: RelationGrain | None = None
+
+    @property
+    def evaluation_mode(self) -> RefEvaluationMode:
+        if self.reference.kind == "query":
+            return "re-evaluate"
+        if self.reference.kind in {"query-run", "result-set"}:
+            return "retained"
+        return "resolver-defined"
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "kind": "ref_operand",
+            "reference": self.reference.format(),
+            "reference_kind": self.reference.kind,
+            "evaluation_mode": self.evaluation_mode,
+        }
+        if self.grain is not None:
+            payload["grain"] = self.grain
+        return payload
+
+
+@dataclass(frozen=True)
+class ResolvedRefOperand:
+    """Planner resolution of a :class:`RefOperand` relation."""
+
+    operand: RefOperand
+    grain: RelationGrain
+    lineage: tuple[ObjectRef, ...] = ()
+    member_refs: tuple[str, ...] = ()
+
+
+class RefResolver(Protocol):
+    """Narrow planner seam for durable query/result/cohort relation lookup."""
+
+    def resolve_ref_operand(self, operand: RefOperand) -> ResolvedRefOperand: ...
+
+
+class RefOperandCycleError(ExpressionCompileError):
+    """Raised when an operand would make the reference lineage cyclic."""
+
+
+def resolve_ref_operand(
+    operand: RefOperand,
+    resolver: RefResolver,
+    *,
+    ancestry: tuple[ObjectRef, ...] = (),
+) -> ResolvedRefOperand:
+    """Resolve an operand and reject a cycle before relation materialization."""
+
+    ancestry_refs = {ref.format() for ref in ancestry}
+    if operand.reference.format() in ancestry_refs:
+        raise RefOperandCycleError(
+            f"reference cycle detected at {operand.reference.format()}; use a non-recursive query definition",
+            field="from",
+        )
+    resolved = resolver.resolve_ref_operand(operand)
+    if operand.grain is not None and operand.grain != resolved.grain:
+        raise ExpressionCompileError(
+            f"reference {operand.reference.format()} has grain {resolved.grain!r}, not {operand.grain!r}; "
+            "use a same-grain relation or an explicit grain-changing projection",
+            field="from",
+        )
+    # Resolvers may include the direct operand in lineage for explainability;
+    # add it only when absent so a normal one-hop query ref is not mistaken for
+    # a cycle. Repeated ancestors or indirect lineage still fail closed.
+    formatted = [ref.format() for ref in (*ancestry, *resolved.lineage)]
+    if operand.reference.format() not in formatted:
+        formatted.append(operand.reference.format())
+    if len(formatted) != len(set(formatted)):
+        raise RefOperandCycleError(
+            f"reference cycle detected while resolving {operand.reference.format()}; use a non-recursive query definition",
+            field="from",
+        )
+    return resolved
+
+
+@dataclass(frozen=True)
+class ReferenceQueryPipeline:
+    """A pipeline rooted in a durable reference whose grain is planner-resolved."""
+
+    operand: RefOperand
+    stages: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {"source": self.operand.to_payload(), "stages": list(self.stages)}
 
 
 @dataclass(frozen=True)
@@ -360,10 +489,12 @@ class QueryUnitOffsetStage:
 class QueryUnitGroupStage:
     """Aggregate grouping stage in a terminal query-unit pipeline."""
 
-    field: str
+    fields: tuple[str, ...]
 
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "group", "field": self.field}
+        if len(self.fields) == 1:
+            return {"kind": "group", "field": self.fields[0]}
+        return {"kind": "group", "fields": list(self.fields)}
 
 
 @dataclass(frozen=True)
@@ -867,8 +998,10 @@ class _QueryTransformer(Transformer[Token, _LexToken | str | QueryExpressionAST]
         if matched is None:
             raise ExpressionCompileError(f"invalid field clause: {token}", field=None)
         negated, field_name, raw_value = matched.group(1), matched.group(2), matched.group(3)
+        value_path_field = field_name.lower().startswith("value.")
         if raw_value.startswith('"'):
-            raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
+            if not value_path_field:
+                raw_value = _decode_escaped_string(Token("ESCAPED_STRING", raw_value))
         elif raw_value.startswith("("):
             raw_value = raw_value[1:-1]
         return _FieldToken(field=field_name.lower(), raw_value=raw_value, negated=bool(negated))
@@ -898,14 +1031,39 @@ def _canonical_session_alias(field_name: str) -> str:
     return "id" if field_name == "session" else field_name
 
 
+_VALUE_PATH_PREFIX = "value."
+_VALUE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_assertion_value_path_field(field_name: str) -> bool:
+    """Return whether *field_name* is a dynamic ``value.<path>`` assertion field.
+
+    These are not enumerable in the closed structural-field registries
+    (:data:`_ASSERTION_STRUCTURAL_FIELDS` etc.) because the path is caller-
+    chosen JSON-object navigation below the assertion ``value`` column
+    (polylogue-rxdo.7 typed value predicates). Every dotted segment must be a
+    plain identifier -- no SQLite JSON-path wildcards/array indexing -- so the
+    shape stays unambiguous before it reaches SQL lowering.
+    """
+
+    if not field_name.startswith(_VALUE_PATH_PREFIX):
+        return False
+    suffix = field_name[len(_VALUE_PATH_PREFIX) :]
+    if not suffix:
+        return False
+    return all(_VALUE_PATH_SEGMENT_RE.match(segment) for segment in suffix.split("."))
+
+
 def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     field_name = token.field
     session_field = _scoped_session_field(field_name)
     validation_field = session_field or field_name
+    is_value_path_field = session_field is None and _is_assertion_value_path_field(field_name)
     if (
         session_field is None
         and field_name not in EXPRESSION_FIELD_REGISTRY
         and field_name not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             _unknown_query_field_message(field_name, include_structural=True),
@@ -914,13 +1072,20 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
     if (
         validation_field not in _BOOLEAN_SUPPORTED_FIELDS
         and validation_field not in _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS
+        and not is_value_path_field
     ):
         raise ExpressionCompileError(
             f"field {field_name!r} is not supported inside Boolean SQL predicates yet",
             field=field_name,
         )
 
-    values = _split_alternation(token.raw_value) if token.raw_value else ()
+    values = (
+        _split_assertion_value_path_alternation(token.raw_value)
+        if is_value_path_field and token.raw_value
+        else _split_alternation(token.raw_value)
+        if token.raw_value
+        else ()
+    )
     if validation_field == "origin":
         known_origins = {o.value for o in Origin}
         for value in values:
@@ -953,6 +1118,47 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         values = (match.group(2),)
         count_predicate = QueryFieldPredicate(field=field_name, values=values, op=op_text)
         return QueryNotPredicate(count_predicate) if token.negated else count_predicate
+    elif is_value_path_field:
+        if not values:
+            raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+        parsed_values: list[str] = []
+        parsed_ops: set[QueryCompareOp] = set()
+        for raw_value in values:
+            match = re.fullmatch(r"(>=|<=|=|>|<)?(.+)", raw_value.strip(), re.DOTALL)
+            if match is None or not match.group(2).strip():
+                raise ExpressionCompileError(f"field {field_name!r} requires a value", field=field_name)
+            op_text = cast(QueryCompareOp, match.group(1) or "=")
+            value_text = match.group(2).strip()
+            if op_text != "=":
+                try:
+                    numeric_value = float(value_text)
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a numeric value",
+                        field=field_name,
+                    ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {field_name!r} comparison operator {op_text!r} requires a finite numeric value",
+                        field=field_name,
+                    )
+            else:
+                _validate_assertion_value_path_equality_literal(value_text, field_name=field_name)
+            parsed_ops.add(op_text)
+            parsed_values.append(value_text)
+        if len(parsed_ops) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} alternation must use one comparison operator",
+                field=field_name,
+            )
+        op_text = next(iter(parsed_ops))
+        if op_text != "=" and len(parsed_values) != 1:
+            raise ExpressionCompileError(
+                f"field {field_name!r} numeric comparison accepts one value",
+                field=field_name,
+            )
+        value_path_predicate = QueryFieldPredicate(field=field_name, values=tuple(parsed_values), op=op_text)
+        return QueryNotPredicate(value_path_predicate) if token.negated else value_path_predicate
     elif validation_field == "date" and values:
         raw_value = values[-1].strip()
         match = re.fullmatch(r"(>=|<=|>|<)?(.+)", raw_value)
@@ -1063,7 +1269,8 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
             supported = set(query_unit_field_names(unit))
             supported_field = predicate.field
             validation_field = session_field or predicate.field
-        if supported_field not in supported:
+        value_path_field = unit == "assertion" and _is_assertion_value_path_field(supported_field)
+        if supported_field not in supported and not value_path_field:
             raise ExpressionCompileError(
                 f"field {predicate.field!r} is not supported for {unit} predicates",
                 field=predicate.field,
@@ -1150,6 +1357,30 @@ def _validate_predicate_context(predicate: QueryPredicate, *, unit: Literal["ses
                 raise ExpressionCompileError(
                     f"field {validation_field!r} requires a numeric value", field=validation_field
                 ) from exc
+        if value_path_field:
+            if not predicate.values:
+                raise ExpressionCompileError(f"field {predicate.field!r} requires a value", field=predicate.field)
+            if predicate.op != "=":
+                if len(predicate.values) != 1:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} numeric comparison accepts one value",
+                        field=predicate.field,
+                    )
+                try:
+                    numeric_value = float(predicate.values[0])
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a numeric value",
+                        field=predicate.field,
+                    ) from exc
+                if not math.isfinite(numeric_value):
+                    raise ExpressionCompileError(
+                        f"field {predicate.field!r} comparison operator {predicate.op!r} requires a finite numeric value",
+                        field=predicate.field,
+                    )
+            else:
+                for value in predicate.values:
+                    _validate_assertion_value_path_equality_literal(value, field_name=predicate.field)
         return
     if isinstance(predicate, QueryNotPredicate):
         _validate_predicate_context(predicate.child, unit=unit)
@@ -1497,6 +1728,73 @@ def _split_pipeline_stages(expression: str) -> tuple[str, ...]:
     return tuple(stages)
 
 
+_REF_OPERAND_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort"})
+
+
+def _validate_ref_operand_identity(reference: ObjectRef) -> None:
+    """Apply the substrate's canonical identity constraints at the DSL edge."""
+
+    try:
+        if reference.kind == "query":
+            query_ref(reference.object_id)
+        elif reference.kind == "query-run":
+            query_run_ref(reference.object_id)
+        elif reference.kind == "result-set":
+            result_set_ref(reference.object_id)
+    except ValueError as exc:
+        raise ExpressionCompileError(f"invalid {reference.kind} reference: {exc}", field="from") from exc
+
+
+def _parse_ref_operand_stage(stage: str) -> RefOperand | None:
+    """Parse the hand-split ``from <object-ref>`` source stage.
+
+    It intentionally lives outside the Lark grammar with other pipeline
+    stages: a colon-bearing result reference must not compete with the generic
+    ``FIELD_CLAUSE`` terminal.
+    """
+
+    normalized = stage.strip()
+    if not normalized.lower().startswith("from "):
+        return None
+    ref_text = normalized[5:].strip()
+    if not ref_text or any(char.isspace() for char in ref_text):
+        raise ExpressionCompileError("pipeline `from` requires one object reference", field="from")
+    try:
+        reference = ObjectRef.parse(ref_text)
+    except ValueError as exc:
+        raise ExpressionCompileError(f"invalid pipeline `from` reference: {ref_text!r}", field="from") from exc
+    if reference.kind not in _REF_OPERAND_KINDS:
+        supported = ", ".join(sorted(_REF_OPERAND_KINDS))
+        raise ExpressionCompileError(
+            f"pipeline `from` requires a query, query-run, result-set, or cohort reference; got {reference.kind!r}. "
+            f"Supported kinds: {supported}",
+            field="from",
+        )
+    _validate_ref_operand_identity(reference)
+    return RefOperand(reference=reference)
+
+
+def parse_reference_query_pipeline(expression: str) -> ReferenceQueryPipeline | None:
+    """Parse a ``from <ref>`` pipeline into a provenance-carrying AST node.
+
+    Relation lookup is deliberately deferred to the planner, which supplies
+    the grain, retained-run availability, and durable query-edge lineage.
+    """
+
+    stages = _split_pipeline_stages(expression)
+    if not stages:
+        stripped = expression.strip()
+        if not stripped:
+            return None
+        stages = (stripped,)
+    if not stages:
+        return None
+    operand = _parse_ref_operand_stage(stages[0])
+    if operand is None:
+        return None
+    return ReferenceQueryPipeline(operand=operand, stages=stages[1:])
+
+
 #: Canonical query units wired for the ``with <units>`` projection clause.
 #: The clause is unit-agnostic by construction (the fetch/attach path drives off
 #: the descriptor registry), but only units listed here are validated as
@@ -1785,12 +2083,14 @@ def _parse_group_stage(stage: str) -> str | None:
     normalized = " ".join(stage.split()).lower()
     if not normalized.startswith("group by "):
         return None
-    field = normalized.removeprefix("group by ").strip()
-    if not field:
+    raw_fields = normalized.removeprefix("group by ").strip()
+    if not raw_fields:
         raise ExpressionCompileError("pipeline `group by` requires a field", field="group")
-    if field in {"origin", "repo"}:
-        return f"session.{field}"
-    return field
+    fields = tuple(part.strip() for part in raw_fields.split(","))
+    if any(not field for field in fields):
+        raise ExpressionCompileError("pipeline `group by` requires a field after every comma", field="group")
+    normalized_fields = tuple(f"session.{field}" if field in {"origin", "repo"} else field for field in fields)
+    return ",".join(normalized_fields)
 
 
 def _parse_count_stage(stage: str) -> bool:
@@ -1864,6 +2164,12 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 )
             if source.group_by is not None:
                 raise ExpressionCompileError("pipeline `sort by time` must appear before `group by`", field="sort")
+            descriptor = query_unit_descriptor(source.unit)
+            if descriptor is None or not descriptor.time_sort_supported:
+                raise ExpressionCompileError(
+                    f"pipeline `sort by time` is not supported for {source.unit} rows",
+                    field="sort",
+                )
             _ensure_sql_row_pipeline_lowerer(source.unit, stage="sort by time")
         elif source.aggregate != "count":
             raise ExpressionCompileError(
@@ -1894,13 +2200,15 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             raise ExpressionCompileError("pipeline `group by` must appear before `limit` and `offset`", field="group")
         _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="group by")
         _ensure_aggregate_lowerer_supported(source.unit, stage="group by")
-        _validate_aggregate_group_field(source.unit, group_by)
+        group_fields = tuple(group_by.split(","))
+        for group_field in group_fields:
+            _validate_aggregate_group_field(source.unit, group_field)
         return replace(
             source,
             group_by=group_by,
             pipeline_stages=(
                 *source.pipeline_stages,
-                QueryUnitGroupStage(group_by),
+                QueryUnitGroupStage(group_fields),
             ),
         )
     if _parse_count_stage(stage):
@@ -1966,6 +2274,32 @@ def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | No
     return QueryUnitSource(unit=unit, predicate=bound)
 
 
+#: Shape-only prefixes for terminal pipeline stage keywords (``sort by``,
+#: ``group by``, ``limit``, ``offset``). ``count`` has no trailing argument so
+#: it is matched by exact equality instead. Used only to *recognize* that a
+#: stage has the shape of a terminal pipeline action -- never to validate its
+#: contents, so this never raises.
+_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ")
+
+
+def _pipeline_stage_keyword(stage: str) -> str | None:
+    """Return the terminal pipeline stage keyword ``stage`` looks like, if any.
+
+    Distinguishes "this stage has the shape of `count`/`group by`/`sort by`/
+    `limit`/`offset` but was misapplied" from "this stage is unrecognized
+    entirely", so callers can raise a specific, actionable error instead of a
+    generic one for the former.
+    """
+
+    normalized = " ".join(stage.split()).lower()
+    if normalized == "count":
+        return "count"
+    for prefix in _PIPELINE_STAGE_KEYWORD_PREFIXES:
+        if normalized.startswith(prefix):
+            return prefix.strip()
+    return None
+
+
 def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
     stages = _split_pipeline_stages(expression)
     if not stages:
@@ -1979,8 +2313,21 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
         session_predicate = _session_source_predicate(first_stage)
         terminal_source = _parse_plain_unit_source_expression(second_stage)
         if terminal_source is None:
+            keyword = _pipeline_stage_keyword(second_stage)
+            if keyword is not None:
+                raise ExpressionCompileError(
+                    f"pipeline `{keyword}` cannot follow `sessions where ...` directly; "
+                    "`sessions` has no terminal row/aggregate lowerer of its own, only a session-scoping "
+                    "stage. To count matching sessions, use `find <predicate> then analyze --count` instead "
+                    "of a pipeline `| count`. To count/group/sort/limit rows of a specific terminal unit "
+                    "scoped to these sessions, pipe into an executable `<unit>s where ...` terminal stage "
+                    "first, e.g. `sessions where ... | actions where ... | group by FIELD | count`. "
+                    f"Supported terminal units: {terminal_query_source_list()}.",
+                    field=None,
+                )
             raise ExpressionCompileError(
-                "pipeline terminal stage must be an executable `<unit>s where ...` query",
+                "pipeline terminal stage must be an executable `<unit>s where ...` query "
+                f"(got {second_stage!r}); supported terminal units: {terminal_query_source_list()}.",
                 field=None,
             )
         scoped_session_predicate = _bind_scoped_session_predicate(session_predicate, terminal_unit=terminal_source.unit)
@@ -2142,6 +2489,9 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
         expression, _with_units, _with_unit_fields = _split_with_projection_clause(expression)
         if not expression:
             return QueryExpressionAST(())
+    reference_pipeline = parse_reference_query_pipeline(expression)
+    if reference_pipeline is not None:
+        return QueryExpressionAST((), ref_operand=reference_pipeline.operand)
     source_where = _parse_source_where_predicate(expression)
     if source_where is not None:
         return QueryExpressionAST((), boolean_predicate=source_where)
@@ -2291,6 +2641,7 @@ def _ast_payload(
     clauses: tuple[QueryExpressionExplainClause, ...] = (),
     predicate: QueryPredicate | None = None,
     unit_source: QueryUnitSource | None = None,
+    reference_pipeline: ReferenceQueryPipeline | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {"entry": entry}
     if clauses:
@@ -2321,6 +2672,8 @@ def _ast_payload(
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         unit_payload["pipeline"] = unit_source.pipeline.to_payload()
         payload["unit_source"] = unit_payload
+    if reference_pipeline is not None:
+        payload["reference_pipeline"] = reference_pipeline.to_payload()
     return payload
 
 
@@ -2379,6 +2732,34 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
                 execution_legs=execution_legs,
                 plan_description=plan_description,
             ),
+        )
+    reference_pipeline = parse_reference_query_pipeline(stripped)
+    if reference_pipeline is not None:
+        operand = reference_pipeline.operand
+        selected_units = (operand.grain or "unresolved-reference",)
+        execution_legs = ("durable-reference-relation",)
+        plan_description = (
+            f"reference operand: {operand.reference.format()}",
+            f"reference evaluation: {operand.evaluation_mode}",
+            "relation grain: resolver required before materialization",
+        )
+        lowerer = "reference-operand-to-planner-relation"
+        return QueryExpressionExplanation(
+            source_text=source_text,
+            clauses=(),
+            lowerer=lowerer,
+            lowered_spec=SessionQuerySpec(),
+            selected_units=selected_units,
+            execution_legs=execution_legs,
+            plan_description=plan_description,
+            ast=_ast_payload(entry="reference_pipeline", reference_pipeline=reference_pipeline),
+            lowering_plan={
+                "lowerer": lowerer,
+                "selected_units": list(selected_units),
+                "execution_legs": list(execution_legs),
+                "plan_description": list(plan_description),
+                "reference_lineage": [operand.reference.format()],
+            },
         )
     unit_source = parse_unit_source_expression(stripped)
     if unit_source is not None:
@@ -2455,6 +2836,67 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
 def _split_alternation(raw: str) -> tuple[str, ...]:
     """Split ``a|b|c`` into ``("a", "b", "c")``."""
     return tuple(part.strip() for part in raw.split("|") if part.strip())
+
+
+def _split_assertion_value_path_alternation(raw: str) -> tuple[str, ...]:
+    """Split value-path alternatives while preserving JSON string literals."""
+
+    values: list[str] = []
+    start = 0
+    quoted = False
+    escaped = False
+    for index, character in enumerate(raw):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if character == "|" and not quoted:
+            candidate = raw[start:index].strip()
+            if candidate:
+                values.append(candidate)
+            start = index + 1
+    candidate = raw[start:].strip()
+    if candidate:
+        values.append(candidate)
+    return tuple(values)
+
+
+def _validate_assertion_value_path_equality_literal(text: str, *, field_name: str) -> None:
+    """Reject non-scalar or non-finite explicit JSON equality literals."""
+
+    stripped = text.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return
+    if isinstance(decoded, float) and not math.isfinite(decoded):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a finite JSON scalar value",
+            field=field_name,
+        )
+    if isinstance(decoded, int) and not isinstance(decoded, bool):
+        try:
+            numeric_value = float(decoded)
+        except OverflowError as exc:
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            ) from exc
+        if not math.isfinite(numeric_value):
+            raise ExpressionCompileError(
+                f"field {field_name!r} equality requires a finite JSON scalar value",
+                field=field_name,
+            )
+    if isinstance(decoded, dict | list):
+        raise ExpressionCompileError(
+            f"field {field_name!r} equality requires a JSON scalar value",
+            field=field_name,
+        )
 
 
 _RELATIVE_DATE_RE = re.compile(r"^\d+[hdwm]$", re.IGNORECASE)
@@ -2864,6 +3306,14 @@ def compile_expression(expression: str) -> SessionQuerySpec:
     # expression before parsing it (outside the Lark grammar, like ``|`` stages).
     expression, with_units, with_unit_fields = _split_with_projection_clause(expression)
 
+    reference_pipeline = parse_reference_query_pipeline(expression)
+    if reference_pipeline is not None:
+        raise ExpressionCompileError(
+            "pipeline `from` requires the reference-aware query planner; "
+            "a durable relation is never expanded into text at the compatibility selector boundary",
+            field="from",
+        )
+
     ast = parse_expression_ast(expression)
     if ast.boolean_predicate is not None:
         similar_text, residual_predicate = _extract_semantic_seed(ast.boolean_predicate)
@@ -3012,6 +3462,11 @@ __all__ = [
     "QueryExpressionExplainClause",
     "QueryExpressionExplanation",
     "QueryExpressionAST",
+    "RefOperand",
+    "RefOperandCycleError",
+    "RefResolver",
+    "ReferenceQueryPipeline",
+    "ResolvedRefOperand",
     "QueryUnitPipeline",
     "QueryUnitCountStage",
     "QueryUnitGroupStage",
@@ -3029,8 +3484,10 @@ __all__ = [
     "SessionQueryTerminalStage",
     "SessionTerminalAction",
     "_HAS_BOOL_MAP",
+    "parse_reference_query_pipeline",
     "parse_unit_source_expression",
     "parse_expression_ast",
+    "resolve_ref_operand",
     "split_with_clause",
     "split_with_projection_clause",
     "WITH_PROJECTION_SUPPORTED_UNITS",

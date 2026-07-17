@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections import Counter
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,10 @@ from polylogue.archive.raw_materialization import (
     source_path_native_id_candidates,
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.logging import get_logger
+from polylogue.storage.raw_authority import raw_authority_detail_query_handle
+
+logger = get_logger(__name__)
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -25,7 +30,7 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
         return []
     cutoff_ms = int((time.time() - ACTIVE_REBUILD_STALE_AFTER_S) * 1000)
     try:
-        with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -39,7 +44,8 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
                 """,
                 (cutoff_ms,),
             ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("active rebuild-index attempts query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [
         {
@@ -81,6 +87,14 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
             return False
     if not bool(readiness.get("available", False)):
         return False
+    # A surface that composes the archive-debt classifier records a failure to
+    # run it here (see paths._merge_raw_materialization_debt). Readiness that
+    # required the classifier cannot be claimed when the classifier failed.
+    if readiness.get("debt_classifier_error"):
+        return False
+    frontier = readiness.get("raw_authority_frontier")
+    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
+        return False
     blocking_keys = (
         "critical",
         "warning",
@@ -92,30 +106,35 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "lost_source_evidence_count",
         "unchecked",
         "affected_unchecked",
+        "raw_authority_frontier_blocking_count",
+        "raw_authority_blocker_count",
+        "raw_authority_pending_census_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
 
-def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, object]:
+def raw_materialization_readiness_snapshot(
+    active_archive: Path,
+    *,
+    classify_gaps: bool = True,
+) -> dict[str, object]:
     """Return compact raw→index materialization readiness for an archive root.
 
-    This function is used by status/readiness surfaces and must stay cheap on
-    large archives. It classifies only cheap structural explanations for
-    raw-id join gaps: rows already materialized by provider/source aliases and
-    parsed sidecar/metadata artifacts. Remaining gaps are daemon convergence
-    input, not an operator maintenance workflow.
+    Exact classification may inspect every raw-id gap and is therefore reserved
+    for explicit diagnostic reads. ``classify_gaps=False`` keeps the aggregate
+    counters and durable authority state but marks all unclassified gaps as
+    unchecked, which is the bounded periodic-status contract.
     """
     source_db = active_archive / "source.db"
     index_db = active_archive / "index.db"
     if not source_db.exists() or not index_db.exists():
         return {"available": False, "error": "source.db or index.db missing"}
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             raw_columns = _table_columns(conn, "source", "raw_sessions")
             session_columns = _table_columns(conn, "main", "sessions")
-            raw_select_columns = _raw_gap_select_columns(raw_columns)
             row = conn.execute(
                 """
                 WITH raw_rows AS (
@@ -176,34 +195,38 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 LIMIT 16
                 """
             ).fetchall()
-            gap_rows = conn.execute(
-                f"""
-                WITH raw_rows AS (
-                    SELECT
-                        {raw_select_columns},
-                        EXISTS (
-                            SELECT 1
-                            FROM main.sessions s
-                            WHERE s.raw_id = r.raw_id
-                        ) AS is_materialized
-                    FROM source.raw_sessions r
-                    WHERE COALESCE(r.validation_status, '') != 'skipped'
+            classified_counts: Counter[str] = Counter()
+            parse_failed_origins: set[str] = set()
+            if classify_gaps:
+                raw_select_columns = _raw_gap_select_columns(raw_columns)
+                gap_rows = conn.execute(
+                    f"""
+                    WITH raw_rows AS (
+                        SELECT
+                            {raw_select_columns},
+                            EXISTS (
+                                SELECT 1
+                                FROM main.sessions s
+                                WHERE s.raw_id = r.raw_id
+                            ) AS is_materialized
+                        FROM source.raw_sessions r
+                        WHERE COALESCE(r.validation_status, '') != 'skipped'
+                    )
+                    SELECT *
+                    FROM raw_rows
+                    WHERE NOT is_materialized
+                    """,
+                ).fetchall()
+                classified_counts, parse_failed_origins = _classify_raw_gap_rows(
+                    conn,
+                    active_archive,
+                    gap_rows,
+                    raw_columns=raw_columns,
+                    session_columns=session_columns,
+                    has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
+                    has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
+                    has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
                 )
-                SELECT *
-                FROM raw_rows
-                WHERE NOT is_materialized
-                """,
-            ).fetchall()
-            classified_counts, parse_failed_origins = _classify_raw_gap_rows(
-                conn,
-                active_archive,
-                gap_rows,
-                raw_columns=raw_columns,
-                session_columns=session_columns,
-                has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
-                has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
-                has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
-            )
             adoption_deferred_count = 0
             if _table_columns(conn, "main", "raw_revision_applications"):
                 adoption_deferred_count = int(
@@ -223,6 +246,138 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 )
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
+            authority_census: dict[str, object] | None = None
+            authority_frontier: dict[str, object] | None = None
+            authority_frontier_blocking_count = 0
+            authority_frontier_remediation_refs: list[dict[str, object]] = []
+            authority_pending_census_count = 0
+            if _table_columns(conn, "source", "raw_authority_censuses"):
+                authority_pending_census_count = int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM source.raw_authority_censuses
+                        WHERE lifecycle_status = 'planned'
+                        """
+                    ).fetchone()[0]
+                )
+                census_row = conn.execute(
+                    """
+                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
+                           plan_count, post_inventory_digest, post_residual_digest,
+                           post_plan_count, executable_plan_count, residual_plan_count,
+                           predecessor_census_id, mode, lifecycle_status, quiescent,
+                           fixed_point, completed_at_ms
+                    FROM source.raw_authority_censuses
+                    WHERE lifecycle_status IN ('completed', 'interrupted')
+                    ORDER BY sequence_no DESC LIMIT 1
+                    """
+                ).fetchone()
+                if census_row is not None:
+                    authority_census = {
+                        "census_id": str(census_row["census_id"]),
+                        "sequence_no": int(census_row["sequence_no"]),
+                        "inventory_digest": str(census_row["inventory_digest"]),
+                        "residual_digest": str(census_row["residual_digest"]),
+                        "plan_count": int(census_row["plan_count"]),
+                        "post_inventory_digest": str(census_row["post_inventory_digest"]),
+                        "post_residual_digest": str(census_row["post_residual_digest"]),
+                        "post_plan_count": int(census_row["post_plan_count"]),
+                        "executable_plan_count": int(census_row["executable_plan_count"]),
+                        "residual_plan_count": int(census_row["residual_plan_count"]),
+                        "predecessor_census_id": census_row["predecessor_census_id"],
+                        "mode": str(census_row["mode"]),
+                        "lifecycle_status": str(census_row["lifecycle_status"]),
+                        "quiescent": bool(census_row["quiescent"]),
+                        "fixed_point": bool(census_row["fixed_point"]),
+                        "completed_at_ms": int(census_row["completed_at_ms"]),
+                        "pending_census_count": authority_pending_census_count,
+                        "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
+                    }
+                frontier_row = conn.execute(
+                    """
+                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
+                           plan_count, executable_plan_count, residual_plan_count,
+                           lifecycle_status, completed_at_ms, scope_json,
+                           post_residual_json
+                    FROM source.raw_authority_censuses
+                    WHERE lifecycle_status IN ('completed', 'interrupted')
+                      AND json_extract(scope_json, '$.schema') =
+                          'polylogue.raw-authority-frontier-scope.v1'
+                    ORDER BY sequence_no DESC LIMIT 1
+                    """
+                ).fetchone()
+                if frontier_row is not None:
+                    import json
+
+                    frontier_scope = json.loads(str(frontier_row["scope_json"]))
+                    # An apply census records its pre-application scope for
+                    # auditability, then publishes the actual frontier in the
+                    # postflight residual.  Readiness must reflect that
+                    # terminal state rather than keep an already repaired plan
+                    # blocking until some later inspection happens to run.
+                    frontier_post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
+                    postflight_state_counts = frontier_post_residual.get("frontier_state_counts")
+                    postflight_residual_state_counts = frontier_post_residual.get("state_counts")
+                    scope_state_counts = frontier_scope.get("state_counts")
+                    frontier_state_counts_source = (
+                        postflight_state_counts if isinstance(postflight_state_counts, Mapping) else scope_state_counts
+                    )
+                    frontier_state_counts = {
+                        str(key): int(value) for key, value in dict(frontier_state_counts_source or {}).items()
+                    }
+                    blocking_state_counts = {
+                        str(key): int(value)
+                        for key, value in dict(
+                            postflight_residual_state_counts
+                            if isinstance(postflight_residual_state_counts, Mapping)
+                            else frontier_state_counts
+                        ).items()
+                    }
+                    nonblocking_states = {"proven_current", "superseded"}
+                    authority_frontier_blocking_count = sum(
+                        count for state, count in blocking_state_counts.items() if state not in nonblocking_states
+                    )
+                    authority_frontier = {
+                        "census_id": str(frontier_row["census_id"]),
+                        "sequence_no": int(frontier_row["sequence_no"]),
+                        "inventory_digest": str(frontier_scope.get("inventory_digest") or ""),
+                        "plan_inventory_digest": str(frontier_row["inventory_digest"]),
+                        "residual_digest": str(frontier_row["residual_digest"]),
+                        "plan_count": int(frontier_row["plan_count"]),
+                        "executable_plan_count": int(frontier_row["executable_plan_count"]),
+                        "residual_plan_count": int(frontier_row["residual_plan_count"]),
+                        "state_counts": frontier_state_counts,
+                        "blocking_count": authority_frontier_blocking_count,
+                        "lifecycle_status": str(frontier_row["lifecycle_status"]),
+                        "completed_at_ms": int(frontier_row["completed_at_ms"]),
+                        "query_handle": (f"polylogue://raw-authority-census/{frontier_row['census_id']}/0"),
+                    }
+            authority_blocker_count = 0
+            if _table_columns(conn, "source", "raw_authority_blockers"):
+                authority_blocker_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
+                    ).fetchone()[0]
+                )
+                authority_frontier_remediation_refs = [
+                    {
+                        "blocker_id": str(blocker_id),
+                        "plan_id": str(plan_id),
+                        "detail_query_handle": raw_authority_detail_query_handle(str(census_id), str(plan_id)),
+                    }
+                    for blocker_id, plan_id, census_id in conn.execute(
+                        """
+                        SELECT b.blocker_id, b.plan_id, b.census_id
+                        FROM source.raw_authority_blockers AS b
+                        JOIN source.raw_authority_plans AS p ON p.plan_id = b.plan_id
+                        WHERE b.resolved_at_ms IS NULL
+                          AND json_extract(p.authority_witness_json, '$.schema') =
+                              'polylogue.raw-authority-frontier-plan.v1'
+                        ORDER BY b.created_at_ms, b.blocker_id
+                        LIMIT 16
+                        """
+                    )
+                ]
     except Exception as exc:
         return {
             "available": False,
@@ -242,7 +397,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     critical = actionable
     affected_actionable = parse_failed
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
-    classification = "cheap_projection" if classified or adoption_deferred_count else "not_run"
+    classification = "cheap_projection" if classify_gaps and (classified or adoption_deferred_count) else "not_run"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
         "raw_id_join_gap": raw_id_join_gap_count,
@@ -281,6 +436,16 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
         "lost_source_evidence_samples": lost_source_evidence_samples,
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
+        "raw_authority_census": authority_census,
+        "raw_authority_frontier": authority_frontier,
+        "raw_authority_frontier_blocking_count": authority_frontier_blocking_count,
+        "raw_authority_frontier_remediation_refs": authority_frontier_remediation_refs,
+        "raw_authority_blocker_count": authority_blocker_count,
+        "raw_authority_pending_census_count": authority_pending_census_count,
+        "raw_authority_ledger_counts": {
+            "unresolved_blockers": authority_blocker_count,
+            "pending_censuses": authority_pending_census_count,
+        },
     }
 
 
@@ -307,7 +472,7 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
             "lost_source_evidence_samples": [],
         }
     try:
-        with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
@@ -401,17 +566,18 @@ def _missing_source_raw_session_samples(conn: sqlite3.Connection, *, limit: int 
 
 
 def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
-    try:
-        row = conn.execute(sql).fetchone()
-    except sqlite3.Error:
-        return 0
+    row = conn.execute(sql).fetchone()
     return int(row[0] or 0) if row is not None else 0
 
 
 def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
     try:
-        rows = conn.execute(f"PRAGMA {schema}.table_info({table})").fetchall()
-    except sqlite3.Error:
+        # ``sessions.session_id`` and other identity columns are generated.
+        # table_info omits generated/hidden columns, which made exact lost-raw
+        # counts pair with empty samples on the canonical archive schema.
+        rows = conn.execute(f"PRAGMA {schema}.table_xinfo({table})").fetchall()
+    except sqlite3.Error as exc:
+        logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
         return frozenset()
     return frozenset(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows)
 

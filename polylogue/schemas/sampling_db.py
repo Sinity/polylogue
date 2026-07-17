@@ -9,10 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypeAlias, overload
 
+import ijson
+from ijson.common import ObjectBuilder
+
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue, require_json_value
 from polylogue.core.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
@@ -25,6 +29,11 @@ from polylogue.schemas.observation import (
     SchemaUnit,
     extract_schema_units_from_payload,
     resolve_provider_config,
+)
+from polylogue.schemas.observation_models import (
+    SCHEMA_SAMPLE_STRING_LIMIT,
+    ObservationTerminalRecorder,
+    ObservationTerminalStatus,
 )
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.connection_profile import connection_context
@@ -63,6 +72,7 @@ class _RawSessionRow:
     blob_hash: bytes
     file_mtime_ms: int | None
     acquired_at_ms: int | None
+    validation_status: str | None
 
     @property
     def provider_token(self) -> str:
@@ -105,6 +115,26 @@ def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
         blob_hash=bytes(row["blob_hash"]) if row["blob_hash"] is not None else b"",
         file_mtime_ms=row["file_mtime_ms"],
         acquired_at_ms=row["acquired_at_ms"],
+        validation_status=row["validation_status"],
+    )
+
+
+def _record_terminal(
+    recorder: ObservationTerminalRecorder | None,
+    row: _RawSessionRow,
+    *,
+    status: ObservationTerminalStatus,
+    reason: str,
+    artifact_kind: str | None = None,
+) -> None:
+    if recorder is None:
+        return
+    recorder(
+        raw_id=row.raw_id,
+        status=status,
+        artifact_kind=artifact_kind,
+        source_path=row.source_path,
+        reason=reason,
     )
 
 
@@ -134,19 +164,15 @@ def _iter_record_stream_units(
     if canonical_schema_provider(runtime_provider) != str(source_name):
         return
 
-    try:
-        samples = extract_record_samples_from_raw_content(
-            raw_content,
-            max_samples=_record_sample_limit(
-                config=config,
-                max_samples=max_samples,
-                full_corpus=full_corpus,
-            ),
-            record_type_key=config.record_type_key,
-        )
-    except Exception:
-        logger.exception("Failed to extract record samples from raw content: %s", raw_content)
-        samples = []
+    samples = extract_record_samples_from_raw_content(
+        raw_content,
+        max_samples=_record_sample_limit(
+            config=config,
+            max_samples=max_samples,
+            full_corpus=full_corpus,
+        ),
+        record_type_key=config.record_type_key,
+    )
 
     if not samples:
         return
@@ -159,6 +185,7 @@ def _iter_record_stream_units(
         observed_at=row.observed_at,
         config=config,
         max_samples=max_samples,
+        full_corpus=full_corpus,
     )
 
 
@@ -168,19 +195,50 @@ def _build_raw_payload_envelope_for_row(
     source_name: Provider,
     raw_content: Path,
     config: ProviderConfig,
-) -> RawPayloadEnvelope | None:
-    try:
-        from polylogue.schemas import sampling as sampling_root
+) -> tuple[RawPayloadEnvelope | None, bool]:
+    from polylogue.schemas import sampling as sampling_root
 
-        return sampling_root.build_raw_payload_envelope(
-            raw_content,
+    compacted_payload = _stream_compact_json_document(raw_content)
+    return (
+        sampling_root.build_raw_payload_envelope(
+            compacted_payload if compacted_payload is not None else raw_content,
             source_path=row.source_path,
             fallback_provider=row.provider_token or str(source_name),
             jsonl_dict_only=config.sample_granularity == "record",
-        )
-    except Exception:
-        logger.exception("Failed to build raw payload envelope for %s", raw_content)
-        return None
+        ),
+        compacted_payload is not None,
+    )
+
+
+def _stream_compact_json_document(raw_content: Path) -> JSONValue | None:
+    """Decode JSON while bounding retained string values for schema inference.
+
+    Schema inference observes structure and small representative values; it
+    never consumes complete transcript bodies.  Truncating value events before
+    ``ObjectBuilder`` retains them avoids materializing multi-megabyte message
+    strings and then copying them during the ordinary schema compaction pass.
+    Map keys remain complete because they are structural evidence.
+
+    ``None`` means the blob does not look like a JSON document.  The caller
+    then delegates to the ordinary raw-envelope decoder for SQLite and other
+    provider-specific artifacts.
+    """
+    with raw_content.open("rb") as handle:
+        prefix = handle.read(64).lstrip()
+        if not prefix.startswith((b"{", b"[")):
+            return None
+        handle.seek(0)
+        builder = ObjectBuilder()
+        try:
+            for event, value in ijson.basic_parse(handle, use_float=True):
+                if event == "string" and isinstance(value, str):
+                    value = value[:SCHEMA_SAMPLE_STRING_LIMIT]
+                builder.event(event, value)
+        except ijson.JSONError:
+            # Preserve the ordinary decoder's JSONL and provider-specific
+            # fallbacks for malformed or concatenated document-like blobs.
+            return None
+    return require_json_value(builder.value, context="stream-compacted schema payload")
 
 
 def _iter_schema_units_from_db(
@@ -190,6 +248,7 @@ def _iter_schema_units_from_db(
     config: ProviderConfig,
     max_samples: int | None = None,
     full_corpus: bool = False,
+    terminal_recorder: ObservationTerminalRecorder | None = None,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_sessions.
 
@@ -209,7 +268,8 @@ def _iter_schema_units_from_db(
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             f"""
-            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms
+            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                   validation_status
             FROM raw_sessions
             WHERE origin IN ({placeholders})
             """,
@@ -223,32 +283,89 @@ def _iter_schema_units_from_db(
             for row in batch:
                 raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
 
+                path_classification = classify_artifact_path(
+                    row.source_path,
+                    provider=row.provider_token or source_name,
+                )
+                if path_classification is not None and not path_classification.schema_eligible:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason=f"artifact_taxonomy:{path_classification.reason}",
+                        artifact_kind=path_classification.kind.value,
+                    )
+                    continue
+
+                if row.validation_status == "failed":
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="quarantined",
+                        reason="source_validation_failed",
+                    )
+                    continue
+
                 if config.sample_granularity == "record":
-                    yielded_record_units = False
-                    for unit in _iter_record_stream_units(
-                        row=row,
+                    try:
+                        record_units = list(
+                            _iter_record_stream_units(
+                                row=row,
+                                source_name=source_name,
+                                raw_content=raw_content,
+                                config=config,
+                                max_samples=max_samples,
+                                full_corpus=full_corpus,
+                            )
+                        )
+                    except Exception:
+                        logger.exception("Failed to extract record samples from raw content: %s", raw_content)
+                        record_units = []
+                    if record_units:
+                        yield from record_units
+                        artifact_kinds = {unit.artifact_kind for unit in record_units}
+                        _record_terminal(
+                            terminal_recorder,
+                            row,
+                            status="included",
+                            reason="observed_schema_units",
+                            artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
+                        )
+                        continue
+
+                try:
+                    envelope, values_compacted = _build_raw_payload_envelope_for_row(
+                        row,
                         source_name=source_name,
                         raw_content=raw_content,
                         config=config,
-                        max_samples=max_samples,
-                        full_corpus=full_corpus,
-                    ):
-                        yielded_record_units = True
-                        yield unit
-                    if yielded_record_units:
-                        continue
-
-                envelope = _build_raw_payload_envelope_for_row(
-                    row,
-                    source_name=source_name,
-                    raw_content=raw_content,
-                    config=config,
-                )
+                    )
+                except Exception:
+                    logger.exception("Failed to build raw payload envelope for %s", raw_content)
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="decode_failed",
+                        reason="payload_decode_failed",
+                    )
+                    continue
                 if envelope is None:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="decode_failed",
+                        reason="payload_envelope_missing",
+                    )
                     continue
                 if canonical_schema_provider(envelope.provider) != str(source_name):
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason="provider_mismatch",
+                    )
                     continue
-                yield from extract_schema_units_from_payload(
+                units = extract_schema_units_from_payload(
                     envelope.payload,
                     source_name=source_name,
                     source_path=row.source_path,
@@ -256,6 +373,24 @@ def _iter_schema_units_from_db(
                     observed_at=row.observed_at,
                     config=config,
                     max_samples=max_samples,
+                    values_compacted=values_compacted,
+                )
+                if not units:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="unsupported",
+                        reason="no_schema_eligible_units",
+                    )
+                    continue
+                yield from units
+                artifact_kinds = {unit.artifact_kind for unit in units}
+                _record_terminal(
+                    terminal_recorder,
+                    row,
+                    status="included",
+                    reason="observed_schema_units",
+                    artifact_kind=next(iter(artifact_kinds)) if len(artifact_kinds) == 1 else "mixed",
                 )
 
 

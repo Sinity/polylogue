@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import posixpath
+import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -20,7 +19,6 @@ from jinja2 import DictLoader, Environment, select_autoescape
 from devtools import repo_root as _get_root
 from devtools.pages_style import PAGES_STYLE
 from devtools.pages_templates import PAGES_TEMPLATES
-from polylogue.paths import active_index_db_path
 from polylogue.rendering.renderers.html import PygmentsHighlighter
 from polylogue.rendering.renderers.html_sanitizer import sanitize_html
 
@@ -213,7 +211,19 @@ def _render_markdown(
         return str(renderer.renderToken(tokens, idx, options, env))
 
     renderer.rules["link_open"] = _link_open
-    result: str = md.render(content)
+    tokens = md.parse(content)
+    seen_slugs: dict[str, int] = {}
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or index + 1 >= len(tokens):
+            continue
+        title = tokens[index + 1].content
+        base = re.sub(r"[^\w\- ]", "", title.casefold()).replace("_", "")
+        base = re.sub(r"\s+", "-", base).strip("-") or "section"
+        occurrence = seen_slugs.get(base, 0)
+        seen_slugs[base] = occurrence + 1
+        token.attrSet("id", base if occurrence == 0 else f"{base}-{occurrence}")
+
+    result: str = md.renderer.render(tokens, md.options, {})
     return result
 
 
@@ -258,20 +268,6 @@ def _nav_data_for_page(config: PagesConfig, page: PageEntry) -> list[dict[str, A
     ]
 
 
-def _home_links_for_page(page: PageEntry, page_paths: set[str]) -> list[dict[str, str]]:
-    candidates = [
-        ("Run the demos", "/demos/"),
-        ("Inspect the proof", "/proof/"),
-        ("Get started", "/docs/getting-started/"),
-        ("Polylogue on Sinex", "/architecture/sinex/"),
-    ]
-    return [
-        {"label": label, "href": _href_between_pages(page.path, target), "suffix": "->"}
-        for label, target in candidates
-        if target in page_paths
-    ]
-
-
 def _validate_site_config(config: PagesConfig) -> None:
     page_paths = {page.path for page in config.pages}
     missing_nav = [
@@ -283,61 +279,6 @@ def _validate_site_config(config: PagesConfig) -> None:
     if missing_nav:
         joined = "\n".join(f"- {item}" for item in missing_nav)
         raise ValueError(f"Navigation entries point at unbuilt pages:\n{joined}")
-
-
-def _site_archive_stats() -> dict[str, Any]:
-    """Return cheap archive counts for the site hero without invoking the CLI.
-
-    The hero counts are read from the live archive and are therefore volatile:
-    in CI no archive exists (stats are empty), while a local dev archive — and
-    especially one mid re-ingest — changes second to second. Embedding those
-    counts in the built HTML made ``render pages --check`` non-deterministic
-    (a fresh build never matched a `.cache/site` built moments earlier),
-    perma-failing the pre-push gate during any ingest. The site build is
-    therefore reproducible by default: live counts are read only when
-    ``POLYLOGUE_PAGES_LIVE_STATS`` is set (e.g. for a deliberate local preview).
-    """
-    if not os.environ.get("POLYLOGUE_PAGES_LIVE_STATS"):
-        return {}
-    path = active_index_db_path()
-    if not path.exists():
-        return {}
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
-        try:
-            if not _table_exists(conn, "sessions"):
-                return {}
-            row = conn.execute(
-                """
-                SELECT
-                    COUNT(*) AS total_sessions,
-                    COALESCE(SUM(message_count), 0) AS total_messages,
-                    COUNT(DISTINCT origin) AS provider_count
-                FROM sessions
-                """
-            ).fetchone()
-            if row is None:
-                return {}
-            total_sessions = int(row[0] or 0)
-            total_messages = int(row[1] or 0)
-            provider_count = int(row[2] or 0)
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return {}
-    return {
-        "total_sessions": total_sessions,
-        "total_messages": total_messages,
-        "provider_count": provider_count,
-    }
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def build_site(config_path: Path | None = None, output_dir: Path | None = None) -> Path:
@@ -356,14 +297,6 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
-
-    stats_raw = _site_archive_stats()
-
-    stats = {
-        "session_count": f"{stats_raw.get('total_sessions', 0):,}",
-        "message_count": f"{stats_raw.get('total_messages', 0) / 1_000_000:.1f}M",
-        "provider_count": str(stats_raw.get("provider_count", 0)),
-    }
 
     for page in config.pages:
         out_path = output_dir / page.path.lstrip("/")
@@ -393,10 +326,16 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
             "nav": _nav_data_for_page(config, page),
             "current_path": page.path,
             "content": content_html,
-            "stats": stats,
             "site_root": _href_between_pages(page.path, "/index.html"),
-            "search_href": _href_between_pages(page.path, "/docs/search/") if "/docs/search/" in page_paths else "",
-            "home_links": _home_links_for_page(page, page_paths),
+            "body_class": "page-home"
+            if page.template == "home.html"
+            else "page-board"
+            if page.template == "beads.html"
+            else "page-doc",
+            "get_started_href": _href_between_pages(page.path, "/docs/getting-started/"),
+            "docs_href": _href_between_pages(page.path, "/docs/"),
+            "board_href": _href_between_pages(page.path, "/beads/"),
+            "demos_href": _href_between_pages(page.path, "/demos/"),
             "updated_at": "",
             **data,
         }
@@ -411,6 +350,12 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
         html: str = template.render(**template_data)
         out_path.write_text(html)
 
+    issues_source = ROOT / ".beads" / "issues.jsonl"
+    board_dir = output_dir / "beads"
+    if issues_source.is_file() and "/beads/" in page_paths:
+        board_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(issues_source, board_dir / "issues.jsonl")
+
     return output_dir
 
 
@@ -418,9 +363,12 @@ class _SiteLinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[str] = []
+        self.ids: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_map = dict(attrs)
+        if attr_map.get("id"):
+            self.ids.add(attr_map["id"] or "")
         if tag == "a" and attr_map.get("href"):
             self.links.append(attr_map["href"] or "")
         elif tag in {"img", "script"} and attr_map.get("src"):
@@ -431,8 +379,10 @@ class _SiteLinkParser(HTMLParser):
 
 def _local_link_target(page_path: Path, site_dir: Path, href: str) -> Path | None:
     parsed = urlparse(href)
-    if parsed.scheme or parsed.netloc or href.startswith("#"):
+    if parsed.scheme or parsed.netloc:
         return None
+    if not parsed.path and parsed.fragment:
+        return page_path
     if parsed.path in {"", "#"}:
         return None
     path = parsed.path
@@ -451,9 +401,13 @@ def _local_link_target(page_path: Path, site_dir: Path, href: str) -> Path | Non
 
 def validate_site_links(site_dir: Path) -> list[BrokenSiteLink]:
     broken: list[BrokenSiteLink] = []
+    parsed_pages: dict[Path, _SiteLinkParser] = {}
     for page in sorted(site_dir.rglob("*.html")):
         parser = _SiteLinkParser()
         parser.feed(page.read_text(encoding="utf-8"))
+        parsed_pages[page.resolve()] = parser
+
+    for page, parser in parsed_pages.items():
         for href in parser.links:
             target = _local_link_target(page, site_dir, href)
             if target is not None and not target.exists():
@@ -464,6 +418,18 @@ def validate_site_links(site_dir: Path) -> list[BrokenSiteLink]:
                         target=target.relative_to(site_dir).as_posix(),
                     )
                 )
+                continue
+            fragment = urlparse(href).fragment
+            if target is not None and fragment:
+                target_parser = parsed_pages.get(target.resolve())
+                if target_parser is not None and fragment not in target_parser.ids:
+                    broken.append(
+                        BrokenSiteLink(
+                            page=page.relative_to(site_dir).as_posix(),
+                            href=href,
+                            target=f"{target.relative_to(site_dir).as_posix()}#{fragment}",
+                        )
+                    )
     return broken
 
 

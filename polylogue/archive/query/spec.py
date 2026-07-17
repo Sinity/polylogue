@@ -22,13 +22,13 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.config import Config
-    from polylogue.protocols import VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 _SpecT = TypeVar("_SpecT", bound="SessionQuerySpec")
 

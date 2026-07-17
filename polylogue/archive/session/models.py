@@ -165,10 +165,12 @@ class SessionProfile:
     total_credit_cost: float = 0.0
     cost_provenance: str = "unknown"
     per_model_cost_json: str = "{}"
-    # 1vpm.1: the dominant model by assistant output-token share, and its
-    # canonical family (anthropic/openai/deepseek/...) via
-    # core.sources.canonical_model_family -- the enabling primitive for the
-    # `delegations` view (orchestrator/subagent model identity).
+    # 1vpm.1: the SESSION-WIDE dominant model by assistant output-token
+    # share, and its canonical vendor family (anthropic/openai/deepseek/...)
+    # via archive.semantic.pricing.canonical_model_family. polylogue-4c27:
+    # this is a session-level aggregate fallback, explicitly excluded from
+    # the `delegations` view's per-turn dispatch/requested/child-observed
+    # model identity -- see that view's DDL comment.
     primary_model_name: str | None = None
     primary_model_family: str | None = None
 

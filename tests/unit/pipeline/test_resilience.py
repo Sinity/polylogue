@@ -921,3 +921,35 @@ def test_ingest_record_stream_plan_trusts_known_provider(tmp_path: Path) -> None
     assert result.error is None
     assert len(result.sessions) == 1
     assert result.sessions[0].parsed_session.source_name == "codex"
+
+
+def test_ingest_record_streams_detected_beads_ledger(tmp_path: Path) -> None:
+    """A Beads JSONL raw takes the production stream route through to sessions."""
+    from polylogue.pipeline.services.ingest_worker import ingest_record
+
+    content = (
+        b'{"id":"int-1","kind":"field_change","created_at":"2026-07-08T20:14:35Z",'
+        b'"actor":"Sinity","issue_id":"polylogue-7fj","extra":{"field":"status",'
+        b'"old_value":"open","new_value":"closed"}}\n'
+    )
+    blob_store = BlobStore(tmp_path / "blobs")
+    raw_id, blob_size = blob_store.write_from_bytes(content)
+    source_path = tmp_path / "repo" / ".beads" / "interactions.jsonl"
+    source_path.parent.mkdir(parents=True)
+    record = RawSessionRecord(
+        raw_id=raw_id,
+        blob_hash=raw_id,
+        source_name="unknown",
+        source_path=str(source_path),
+        source_index=None,
+        blob_size=blob_size,
+        acquired_at="2026-07-08T20:14:35Z",
+        file_mtime=None,
+    )
+
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
+
+    assert result.error is None
+    assert len(result.sessions) == 1
+    assert result.sessions[0].parsed_session.source_name is Provider.BEADS
+    assert result.sessions[0].session_id.startswith("beads-issue:polylogue-7fj@workspace-")

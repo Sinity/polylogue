@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "analysis",
+  "job_id": "analysis-02",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "integrated_campaign_contract",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "441a8decaaa0423449888c86b0c65328afc77e16d7e4cee4503afb3ea3f9cd7f",
+  "snapshot_identity": null,
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "analysis-02-campaign-effectiveness-r01.zip",
+      "sha256": "3170b3999b062f5b0ee6c048661c55478dd65f72c9f952f2ebf6d9a218de0039",
+      "size_bytes": 31570,
+      "custody_path": "analysis/results/analysis-02/a01/raw/analysis-02-campaign-effectiveness-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "Admitted to polylogue-yyvg.6: distinct funnel identities, immutable event receipts, mission shape, custody, and generic product-boundary requirements; no campaign ontology enters product code."
+}

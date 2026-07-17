@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.errors import DatabaseError
 from polylogue.demo import (
+    inspect_completion_claims,
     inspect_demo_receipts,
+    render_completion_claims,
     render_demo_receipts,
     render_demo_script,
     run_demo_tour,
@@ -101,7 +105,24 @@ def seed_command(
     default="plain",
     show_default=True,
 )
-def receipts_command(root: Path | None, seed: bool | None, force: bool, output_format: str) -> None:
+@click.option(
+    "--completion-claims-only",
+    is_flag=True,
+    help="Inspect only the completion-claim cohort; suitable for an operator-owned archive.",
+)
+@click.option(
+    "--compact",
+    is_flag=True,
+    help="Keep plain output to the claim, test outcomes, and anti-grep control.",
+)
+def receipts_command(
+    root: Path | None,
+    seed: bool | None,
+    force: bool,
+    output_format: str,
+    completion_claims_only: bool,
+    compact: bool,
+) -> None:
     """Compare a demo assistant claim with structural tool evidence."""
 
     has_configured_root = root is not None or "POLYLOGUE_ARCHIVE_ROOT" in os.environ
@@ -116,13 +137,32 @@ def receipts_command(root: Path | None, seed: bool | None, force: bool, output_f
     if should_seed:
         asyncio.run(seed_demo_archive(resolved_root, force=force, with_overlays=False))
 
+    if completion_claims_only:
+        try:
+            completion_claims = inspect_completion_claims(resolved_root)
+        except (DatabaseError, OSError, sqlite3.Error) as exc:
+            raise click.ClickException(f"completion-claim evidence unavailable: {exc}") from exc
+        if output_format == "json":
+            click.echo(json.dumps(completion_claims.to_payload(), sort_keys=True))
+        else:
+            click.echo(render_completion_claims(completion_claims), nl=False)
+        return
+
     result = inspect_demo_receipts(resolved_root)
     if output_format == "json":
         payload = result.to_payload()
         payload["seeded_for_command"] = should_seed
         click.echo(json.dumps(payload, sort_keys=True))
     else:
-        click.echo(render_demo_receipts(result), nl=False)
+        archive_label = None if has_configured_root else "<demo-archive>"
+        click.echo(
+            render_demo_receipts(
+                result,
+                archive_label=archive_label,
+                compact=compact,
+            ),
+            nl=False,
+        )
     if not result.ok:
         raise click.ClickException("demo receipts verification failed")
 

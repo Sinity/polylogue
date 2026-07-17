@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from polylogue.core.enums import Origin
 
+MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+
 
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
@@ -76,6 +78,19 @@ class ArchiveDaemonStageEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveDaemonLifecycle:
+    """Forensic lifecycle record for one daemon process instance."""
+
+    run_id: str
+    started_at_ms: int
+    stopped_at_ms: int | None
+    last_heartbeat_at_ms: int
+    signal: str | None
+    exit_kind: str | None
+    details: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveOtlpSpan:
     """Compact read-back row for one OTLP span."""
 
@@ -89,6 +104,79 @@ class ArchiveOtlpSpan:
     ended_at_ms: int | None
     attributes_json: str
     events_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveMcpCallLogEntry:
+    """Compact read-back row for one durable MCP tool call-log entry."""
+
+    call_id: str
+    tool_name: str
+    session_id: str | None
+    started_at_ms: int
+    finished_at_ms: int
+    duration_ms: int
+    success: bool
+    error_detail: str | None
+
+
+def record_query_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    query_hash: str,
+    actor: str | None,
+    surface: str,
+    verb: str | None,
+    request: dict[str, object] | None,
+    lowered_spec: dict[str, object] | None,
+    archive_epoch: str | None,
+    started_at_ms: int,
+    duration_ms: int,
+    status: str,
+    degraded: dict[str, object] | None,
+    unit: str | None,
+    member_count: int | None,
+    exactness: str | None,
+    result_fingerprint: str | None,
+    sample_refs: tuple[str, ...] = (),
+) -> None:
+    """Write one bounded operational query run; never stores full membership."""
+    if len(sample_refs) > 20:
+        raise ValueError("query run sample refs are capped at 20")
+    conn.execute(
+        """
+        INSERT INTO query_runs (
+            run_id, query_hash, actor, surface, verb, request_json, lowered_spec_json,
+            archive_epoch, started_at_ms, duration_ms, status, degraded_json, unit,
+            member_count, exactness, result_fingerprint, sample_refs_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            query_hash,
+            actor,
+            surface,
+            verb,
+            _json_or_none(request),
+            _json_or_none(lowered_spec),
+            archive_epoch,
+            started_at_ms,
+            duration_ms,
+            status,
+            _json_or_none(degraded),
+            unit,
+            member_count,
+            exactness,
+            result_fingerprint,
+            json.dumps(sample_refs, separators=(",", ":")),
+        ),
+    )
+    conn.commit()
+
+
+def _json_or_none(value: dict[str, object] | None) -> str | None:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")) if value is not None else None
 
 
 def upsert_ingest_cursor(
@@ -450,6 +538,105 @@ def record_daemon_stage_event(
     return event_id
 
 
+def record_daemon_lifecycle_start(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    started_at_ms: int,
+    details: dict[str, object] | None = None,
+) -> None:
+    """Create the authoritative lifecycle row for one daemon process."""
+    conn.execute(
+        """
+        INSERT INTO daemon_lifecycle (
+            run_id, started_at_ms, last_heartbeat_at_ms, details_json
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (run_id, started_at_ms, started_at_ms, _json_dumps(details or {})),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_heartbeat(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    heartbeat_at_ms: int,
+) -> None:
+    """Advance a daemon process's durable heartbeat."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET last_heartbeat_at_ms = ?
+        WHERE run_id = ?
+        """,
+        (heartbeat_at_ms, run_id),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_signal(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    signal_name: str,
+    observed_at_ms: int,
+) -> None:
+    """Persist the terminating signal before control leaves the process."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET signal = ?, last_heartbeat_at_ms = ?
+        WHERE run_id = ?
+        """,
+        (signal_name, observed_at_ms, run_id),
+    )
+    conn.commit()
+
+
+def record_daemon_lifecycle_stop(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    stopped_at_ms: int,
+    exit_kind: str,
+) -> None:
+    """Mark a daemon lifecycle row stopped without erasing its signal."""
+    conn.execute(
+        """
+        UPDATE daemon_lifecycle
+        SET stopped_at_ms = ?, last_heartbeat_at_ms = ?, exit_kind = ?
+        WHERE run_id = ?
+        """,
+        (stopped_at_ms, stopped_at_ms, exit_kind, run_id),
+    )
+    conn.commit()
+
+
+def latest_daemon_lifecycle(conn: sqlite3.Connection) -> ArchiveDaemonLifecycle | None:
+    """Read the newest daemon lifecycle row, if the ops tier has one."""
+    row = conn.execute(
+        """
+        SELECT run_id, started_at_ms, stopped_at_ms, last_heartbeat_at_ms,
+               signal, exit_kind, details_json
+        FROM daemon_lifecycle
+        ORDER BY started_at_ms DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return ArchiveDaemonLifecycle(
+        run_id=str(row[0]),
+        started_at_ms=_int_value(row[1]),
+        stopped_at_ms=None if row[2] is None else _int_value(row[2]),
+        last_heartbeat_at_ms=_int_value(row[3]),
+        signal=None if row[4] is None else str(row[4]),
+        exit_kind=None if row[5] is None else str(row[5]),
+        details=_json_loads(row[6] if isinstance(row[6], str) else None),
+    )
+
+
 def read_daemon_stage_event(conn: sqlite3.Connection, event_id: str) -> ArchiveDaemonStageEvent:
     """Read one daemon stage event by id."""
     row = conn.execute(
@@ -718,6 +905,155 @@ def read_otlp_span(conn: sqlite3.Connection, trace_id: str, span_id: str) -> Arc
     return ArchiveOtlpSpan(*row)
 
 
+def record_mcp_call(
+    conn: sqlite3.Connection,
+    *,
+    tool_name: str,
+    started_at_ms: int,
+    finished_at_ms: int,
+    success: bool,
+    session_id: str | None = None,
+    session_ids: tuple[str, ...] = (),
+    error_detail: str | None = None,
+    call_id: str | None = None,
+) -> str:
+    """Record one durable MCP tool call-log entry and return its call id.
+
+    ``ops.db`` is the disposable telemetry tier (#7s57): the filesystem outbox
+    retries delivery across daemon/process outages, while this writer remains a
+    freeform-additive table (``CREATE TABLE IF NOT EXISTS``, no migration
+    chain) recording tool name, session id (when the caller knows one),
+    timing, and success/failure per MCP tool invocation, so resume/context
+    tool efficacy (``get_resume_brief``, ``compose_context_preamble``, ...)
+    can be reconstructed per session.
+    """
+    if call_id is None:
+        call_id = str(uuid.uuid4())
+    duration_ms = max(0, finished_at_ms - started_at_ms)
+    values = (
+        call_id,
+        tool_name,
+        session_id,
+        started_at_ms,
+        finished_at_ms,
+        duration_ms,
+        1 if success else 0,
+        error_detail,
+    )
+    desired_refs: dict[str, str] = {
+        value: "member" for value in dict.fromkeys(session_ids) if value and value != session_id
+    }
+    if session_id is not None:
+        desired_refs[session_id] = "primary"
+    with conn:
+        existing = conn.execute(
+            """
+            SELECT
+                call_id, tool_name, session_id, started_at_ms,
+                finished_at_ms, duration_ms, success, error_detail
+            FROM mcp_call_log
+            WHERE call_id = ?
+            """,
+            (call_id,),
+        ).fetchone()
+        if existing is not None and tuple(existing) != values:
+            raise ValueError(f"conflicting MCP call payload for call_id {call_id}")
+        existing_refs = {
+            str(row[0]): str(row[1])
+            for row in conn.execute(
+                "SELECT session_id, relation FROM mcp_call_session_refs WHERE call_id = ?",
+                (call_id,),
+            ).fetchall()
+        }
+        if existing_refs and existing_refs != desired_refs:
+            raise ValueError(f"conflicting MCP call session refs for call_id {call_id}")
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO mcp_call_log (
+                    call_id,
+                    tool_name,
+                    session_id,
+                    started_at_ms,
+                    finished_at_ms,
+                    duration_ms,
+                    success,
+                    error_detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+        if not existing_refs:
+            conn.executemany(
+                "INSERT INTO mcp_call_session_refs (call_id, session_id, relation) VALUES (?, ?, ?)",
+                ((call_id, ref, relation) for ref, relation in desired_refs.items()),
+            )
+        conn.execute(
+            "DELETE FROM mcp_call_log WHERE started_at_ms < ?",
+            (finished_at_ms - MCP_CALL_LOG_RETENTION_MS,),
+        )
+    return call_id
+
+
+def list_mcp_calls(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str | None = None,
+    tool_name: str | None = None,
+    limit: int = 100,
+) -> tuple[ArchiveMcpCallLogEntry, ...]:
+    """Return MCP call-log entries newest-first, optionally filtered."""
+    query = """
+        SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
+        FROM mcp_call_log AS calls
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if session_id is not None:
+        clauses.append(
+            "(calls.session_id = ? OR EXISTS ("
+            "SELECT 1 FROM mcp_call_session_refs AS refs "
+            "WHERE refs.call_id = calls.call_id AND refs.session_id = ?))"
+        )
+        params.extend((session_id, session_id))
+    if tool_name is not None:
+        clauses.append("tool_name = ?")
+        params.append(tool_name)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY started_at_ms DESC, call_id DESC LIMIT ?"
+    params.append(limit)
+    return tuple(_mcp_call_log_entry_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
+
+
+def read_mcp_call(conn: sqlite3.Connection, call_id: str) -> ArchiveMcpCallLogEntry:
+    """Read one MCP call-log entry by id."""
+    row = conn.execute(
+        """
+        SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
+        FROM mcp_call_log
+        WHERE call_id = ?
+        """,
+        (call_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(call_id)
+    return _mcp_call_log_entry_from_row(row)
+
+
+def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveMcpCallLogEntry:
+    return ArchiveMcpCallLogEntry(
+        call_id=str(row[0]),
+        tool_name=str(row[1]),
+        session_id=None if row[2] is None else str(row[2]),
+        started_at_ms=_int_value(row[3]),
+        finished_at_ms=_int_value(row[4]),
+        duration_ms=_int_value(row[5]),
+        success=bool(row[6]),
+        error_detail=None if row[7] is None else str(row[7]),
+    )
+
+
 def read_compact_state(conn: sqlite3.Connection) -> OpsCompactState:
     """Read a compact status snapshot across OPS-tier state tables."""
     cursor_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
@@ -809,12 +1145,14 @@ def _json_loads(raw_json: str | None) -> dict[str, object]:
 
 __all__ = [
     "ArchiveCursorLagSample",
+    "ArchiveDaemonLifecycle",
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveOtlpSpan",
     "OpsCompactState",
     "add_convergence_debt",
     "list_cursor_lag_samples",
+    "latest_daemon_lifecycle",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
     "list_otlp_spans",
@@ -824,8 +1162,13 @@ __all__ = [
     "read_otlp_span",
     "read_compact_state",
     "record_cursor_lag_sample",
+    "record_daemon_lifecycle_heartbeat",
+    "record_daemon_lifecycle_signal",
+    "record_daemon_lifecycle_start",
+    "record_daemon_lifecycle_stop",
     "record_daemon_stage_event",
     "record_ingest_attempt",
+    "record_query_run",
     "upsert_embedding_catchup_run",
     "upsert_ingest_cursor",
     "upsert_otlp_span",

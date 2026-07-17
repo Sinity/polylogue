@@ -8,12 +8,14 @@ import re
 import shlex
 import sqlite3
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from time import perf_counter
+from typing import TypeVar, cast
 
 from polylogue.coordination.payloads import (
     AgentCoordinationPayload,
@@ -41,9 +43,18 @@ from polylogue.coordination.payloads import (
     CoordinationView,
     CoordinationWorkItemPayload,
 )
+from polylogue.logging import get_logger
 from polylogue.paths import active_index_db_path, archive_root
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
+
+logger = get_logger(__name__)
 
 CommandRunner = Callable[[Sequence[str], Path | None], "CommandResult"]
+_StageResult = TypeVar("_StageResult")
 
 _COMMAND_CHARS = 220
 _CHANGED_PATH_LIMIT = 40
@@ -51,6 +62,7 @@ _CHANGED_PATH_LIMIT = 40
 # complete default response below the bead's 8 KiB transport ceiling.
 _COMPACT_BYTE_BUDGET = 7_600
 _PROCESS_COMMAND = ("ps", "ww", "-eo", "pid=,ppid=,comm=,cgroup:200=,args=")
+_BEADS_PROBE_TIMEOUT_SECONDS = 0.35
 _AGENT_NAMES = ("codex", "claude", "gemini")
 _SYSTEM_RESOURCE_NAMES = frozenset(
     {
@@ -91,8 +103,15 @@ def build_coordination_envelope(
     limit: int = 10,
     detail: bool = False,
     runner: CommandRunner | None = None,
+    stage_timings_ms: MutableMapping[str, float] | None = None,
 ) -> AgentCoordinationPayload:
-    """Return a bounded, JSON-first coordination envelope for agents."""
+    """Return a bounded, JSON-first coordination envelope for agents.
+
+    ``stage_timings_ms`` is an optional caller-owned diagnostic sink.  It is
+    intentionally not projected into the agent payload: timing collection is
+    for the benchmark harness, while the compact payload remains bounded and
+    semantically stable.
+    """
 
     now = datetime.now(UTC).isoformat()
     root_cwd = (cwd or Path.cwd()).resolve()
@@ -100,35 +119,70 @@ def build_coordination_envelope(
     peer_limit = max(1, min(limit, 50))
     resource_limit = max(1, min(limit, 50))
 
-    repo = _repo_payload(root_cwd, command_runner)
-    process_result, process_rows = _process_snapshot(command_runner)
-    self_payload = _self_payload(root_cwd, repo, process_rows, process_result)
-    work_item = _work_item_payload(root_cwd, repo, command_runner)
-    beads = _beads_payload(root_cwd, repo, command_runner)
-    all_peers = _logical_peer_payloads(
-        process_rows,
-        process_result,
-        owner_pid=self_payload.owner_pid,
-        invocation_pid=self_payload.invocation_pid,
+    repo = _timed_stage(stage_timings_ms, "repo", lambda: _repo_payload(root_cwd, command_runner))
+    process_result, process_rows = _timed_stage(stage_timings_ms, "process", lambda: _process_snapshot(command_runner))
+    self_payload = _timed_stage(
+        stage_timings_ms,
+        "self",
+        lambda: _self_payload(root_cwd, repo, process_rows, process_result),
     )
-    all_resources = _resource_scope_payloads(
-        process_rows,
-        process_result,
-        root_cwd,
-        archive_resource=_configured_archive_resource(),
+    work_item = _timed_stage(
+        stage_timings_ms,
+        "work_item",
+        lambda: _work_item_payload(root_cwd, repo, command_runner),
+    )
+    beads = _timed_stage(stage_timings_ms, "beads", lambda: _beads_payload(root_cwd, repo, command_runner))
+    all_peers = _timed_stage(
+        stage_timings_ms,
+        "peers",
+        lambda: _logical_peer_payloads(
+            process_rows,
+            process_result,
+            owner_pid=self_payload.owner_pid,
+            invocation_pid=self_payload.invocation_pid,
+        ),
+    )
+    all_resources = _timed_stage(
+        stage_timings_ms,
+        "resources",
+        lambda: _resource_scope_payloads(
+            process_rows,
+            process_result,
+            root_cwd,
+            archive_resource=_configured_archive_resource(),
+        ),
     )
     peers = all_peers[:peer_limit]
     resources = all_resources[:resource_limit]
-    archive = _archive_payload(resources)
-    handoff = _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit)
-    session_trees, activity_episodes, subagent_exchanges, proof_refs, context_flow_refs = _archive_evidence_payloads(
-        repo,
-        self_payload,
-        archive,
-        limit=peer_limit,
+    archive = _timed_stage(stage_timings_ms, "archive", lambda: _archive_payload(resources))
+    handoff = _timed_stage(
+        stage_timings_ms,
+        "handoff",
+        lambda: _handoff_payloads(repo.root or str(root_cwd), archive=archive, limit=peer_limit),
     )
-    overlaps = _overlap_payloads(repo, work_item, peers, resources)
-    advisories = _advisories(repo, work_item, overlaps, archive)
+    (
+        session_trees,
+        activity_episodes,
+        subagent_exchanges,
+        proof_refs,
+        context_flow_refs,
+        archive_evidence_degraded_reason,
+    ) = _timed_stage(
+        stage_timings_ms,
+        "archive_evidence",
+        lambda: _archive_evidence_payloads(
+            repo,
+            self_payload,
+            archive,
+            limit=peer_limit,
+        ),
+    )
+    overlaps = _timed_stage(stage_timings_ms, "overlaps", lambda: _overlap_payloads(repo, work_item, peers, resources))
+    advisories = _timed_stage(
+        stage_timings_ms,
+        "advisories",
+        lambda: _advisories(repo, work_item, overlaps, archive, archive_evidence_degraded_reason),
+    )
     provenance = (repo.provenance, work_item.provenance, self_payload.provenance)
     payload = AgentCoordinationPayload(
         view=view,
@@ -165,8 +219,31 @@ def build_coordination_envelope(
     total_counts["resource_components"] = sum(episode.component_count for episode in all_resources)
     total_counts["resource_refs"] = sum(episode.resource_count for episode in all_resources)
     if detail:
-        return _finalize_projection(projected, total_counts=total_counts, detail=True)
-    return _compact_coordination_payload(projected, total_counts=total_counts)
+        return _timed_stage(
+            stage_timings_ms,
+            "projection",
+            lambda: _finalize_projection(projected, total_counts=total_counts, detail=True),
+        )
+    return _timed_stage(
+        stage_timings_ms,
+        "projection",
+        lambda: _compact_coordination_payload(projected, total_counts=total_counts),
+    )
+
+
+def _timed_stage(
+    timings: MutableMapping[str, float] | None,
+    name: str,
+    call: Callable[[], _StageResult],
+) -> _StageResult:
+    """Execute one envelope stage and record its wall time when requested."""
+
+    started = perf_counter()
+    try:
+        return call()
+    finally:
+        if timings is not None:
+            timings[name] = round((perf_counter() - started) * 1_000, 3)
 
 
 def project_coordination_envelope(
@@ -650,7 +727,7 @@ def _serialized_size(payload: AgentCoordinationPayload) -> int:
     return len(payload.to_json(exclude_none=True).encode("utf-8"))
 
 
-def _run_command(args: Sequence[str], cwd: Path | None) -> CommandResult:
+def _run_command(args: Sequence[str], cwd: Path | None, *, timeout_seconds: float = 2.0) -> CommandResult:
     try:
         completed = subprocess.run(
             [str(arg) for arg in args],
@@ -658,7 +735,7 @@ def _run_command(args: Sequence[str], cwd: Path | None) -> CommandResult:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return CommandResult(tuple(str(arg) for arg in args), 124, "", str(exc))
@@ -937,11 +1014,19 @@ def _beads_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunn
     beads_dir = beads_root / ".beads"
     if not beads_dir.exists():
         return None
-    hooks_result = runner(("bd", "hooks", "list", "--json"), beads_root)
+    # These three Beads read probes have no data dependency.  They used to
+    # serialize three CLI startups on every compact status request, which was
+    # the dominant live-route latency.  Preserve all three result contracts
+    # while letting their subprocess waits overlap.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="coordination-beads") as executor:
+        hooks_future = executor.submit(_run_beads_probe, runner, ("bd", "hooks", "list", "--json"), beads_root)
+        gates_future = executor.submit(_run_beads_probe, runner, ("bd", "gate", "list", "--json"), beads_root)
+        merge_future = executor.submit(_run_beads_probe, runner, ("bd", "merge-slot", "check", "--json"), beads_root)
+        hooks_result = hooks_future.result()
+        gates_result = gates_future.result()
+        merge_result = merge_future.result()
     hooks = _beads_hooks(hooks_result)
-    gates_result = runner(("bd", "gate", "list", "--json"), beads_root)
     gates = _beads_gates(gates_result)
-    merge_result = runner(("bd", "merge-slot", "check", "--json"), beads_root)
     merge_slot = _beads_merge_slot(merge_result)
     hooks_all_installed = all(hook.installed for hook in hooks) if hooks else None
     hooks_outdated_count = sum(1 for hook in hooks if hook.outdated) if hooks else None
@@ -963,6 +1048,20 @@ def _beads_payload(cwd: Path, repo: CoordinationRepoPayload, runner: CommandRunn
             else (hooks_result.stderr.strip()[:200] or "bd hooks list failed"),
         ),
     )
+
+
+def _run_beads_probe(runner: CommandRunner, args: Sequence[str], cwd: Path) -> CommandResult:
+    """Bound live Beads probes so an unavailable optional source stays honest.
+
+    A timeout returns the existing error-shaped ``CommandResult`` rather than
+    stale merge state.  Test runners retain their injected deterministic
+    behavior, while production status stays interactive when a Beads command
+    blocks on its own daemon or lock.
+    """
+
+    if runner is _run_command:
+        return _run_command(args, cwd, timeout_seconds=_BEADS_PROBE_TIMEOUT_SECONDS)
+    return runner(args, cwd)
 
 
 def _beads_hooks(result: CommandResult) -> tuple[CoordinationBeadsHookPayload, ...]:
@@ -1053,7 +1152,8 @@ def _process_snapshot(runner: CommandRunner) -> tuple[CommandResult, tuple[_Proc
 def _configured_archive_resource() -> str | None:
     try:
         return str(archive_root().resolve())
-    except Exception:
+    except Exception as exc:
+        logger.warning("coordination archive-resource resolution failed: %s", exc, exc_info=True)
         return None
 
 
@@ -1455,7 +1555,8 @@ def _assertion_handoff_payloads(
                 """,
                 (limit * 4,),
             ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("coordination assertion-handoff query failed: %s", exc, exc_info=True)
         return ()
     repo_tokens = {str(repo_root), repo_root.name}
     scoped_rows = [
@@ -1503,7 +1604,14 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
     try:
         archive = archive_root().resolve()
         index = active_index_db_path().resolve()
-    except Exception:
+    except Exception as exc:
+        # archive_root()/active_index_db_path() raise both for the ordinary
+        # "no archive configured" case and for genuine config-resolution
+        # bugs; a bare None return makes the two indistinguishable to the
+        # caller (no archive field, no advisory). Log loudly so the failure
+        # is visible even though the payload shape can't carry a reason here
+        # (polylogue-cpf.4).
+        logger.warning("coordination archive-root resolution failed: %s", exc, exc_info=True)
         return None
     hook_flow_states: dict[str, str] = {}
     hook_flow_healthy: bool | None = None
@@ -1519,7 +1627,11 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         hook_flow_gaps = tuple(
             f"{status.harness}:{status.flow_state}" for status in configured if status.flow_healthy is not True
         )
-    except Exception:
+    except Exception as exc:
+        # hook_flow_healthy stays None ("unknown"), not True, so this does
+        # not misreport as healthy — but it looks identical to "no hooks
+        # configured" without a log line.
+        logger.warning("coordination hook-status query failed: %s", exc, exc_info=True)
         hook_flow_states = {}
     return CoordinationArchivePayload(
         archive_root=str(archive),
@@ -1543,7 +1655,8 @@ def _sqlite_user_version(path: Path) -> int | None:
     try:
         with closing(sqlite3.connect(uri, uri=True, timeout=0.2)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("coordination user_version probe failed for %s: %s", path, exc, exc_info=True)
         return None
     return int(row[0]) if row else None
 
@@ -1560,27 +1673,44 @@ def _archive_evidence_payloads(
     tuple[CoordinationSubagentExchangePayload, ...],
     tuple[CoordinationProofRefPayload, ...],
     tuple[CoordinationContextFlowRefPayload, ...],
+    str | None,
 ]:
+    """Return bounded archive-evidence tuples plus a degradation reason.
+
+    Empty tuples are ambiguous on their own: they mean "no archive
+    configured", "archive schema not ready yet", and "the read-only SQLite
+    query hit the 0.2s timeout/lock/corruption" alike. The trailing
+    ``str | None`` distinguishes the last case (a genuine query failure,
+    logged here too) from ordinary absence of evidence, per the
+    degrade-loudly doctrine (polylogue-cpf.4).
+    """
+    empty: tuple[
+        tuple[CoordinationSessionTreePayload, ...],
+        tuple[CoordinationActivityEpisodePayload, ...],
+        tuple[CoordinationSubagentExchangePayload, ...],
+        tuple[CoordinationProofRefPayload, ...],
+        tuple[CoordinationContextFlowRefPayload, ...],
+    ] = ((), (), (), (), ())
     if archive is None or not archive.index_exists or archive.index_user_version is None:
-        return (), (), (), (), ()
+        return (*empty, None)
     index = Path(archive.index_db)
     try:
         conn = sqlite3.connect(f"file:{index}?mode=ro", uri=True, timeout=0.2)
         conn.row_factory = sqlite3.Row
-    except sqlite3.Error:
-        return (), (), (), (), ()
+    except sqlite3.Error as exc:
+        logger.warning("coordination archive-evidence connect failed: %s", exc, exc_info=True)
+        return (*empty, f"archive-evidence connect failed: {exc}")
     try:
-        if not _archive_tables_present(
-            conn,
-            (
-                "sessions",
-                "session_links",
-                "session_runs",
-                "session_observed_events",
-                "session_context_snapshots",
-            ),
-        ):
-            return (), (), (), (), ()
+        # polylogue-dab/itvd: session_runs/session_observed_events/
+        # session_context_snapshots are source-derived CTE relations
+        # (run_projection_relations.py), not tables -- they can never appear
+        # in sqlite_master, so requiring their presence here always
+        # short-circuited to "no evidence", silently degrading every
+        # coordination archive-evidence query. Only `sessions`/`session_links`
+        # need to exist; the run/event/snapshot relations are always
+        # computable once `sessions` does.
+        if not _archive_tables_present(conn, ("sessions", "session_links")):
+            return (*empty, None)
         target_session_id = _resolve_coordination_session(conn, repo, self_payload)
         session_tree: tuple[CoordinationSessionTreePayload, ...] = ()
         if target_session_id is not None:
@@ -1590,9 +1720,10 @@ def _archive_evidence_payloads(
         subagent_exchanges = _archive_subagent_exchange_payloads(conn, target_session_id, repo, limit=limit)
         proof_refs = _archive_proof_payloads(conn, target_session_id, repo, limit=limit)
         context_refs = _archive_context_flow_payloads(conn, target_session_id, repo, limit=limit)
-        return session_tree, activity, subagent_exchanges, proof_refs, context_refs
-    except sqlite3.Error:
-        return (), (), (), (), ()
+        return session_tree, activity, subagent_exchanges, proof_refs, context_refs, None
+    except sqlite3.Error as exc:
+        logger.warning("coordination archive-evidence query failed: %s", exc, exc_info=True)
+        return (*empty, f"archive-evidence query failed: {exc}")
     finally:
         conn.close()
 
@@ -1604,6 +1735,26 @@ def _archive_tables_present(conn: sqlite3.Connection, names: tuple[str, ...]) ->
         names,
     ).fetchall()
     return {str(row["name"]) for row in rows} >= set(names)
+
+
+def _combined_relation_sql(*fragments: str) -> str:
+    """Merge multiple ``run_projection_relations.py`` ``WITH`` fragments into one clause.
+
+    Each ``*_relation_sql()`` helper returns its own standalone ``WITH ...``
+    string (one or two independently-named CTEs). SQLite allows only one
+    ``WITH`` keyword per statement, so a query that needs relations from more
+    than one helper (e.g. runs LEFT JOIN observed_events) must merge their
+    CTE bodies under a single ``WITH``. The CTE names declared by the run,
+    observed-event, and context-snapshot fragments are disjoint by
+    construction, so concatenation is safe.
+    """
+    bodies = []
+    for fragment in fragments:
+        stripped = fragment.strip()
+        if not stripped.upper().startswith("WITH "):
+            raise ValueError(f"expected a WITH-clause fragment, got: {stripped[:40]!r}")
+        bodies.append(stripped[len("WITH ") :])
+    return "WITH " + ",\n".join(bodies) + "\n"
 
 
 def _resolve_coordination_session(
@@ -1827,11 +1978,12 @@ def _archive_activity_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="r")
     run_rows = conn.execute(
         f"""
+        {run_relation_sql()}
         SELECT r.run_ref AS ref, r.session_id, r.run_ref, 'run' AS kind, r.status,
                COALESCE(NULLIF(r.title, ''), r.search_text) AS summary,
                r.source_updated_at AS occurred_at,
                r.evidence_refs_json AS refs_json
-        FROM session_runs r
+        FROM runs r
         {where}
         ORDER BY COALESCE(r.source_updated_at, r.materialized_at) DESC, r.position
         LIMIT ?
@@ -1842,10 +1994,11 @@ def _archive_activity_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="e")
     event_rows = conn.execute(
         f"""
+        {observed_event_relation_sql(source_where="1")}
         SELECT e.event_ref AS ref, e.session_id, e.run_ref, e.kind, NULL AS status,
                e.summary, e.source_updated_at AS occurred_at,
                e.evidence_refs_json AS refs_json
-        FROM session_observed_events e
+        FROM observed_events e
         {where}
         ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
         LIMIT ?
@@ -1895,8 +2048,16 @@ def _archive_subagent_exchange_rows(
     else:
         where = "WHERE "
     where += "r.role = 'subagent'"
+    # polylogue-dab/itvd: the pre-dab materialized writer synthesized a
+    # 'subagent_finished' marker event carrying the child's final report
+    # text; the source-derived CTE (run_projection_relations.py) has no
+    # equivalent event kind, so `finished` never matches and
+    # finished_event_ref/returned_final_message are always NULL now. The
+    # subagent run row itself (status/title/context_snapshot_ref) is still
+    # accurate -- only the "what did it report back" enrichment is gone.
     rows = conn.execute(
         f"""
+        {_combined_relation_sql(run_relation_sql(), observed_event_relation_sql(source_where="1"))}
         SELECT
             r.run_ref,
             r.session_id,
@@ -1909,8 +2070,8 @@ def _archive_subagent_exchange_rows(
             finished.event_ref AS finished_event_ref,
             finished.summary AS returned_final_message,
             finished.evidence_refs_json AS finished_evidence_refs_json
-        FROM session_runs r
-        LEFT JOIN session_observed_events finished
+        FROM runs r
+        LEFT JOIN observed_events finished
           ON finished.run_ref = r.run_ref
          AND finished.kind = 'subagent_finished'
         {where}
@@ -1935,11 +2096,16 @@ def _archive_proof_rows(
         where += " AND "
     else:
         where = "WHERE "
+    # polylogue-dab/itvd: the source-derived observed-event CTE only ever
+    # emits kind in ('session_started', 'tool_finished') -- the pre-dab
+    # writer's richer command/test/session-finished marker kinds have no
+    # equivalent, so this now only ever matches plain tool_finished events.
     where += "e.kind IN ('tool_finished', 'command_finished', 'test_finished', 'session_finished')"
     rows = conn.execute(
         f"""
+        {observed_event_relation_sql(source_where="1")}
         SELECT e.event_ref, e.session_id, e.kind, e.summary, e.evidence_refs_json, e.payload_json
-        FROM session_observed_events e
+        FROM observed_events e
         {where}
         ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
         LIMIT ?
@@ -1973,9 +2139,10 @@ def _archive_context_flow_rows(
     where = _archive_scope_where(target_session_id, repo, params, alias="c")
     rows = conn.execute(
         f"""
+        {context_snapshot_relation_sql()}
         SELECT c.snapshot_ref, c.session_id, c.run_ref, c.boundary, c.inheritance_mode,
                c.segment_refs_json, c.evidence_refs_json
-        FROM session_context_snapshots c
+        FROM context_snapshots c
         {where}
         ORDER BY COALESCE(c.source_updated_at, c.materialized_at) DESC, c.position
         LIMIT ?
@@ -2144,6 +2311,7 @@ def _advisories(
     work_item: CoordinationWorkItemPayload,
     overlaps: tuple[CoordinationOverlapPayload, ...],
     archive: CoordinationArchivePayload | None,
+    archive_evidence_degraded_reason: str | None = None,
 ) -> tuple[str, ...]:
     advisories: list[str] = []
     if repo.dirty:
@@ -2154,4 +2322,10 @@ def _advisories(
         advisories.append("One or more overlap/resource signals deserve review before heavy work.")
     if archive is not None and not archive.index_exists:
         advisories.append("Active index.db is not present for the resolved archive root.")
+    if archive_evidence_degraded_reason is not None:
+        # Distinguishes "the archive genuinely has no matching evidence" from
+        # "the bounded archive-evidence query failed" — session_trees/
+        # activity_episodes/subagent_exchanges/proof_refs/context_flow_refs
+        # are empty in both cases without this advisory (polylogue-cpf.4).
+        advisories.append(f"Archive-evidence lookup degraded: {archive_evidence_degraded_reason}")
     return tuple(advisories)

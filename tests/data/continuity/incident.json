@@ -1,0 +1,27 @@
+{
+  "resume": {"refs": ["session:resume-1"], "source": "fixture-session-lineage"},
+  "forensic-debug": {"refs": ["session:debug-1", "file:src/app.py"], "source": "fixture-action-and-file-evidence"},
+  "prior-art": {"refs": ["session:prior-1"], "source": "fixture-similarity-and-decision-evidence"},
+  "decision": {"refs": ["assertion:decision-1"], "source": "fixture-user-evidence"},
+  "postmortem": {"refs": ["run:failed-1", "action:failed-1"], "source": "fixture-run-and-action-evidence"},
+  "cost": {"refs": ["usage:run-1"], "source": "fixture-reported-usage"},
+  "self-inspection": {"refs": ["capability:query"], "source": "declaration-fixture"},
+  "parallel-claude-incident": {
+    "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
+    "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+    "run_ref": "wf_54d4fb2e-841",
+    "workflow_invocations": 4,
+    "call_keys": 50,
+    "attempt_transcripts": 91,
+    "result_records": 65,
+    "completed_call_keys": 49,
+    "unresolved_call_keys": 1,
+    "other_child_sessions": 38,
+    "source": "independent incident census",
+    "mutation_expectations": {
+      "lost-continuation-state": "detected",
+      "global-delegation-materialization": "detected",
+      "wrong-workflow-membership": "detected"
+    }
+  }
+}

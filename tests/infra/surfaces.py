@@ -3,10 +3,9 @@
 This module hosts the cross-surface parity harness.  The substrate surfaces
 (``SQLiteRecordSurface``, ``SQLiteHydratedSurface``, ``RepositorySurface``,
 ``FacadeSurface``) project the same archive through progressively higher
-abstractions.  The adapter surfaces (``CLISurface``, ``MCPSurface``) close
-the loop on the public surfaces — the Click query CLI and the MCP server
-tools — so any drift between substrate and adapter is caught by the same
-parity assertions.
+abstractions.  The adapter surfaces (``CLISurface``, ``MCPSurface``, and
+``DaemonHTTPSurface``) close the loop on public routes so drift between the
+substrate and an adapter is caught by the same semantic assertions.
 """
 
 from __future__ import annotations
@@ -17,13 +16,17 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlencode
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from click.testing import CliRunner
 
 from polylogue.api import Polylogue
+from polylogue.core.json import JSONDocument, require_json_document
+from polylogue.insights.archive import SessionProfileInsight
 from tests.infra.archive_scenarios import ArchiveScenario, archive_for_scenario_db, open_index_db
+from tests.infra.json_contracts import extract_json_result, json_int, json_object_list
 from tests.infra.query_cases import ArchiveQueryCase
 from tests.infra.semantic_facts import ArchiveFacts, SessionFacts
 
@@ -180,12 +183,13 @@ def _ids_from_sessions(sessions: list[Any]) -> tuple[str, ...]:
 
 
 class RepositorySurface:
-    """Facade projection with a long-lived mutating handle.
+    """Long-lived archive handle with an explicit repository fact path.
 
-    Distinct from ``FacadeSurface`` only in lifecycle: the repository
-    lifecycle harness holds this handle across tag/metadata mutations and
-    delete transitions. Both project through the same ``Polylogue`` API over
-    ``index.db``.
+    Existing lifecycle/query methods remain facade-backed for compatibility
+    with their harness. ``session_profile_insight`` deliberately calls the
+    production :class:`SessionRepository` read before applying the public
+    insight projection, so the selected parity survivor does not relabel the
+    facade as a repository surface.
     """
 
     name = "repository"
@@ -199,6 +203,18 @@ class RepositorySurface:
 
     async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
         return await scenario.facts_from_archive(self._archive)
+
+    async def session_profile_insight(
+        self,
+        session_id: str,
+        *,
+        tier: str = "evidence",
+    ) -> SessionProfileInsight | None:
+        """Read through ``SessionRepository`` and project the public insight."""
+        record = await self._archive.repository.get_session_profile_record(session_id)
+        if record is None:
+            return None
+        return SessionProfileInsight.from_record(record, tier=tier)
 
     async def archive_facts(self) -> ArchiveFacts:
         return ArchiveFacts.from_sessions(await self._archive.list_sessions(limit=None))
@@ -235,6 +251,15 @@ class FacadeSurface:
         if session is None:
             raise AssertionError(f"Scenario {scenario.resolved_session_id!r} missing through facade")
         return SessionFacts.from_domain_session(session)
+
+    async def session_profile_insight(
+        self,
+        session_id: str,
+        *,
+        tier: str = "evidence",
+    ) -> SessionProfileInsight | None:
+        """Read the selected fact through the public async facade."""
+        return await self._archive.get_session_profile_insight(session_id, tier=tier)
 
     async def archive_facts(self) -> ArchiveFacts:
         return ArchiveFacts.from_sessions(await self._archive.list_sessions(limit=None))
@@ -278,9 +303,15 @@ class CLISurface:
         self._db_path = db_path
         self._runner = CliRunner()
 
-    def _invoke(self, query_case: ArchiveQueryCase) -> tuple[int, str]:
+    def _invoke_args(self, args: list[str]) -> tuple[int, str]:
         from polylogue.cli.click_app import cli
 
+        result = self._runner.invoke(cli, args, catch_exceptions=True)
+        if result.exception is not None and not isinstance(result.exception, SystemExit):
+            raise result.exception
+        return result.exit_code, result.output
+
+    def _invoke(self, query_case: ArchiveQueryCase) -> tuple[int, str]:
         args: list[str] = []
         if query_case.provider is not None:
             args.extend(["--origin", _origin_for_provider_token(query_case.provider)])
@@ -308,10 +339,45 @@ class CLISurface:
         if query_case.search_text is not None:
             args.extend(["--contains", query_case.search_text])
         args.extend(["read", "--all", "--format", "json"])
-        result = self._runner.invoke(cli, args, catch_exceptions=True)
-        if result.exception is not None and not isinstance(result.exception, SystemExit):
-            raise result.exception
-        return result.exit_code, result.output
+        return self._invoke_args(args)
+
+    async def session_profile_payloads(
+        self,
+        *,
+        origin: str,
+        tier: str = "evidence",
+    ) -> tuple[JSONDocument, ...]:
+        """Run the production profile CLI and return its typed item payloads."""
+        exit_code, output = self._invoke_args(
+            [
+                "--origin",
+                origin,
+                "analyze",
+                "insights",
+                "profiles",
+                "--tier",
+                tier,
+                "--limit",
+                "50",
+                "--format",
+                "json",
+            ]
+        )
+        if exit_code != 0:
+            raise AssertionError(
+                f"polylogue analyze insights profiles exited {exit_code} for origin {origin!r}: {output!r}"
+            )
+        payload = extract_json_result(output, context="profile insights CLI output")
+        profiles = tuple(
+            json_object_list(
+                payload.get("session_profiles"),
+                context="profile insights CLI output.session_profiles",
+            )
+        )
+        total = json_int(payload.get("total"), context="profile insights CLI output.total")
+        if total != len(profiles):
+            raise AssertionError(f"profile insights CLI total={total} but returned {len(profiles)} items")
+        return profiles
 
     async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
         raise NotImplementedError("CLISurface only supports query-level projections")
@@ -462,6 +528,29 @@ class DaemonHTTPSurface:
         self._thread = threading.Thread(target=self._server.serve_forever, name="daemon-http-surface", daemon=True)
         self._thread.start()
 
+    def _json_get(self, path: str) -> tuple[int, JSONDocument]:
+        request = Request(f"{self._base_url}{path}", headers={"Accept": "application/json"})
+        try:
+            with urlopen(request, timeout=5.0) as response:
+                status = int(response.status)
+                body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            status = int(exc.code)
+            body = exc.read().decode("utf-8")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"daemon HTTP {path!r} returned non-JSON body: {body!r}") from exc
+        try:
+            return status, require_json_document(payload, context=f"daemon HTTP {path!r} response")
+        except TypeError as exc:
+            raise AssertionError(str(exc)) from exc
+
+    async def session_profile_response(self, session_id: str) -> tuple[int, JSONDocument]:
+        """Read one profile panel through the production daemon route."""
+        encoded_id = quote(session_id, safe="")
+        return self._json_get(f"/api/insights/sessions/{encoded_id}?include=profile")
+
     async def session_facts(self, scenario: ArchiveScenario) -> SessionFacts:
         raise NotImplementedError("DaemonHTTPSurface only supports query-level projections")
 
@@ -587,7 +676,8 @@ def _provider_counts(sessions: list[SessionFacts]) -> dict[str, int]:
 
 def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenario, ...]:
     rows = conn.execute("SELECT origin, native_id FROM sessions ORDER BY session_id").fetchall()
-    from polylogue.api.archive import _provider_for_archive_origin
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
 
     scenarios: list[ArchiveScenario] = []
     for row in rows:
@@ -595,7 +685,7 @@ def _current_archive_scenarios(conn: sqlite3.Connection) -> tuple[ArchiveScenari
         # so the rebuilt scenario re-derives the same archive session id.
         native_id = str(row["native_id"])
         raw_id = native_id[len("ext-") :] if native_id.startswith("ext-") else native_id
-        provider = str(_provider_for_archive_origin(str(row["origin"])))
+        provider = str(provider_from_origin(Origin.from_string(str(row["origin"]))))
         scenarios.append(ArchiveScenario(name=raw_id, provider=provider))
     return tuple(scenarios)
 

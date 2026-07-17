@@ -9,6 +9,7 @@ import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 
@@ -237,7 +238,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     type=click.Choice(["headline", "full"]),
     default="full",
     show_default=True,
-    help="Report detail: headline skips expensive provider-event and stale-rollup diagnostics.",
+    help="Report detail: headline skips expensive origin-event and stale-rollup diagnostics.",
 )
 @click.option(
     "--json",
@@ -262,9 +263,9 @@ def usage_command(
     detail: str,
     output_format: str,
 ) -> None:
-    """Audit provider usage accounting without turning it into a cost report.
+    """Audit origin usage accounting without turning it into a cost report.
 
-    Provider event rows, provider cumulative counters, transcript words, and
+    Provider event rows, origin cumulative counters, transcript words, and
     model rollups are printed as separate evidence streams so cached tokens,
     reasoning tokens, zero-token events, missing models, multi-model sessions,
     source acquisition debt, and stale rollups stay visible.
@@ -298,18 +299,31 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
     pricing_lanes = tuple(getattr(report, "pricing_lanes", ()))
     if pricing_lanes:
         env.ui.console.print(
-            f"  stored/provider-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
+            f"  stored/origin-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
         )
         env.ui.console.print(
-            f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+            "  catalog API-equivalent cost: "
+            + _format_optional_usd(getattr(report, "catalog_api_equivalent_usd", None))
+        )
+        env.ui.console.print(
+            "  known catalog-priced subtotal: "
+            + _format_optional_usd(getattr(report, "catalog_priced_subtotal_usd", None))
+        )
+        env.ui.console.print(
+            "  catalog subscription-credit cost (Claude Code Pro tier, non-authoritative): "
+            f"${float(getattr(report, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
         )
         logical_catalog_api_equivalent_usd = getattr(report, "logical_catalog_api_equivalent_usd", None)
-        if logical_catalog_api_equivalent_usd is not None:
-            env.ui.console.print(
-                "  catalog API-equivalent cost "
-                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
-                f"${float(logical_catalog_api_equivalent_usd or 0.0):,.2f}"
-            )
+        env.ui.console.print(
+            "  catalog API-equivalent cost "
+            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+            + _format_optional_usd(logical_catalog_api_equivalent_usd)
+        )
+        env.ui.console.print(
+            "  catalog subscription-credit cost "
+            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+            f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
+        )
         for lane in pricing_lanes:
             env.ui.console.print(
                 "    pricing lane "
@@ -318,7 +332,9 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
                 f"stored=${float(getattr(lane, 'stored_cost_usd', 0.0) or 0.0):,.2f} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
+                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
+                f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
         logical_pricing_lanes = tuple(getattr(report, "logical_pricing_lanes", ()))
         for lane in logical_pricing_lanes:
@@ -328,7 +344,9 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"rows={getattr(lane, 'row_count', 0)} "
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
+                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
+                f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
     if not origins:
         env.ui.console.print("  No sessions matched.")
@@ -337,7 +355,7 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
         env.ui.console.print(f"\n[bold]{row.origin}[/bold]")
         env.ui.console.print(
             "  coverage: "
-            f"provider={row.provider}  declared={row.declared_coverage}  state={row.coverage_state}  "
+            f"origin={row.origin}  declared={row.declared_coverage}  state={row.coverage_state}  "
             f"evidence={row.evidence_stream}"
         )
         if row.coverage_basis:
@@ -354,7 +372,7 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"acquired_not_materialized={row.acquired_not_materialized_count}"
         )
         env.ui.console.print(
-            "  provider events: "
+            "  origin events: "
             f"{row.provider_event_count} across {row.provider_event_session_count} sessions  "
             f"token_count={row.token_count_event_count}  message_usage={row.message_usage_event_count}  "
             f"zero_token={row.zero_token_event_count}  missing_model={row.missing_model_event_count}"
@@ -365,8 +383,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"estimated={row.estimated_model_row_count}  multi_model_sessions={row.multi_model_session_count}  "
             f"stale_sessions={row.stale_rollup_session_count}"
         )
-        env.ui.console.print(f"  provider request usage:    {_usage_counter_line(row.provider_request_usage)}")
-        env.ui.console.print(f"  provider cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
+        env.ui.console.print(f"  origin request usage:    {_usage_counter_line(row.provider_request_usage)}")
+        env.ui.console.print(f"  origin cumulative usage: {_usage_counter_line(row.provider_cumulative_usage)}")
         env.ui.console.print(
             f"  model rollup usage ({row.model_rollup_grain}): {_usage_counter_line(row.model_rollup_usage)}"
         )
@@ -390,6 +408,16 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             env.ui.console.print("    stale-rollup samples: " + ", ".join(row.sample_stale_rollup_sessions))
 
 
+def _format_optional_usd(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return "unknown"
+    try:
+        amount = float(value)
+    except ValueError:
+        return "unknown"
+    return f"${amount:,.2f}"
+
+
 def _usage_counter_line(counters: object) -> str:
     values = counters.to_dict() if hasattr(counters, "to_dict") else {}
     return (
@@ -403,7 +431,7 @@ def _usage_counter_line(counters: object) -> str:
 
 
 @click.command("tools")
-@click.option("--origin", help="Filter by origin or provider token")
+@click.option("--origin", help="Filter by origin or origin token")
 @click.option("--tool", help="Only entries for this exact normalized tool name, e.g. mcp__serena__find_symbol")
 @click.option("--mcp-server", help="Only MCP tools with this server prefix, e.g. serena -> mcp__serena__*")
 @click.option("--action-kind", help="Only entries for this action kind")
@@ -500,7 +528,6 @@ async def _tools(
     from typing import cast
 
     from polylogue.insights.tool_usage import ToolUsageInsightQuery
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.surfaces.payloads import (
         ToolCountBasis,
         ToolCountDetailLevel,
@@ -523,7 +550,6 @@ async def _tools(
 
     def row_payload(row: dict[str, object]) -> ToolCountRowPayload:
         return ToolCountRowPayload(
-            source_name=str(row["source_name"]),
             origin=str(row["origin"]),
             normalized_tool_name=str(row["normalized_tool_name"]),
             action_kind=str(row["action_kind"]),
@@ -567,106 +593,149 @@ async def _tools(
         )
 
     query = ToolUsageInsightQuery(
-        provider=origin,
+        origin=origin,
         tool=tool,
         mcp_server=mcp_server,
         action_kind=action_kind,
         since_ms=since_ms,
         limit=limit,
     )
-    with ArchiveStore.open_existing(env.config.archive_root) as archive:
-        if compare_family:
-            family = compare_family.strip().lower()
-            if not family:
-                raise click.UsageError("--compare-family must not be empty")
-            mcp_family = family.replace("-", "_")
-            action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
-            mcp_query = ToolUsageInsightQuery(
-                provider=origin,
-                mcp_server=mcp_family,
-                action_kind=action_kind,
-                since_ms=since_ms,
-                limit=limit,
-            )
-            action_query = ToolUsageInsightQuery(
-                provider=origin,
-                action_kind=action_kind,
-                since_ms=since_ms,
-                limit=limit,
-            )
-            call_payload = payload_for(
-                rows=archive.list_tool_call_count_rows(mcp_query),
-                payload_basis="tool-use-blocks",
-                kind_value="tool_call_counts",
-                detail_value="tool_use_block_call_counts",
-                payload_tool=None,
-                payload_mcp_server=mcp_family,
-                payload_detail_patterns=(),
-            )
-            event_payload = payload_for(
-                rows=archive.list_tool_observed_event_count_rows(mcp_query),
-                payload_basis="observed-events",
-                kind_value="tool_observed_event_counts",
-                detail_value="tool_finished_observed_events",
-                payload_tool=None,
-                payload_mcp_server=mcp_family,
-                payload_detail_patterns=(),
-            )
-            action_payload = payload_for(
-                rows=archive.list_tool_action_evidence_count_rows(
+    if compare_family:
+        family = compare_family.strip().lower()
+        if not family:
+            raise click.UsageError("--compare-family must not be empty")
+        mcp_family = family.replace("-", "_")
+        action_patterns = tuple(dict.fromkeys((family, *detail_patterns)))
+        mcp_query = ToolUsageInsightQuery(
+            origin=origin,
+            mcp_server=mcp_family,
+            action_kind=action_kind,
+            since_ms=since_ms,
+            limit=limit,
+        )
+        action_query = ToolUsageInsightQuery(
+            origin=origin,
+            action_kind=action_kind,
+            since_ms=since_ms,
+            limit=limit,
+        )
+        call_rows, event_rows, action_rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.compare-family",
+            arguments={
+                "origin": origin,
+                "family": family,
+                "action_kind": action_kind,
+                "since_ms": since_ms,
+                "limit": limit,
+            },
+            work=lambda archive: (
+                archive.list_tool_call_count_rows(mcp_query),
+                archive.list_tool_observed_event_count_rows(mcp_query),
+                archive.list_tool_action_evidence_count_rows(
                     action_query,
                     detail_patterns=action_patterns,
                     since_ms=since_ms,
                 ),
-                payload_basis="actions",
-                kind_value="tool_action_evidence_counts",
-                detail_value="canonical_action_evidence_counts",
-                payload_tool=None,
-                payload_mcp_server=None,
-                payload_detail_patterns=action_patterns,
-            )
-            comparison = ToolFamilyComparisonPayload(
-                kind="tool_family_evidence_comparison",
-                archive_root=str(env.config.archive_root),
-                family=family,
-                bases=(call_payload, event_payload, action_payload),
-                caveats=(
-                    "Counts are grouped by evidence basis and must not be summed across bases.",
-                    "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
-                    "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
-                ),
-            )
-            if output_format == "json":
-                click.echo(comparison.to_json(exclude_none=True))
-                return
-            env.ui.console.print(f"\n[bold]Tool family evidence comparison: {family}[/bold]")
-            for basis_payload in comparison.bases:
-                env.ui.console.print(f"  {basis_payload.filters.basis}: {len(basis_payload.items)} row(s)")
-                for item in basis_payload.items:
-                    count = item.event_count if basis_payload.filters.basis == "observed-events" else item.call_count
-                    evidence = f" [{item.evidence_kind}]" if item.evidence_kind else ""
-                    env.ui.console.print(f"    {item.origin}  {item.normalized_tool_name}{evidence}: {count or 0}")
-            env.ui.console.print("  caveat: counts are basis-specific; do not sum them across sections")
+            ),
+            page_size=limit,
+            projection="tool-usage-comparison",
+            workload_class="scan",
+        )
+        call_payload = payload_for(
+            rows=call_rows,
+            payload_basis="tool-use-blocks",
+            kind_value="tool_call_counts",
+            detail_value="tool_use_block_call_counts",
+            payload_tool=None,
+            payload_mcp_server=mcp_family,
+            payload_detail_patterns=(),
+        )
+        event_payload = payload_for(
+            rows=event_rows,
+            payload_basis="observed-events",
+            kind_value="tool_observed_event_counts",
+            detail_value="tool_finished_observed_events",
+            payload_tool=None,
+            payload_mcp_server=mcp_family,
+            payload_detail_patterns=(),
+        )
+        action_payload = payload_for(
+            rows=action_rows,
+            payload_basis="actions",
+            kind_value="tool_action_evidence_counts",
+            detail_value="canonical_action_evidence_counts",
+            payload_tool=None,
+            payload_mcp_server=None,
+            payload_detail_patterns=action_patterns,
+        )
+        comparison = ToolFamilyComparisonPayload(
+            kind="tool_family_evidence_comparison",
+            archive_root=str(env.config.archive_root),
+            family=family,
+            bases=(call_payload, event_payload, action_payload),
+            caveats=(
+                "Counts are grouped by evidence basis and must not be summed across bases.",
+                "Observed-event sections count source-derived tool_finished outcomes, not raw tool_use calls.",
+                "Action evidence can include command/path/input detail matches for tools used outside MCP rows.",
+            ),
+        )
+        if output_format == "json":
+            click.echo(comparison.to_json(exclude_none=True))
             return
-        if basis == "observed-events":
-            rows = archive.list_tool_observed_event_count_rows(query)
-            kind = "tool_observed_event_counts"
-            detail = "tool_finished_observed_events"
-            count_key = "event_count"
-        elif basis == "actions":
-            rows = archive.list_tool_action_evidence_count_rows(
+        env.ui.console.print(f"\n[bold]Tool family evidence comparison: {family}[/bold]")
+        for basis_payload in comparison.bases:
+            env.ui.console.print(f"  {basis_payload.filters.basis}: {len(basis_payload.items)} row(s)")
+            for item in basis_payload.items:
+                count = item.event_count if basis_payload.filters.basis == "observed-events" else item.call_count
+                evidence = f" [{item.evidence_kind}]" if item.evidence_kind else ""
+                env.ui.console.print(f"    {item.origin}  {item.normalized_tool_name}{evidence}: {count or 0}")
+        env.ui.console.print("  caveat: counts are basis-specific; do not sum them across sections")
+        return
+
+    if basis == "observed-events":
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.observed-events",
+            arguments={"query": query, "limit": limit},
+            work=lambda archive: archive.list_tool_observed_event_count_rows(query),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_observed_event_counts"
+        detail = "tool_finished_observed_events"
+        count_key = "event_count"
+    elif basis == "actions":
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.actions",
+            arguments={"query": query, "detail_patterns": detail_patterns, "since_ms": since_ms, "limit": limit},
+            work=lambda archive: archive.list_tool_action_evidence_count_rows(
                 query,
                 detail_patterns=detail_patterns,
                 since_ms=since_ms,
-            )
-            kind = "tool_action_evidence_counts"
-            detail = "canonical_action_evidence_counts"
-            count_key = "call_count"
-        else:
-            rows = archive.list_tool_call_count_rows(query)
-            kind = "tool_call_counts"
-            detail = "tool_use_block_call_counts"
-            count_key = "call_count"
+            ),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_action_evidence_counts"
+        detail = "canonical_action_evidence_counts"
+        count_key = "call_count"
+    else:
+        rows = await run_archive_read(
+            env.config.archive_root,
+            operation="cli.diagnostics.tool-usage.calls",
+            arguments={"query": query, "limit": limit},
+            work=lambda archive: archive.list_tool_call_count_rows(query),
+            page_size=limit,
+            projection="tool-usage",
+            workload_class="scan",
+        )
+        kind = "tool_call_counts"
+        detail = "tool_use_block_call_counts"
+        count_key = "call_count"
     if output_format == "json":
         payload = payload_for(
             rows=rows,

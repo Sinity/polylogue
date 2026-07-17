@@ -1,21 +1,26 @@
 """Small archive-root façade over archive source/index/user tiers.
 
-Writer module: index, source, user.
-Twin-write contract: raw-revision-authority.
+Writer module: index, source.
+Twin-write contract: raw-membership-classification.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, BinaryIO, Literal, TypedDict, cast
 
+from polylogue.annotations.batch import AnnotationBatch
+from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
@@ -33,11 +38,12 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.revision_authority import (
-    HistoricalRawRevision,
+    HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
-    classify_historical_full_revisions,
+    append_source_revision,
+    classify_historical_full_revision_streams,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -60,7 +66,9 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.refs import delegation_edge_object_id
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.types import SessionId
 from polylogue.insights.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
 )
@@ -108,7 +116,7 @@ from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.insights.readiness import (
-    InsightProviderCoverage,
+    InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
@@ -120,6 +128,7 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -136,6 +145,7 @@ from polylogue.storage.insights.session.status import session_insight_status_syn
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     archive_tier_spec,
     initialize_active_archive_root,
@@ -150,6 +160,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
     assert_session_fts_exact_sync,
     record_revision_application_sync,
@@ -163,6 +174,17 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    DurableAnnotationSchema,
+    list_durable_annotation_schemas,
+    persist_annotation_batch,
+    persist_annotation_schema,
+    read_annotation_batch,
+    read_durable_annotation_schema,
+)
+from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    list_annotation_batches as _list_annotation_batches,
+)
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
@@ -197,6 +219,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveBlockRow,
     ArchiveInsightMaterialization,
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
@@ -218,7 +241,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
-from polylogue.storage.sqlite.queries.tool_usage import ToolUsageProviderCoverageRow, ToolUsageRow
+from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_from_row,
     context_snapshot_relation_sql,
@@ -228,11 +251,8 @@ from polylogue.storage.sqlite.run_projection_relations import (
     projected_run_from_row,
     run_relation_sql,
 )
-from polylogue.storage.sqlite.run_projection_relations import (
-    table_exists_sync as _run_projection_table_exists,
-)
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-from polylogue.types import SessionId
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(slots=True)
@@ -294,7 +314,6 @@ class ArchiveSessionSummary:
     session_id: str
     native_id: str
     origin: str
-    provider: Provider
     title: str | None
     created_at: str | None
     updated_at: str | None
@@ -339,7 +358,6 @@ class ArchiveSessionSearchHit:
     block_id: str
     message_id: str
     origin: str
-    provider: Provider
     title: str | None
     snippet: str
 
@@ -359,6 +377,7 @@ class ArchiveMessageQueryRow:
     position: int
     word_count: int
     text: str
+    blocks: tuple[ArchiveBlockRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,6 +421,210 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
     )
+
+
+DelegationMappingState = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationResultStatus = Literal["ok", "error", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationQueryRow:
+    """Terminal query projection over one `delegations` view row
+    (polylogue-y964). ``mapping_state`` is the view's own vocabulary --
+    resolved/unresolved/ambiguous/edge_only/quarantined -- never
+    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
+    always carry ``instruction_tool_use_block_id``; edge-only rows
+    (edge_only/quarantined) never fabricate one."""
+
+    parent_session_id: str
+    child_session_id: str | None
+    mapping_state: DelegationMappingState
+    link_confidence: float | None
+    link_method: str | None
+    inheritance: str | None
+    branch_point_message_id: str | None
+    instruction_message_id: str | None
+    instruction_tool_use_block_id: str | None
+    instruction_payload: str | None
+    dispatch_turn_model: str | None
+    requested_model: str | None
+    artifact_block_id: str | None
+    artifact_text: str | None
+    result_is_error: int | None
+    result_exit_code: int | None
+    result_status: DelegationResultStatus
+    parent_origin: str
+    parent_session_dominant_model: str | None
+    parent_session_dominant_model_family: str | None
+    parent_terminal_state: str | None
+    child_session_dominant_model: str | None
+    child_session_dominant_model_family: str | None
+    child_cost_usd: float | None
+    child_cost_is_estimated: int | None
+    child_tokens: int | None
+    child_wall_ms: int | None
+    child_terminal_state: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationContextRow:
+    """One bounded message excerpt surrounding a delegation dispatch."""
+
+    message_id: str
+    role: str
+    text: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationCard:
+    """Explicit bounded evidence card for one delegation attempt."""
+
+    attempt: ArchiveDelegationQueryRow
+    delegation_ref: str
+    parent_session_title: str | None
+    child_session_title: str | None
+    run_ref: str | None
+    run_title: str | None
+    instruction: str | None
+    parent_context: tuple[ArchiveDelegationContextRow, ...]
+    parent_context_truncated: bool
+    dispatch_result: str | None
+    dispatch_result_truncated: bool
+    child_excerpt: str | None
+    child_excerpt_truncated: bool
+    parent_followup: tuple[ArchiveDelegationContextRow, ...]
+    parent_followup_truncated: bool
+    annotation_refs: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+
+
+def _archive_delegation_query_row(row: sqlite3.Row) -> ArchiveDelegationQueryRow:
+    return ArchiveDelegationQueryRow(
+        parent_session_id=str(row["parent_session_id"]),
+        child_session_id=str(row["child_session_id"]) if row["child_session_id"] is not None else None,
+        mapping_state=cast(DelegationMappingState, str(row["mapping_state"])),
+        link_confidence=float(row["link_confidence"]) if row["link_confidence"] is not None else None,
+        link_method=str(row["link_method"]) if row["link_method"] is not None else None,
+        inheritance=str(row["inheritance"]) if row["inheritance"] is not None else None,
+        branch_point_message_id=(
+            str(row["branch_point_message_id"]) if row["branch_point_message_id"] is not None else None
+        ),
+        instruction_message_id=(
+            str(row["instruction_message_id"]) if row["instruction_message_id"] is not None else None
+        ),
+        instruction_tool_use_block_id=(
+            str(row["instruction_tool_use_block_id"]) if row["instruction_tool_use_block_id"] is not None else None
+        ),
+        instruction_payload=str(row["instruction_payload"]) if row["instruction_payload"] is not None else None,
+        dispatch_turn_model=str(row["dispatch_turn_model"]) if row["dispatch_turn_model"] is not None else None,
+        requested_model=str(row["requested_model"]) if row["requested_model"] is not None else None,
+        artifact_block_id=str(row["artifact_block_id"]) if row["artifact_block_id"] is not None else None,
+        artifact_text=str(row["artifact_text"]) if row["artifact_text"] is not None else None,
+        result_is_error=int(row["result_is_error"]) if row["result_is_error"] is not None else None,
+        result_exit_code=int(row["result_exit_code"]) if row["result_exit_code"] is not None else None,
+        result_status=cast(DelegationResultStatus, str(row["result_status"])),
+        parent_origin=str(row["parent_origin"]),
+        parent_session_dominant_model=(
+            str(row["parent_session_dominant_model"]) if row["parent_session_dominant_model"] is not None else None
+        ),
+        parent_session_dominant_model_family=(
+            str(row["parent_session_dominant_model_family"])
+            if row["parent_session_dominant_model_family"] is not None
+            else None
+        ),
+        parent_terminal_state=(str(row["parent_terminal_state"]) if row["parent_terminal_state"] is not None else None),
+        child_session_dominant_model=(
+            str(row["child_session_dominant_model"]) if row["child_session_dominant_model"] is not None else None
+        ),
+        child_session_dominant_model_family=(
+            str(row["child_session_dominant_model_family"])
+            if row["child_session_dominant_model_family"] is not None
+            else None
+        ),
+        child_cost_usd=float(row["child_cost_usd"]) if row["child_cost_usd"] is not None else None,
+        child_cost_is_estimated=(
+            int(row["child_cost_is_estimated"]) if row["child_cost_is_estimated"] is not None else None
+        ),
+        child_tokens=int(row["child_tokens"]) if row["child_tokens"] is not None else None,
+        child_wall_ms=int(row["child_wall_ms"]) if row["child_wall_ms"] is not None else None,
+        child_terminal_state=str(row["child_terminal_state"]) if row["child_terminal_state"] is not None else None,
+    )
+
+
+def _delegation_instruction(payload: str | None) -> str | None:
+    if payload is None:
+        return None
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(decoded, dict):
+        for key in ("prompt", "description", "instruction", "task"):
+            value = decoded.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+    return None
+
+
+def _bounded_delegation_card_text(value: str | None, *, limit: int) -> tuple[str | None, bool]:
+    if value is None:
+        return None, False
+    if len(value) <= limit:
+        return value, False
+    return value[:limit], True
+
+
+def _delegation_message_window(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    anchor_position: int,
+    before: bool,
+    limit: int = 3,
+    text_limit: int = 1000,
+) -> tuple[tuple[ArchiveDelegationContextRow, ...], bool]:
+    operator = "<" if before else ">"
+    direction = "DESC" if before else "ASC"
+    rows = conn.execute(
+        f"""
+        SELECT
+            m.message_id,
+            m.role,
+            COALESCE((
+                SELECT group_concat(ordered.search_text, char(10))
+                FROM (
+                    SELECT b.search_text
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                    ORDER BY b.position, b.block_id
+                ) AS ordered
+            ), '') AS text
+        FROM messages m
+        WHERE m.session_id = ? AND m.position {operator} ?
+        ORDER BY m.position {direction}, m.message_id {direction}
+        LIMIT ?
+        """,
+        (session_id, anchor_position, limit + 1),
+    ).fetchall()
+    window_truncated = len(rows) > limit
+    rows = rows[:limit]
+    if before:
+        rows = list(reversed(rows))
+    projected: list[ArchiveDelegationContextRow] = []
+    for row in rows:
+        text, text_truncated = _bounded_delegation_card_text(str(row["text"] or ""), limit=text_limit)
+        projected.append(
+            ArchiveDelegationContextRow(
+                message_id=str(row["message_id"]),
+                role=str(row["role"]),
+                text=text or "",
+                truncated=text_truncated,
+            )
+        )
+    return tuple(projected), window_truncated
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,10 +723,79 @@ class ArchiveQueryUnitAggregateRow:
     count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitMultiAggregateRow:
+    """One losslessly addressable row from a multi-field aggregate page."""
+
+    unit: str
+    group_by: tuple[str, ...]
+    group_values: tuple[str, ...]
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitMultiAggregatePage:
+    """A bounded multi-field aggregate page plus exact full-result facts.
+
+    ``rows`` is bounded by the caller's page limit. ``denominator`` and the
+    per-field quality counters describe the complete matching row set rather
+    than merely the returned page, so page boundaries never change aggregate
+    meaning.
+    """
+
+    rows: tuple[ArchiveQueryUnitMultiAggregateRow, ...]
+    denominator: int
+    missing_counts: tuple[int, ...]
+    unknown_counts: tuple[int, ...]
+
+
 def _sql_string_literal(value: str) -> str:
     """Return a SQL single-quoted literal for a static in-repo token."""
 
     return "'" + value.replace("'", "''") + "'"
+
+
+_LEGACY_EXECUTION_TOOL_NAMES = (
+    "bash",
+    "exec",
+    "exec_command",
+    "functions.exec",
+    "functions.exec_command",
+    "local_shell_call",
+    "run",
+    "shell",
+    "shell_command",
+    "terminal",
+)
+
+
+def _action_command_expression(row_alias: str) -> str:
+    """Return canonical command text without rewriting historical evidence.
+
+    Current parsers persist ``command`` alongside provider-native fields. Older
+    Codex rows may instead carry ``cmd`` or free-form ``arguments``. Restrict
+    those fallbacks to execution tools so unrelated argument strings never
+    become shell commands merely because they share the same JSON key.
+    """
+
+    execution_tools = ", ".join(_sql_string_literal(name) for name in _LEGACY_EXECUTION_TOOL_NAMES)
+    return f"""
+        COALESCE(
+            NULLIF({row_alias}.tool_command, ''),
+            CASE
+                WHEN LOWER(COALESCE({row_alias}.tool_name, '')) IN ({execution_tools}) THEN
+                    COALESCE(
+                        NULLIF(json_extract({row_alias}.tool_input, '$.cmd'), ''),
+                        CASE
+                            WHEN json_type({row_alias}.tool_input, '$.arguments') = 'text'
+                                THEN NULLIF(json_extract({row_alias}.tool_input, '$.arguments'), '')
+                            ELSE NULL
+                        END
+                    )
+                ELSE NULL
+            END
+        )
+    """.strip()
 
 
 _ACTION_FOLLOWUP_ACK_CONDITION = " OR ".join(
@@ -606,6 +898,61 @@ action_rows AS (
 """
 
 
+def _exact_session_ids_from_predicate(predicate: QueryPredicate) -> tuple[str, ...] | None:
+    """Return a safe owning-session bound implied by a predicate subtree."""
+    if isinstance(predicate, QueryFieldPredicate):
+        session_field = _predicate_session_field(predicate)
+        if session_field not in {"id", "session"} or not predicate.values:
+            return None
+        # Session identity equality follows ordinary predicate lowering and uses
+        # the final parsed value.  Do not broaden the physical relation beyond
+        # the predicate's actual semantics.
+        return tuple(value for value in predicate.values[-1:] if value)
+    if isinstance(predicate, QueryBoolPredicate):
+        child_bounds = [
+            bound for child in predicate.children if (bound := _exact_session_ids_from_predicate(child)) is not None
+        ]
+        if not child_bounds:
+            return None
+        if predicate.op == "or":
+            if len(child_bounds) != len(predicate.children):
+                return None
+            return tuple(dict.fromkeys(session_id for bound in child_bounds for session_id in bound))
+        intersection = set(child_bounds[0])
+        for bound in child_bounds[1:]:
+            intersection.intersection_update(bound)
+        return tuple(session_id for session_id in child_bounds[0] if session_id in intersection)
+    return None
+
+
+def _action_relation_for_query(
+    *,
+    predicate: QueryPredicate | None = None,
+    session_ids: Sequence[str] = (),
+    include_followup: bool,
+) -> tuple[str, str, list[object]]:
+    """Select the canonical action relation, physically bounded when safe."""
+    explicit_ids = tuple(dict.fromkeys(session_id for session_id in session_ids if session_id))
+    predicate_ids = _exact_session_ids_from_predicate(predicate) if predicate is not None else None
+    normalized_ids = explicit_ids if explicit_ids else predicate_ids
+    if normalized_ids is None:
+        return (
+            (_ACTION_FOLLOWUP_RELATION_SQL if include_followup else ""),
+            ("action_rows" if include_followup else "actions"),
+            [],
+        )
+    bounded_cte = bounded_action_relation_cte(
+        relation_name="bounded_actions",
+        session_count=len(normalized_ids),
+    )
+    relation_params: list[object] = [*normalized_ids, *normalized_ids, *normalized_ids]
+    if not include_followup:
+        return f"WITH {bounded_cte}", "bounded_actions", relation_params
+    followup_ctes = _ACTION_FOLLOWUP_RELATION_SQL.strip().removeprefix("WITH ")
+    followup_ctes = followup_ctes.replace("FROM actions a", "FROM bounded_actions a", 1)
+    return f"WITH {bounded_cte},\n{followup_ctes}", "action_rows", relation_params
+
+
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
     """Return a closed SQL direction token for terminal row ordering."""
 
@@ -629,6 +976,13 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
 
     if group_by is None:
         return "'all'"
+    fields = tuple(field.strip() for field in group_by.split(","))
+    if len(fields) > 1:
+        # Keep multi-dimensional grouping in SQLite.  The old Python fallback
+        # fetched every matching action/delegation row before grouping, which
+        # made a bounded page an archive-wide materialization request.
+        components = ", ".join(f"'{field}', {_query_unit_group_expression(unit, row_alias, field)}" for field in fields)
+        return f"json_object({components})"
     normalized = group_by.removeprefix("session.")
     session_fields = {
         "origin": "COALESCE(NULLIF(s.origin, ''), 'unknown')",
@@ -673,11 +1027,135 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             "handler": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.handler_kind'), ''), 'unknown')",
             "status": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.status'), ''), 'unknown')",
         },
+        "delegation": {
+            "basis": (f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
+            "mapping_state": f"COALESCE(NULLIF({row_alias}.mapping_state, ''), 'unknown')",
+            "result_status": f"COALESCE(NULLIF({row_alias}.result_status, ''), 'unknown')",
+            "requested_model": f"COALESCE(NULLIF({row_alias}.requested_model, ''), 'unknown')",
+            "dispatch_model": f"COALESCE(NULLIF({row_alias}.dispatch_turn_model, ''), 'unknown')",
+            "child_model": f"COALESCE(NULLIF({row_alias}.child_session_dominant_model, ''), 'unknown')",
+        },
     }
     try:
         return unit_fields[unit][group_by]
     except KeyError as exc:
         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class _MultiAggregateFieldSQL:
+    """Closed SQL expressions for one multi-field aggregate dimension."""
+
+    value: str
+    missing: str
+    unknown: str
+
+
+def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> _MultiAggregateFieldSQL:
+    """Return lossless value and quality expressions for one group field.
+
+    Multi-field aggregation historically converted terminal rows back into
+    Python objects, where ``None`` became ``[missing]`` and literal ``unknown``
+    values remained distinguishable. Keep that contract while moving the work
+    into SQLite; do not conflate an empty string, a missing value, and an
+    explicit unknown token.
+    """
+
+    if field == "session.origin":
+        raw = "s.origin"
+    elif field == "session.repo":
+        raw = "s.git_repository_url"
+    else:
+        raw_fields = {
+            "message": {
+                "role": f"{row_alias}.role",
+                "type": f"{row_alias}.message_type",
+            },
+            "action": {
+                "tool": f"{row_alias}.tool_name",
+                "action": f"{row_alias}.semantic_type",
+                "type": f"{row_alias}.semantic_type",
+                "is_error": f"{row_alias}.is_error",
+                "exit_code": f"{row_alias}.exit_code",
+                "followup_class": f"{row_alias}.followup_class",
+            },
+            "block": {
+                "type": f"{row_alias}.block_type",
+                "tool": f"{row_alias}.tool_name",
+                "action": f"{row_alias}.semantic_type",
+            },
+            "file": {"path": f"{row_alias}.path"},
+            "assertion": {
+                "kind": f"{row_alias}.kind",
+                "status": f"{row_alias}.status",
+                "visibility": f"{row_alias}.visibility",
+                "author_kind": f"{row_alias}.author_kind",
+            },
+            "observed-event": {
+                "kind": f"{row_alias}.kind",
+                "delivery_state": f"{row_alias}.delivery_state",
+                "tool": f"json_extract({row_alias}.payload_json, '$.tool_name')",
+                "handler": f"json_extract({row_alias}.payload_json, '$.handler_kind')",
+                "status": f"json_extract({row_alias}.payload_json, '$.status')",
+            },
+            "delegation": {
+                "mapping_state": f"{row_alias}.mapping_state",
+                "result_status": f"{row_alias}.result_status",
+                "requested_model": f"{row_alias}.requested_model",
+                "dispatch_model": f"{row_alias}.dispatch_turn_model",
+                "child_model": f"{row_alias}.child_session_dominant_model",
+            },
+        }
+        if unit == "delegation" and field == "basis":
+            return _MultiAggregateFieldSQL(
+                value=(f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
+                missing="0",
+                unknown="0",
+            )
+        try:
+            raw = raw_fields[unit][field]
+        except KeyError as exc:
+            raise ValueError(f"unsupported {unit} multi-aggregate group field: {field}") from exc
+
+    assertion_defaults = {
+        "status": ASSERTION_DEFAULT_STATUS,
+        "visibility": ASSERTION_DEFAULT_VISIBILITY,
+        "author_kind": ASSERTION_DEFAULT_AUTHOR_KIND,
+    }
+    if unit == "assertion" and field in assertion_defaults:
+        value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(assertion_defaults[field])}) AS TEXT)"
+        missing = "0"
+    else:
+        value = f"CASE WHEN {raw} IS NULL THEN '[missing]' ELSE CAST({raw} AS TEXT) END"
+        missing = f"CASE WHEN {raw} IS NULL THEN 1 ELSE 0 END"
+    unknown = f"CASE WHEN {raw} IS NOT NULL AND LOWER(CAST({raw} AS TEXT)) = 'unknown' THEN 1 ELSE 0 END"
+    return _MultiAggregateFieldSQL(value=value, missing=missing, unknown=unknown)
+
+
+def _query_unit_multi_aggregate_order(
+    group_columns: Sequence[str],
+    sort: Literal["count", "key"] | None,
+    direction: Literal["asc", "desc"],
+) -> str:
+    """Return the stable ordering used by the former Python tuple sort."""
+
+    sql_direction = _query_unit_order_direction(direction)
+    key_order = ", ".join(f"{column} {sql_direction}" for column in group_columns)
+    if sort == "key":
+        return key_order
+    return f"count {sql_direction}, {key_order}"
+
+
+def _append_query_ctes(prefix_sql: str, *ctes: str) -> str:
+    """Append CTEs to an optional relation prefix that already starts WITH."""
+
+    body = ",\n".join(cte.strip() for cte in ctes)
+    prefix = prefix_sql.strip()
+    if not prefix:
+        return f"WITH {body}"
+    if not prefix.upper().startswith("WITH "):
+        raise ValueError("query relation prefix must start with WITH")
+    return f"{prefix},\n{body}"
 
 
 def _predicate_uses_unit_field(predicate: QueryPredicate, field_name: str, *, unit: str | None = None) -> bool:
@@ -711,7 +1189,9 @@ def _query_unit_group_uses_session(group_by: str | None) -> bool:
 
     if group_by is None:
         return False
-    return group_by.startswith("session.") or group_by in {"origin", "repo"}
+    return any(
+        field.strip().startswith("session.") or field.strip() in {"origin", "repo"} for field in group_by.split(",")
+    )
 
 
 def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> bool:
@@ -849,7 +1329,7 @@ class ArchiveStore:
         if not self.index_db_path.exists():
             return
         try:
-            with sqlite3.connect(self.index_db_path) as conn:
+            with closing(sqlite3.connect(self.index_db_path)) as conn:
                 current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 if current_version != archive_tier_spec(ArchiveTier.INDEX).version:
                     return
@@ -859,6 +1339,41 @@ class ArchiveStore:
                 conn.commit()
         except sqlite3.Error:
             return
+
+    def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
+        """Install a SQLite progress handler on the index read connection.
+
+        ``guard`` returning nonzero aborts the active statement with
+        ``sqlite3.OperationalError: interrupted``. Execution control
+        (polylogue-z9gh.1) uses this for cancellation/deadline enforcement;
+        the store deliberately exposes only this narrow hook rather than the
+        raw connection.
+        """
+        self._conn.set_progress_handler(guard, n_opcodes)
+
+    def clear_read_progress_guard(self) -> None:
+        """Remove the index connection's progress handler before ownership ends."""
+
+        self._conn.set_progress_handler(None, 0)
+
+    def begin_read_snapshot(self) -> None:
+        """Begin the owned read transaction used by one controlled query call."""
+
+        self._conn.execute("BEGIN")
+
+    def end_read_snapshot(self) -> None:
+        """Release the owned read snapshot without ever committing read work."""
+
+        if self._conn.in_transaction:
+            self._conn.rollback()
+
+    def interrupt_reads(self) -> None:
+        """Interrupt any statement active on the index read connection.
+
+        Safe to call from another thread (``sqlite3.Connection.interrupt``
+        is explicitly cross-thread callable).
+        """
+        self._conn.interrupt()
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db write connection, opening it lazily."""
@@ -1228,6 +1743,7 @@ class ArchiveStore:
         self,
         *,
         provider: Provider,
+        capture_mode: Provider | None = None,
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
@@ -1246,6 +1762,7 @@ class ArchiveStore:
         return write_source_raw_session(
             self._ensure_source_conn(),
             origin=origin_from_provider(provider),
+            capture_mode=capture_mode or provider,
             source_path=source_path,
             source_index=source_index,
             payload=payload,
@@ -1260,6 +1777,7 @@ class ArchiveStore:
         self,
         *,
         provider: Provider,
+        capture_mode: Provider | None = None,
         blob_hash_hex: str,
         blob_size: int,
         source_path: str,
@@ -1275,6 +1793,7 @@ class ArchiveStore:
         return write_source_raw_session_blob_ref(
             self._ensure_source_conn(),
             origin=origin_from_provider(provider),
+            capture_mode=capture_mode or provider,
             source_path=source_path,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),
@@ -1301,6 +1820,42 @@ class ArchiveStore:
         revision_authoritative: bool = False,
     ) -> tuple[str, str]:
         """Index one session for raw evidence that is already durable."""
+        result = self.write_parsed_for_retained_raw_result(
+            session,
+            raw_id=raw_id,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_index=source_index,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+            finalize_raw_parse=finalize_raw_parse,
+            revision_authoritative=revision_authoritative,
+        )
+        return result.raw_id, result.session_id
+
+    def write_parsed_for_retained_raw_result(
+        self,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        source_path: str,
+        acquired_at_ms: int,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+        finalize_raw_parse: bool = True,
+        revision_authoritative: bool = False,
+    ) -> ArchiveRawParsedWriteResult:
+        """Index one session for raw evidence that is already durable, with counts.
+
+        Used both by append-chain replay and by any caller that must index
+        several sessions parsed from ONE physical raw acquisition (e.g. a
+        Claude Code/Codex grouped JSONL file whose content splits into
+        multiple sessions) against the SAME raw_id, instead of writing a
+        duplicate raw row per session.
+        """
         preacquired_attachments, attachment_blob_refs = self._preacquire_attachment_blobs(
             session,
             source_path=source_path,
@@ -1324,10 +1879,41 @@ class ArchiveStore:
         if stage_timings_s is not None:
             key = f"{stage_timing_prefix}.index_parsed_write"
             stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
-        return result.raw_id, result.session_id
+        return result
 
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope) -> None:
         bind_source_raw_revision(self._ensure_source_conn(), raw_id, revision)
+
+    def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
+        """Undo census-time bindings when index authority rejects adoption.
+
+        Only backfill-created full envelopes use ``source_revision=raw_id``;
+        asserted/live envelopes and append authority cannot match this guard.
+        """
+        if not raw_ids:
+            return
+        placeholders = ",".join("?" for _ in raw_ids)
+        conn = self._ensure_source_conn()
+        with conn:
+            conn.execute(
+                f"""
+                UPDATE raw_sessions
+                SET logical_source_key = NULL,
+                    revision_kind = 'unknown',
+                    source_revision = NULL,
+                    predecessor_source_revision = NULL,
+                    predecessor_raw_id = NULL,
+                    baseline_raw_id = NULL,
+                    append_start_offset = NULL,
+                    append_end_offset = NULL,
+                    acquisition_generation = NULL,
+                    revision_authority = 'quarantined'
+                WHERE raw_id IN ({placeholders})
+                  AND revision_kind = 'full'
+                  AND source_revision = raw_id
+                """,
+                tuple(raw_ids),
+            )
 
     def raw_full_revision_generation(self, logical_source_key: str) -> int:
         """Allocate the next generation from durable, authoritative evidence."""
@@ -1383,21 +1969,27 @@ class ArchiveStore:
         source_conn = self._ensure_source_conn()
         full_rows = source_conn.execute(
             """
-            SELECT raw_id, lower(hex(blob_hash)) AS blob_hash
+            SELECT raw_id, lower(hex(blob_hash)) AS blob_hash, blob_size
             FROM raw_sessions
             WHERE logical_source_key = ? AND revision_kind = 'full'
             """,
             (logical_source_key,),
         ).fetchall()
-        historical: list[HistoricalRawRevision] = []
+        historical: list[HistoricalRawRevisionStream] = []
         for row in full_rows:
+
+            def open_payload(blob_hash: str = str(row[1])) -> BinaryIO:
+                assert self._blob_publisher is not None
+                return self._blob_publisher.open(blob_hash)
+
             historical.append(
-                HistoricalRawRevision(
+                HistoricalRawRevisionStream(
                     raw_id=str(row[0]),
-                    payload=self._blob_publisher.read_all(str(row[1])),
+                    payload_size=int(row[2]),
+                    open_payload=open_payload,
                 )
             )
-        decisions = classify_historical_full_revisions(historical)
+        decisions = classify_historical_full_revision_streams(historical)
         by_raw_id = {decision.raw_id: decision for decision in decisions}
         baseline_ids = [decision.raw_id for decision in decisions if decision.relation == "baseline"]
         baseline_raw_id = baseline_ids[0] if len(baseline_ids) == 1 else None
@@ -1497,7 +2089,7 @@ class ArchiveStore:
                 """
             SELECT raw_id, revision_kind, source_revision, acquisition_generation,
                    revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
-                   append_start_offset, append_end_offset
+                   append_start_offset, append_end_offset, predecessor_source_revision
             FROM raw_sessions
             WHERE logical_source_key = ? AND source_revision IS NOT NULL
             """,
@@ -1514,6 +2106,7 @@ class ArchiveStore:
                 acquisition_generation=int(row[3]),
                 authority=RawRevisionAuthority(str(row[4])),
                 blob_size=int(row[5]),
+                predecessor_source_revision=str(row[10]) if row[10] is not None else None,
                 predecessor_raw_id=str(row[6]) if row[6] is not None else None,
                 baseline_raw_id=str(row[7]) if row[7] is not None else None,
                 append_start_offset=int(row[8]) if row[8] is not None else None,
@@ -1522,15 +2115,111 @@ class ArchiveStore:
             for row in rows
         ]
 
-    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
-        """Read one retained revision with its parsing identity."""
+    def _authorize_full_snapshot_fold(
+        self,
+        *,
+        existing_head: tuple[object, ...],
+        full_candidate: RevisionCandidate,
+        candidates: Mapping[str, RevisionCandidate],
+    ) -> FullSnapshotFoldAuthorization | None:
+        """Prove one full raw is exactly the accepted byte-append chain.
+
+        The caller invokes this while holding the index replay transaction;
+        failure intentionally yields no authority and leaves ordinary CAS
+        semantics in force.  Every byte, offset, source revision, and raw
+        predecessor edge is checked instead of trusting parser-normalized
+        content hashes, which are segmentation-sensitive for Codex JSONL.
+        """
+        if (
+            full_candidate.kind is not RawRevisionKind.FULL
+            or full_candidate.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or str(existing_head[4]) != "byte"
+            or str(existing_head[1]) not in candidates
+        ):
+            return None
+        accepted_head = candidates[str(existing_head[1])]
+        frontier = int(cast(int | str | bytes, existing_head[5]))
+        if (
+            accepted_head.kind is not RawRevisionKind.APPEND
+            or accepted_head.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or accepted_head.source_revision != str(existing_head[2])
+            or accepted_head.append_end_offset != frontier
+        ):
+            return None
+        _full_digest, full_size = self._raw_revision_payload_digest_and_size(full_candidate.raw_id)
+        if full_size != frontier:
+            return None
+
+        tail_raw_ids: list[str] = []
+        current = accepted_head
+        baseline_raw_id = current.baseline_raw_id
+        expected_end = frontier
+        visited: set[str] = set()
+        while current.kind is RawRevisionKind.APPEND:
+            if (
+                current.raw_id in visited
+                or current.authority is not RawRevisionAuthority.BYTE_PROVEN
+                or current.baseline_raw_id != baseline_raw_id
+                or current.predecessor_raw_id is None
+                or current.predecessor_source_revision is None
+                or current.append_start_offset is None
+                or current.append_end_offset != expected_end
+            ):
+                return None
+            visited.add(current.raw_id)
+            tail_digest, tail_size = self._raw_revision_payload_digest_and_size(current.raw_id)
+            assert current.append_end_offset is not None
+            assert current.append_start_offset is not None
+            if tail_size != current.append_end_offset - current.append_start_offset:
+                return None
+            predecessor = candidates.get(current.predecessor_raw_id)
+            if (
+                predecessor is None
+                or predecessor.source_revision != current.predecessor_source_revision
+                or current.source_revision != append_source_revision(predecessor.source_revision, tail_digest)
+            ):
+                return None
+            predecessor_end = (
+                predecessor.blob_size if predecessor.kind is RawRevisionKind.FULL else predecessor.append_end_offset
+            )
+            if predecessor_end != current.append_start_offset:
+                return None
+            tail_raw_ids.append(current.raw_id)
+            expected_end = current.append_start_offset
+            current = predecessor
+        if (
+            current.kind is not RawRevisionKind.FULL
+            or current.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or current.raw_id != baseline_raw_id
+            or current.blob_size != expected_end
+        ):
+            return None
+        _baseline_digest, baseline_size = self._raw_revision_payload_digest_and_size(current.raw_id)
+        if baseline_size != current.blob_size or not self._raw_revision_matches_segments(
+            full_candidate.raw_id,
+            [current.raw_id, *reversed(tail_raw_ids)],
+        ):
+            return None
+        return FullSnapshotFoldAuthorization(
+            logical_source_key=full_candidate.logical_source_key,
+            session_id=str(existing_head[0]),
+            accepted_append_raw_id=str(existing_head[1]),
+            accepted_append_source_revision=str(existing_head[2]),
+            accepted_append_content_hash=cast(bytes, existing_head[3]),
+            frontier=frontier,
+            full_raw_id=full_candidate.raw_id,
+            full_source_revision=full_candidate.source_revision,
+        )
+
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+        """Return one retained revision's identity without materializing its blob."""
         if self._blob_publisher is None:
             raise RuntimeError("raw revision replay requires a writable blob publisher")
         row = (
             self._ensure_source_conn()
             .execute(
                 """
-            SELECT origin, lower(hex(blob_hash)), source_path, revision_kind
+            SELECT origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
             FROM raw_sessions WHERE raw_id = ?
             """,
                 (raw_id,),
@@ -1540,11 +2229,47 @@ class ArchiveStore:
         if row is None:
             raise KeyError(raw_id)
         return (
-            provider_from_origin(Origin.from_string(str(row[0]))),
-            self._blob_publisher.read_all(str(row[1])),
+            provider_from_origin(Origin.from_string(str(row[0])), family_hint=row[1]),
             str(row[2]),
-            RawRevisionKind(str(row[3])),
+            str(row[3]),
+            RawRevisionKind(str(row[4])),
+            int(row[5]),
         )
+
+    @contextmanager
+    def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+        """Open a retained revision for bounded streaming consumption."""
+        provider, blob_hash, source_path, kind, _blob_size = self.raw_revision_descriptor(raw_id)
+        assert self._blob_publisher is not None
+        with self._blob_publisher.open(blob_hash) as payload:
+            yield provider, payload, source_path, kind
+
+    def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+        """Read one retained revision with its parsing identity.
+
+        Use ``open_raw_revision_material`` for potentially large blobs.
+        """
+        provider, blob_hash, source_path, kind, _blob_size = self.raw_revision_descriptor(raw_id)
+        assert self._blob_publisher is not None
+        return provider, self._blob_publisher.read_all(blob_hash), source_path, kind
+
+    def _raw_revision_payload_digest_and_size(self, raw_id: str) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        size = 0
+        with self.open_raw_revision_material(raw_id) as (_provider, payload, _source_path, _kind):
+            while chunk := payload.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        return digest.hexdigest(), size
+
+    def _raw_revision_matches_segments(self, full_raw_id: str, segment_raw_ids: Sequence[str]) -> bool:
+        with self.open_raw_revision_material(full_raw_id) as (_provider, full, _source_path, _kind):
+            for raw_id in segment_raw_ids:
+                with self.open_raw_revision_material(raw_id) as (_provider, segment, _source_path, _kind):
+                    while chunk := segment.read(1024 * 1024):
+                        if full.read(len(chunk)) != chunk:
+                            return False
+            return full.read(1) == b""
 
     def unclassified_raw_revision_rows(self) -> tuple[tuple[str, int], ...]:
         """Return legacy rows that have no durable logical revision identity."""
@@ -1670,10 +2395,48 @@ class ArchiveStore:
         parser_fingerprint: str,
         censused_at_ms: int,
         detail: str = "",
+        retire_full_revision_governance: bool = False,
     ) -> None:
         """Atomically replace one raw's complete parser census and memberships."""
         conn = self._ensure_source_conn()
         with conn:
+            if retire_full_revision_governance:
+                revision = conn.execute(
+                    "SELECT logical_source_key, revision_kind FROM raw_sessions WHERE raw_id = ?",
+                    (raw_id,),
+                ).fetchone()
+                if revision is None:
+                    raise RuntimeError(f"membership census raw is missing: {raw_id}")
+                if revision[0] is not None and str(revision[1]) != RawRevisionKind.FULL.value:
+                    raise RuntimeError("only self-contained full raws can move to membership governance")
+                dependent = conn.execute(
+                    """
+                    SELECT 1 FROM raw_sessions
+                    WHERE raw_id != ?
+                      AND (predecessor_raw_id = ? OR baseline_raw_id = ?)
+                    LIMIT 1
+                    """,
+                    (raw_id, raw_id, raw_id),
+                ).fetchone()
+                if dependent is not None:
+                    raise RuntimeError("an active byte-revision chain cannot move to membership governance")
+                conn.execute(
+                    """
+                    UPDATE raw_sessions
+                    SET logical_source_key = NULL,
+                        revision_kind = 'unknown',
+                        source_revision = NULL,
+                        predecessor_raw_id = NULL,
+                        baseline_raw_id = NULL,
+                        append_start_offset = NULL,
+                        append_end_offset = NULL,
+                        acquisition_generation = NULL,
+                        revision_authority = 'quarantined',
+                        predecessor_source_revision = NULL
+                    WHERE raw_id = ?
+                    """,
+                    (raw_id,),
+                )
             conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (raw_id,))
             if sessions is not None:
                 for session in sessions:
@@ -1711,6 +2474,25 @@ class ArchiveStore:
                 (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
             )
 
+    def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return a full-only byte cohort that can join semantic membership."""
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+            SELECT raw_id, revision_kind
+            FROM raw_sessions
+            WHERE logical_source_key = ?
+            ORDER BY raw_id
+            """,
+                (logical_source_key,),
+            )
+            .fetchall()
+        )
+        if not rows or any(str(row[1]) != RawRevisionKind.FULL.value for row in rows):
+            return ()
+        return tuple(str(row[0]) for row in rows)
+
     def expand_raw_membership_selection(self, raw_ids: list[str] | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Expand scheduling hints to the complete transitive membership cohort."""
         return self.expand_raw_membership_selection_sync(self._ensure_source_conn(), raw_ids)
@@ -1720,17 +2502,67 @@ class ArchiveStore:
         conn: sqlite3.Connection,
         raw_ids: list[str],
     ) -> tuple[tuple[str, ...], ...]:
-        """Partition scheduling hints into transitive authority components."""
-        components: list[set[str]] = []
-        for raw_id in dict.fromkeys(raw_ids):
-            expanded, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, [raw_id])
-            component = set(expanded)
-            overlapping = [existing for existing in components if existing & component]
-            for existing in overlapping:
-                component.update(existing)
-                components.remove(existing)
-            components.append(component)
-        return tuple(tuple(sorted(component)) for component in sorted(components, key=lambda item: min(item)))
+        """Partition scheduling hints with one bulk authority-graph snapshot.
+
+        Re-expanding every direct candidate separately turns a large backlog
+        into thousands of overlapping recursive SQL walks.  Source paths and
+        logical membership keys are both undirected authority edges, so build
+        their connected components once and project only components containing
+        a scheduling hint.
+        """
+        hints = tuple(dict.fromkeys(raw_ids))
+        if not hints:
+            return ()
+
+        parent: dict[str, str] = {}
+
+        def find(raw_id: str) -> str:
+            root = parent.setdefault(raw_id, raw_id)
+            while root != parent[root]:
+                parent[root] = parent[parent[root]]
+                root = parent[root]
+            while raw_id != root:
+                next_raw_id = parent[raw_id]
+                parent[raw_id] = root
+                raw_id = next_raw_id
+            return root
+
+        def join(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        by_path: dict[str, str] = {}
+        by_key: dict[str, str] = {}
+        for raw_id, source_path, logical_source_key in conn.execute(
+            "SELECT raw_id, source_path, logical_source_key FROM raw_sessions"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            path = str(source_path or "")
+            if path:
+                prior = by_path.setdefault(path, raw_text)
+                join(prior, raw_text)
+            if logical_source_key is not None:
+                key = str(logical_source_key)
+                prior = by_key.setdefault(key, raw_text)
+                join(prior, raw_text)
+        for raw_id, logical_source_key in conn.execute(
+            "SELECT raw_id, logical_source_key FROM raw_session_memberships"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            key = str(logical_source_key)
+            prior = by_key.setdefault(key, raw_text)
+            join(prior, raw_text)
+
+        members: dict[str, list[str]] = {}
+        for raw_id in parent:
+            members.setdefault(find(raw_id), []).append(raw_id)
+        selected_roots = {find(raw_id) for raw_id in hints if raw_id in parent}
+        components = [tuple(sorted(members[root])) for root in selected_roots]
+        return tuple(sorted(components, key=lambda component: component[0]))
 
     def raw_membership_selection_components(self, raw_ids: list[str]) -> tuple[tuple[str, ...], ...]:
         return self.raw_membership_selection_components_sync(self._ensure_source_conn(), raw_ids)
@@ -1768,8 +2600,17 @@ class ArchiveStore:
             keys = {
                 str(row[0])
                 for row in conn.execute(
-                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
-                    tuple(selected),
+                    f"""
+                    SELECT logical_source_key
+                    FROM raw_session_memberships
+                    WHERE raw_id IN ({placeholders})
+                    UNION
+                    SELECT logical_source_key
+                    FROM raw_sessions
+                    WHERE raw_id IN ({placeholders})
+                      AND logical_source_key IS NOT NULL
+                    """,
+                    (*selected, *selected),
                 )
             }
             before = len(selected)
@@ -1778,9 +2619,16 @@ class ArchiveStore:
                 selected.update(
                     str(row[0])
                     for row in conn.execute(
-                        f"SELECT DISTINCT raw_id FROM raw_session_memberships "
-                        f"WHERE logical_source_key IN ({key_marks})",
-                        tuple(keys),
+                        f"""
+                        SELECT raw_id
+                        FROM raw_session_memberships
+                        WHERE logical_source_key IN ({key_marks})
+                        UNION
+                        SELECT raw_id
+                        FROM raw_sessions
+                        WHERE logical_source_key IN ({key_marks})
+                        """,
+                        (*keys, *keys),
                     )
                 )
             changed = len(selected) != before
@@ -1791,23 +2639,99 @@ class ArchiveStore:
             sorted(
                 str(row[0])
                 for row in conn.execute(
-                    f"SELECT DISTINCT logical_source_key FROM raw_session_memberships WHERE raw_id IN ({placeholders})",
-                    tuple(selected),
+                    f"""
+                    SELECT logical_source_key
+                    FROM raw_session_memberships
+                    WHERE raw_id IN ({placeholders})
+                    UNION
+                    SELECT logical_source_key
+                    FROM raw_sessions
+                    WHERE raw_id IN ({placeholders})
+                      AND logical_source_key IS NOT NULL
+                    """,
+                    (*selected, *selected),
                 )
             )
         )
         return tuple(sorted(selected)), logical_keys
 
-    def raw_membership_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+    def raw_membership_raw_ids(
+        self,
+        logical_source_key: str,
+        *,
+        include_complete_raw_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Return byte-proven candidates plus the complete raw being classified.
+
+        A newly censused live snapshot has not received a membership decision
+        yet, so it is deliberately quarantined until this classification
+        completes. Admit only that caller-owned complete census alongside
+        established byte-proven evidence; do not reopen unrelated quarantined
+        members from a prior failed or ambiguous replay.
+        """
         rows = (
             self._ensure_source_conn()
             .execute(
-                "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ? ORDER BY raw_id",
+                """
+                SELECT m.raw_id
+                FROM raw_session_memberships AS m
+                LEFT JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+                WHERE m.logical_source_key = ?
+                  AND (
+                    m.revision_authority = 'byte_proven'
+                    OR (
+                        m.raw_id = ?
+                        AND c.status = 'complete'
+                        AND m.decision IS NULL
+                    )
+                  )
+                ORDER BY m.raw_id
+                """,
+                (logical_source_key, include_complete_raw_id),
+            )
+            .fetchall()
+        )
+        return tuple(str(row[0]) for row in rows)
+
+    def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
+        """Return the durable acquisition order for one retained raw revision."""
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                "SELECT acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        if row is None:
+            raise KeyError(f"unknown raw revision {raw_id}")
+        return int(row[0])
+
+    def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
+        """Return census candidates excluding quarantined full rows with another authority key."""
+        rows = (
+            self._ensure_source_conn()
+            .execute(
+                """
+                SELECT m.raw_id
+                FROM raw_session_memberships AS m
+                JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+                WHERE m.logical_source_key = ? AND r.revision_authority = 'byte_proven'
+                ORDER BY m.raw_id
+                """,
                 (logical_source_key,),
             )
             .fetchall()
         )
         return tuple(str(row[0]) for row in rows)
+
+    def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None:
+        """Return the currently indexed accepted raw for one logical session."""
+        row = self._conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            (logical_source_key,),
+        ).fetchone()
+        return None if row is None else str(row[0])
 
     def raw_membership_authority_complete(self, raw_id: str) -> bool:
         row = (
@@ -1905,6 +2829,8 @@ class ArchiveStore:
         parsed_by_raw_id: dict[str, ParsedSession],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "revision_replay",
     ) -> tuple[str, tuple[str, ...]]:
         """Apply a proven chain and atomically receipt its exact index state."""
         if not plan.accepted_raw_ids:
@@ -1917,7 +2843,7 @@ class ArchiveStore:
         attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
         attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
         for raw_id in plan.accepted_raw_ids:
-            _provider, _payload, source_path, _kind = self.raw_revision_material(raw_id)
+            _provider, _blob_hash, source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
             acquired, refs = self._preacquire_attachment_blobs(
                 parsed_by_raw_id[raw_id],
                 source_path=source_path,
@@ -1932,11 +2858,13 @@ class ArchiveStore:
         session_ids: set[str] = set()
         with self._conn:
             existing_head = self._conn.execute(
-                "SELECT accepted_frontier_kind FROM raw_revision_heads WHERE logical_source_key = ?",
+                """SELECT session_id, accepted_raw_id, accepted_source_revision,
+                          accepted_content_hash, accepted_frontier_kind, accepted_frontier
+                   FROM raw_revision_heads WHERE logical_source_key = ?""",
                 (plan.logical_source_key,),
             ).fetchone()
             accepted_frontier_kind = (
-                "semantic" if existing_head is not None and str(existing_head[0]) == "semantic" else "byte"
+                "semantic" if existing_head is not None and str(existing_head[4]) == "semantic" else "byte"
             )
             if accepted_frontier_kind == "semantic":
                 accepted_projection = session_revision_projection(aggregate_sessions[0])
@@ -1948,17 +2876,21 @@ class ArchiveStore:
             else:
                 accepted_frontier = None
             for position, raw_id in enumerate(plan.accepted_raw_ids):
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     parsed_by_raw_id[raw_id],
                     raw_id=raw_id,
                     source_index=0 if position == 0 else -1,
-                    stage_timings_s=None,
-                    stage_timing_prefix="revision_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_ids.add(result.session_id)
             if len(session_ids) != 1:
                 raise RuntimeError("one logical revision chain produced multiple session ids")
@@ -1976,6 +2908,13 @@ class ArchiveStore:
                 raise RuntimeError("accepted revision did not produce a hashed session")
             accepted_raw_id = plan.accepted_raw_ids[-1]
             accepted = candidates[accepted_raw_id]
+            fold_authorization = (
+                self._authorize_full_snapshot_fold(
+                    existing_head=tuple(existing_head), full_candidate=accepted, candidates=candidates
+                )
+                if existing_head is not None and accepted_frontier_kind == "byte"
+                else None
+            )
             decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             for application in plan.applications:
                 candidate = candidates[application.raw_id]
@@ -2006,6 +2945,7 @@ class ArchiveStore:
                         predecessor_raw_id=candidate.predecessor_raw_id,
                         append_end_offset=accepted.append_end_offset,
                         detail=application.detail,
+                        fold_authorization=(fold_authorization if candidate.raw_id == accepted_raw_id else None),
                     ),
                     decided_at_ms=decided_at_ms,
                 )
@@ -2020,7 +2960,7 @@ class ArchiveStore:
             }
         }
         for raw_id in terminal_raw_ids:
-            provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+            provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
             self.mark_raw_parse_succeeded(raw_id, provider=provider)
         return session_id, plan.accepted_raw_ids
 
@@ -2032,6 +2972,8 @@ class ArchiveStore:
         projections_by_raw_id: dict[str, SessionRevisionProjection],
         *,
         acquired_at_ms: int,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "membership_replay",
     ) -> str | None:
         """Apply one semantic member head and persist every membership decision."""
         conn = self._ensure_source_conn()
@@ -2047,7 +2989,7 @@ class ArchiveStore:
         if classification.accepted_raw_ids:
             accepted_raw_id = classification.accepted_raw_ids[-1]
             accepted_session = parsed_by_raw_id[accepted_raw_id]
-            _provider, _payload, source_path, _kind = self.raw_revision_material(accepted_raw_id)
+            _provider, _blob_hash, source_path, _kind, _blob_size = self.raw_revision_descriptor(accepted_raw_id)
             attachments, refs = self._preacquire_attachment_blobs(
                 accepted_session,
                 source_path=source_path,
@@ -2057,17 +2999,56 @@ class ArchiveStore:
                 self._blob_publisher.flush()
             write_source_blob_refs(conn, accepted_raw_id, refs)
             with self._conn:
+                existing_head = self._conn.execute(
+                    """
+                    SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id
+                    FROM raw_revision_heads WHERE logical_source_key = ?
+                    """,
+                    (logical_source_key,),
+                ).fetchone()
+                if existing_head is not None:
+                    existing_raw_id = str(existing_head[0])
+                    classified_raw_ids = {
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                    }
+                    persisted_session = self._conn.execute(
+                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+                        (str(existing_head[3]),),
+                    ).fetchone()
+                    if (
+                        existing_raw_id not in classified_raw_ids
+                        or persisted_session is None
+                        or str(persisted_session[0]) != existing_raw_id
+                        or not isinstance(persisted_session[1], bytes)
+                        or bytes(existing_head[1]) != bytes(persisted_session[1])
+                    ):
+                        raise RuntimeError("membership replay cannot retire an unrelated accepted head")
+                    existing_is_byte_governed = conn.execute(
+                        "SELECT 1 FROM raw_sessions WHERE raw_id = ? AND logical_source_key = ?",
+                        (existing_raw_id, logical_source_key),
+                    ).fetchone()
+                    if existing_is_byte_governed is not None and accepted_raw_id != existing_raw_id:
+                        raise RuntimeError("membership replay cannot replace an unconvertible byte head")
+                    self._conn.execute(
+                        "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+                        (logical_source_key,),
+                    )
+                index_started = time.perf_counter()
                 result = self._index_parsed_for_retained_raw(
                     accepted_session,
                     raw_id=accepted_raw_id,
                     source_index=0,
-                    stage_timings_s=None,
-                    stage_timing_prefix="membership_replay",
+                    stage_timings_s=stage_timings_s,
+                    stage_timing_prefix=stage_timing_prefix,
                     manage_transaction=False,
                     preacquired_attachment_blobs=attachments,
                     finalize_raw_parse=False,
                     revision_authoritative=True,
                 )
+                if stage_timings_s is not None:
+                    key = f"{stage_timing_prefix}.index_parsed_write"
+                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
                 session_id = result.session_id
                 repair_message_fts_index_sync(self._conn, [session_id], record_exact_snapshot=False)
                 assert_session_fts_exact_sync(self._conn, session_id)
@@ -2153,7 +3134,7 @@ class ArchiveStore:
                 (raw_id,),
             ).fetchone()
             if complete is not None and bool(complete[0]):
-                provider, _payload, _source_path, _kind = self.raw_revision_material(raw_id)
+                provider, _blob_hash, _source_path, _kind, _blob_size = self.raw_revision_descriptor(raw_id)
                 self.mark_raw_parse_succeeded(raw_id, provider=provider)
             else:
                 with conn:
@@ -2293,6 +3274,7 @@ class ArchiveStore:
         raw_id = write_source_raw_session(
             source_conn,
             origin=origin_from_provider(session.source_name),
+            capture_mode=session.source_name,
             source_path=source_path,
             source_index=source_index,
             native_id=session.provider_session_id,
@@ -2391,6 +3373,7 @@ class ArchiveStore:
         raw_id = write_source_raw_session_blob_ref(
             source_conn,
             origin=origin_from_provider(session.source_name),
+            capture_mode=session.source_name,
             source_path=source_path,
             source_index=source_index,
             native_id=session.provider_session_id,
@@ -2420,6 +3403,21 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id)
+
+    def has_prefix_lineage(self, session_id: str) -> bool:
+        """Return whether a session's logical transcript inherits a prefix."""
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM session_links
+            WHERE src_session_id = ?
+              AND inheritance = 'prefix-sharing'
+              AND resolved_dst_session_id IS NOT NULL
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        return row is not None
 
     def get_session_tree(self, session_id: str) -> list[ArchiveSessionEnvelope]:
         """Return the rooted archive session tree containing ``session_id``."""
@@ -2493,7 +3491,7 @@ class ArchiveStore:
             )
             rows = source_conn.execute(
                 """
-                SELECT raw_id, origin, source_path, blob_size, acquired_at_ms,
+                SELECT raw_id, origin, capture_mode, source_path, blob_size, acquired_at_ms,
                        parsed_at_ms, validation_status
                 FROM raw_sessions
                 WHERE raw_id = ?
@@ -2507,7 +3505,7 @@ class ArchiveStore:
         return [
             {
                 "raw_id": str(row["raw_id"]),
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"]),
                 "source_path": str(row["source_path"]),
                 "blob_size": int(row["blob_size"] or 0),
                 "acquired_at": _iso_from_ms(row["acquired_at_ms"]),
@@ -2529,7 +3527,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         heuristic_label: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -2542,7 +3540,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("we.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -2605,7 +3603,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -2617,7 +3615,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("sp.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -2837,7 +3835,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         status: str | None = None,
         model: str | None = None,
         since_ms: int | None = None,
@@ -2860,7 +3858,7 @@ class ArchiveStore:
                 return []
             where.append("s.session_id = ?")
             params.append(resolved_session_id)
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -2902,7 +3900,7 @@ class ArchiveStore:
     def list_cost_rollup_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         model: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -2910,7 +3908,7 @@ class ArchiveStore:
         offset: int = 0,
     ) -> list[CostRollupInsight]:
         """Aggregate archive model-usage rows into public cost rollups."""
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         where = ["s.sort_key_ms > 0"]
         params: list[object] = []
         if origin is not None:
@@ -2985,7 +3983,7 @@ class ArchiveStore:
         materialized_at = datetime.now(UTC).isoformat()
         for row in [*rows, *no_usage_rows]:
             source_origin = str(row["source_name"] or "unknown")
-            source_name = _provider_for_origin(source_origin).value
+            source_name = source_origin
             model_name = str(row["model_name"]) if row["model_name"] is not None else None
             normalized_model = _normalize_model(model_name) if model_name is not None else None
             if model is not None and model not in {model_name, normalized_model}:
@@ -3065,7 +4063,7 @@ class ArchiveStore:
         for entry in grouped.values():
             rollups.append(
                 CostRollupInsight(
-                    source_name=entry.source_name,
+                    origin=entry.source_name,
                     model_name=entry.model_name,
                     normalized_model=entry.normalized_model,
                     session_count=entry.session_count,
@@ -3082,7 +4080,7 @@ class ArchiveStore:
                     ),
                     usage=entry.usage,
                     confidence=(
-                        entry.confidence_total / entry.priced_session_count if entry.priced_session_count else 0.0
+                        entry.confidence_total / entry.priced_session_count if entry.priced_session_count else None
                     ),
                     provenance=ArchiveInsightProvenance(
                         materializer_version=0,
@@ -3102,7 +4100,7 @@ class ArchiveStore:
     def list_usage_timeline_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         model: str | None = None,
         group_by: str = "month-origin-model",
         since_ms: int | None = None,
@@ -3112,7 +4110,7 @@ class ArchiveStore:
     ) -> list[UsageTimelineInsight]:
         """Aggregate provider usage and cost evidence by session-month buckets."""
 
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         include_origin = group_by in {"month-origin", "month-origin-model"}
         include_model = group_by in {"month-model", "month-origin-model"}
         buckets: dict[tuple[str, str | None, str | None], _UsageTimelineAccumulator] = {}
@@ -3306,7 +4304,7 @@ class ArchiveStore:
                 UsageTimelineInsight(
                     group_by=group_by,
                     bucket=item.bucket,
-                    source_name=item.source_name,
+                    origin=item.source_name,
                     model_name=timeline_model_name,
                     normalized_model=_normalize_model(timeline_model_name) if timeline_model_name else None,
                     session_count=max(cost_session_count, item.event_session_count),
@@ -3324,7 +4322,7 @@ class ArchiveStore:
                     ),
                 )
             )
-        rows.sort(key=lambda insight: (insight.bucket, insight.source_name or "", insight.normalized_model or ""))
+        rows.sort(key=lambda insight: (insight.bucket, insight.origin or "", insight.normalized_model or ""))
         if offset:
             rows = rows[offset:]
         if limit is not None:
@@ -3471,7 +4469,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         only_stuck: bool = False,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -3484,7 +4482,7 @@ class ArchiveStore:
         if session_id is not None:
             where.append("s.session_id = ?")
             params.append(self.resolve_session_id(session_id))
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3516,7 +4514,7 @@ class ArchiveStore:
     def find_stuck_session_latency_profile_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3528,7 +4526,7 @@ class ArchiveStore:
         whose projected stuck count is non-zero.
         """
         return self.list_session_latency_profile_insights(
-            provider=provider,
+            origin=origin,
             only_stuck=True,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -3589,7 +4587,7 @@ class ArchiveStore:
     def list_session_profile_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         workflow_shape: str | None = None,
         terminal_state: str | None = None,
         since_ms: int | None = None,
@@ -3614,7 +4612,7 @@ class ArchiveStore:
         )
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3901,7 +4899,7 @@ class ArchiveStore:
     def list_session_tag_rollup_insights(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         query: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -3911,7 +4909,7 @@ class ArchiveStore:
         """Aggregate archive session tags into public tag-rollup insights."""
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_provider_value(provider)
+        origin = _origin_value(origin)
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
@@ -3977,7 +4975,7 @@ class ArchiveStore:
         builder_request = _tool_usage_builder_query(request)
         insight = build_tool_usage_insight(
             rows=self._tool_usage_rows(request),
-            coverage_rows=self._tool_usage_provider_coverage_rows(),
+            coverage_rows=self._tool_usage_origin_coverage_rows(),
             query=builder_request,
             materialized_at=datetime.now(UTC).isoformat(),
         )
@@ -3988,7 +4986,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["b.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4034,7 +5032,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4050,7 +5047,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4058,7 +5055,7 @@ class ArchiveStore:
         handler_expr = (
             "CASE "
             f"WHEN {tool_expr} >= 'mcp__' AND {tool_expr} < 'mcp__\U0010ffff' THEN 'mcp' "
-            "WHEN NULLIF(u.tool_command, '') IS NOT NULL THEN 'shell' "
+            f"WHEN NULLIF({_action_command_expression('u')}, '') IS NOT NULL THEN 'shell' "
             "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
             "END"
         )
@@ -4118,7 +5115,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "unknown"),
@@ -4147,7 +5143,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = ["u.block_type = 'tool_use'"]
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4226,10 +5222,10 @@ class ArchiveStore:
 
         rows = fetch_rows()
 
-        buckets: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
-        sessions: dict[tuple[str, str, str, str, str], set[str]] = {}
+        buckets: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        sessions: dict[tuple[str, str, str, str], set[str]] = {}
         for row in rows:
-            source_name = _provider_for_origin(str(row["origin"])).value
+            origin = str(row["origin"] or "unknown-export")
             public_row = {
                 "tool_name": str(row["tool_name"] or ""),
                 "match_detail": str(row["match_detail"] or ""),
@@ -4246,8 +5242,7 @@ class ArchiveStore:
                 detail_patterns=cleaned_details,
             )
             key = (
-                source_name,
-                str(row["origin"] or "unknown-export"),
+                origin,
                 normalized_tool_name,
                 str(row["action_kind"] or "tool_use"),
                 evidence_kind,
@@ -4255,8 +5250,7 @@ class ArchiveStore:
             bucket = buckets.setdefault(
                 key,
                 {
-                    "source_name": source_name,
-                    "origin": str(row["origin"] or "unknown-export"),
+                    "origin": origin,
                     "normalized_tool_name": normalized_tool_name,
                     "action_kind": str(row["action_kind"] or "tool_use"),
                     "evidence_kind": evidence_kind,
@@ -4346,7 +5340,6 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
                 "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": f"{family}/command-detail",
                 "action_kind": str(row["action_kind"] or "tool_use"),
@@ -4364,7 +5357,7 @@ class ArchiveStore:
         request = query or ToolUsageInsightQuery()
         where: list[str] = []
         params: list[object] = []
-        origin = _origin_for_tool_usage_filter(request.provider)
+        origin = _origin_for_tool_usage_filter(request.origin)
         if origin:
             where.append("s.origin = ?")
             params.append(origin)
@@ -4421,7 +5414,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
                 "call_count": int(row["call_count"] or 0),
@@ -4434,7 +5427,7 @@ class ArchiveStore:
             for row in rows
         ]
 
-    def _tool_usage_provider_coverage_rows(self) -> list[ToolUsageProviderCoverageRow]:
+    def _tool_usage_origin_coverage_rows(self) -> list[ToolUsageOriginCoverageRow]:
         rows = self._conn.execute(
             """
             SELECT
@@ -4454,7 +5447,7 @@ class ArchiveStore:
         ).fetchall()
         return [
             {
-                "source_name": _provider_for_origin(str(row["origin"])).value,
+                "origin": str(row["origin"] or "unknown-export"),
                 "session_count": int(row["session_count"] or 0),
                 "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -4469,17 +5462,17 @@ class ArchiveStore:
     def list_archive_coverage_insights(
         self,
         *,
-        group_by: str = "provider",
-        provider: str | None = None,
+        group_by: str = "origin",
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ArchiveCoverageInsight]:
         """Aggregate archive coverage from index tables."""
-        origin = _origin_for_provider_value(provider)
-        if group_by == "provider":
-            return self._provider_coverage_insights(origin=origin, limit=limit, offset=offset)
+        origin = _origin_value(origin)
+        if group_by == "origin":
+            return self._origin_coverage_insights(origin=origin, limit=limit, offset=offset)
         if group_by == "day":
             return self._time_bucket_coverage_insights(
                 bucket_format="%Y-%m-%d",
@@ -4500,9 +5493,9 @@ class ArchiveStore:
                 limit=limit,
                 offset=offset,
             )
-        raise ValueError("archive coverage group_by must be one of: provider, day, week")
+        raise ValueError("archive coverage group_by must be one of: origin, day, week")
 
-    def _provider_coverage_insights(
+    def _origin_coverage_insights(
         self,
         *,
         origin: str | None,
@@ -4541,7 +5534,7 @@ class ArchiveStore:
             """,
             tuple(params),
         ).fetchall()
-        return [_provider_coverage_from_archive_row(row) for row in rows]
+        return [_origin_coverage_from_archive_row(row) for row in rows]
 
     def _time_bucket_coverage_insights(
         self,
@@ -4797,6 +5790,104 @@ class ArchiveStore:
                     annotation_id=annotation_id,
                 )
             return not exists
+        finally:
+            user_conn.close()
+
+    def save_annotation_schema(
+        self,
+        schema: AnnotationSchema,
+        *,
+        registered_at_ms: int | None = None,
+    ) -> DurableAnnotationSchema:
+        """Persist an immutable annotation schema definition in ``user.db``."""
+
+        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            with user_conn:
+                return persist_annotation_schema(
+                    user_conn,
+                    schema,
+                    registered_at_ms=registered_at_ms if registered_at_ms is not None else int(time.time() * 1000),
+                )
+        finally:
+            user_conn.close()
+
+    def get_annotation_schema(
+        self,
+        schema_id: str,
+        version: int | None = None,
+    ) -> DurableAnnotationSchema | None:
+        """Resolve one durable schema definition, defaulting to its latest version."""
+
+        if not self.user_db_path.exists():
+            return None
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return read_durable_annotation_schema(user_conn, schema_id, version)
+        finally:
+            user_conn.close()
+
+    def list_annotation_schemas(self) -> tuple[DurableAnnotationSchema, ...]:
+        """List durable annotation schema definitions in identity order."""
+
+        if not self.user_db_path.exists():
+            return ()
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return list_durable_annotation_schemas(user_conn)
+        finally:
+            user_conn.close()
+
+    def save_annotation_batch(self, batch: AnnotationBatch) -> AnnotationBatch:
+        """Persist one immutable annotation-batch provenance container."""
+
+        initialize_archive_database(self.user_db_path, ArchiveTier.USER)
+        user_conn = sqlite3.connect(self.user_db_path)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            with user_conn:
+                return persist_annotation_batch(user_conn, batch)
+        finally:
+            user_conn.close()
+
+    def get_annotation_batch(self, batch_id: str) -> AnnotationBatch | None:
+        """Read one durable annotation batch by id."""
+
+        if not self.user_db_path.exists():
+            return None
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return read_annotation_batch(user_conn, batch_id)
+        finally:
+            user_conn.close()
+
+    def list_annotation_batches(
+        self,
+        *,
+        schema_id: str | None = None,
+        schema_version: int | None = None,
+        target_ref: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AnnotationBatch, ...]:
+        """List durable batch metadata with focused schema/target filters."""
+
+        if not self.user_db_path.exists():
+            return ()
+        user_conn = sqlite3.connect(f"file:{self.user_db_path}?mode=ro", uri=True)
+        user_conn.row_factory = sqlite3.Row
+        try:
+            return _list_annotation_batches(
+                user_conn,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                target_ref=target_ref,
+                limit=limit,
+            )
         finally:
             user_conn.close()
 
@@ -5356,11 +6447,11 @@ class ArchiveStore:
             else known_insight_readiness_names()
         )
         status = self.session_insight_status()
-        origin_filter = _origin_for_provider_value(request.provider)
+        origin_filter = _origin_value(request.origin)
         since_ms = _epoch_ms_from_iso(request.since)
         until_ms = _epoch_ms_from_iso(request.until)
         total_sessions = self.count_sessions(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
-        coverage = self._archive_session_provider_coverage(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
+        coverage = self._archive_session_origin_coverage(origin=origin_filter, since_ms=since_ms, until_ms=until_ms)
         entries = tuple(
             entry
             for name in selected
@@ -5369,7 +6460,7 @@ class ArchiveStore:
                     name,
                     status=status,
                     total_sessions=total_sessions,
-                    provider_coverage=coverage,
+                    origin_coverage=coverage,
                     origin=origin_filter,
                     since_ms=since_ms,
                     until_ms=until_ms,
@@ -5381,7 +6472,7 @@ class ArchiveStore:
             checked_at=datetime.now(UTC).isoformat(),
             aggregate_verdict=_insight_readiness_aggregate_verdict(entries),
             total_sessions=total_sessions,
-            provider=request.provider,
+            origin=request.origin,
             since=request.since,
             until=request.until,
             insights=entries,
@@ -5412,9 +6503,9 @@ class ArchiveStore:
             return list(self.list_session_tag_rollup_insights(limit=limit))
         return []
 
-    def _archive_session_provider_coverage(
+    def _archive_session_origin_coverage(
         self, *, origin: str | None, since_ms: int | None, until_ms: int | None
-    ) -> tuple[InsightProviderCoverage, ...]:
+    ) -> tuple[InsightOriginCoverage, ...]:
         """Per-provider session distribution for insight readiness coverage."""
         where: list[str] = []
         params: list[object] = []
@@ -5434,8 +6525,8 @@ class ArchiveStore:
             tuple(params),
         ).fetchall()
         return tuple(
-            InsightProviderCoverage(
-                source_name=_provider_for_origin(str(row["origin"])).value,
+            InsightOriginCoverage(
+                origin=str(row["origin"]),
                 row_count=int(row["n"]),
                 min_time=_iso_from_ms(row["lo"]),
                 max_time=_iso_from_ms(row["hi"]),
@@ -5571,7 +6662,7 @@ class ArchiveStore:
         *,
         status: SessionInsightStatusSnapshot,
         total_sessions: int,
-        provider_coverage: tuple[InsightProviderCoverage, ...] = (),
+        origin_coverage: tuple[InsightOriginCoverage, ...] = (),
         origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -5718,7 +6809,7 @@ class ArchiveStore:
             fallback_reason_counts=fallback_reason_counts,
             storage_artifacts=artifacts,
             ready_flags=ready_flags,
-            provider_coverage=provider_coverage,
+            origin_coverage=origin_coverage,
             version_coverage=version_coverage,
             evidence=_archive_insight_readiness_evidence(
                 row_count=row_count,
@@ -5976,7 +7067,6 @@ class ArchiveStore:
                 block_id=str(row["block_id"]),
                 message_id=str(row["message_id"]),
                 origin=str(row["origin"]),
-                provider=_provider_for_origin(str(row["origin"])),
                 title=str(row["title"]) if row["title"] is not None else None,
                 snippet=_highlight_search_snippet(
                     str(row["snippet"] or ""),
@@ -6307,7 +7397,6 @@ class ArchiveStore:
                     block_id=str(row["block_id"] or message_id),
                     message_id=message_id,
                     origin=str(row["origin"]),
-                    provider=_provider_for_origin(str(row["origin"])),
                     title=str(row["title"]) if row["title"] is not None else None,
                     snippet=text[:160],
                 )
@@ -6371,6 +7460,41 @@ class ArchiveStore:
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
+        message_ids = tuple(str(row["message_id"]) for row in rows)
+        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
+        if message_ids:
+            block_placeholders = ", ".join("?" for _ in message_ids)
+            block_rows = self._conn.execute(
+                f"""
+                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
+                       semantic_type, tool_input, language,
+                       tool_result_is_error, tool_result_exit_code
+                FROM blocks
+                WHERE message_id IN ({block_placeholders})
+                ORDER BY message_id, position, block_id
+                """,
+                message_ids,
+            ).fetchall()
+            for block in block_rows:
+                blocks_by_message[str(block["message_id"])].append(
+                    ArchiveBlockRow(
+                        block_id=str(block["block_id"]),
+                        message_id=str(block["message_id"]),
+                        block_type=str(block["block_type"]),
+                        text=str(block["text"]) if block["text"] is not None else None,
+                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
+                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
+                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
+                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
+                        language=str(block["language"]) if block["language"] is not None else None,
+                        tool_result_is_error=(
+                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
+                        ),
+                        tool_result_exit_code=(
+                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
+                        ),
+                    )
+                )
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -6384,6 +7508,7 @@ class ArchiveStore:
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
+                blocks=tuple(blocks_by_message[str(row["message_id"])]),
             )
             for row in rows
         ]
@@ -6395,6 +7520,9 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        roles: Sequence[str] = (),
+        message_type: str | None = None,
+        material_origins: Sequence[str] = (),
     ) -> list[ArchiveMessageQueryRow]:
         """Return message rows for known sessions using the session sort-key index."""
 
@@ -6407,6 +7535,21 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        predicates = [f"m.session_id IN ({placeholders})"]
+        filter_params: list[object] = [*normalized_session_ids]
+        normalized_roles = tuple(dict.fromkeys(str(role) for role in roles if str(role)))
+        if normalized_roles:
+            role_placeholders = ", ".join("?" for _ in normalized_roles)
+            predicates.append(f"m.role IN ({role_placeholders})")
+            filter_params.extend(normalized_roles)
+        if message_type is not None:
+            predicates.append("m.message_type = ?")
+            filter_params.append(str(message_type))
+        normalized_origins = tuple(dict.fromkeys(str(origin) for origin in material_origins if str(origin)))
+        if normalized_origins:
+            origin_placeholders = ", ".join("?" for _ in normalized_origins)
+            predicates.append(f"m.material_origin IN ({origin_placeholders})")
+            filter_params.extend(normalized_origins)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -6432,14 +7575,47 @@ class ArchiveStore:
                 ), '') AS text
             FROM messages m INDEXED BY idx_messages_session_sortkey
             JOIN sessions s ON s.session_id = m.session_id
-            WHERE m.session_id IN ({placeholders})
-            ORDER BY (m.occurred_at_ms IS NULL) {order_direction},
-                     m.occurred_at_ms {order_direction},
-                     m.message_id {order_direction}
+            WHERE {" AND ".join(predicates)}
+            ORDER BY m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*filter_params, normalized_limit, normalized_offset],
         ).fetchall()
+        message_ids = tuple(str(row["message_id"]) for row in rows)
+        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
+        if message_ids:
+            block_placeholders = ", ".join("?" for _ in message_ids)
+            block_rows = self._conn.execute(
+                f"""
+                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
+                       semantic_type, tool_input, language,
+                       tool_result_is_error, tool_result_exit_code
+                FROM blocks
+                WHERE message_id IN ({block_placeholders})
+                ORDER BY message_id, position, block_id
+                """,
+                message_ids,
+            ).fetchall()
+            for block in block_rows:
+                blocks_by_message[str(block["message_id"])].append(
+                    ArchiveBlockRow(
+                        block_id=str(block["block_id"]),
+                        message_id=str(block["message_id"]),
+                        block_type=str(block["block_type"]),
+                        text=str(block["text"]) if block["text"] is not None else None,
+                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
+                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
+                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
+                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
+                        language=str(block["language"]) if block["language"] is not None else None,
+                        tool_result_is_error=(
+                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
+                        ),
+                        tool_result_exit_code=(
+                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
+                        ),
+                    )
+                )
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -6453,9 +7629,46 @@ class ArchiveStore:
                 position=int(row["position"]),
                 word_count=int(row["word_count"]),
                 text=str(row["text"] or ""),
+                blocks=tuple(blocks_by_message[str(row["message_id"])]),
             )
             for row in rows
         ]
+
+    def count_session_messages(
+        self,
+        session_ids: Sequence[str],
+        *,
+        roles: Sequence[str] = (),
+        message_type: str | None = None,
+        material_origins: Sequence[str] = (),
+    ) -> int:
+        """Return an exact count for a bounded session-message projection."""
+
+        normalized_session_ids = tuple(
+            dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
+        )
+        if not normalized_session_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in normalized_session_ids)
+        predicates = [f"session_id IN ({placeholders})"]
+        params: list[object] = [*normalized_session_ids]
+        normalized_roles = tuple(dict.fromkeys(str(role) for role in roles if str(role)))
+        if normalized_roles:
+            role_placeholders = ", ".join("?" for _ in normalized_roles)
+            predicates.append(f"role IN ({role_placeholders})")
+            params.extend(normalized_roles)
+        if message_type is not None:
+            predicates.append("message_type = ?")
+            params.append(str(message_type))
+        normalized_origins = tuple(dict.fromkeys(str(origin) for origin in material_origins if str(origin)))
+        if normalized_origins:
+            origin_placeholders = ", ".join("?" for _ in normalized_origins)
+            predicates.append(f"material_origin IN ({origin_placeholders})")
+            params.extend(normalized_origins)
+        row = self._conn.execute(
+            f"SELECT COUNT(*) AS count FROM messages WHERE {' AND '.join(predicates)}", params
+        ).fetchone()
+        return int(row["count"]) if row is not None else 0
 
     def query_unit_counts(
         self,
@@ -6485,6 +7698,7 @@ class ArchiveStore:
             "file": "f",
             "assertion": "a",
             "observed-event": "e",
+            "delegation": "d",
         }.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
@@ -6514,16 +7728,21 @@ class ArchiveStore:
         if needs_session and active_session_filters and session_filters is not None:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         action_needs_followup = unit == "action" and _action_query_needs_followup_relation(predicate, group_by=group_by)
+        action_prefix_sql = ""
+        action_relation_name = "actions"
+        action_relation_params: list[object] = []
+        if unit == "action":
+            action_prefix_sql, action_relation_name, action_relation_params = _action_relation_for_query(
+                predicate=predicate,
+                include_followup=action_needs_followup,
+            )
         from_sql_by_unit = {
             "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-            "action": (
-                "action_rows a JOIN sessions s ON s.session_id = a.session_id"
-                if action_needs_followup
-                else "actions a JOIN sessions s ON s.session_id = a.session_id"
-            ),
+            "action": (f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id"),
             "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
             "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
             "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+            "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
         }
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
@@ -6532,12 +7751,9 @@ class ArchiveStore:
         if unit == "observed-event":
             source_where, source_params = observed_event_source_pushdown(predicate)
         if unit == "observed-event":
-            prefix_sql = observed_event_relation_sql(
-                source_where=source_where,
-                include_materialized=_run_projection_table_exists(self._conn, "session_observed_events"),
-            )
-        elif action_needs_followup:
-            prefix_sql = _ACTION_FOLLOWUP_RELATION_SQL
+            prefix_sql = observed_event_relation_sql(source_where=source_where)
+        elif unit == "action":
+            prefix_sql = action_prefix_sql
         else:
             prefix_sql = ""
         rows = self._conn.execute(
@@ -6551,7 +7767,14 @@ class ArchiveStore:
             ORDER BY {order_clause}
             LIMIT ? OFFSET ?
             """,
-            [*source_params, *params, *session_params, normalized_limit, normalized_offset],
+            [
+                *action_relation_params,
+                *source_params,
+                *params,
+                *session_params,
+                normalized_limit,
+                normalized_offset,
+            ],
         ).fetchall()
         return [
             ArchiveQueryUnitAggregateRow(
@@ -6562,6 +7785,265 @@ class ArchiveStore:
             )
             for row in rows
         ]
+
+    def query_unit_multi_counts(
+        self,
+        unit: str,
+        predicate: QueryPredicate,
+        *,
+        group_by: Sequence[str],
+        sort: Literal["count", "key"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> ArchiveQueryUnitMultiAggregatePage:
+        """Return one bounded multi-field count page with exact full-set facts.
+
+        The source relation is filtered and grouped inside one SQLite statement.
+        Python retains at most the requested aggregate page; it never pages the
+        selected row relation with OFFSET and never reconstructs the query
+        algorithm in application memory.
+        """
+
+        fields = tuple(str(field).strip() for field in group_by if str(field).strip())
+        if len(fields) < 2:
+            raise ValueError("multi-field aggregate counts require at least two group fields")
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        empty_page = ArchiveQueryUnitMultiAggregatePage(
+            rows=(),
+            denominator=0,
+            missing_counts=tuple(0 for _ in fields),
+            unknown_counts=tuple(0 for _ in fields),
+        )
+        if unit == "assertion" and not self.user_db_path.exists():
+            return empty_page
+        if unit == "assertion":
+            self._attach_user_tier_if_present()
+
+        row_alias = {
+            "message": "m",
+            "action": "a",
+            "block": "b",
+            "file": "f",
+            "assertion": "a",
+            "observed-event": "e",
+            "delegation": "d",
+        }.get(unit)
+        if row_alias is None:
+            raise ValueError(f"Query unit {unit!r} is not wired to SQL multi-aggregate counts")
+
+        active_session_filters = _session_filter_is_active(session_filters)
+        needs_session = (
+            unit != "observed-event"
+            or active_session_filters
+            or any(_query_unit_group_uses_session(field) for field in fields)
+            or _predicate_uses_session_scope(predicate)
+        )
+        session_alias = "s" if needs_session else None
+        clause, predicate_params = _structural_predicate_clause(
+            unit,
+            "a" if unit == "file" else row_alias,
+            predicate,
+            session_alias=session_alias,
+        )
+        where_clause = clause or "1=1"
+        session_clause = ""
+        session_params: list[object] = []
+        if needs_session and active_session_filters and session_filters is not None:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+
+        relation_params: list[object] = []
+        source_params: list[object] = []
+        prefix_sql = ""
+        selected_where_clause = where_clause
+        selected_session_clause = session_clause
+        if unit == "file":
+            file_rows_cte = f"""
+                file_rows AS (
+                    SELECT
+                        a.session_id,
+                        REPLACE(a.tool_path, char(92), '/') AS path
+                    FROM actions a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    JOIN messages m ON m.message_id = a.message_id
+                    WHERE a.tool_path IS NOT NULL
+                      AND a.tool_path != ''
+                      AND {where_clause}
+                      {session_clause}
+                    GROUP BY a.session_id, path
+                )
+            """
+            from_sql = "file_rows f JOIN sessions s ON s.session_id = f.session_id"
+            source_ctes = [file_rows_cte]
+            selected_where_clause = "1=1"
+            selected_session_clause = ""
+        else:
+            source_ctes = []
+            action_needs_followup = unit == "action" and (
+                "followup_class" in fields or _action_query_needs_followup_relation(predicate)
+            )
+            action_relation_name = "actions"
+            if unit == "action":
+                prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+                    predicate=predicate,
+                    include_followup=action_needs_followup,
+                )
+            from_sql_by_unit = {
+                "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
+                "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
+                "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
+                "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+                "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+                "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
+            }
+            from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
+            if unit == "observed-event":
+                source_where, source_params = observed_event_source_pushdown(predicate)
+                prefix_sql = observed_event_relation_sql(source_where=source_where)
+
+        field_sql = tuple(_query_unit_multi_group_field_sql(unit, row_alias, field) for field in fields)
+        group_columns = tuple(f"group_{index}" for index in range(len(fields)))
+        selected_columns = ",\n".join(
+            expression
+            for index, spec in enumerate(field_sql)
+            for expression in (
+                f"{spec.value} AS group_{index}",
+                f"{spec.missing} AS missing_{index}",
+                f"{spec.unknown} AS unknown_{index}",
+            )
+        )
+        grouped_quality_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"SUM(missing_{index}) AS group_missing_{index}",
+                f"SUM(unknown_{index}) AS group_unknown_{index}",
+            )
+        )
+        ranked_quality_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"SUM(group_missing_{index}) OVER () AS total_missing_{index}",
+                f"SUM(group_unknown_{index}) OVER () AS total_unknown_{index}",
+            )
+        )
+        stats_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"COALESCE(MAX(total_missing_{index}), 0) AS missing_{index}",
+                f"COALESCE(MAX(total_unknown_{index}), 0) AS unknown_{index}",
+            )
+        )
+        final_stats_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"stats.missing_{index}",
+                f"stats.unknown_{index}",
+            )
+        )
+        final_group_columns = ",\n".join(f"page.group_{index}" for index in range(len(fields)))
+        group_column_list = ", ".join(group_columns)
+        order_clause = _query_unit_multi_aggregate_order(group_columns, sort, sort_direction)
+
+        selected_cte = f"""
+            selected AS (
+                SELECT
+                    {selected_columns}
+                FROM {from_sql}
+                WHERE {selected_where_clause}
+                {selected_session_clause}
+            )
+        """
+        grouped_cte = f"""
+            grouped AS (
+                SELECT
+                    {group_column_list},
+                    COUNT(*) AS count,
+                    {grouped_quality_columns}
+                FROM selected
+                GROUP BY {group_column_list}
+            )
+        """
+        ranked_cte = f"""
+            ranked AS (
+                SELECT
+                    grouped.*,
+                    SUM(count) OVER () AS denominator,
+                    {ranked_quality_columns},
+                    ROW_NUMBER() OVER (ORDER BY {order_clause}) AS ordinal
+                FROM grouped
+            )
+        """
+        page_cte = """
+            page AS (
+                SELECT *
+                FROM ranked
+                WHERE ordinal > ? AND ordinal <= ?
+            )
+        """
+        stats_cte = f"""
+            stats AS (
+                SELECT
+                    COALESCE(MAX(denominator), 0) AS denominator,
+                    {stats_columns}
+                FROM ranked
+            )
+        """
+        cte_sql = _append_query_ctes(
+            prefix_sql,
+            *source_ctes,
+            selected_cte,
+            grouped_cte,
+            ranked_cte,
+            page_cte,
+            stats_cte,
+        )
+        rows = self._conn.execute(
+            f"""
+            {cte_sql}
+            SELECT
+                stats.denominator,
+                {final_stats_columns},
+                {final_group_columns},
+                page.count,
+                page.ordinal
+            FROM stats
+            LEFT JOIN page ON 1 = 1
+            ORDER BY page.ordinal
+            """,
+            [
+                *relation_params,
+                *source_params,
+                *predicate_params,
+                *session_params,
+                normalized_offset,
+                normalized_offset + normalized_limit,
+            ],
+        ).fetchall()
+        if not rows:
+            return empty_page
+        stats_row = rows[0]
+        aggregate_rows = tuple(
+            ArchiveQueryUnitMultiAggregateRow(
+                unit=unit,
+                group_by=fields,
+                group_values=tuple(str(row[f"group_{index}"]) for index in range(len(fields))),
+                count=int(row["count"]),
+            )
+            for row in rows
+            if row["count"] is not None
+        )
+        return ArchiveQueryUnitMultiAggregatePage(
+            rows=aggregate_rows,
+            denominator=int(stats_row["denominator"]),
+            missing_counts=tuple(int(stats_row[f"missing_{index}"]) for index in range(len(fields))),
+            unknown_counts=tuple(int(stats_row[f"unknown_{index}"]) for index in range(len(fields))),
+        )
 
     def query_actions(
         self,
@@ -6585,13 +8067,17 @@ class ArchiveStore:
         else:
             order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), a.tool_use_block_id"
         clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            predicate=predicate,
+            include_followup=True,
+        )
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {_ACTION_FOLLOWUP_RELATION_SQL}
+            {prefix_sql}
             SELECT
                 a.session_id,
                 a.message_id,
@@ -6601,7 +8087,7 @@ class ArchiveStore:
                 a.tool_result_block_id,
                 a.tool_name,
                 a.semantic_type,
-                a.tool_command,
+                {_action_command_expression("a")} AS tool_command,
                 a.tool_path,
                 m.occurred_at_ms,
                 a.output_text,
@@ -6609,7 +8095,7 @@ class ArchiveStore:
                 a.exit_code,
                 a.followup_class,
                 a.followup_message_ref
-            FROM action_rows a
+            FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE {clause}
@@ -6617,7 +8103,7 @@ class ArchiveStore:
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
-            [*params, *session_params, normalized_limit, normalized_offset],
+            [*relation_params, *params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
@@ -6640,9 +8126,13 @@ class ArchiveStore:
         normalized_offset = max(int(offset), 0)
         order_direction = _query_unit_order_direction(sort_direction)
         placeholders = ", ".join("?" for _ in normalized_session_ids)
+        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+            session_ids=normalized_session_ids,
+            include_followup=True,
+        )
         rows = self._conn.execute(
             f"""
-            {_ACTION_FOLLOWUP_RELATION_SQL}
+            {prefix_sql}
             SELECT
                 a.session_id,
                 a.message_id,
@@ -6652,7 +8142,7 @@ class ArchiveStore:
                 a.tool_result_block_id,
                 a.tool_name,
                 a.semantic_type,
-                a.tool_command,
+                {_action_command_expression("a")} AS tool_command,
                 a.tool_path,
                 m.occurred_at_ms,
                 a.output_text,
@@ -6660,7 +8150,7 @@ class ArchiveStore:
                 a.exit_code,
                 a.followup_class,
                 a.followup_message_ref
-            FROM action_rows a
+            FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
             WHERE a.session_id IN ({placeholders})
@@ -6668,7 +8158,7 @@ class ArchiveStore:
                      a.tool_use_block_id {order_direction}
             LIMIT ? OFFSET ?
             """,
-            [*normalized_session_ids, normalized_limit, normalized_offset],
+            [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
@@ -6707,7 +8197,7 @@ class ArchiveStore:
                 r.block_id AS tool_result_block_id,
                 u.tool_name,
                 u.semantic_type,
-                u.tool_command,
+                {_action_command_expression("u")} AS tool_command,
                 u.tool_path,
                 m.occurred_at_ms,
                 r.search_text AS output_text,
@@ -6731,6 +8221,282 @@ class ArchiveStore:
             [*normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
+
+    def get_delegation_attempt(
+        self,
+        *,
+        instruction_tool_use_block_id: str | None = None,
+        parent_session_id: str | None = None,
+        child_session_id: str | None = None,
+    ) -> ArchiveDelegationQueryRow | None:
+        """Resolve one `delegations` row (polylogue-y964) by its ref identity.
+
+        Action-observed identity (resolved/unresolved/ambiguous): pass only
+        ``instruction_tool_use_block_id``. Edge-only identity (edge_only/
+        quarantined -- no parent-side dispatch action to key off): pass both
+        ``parent_session_id`` and ``child_session_id``; only rows with no
+        instruction (the edge-only mapping states) are eligible so this path
+        never shadows an action-observed row for the same pair.
+        """
+
+        if instruction_tool_use_block_id is not None:
+            row = self._conn.execute(
+                "SELECT * FROM delegations WHERE instruction_tool_use_block_id = ? LIMIT 1",
+                (instruction_tool_use_block_id,),
+            ).fetchone()
+        elif parent_session_id is not None and child_session_id is not None:
+            row = self._conn.execute(
+                """
+                SELECT * FROM delegations
+                WHERE parent_session_id = ? AND child_session_id = ?
+                  AND mapping_state IN ('edge_only', 'quarantined')
+                LIMIT 1
+                """,
+                (parent_session_id, child_session_id),
+            ).fetchone()
+        else:
+            raise ValueError(
+                "get_delegation_attempt requires either instruction_tool_use_block_id or both "
+                "parent_session_id and child_session_id"
+            )
+        return None if row is None else _archive_delegation_query_row(row)
+
+    def get_delegation_card(
+        self,
+        *,
+        instruction_tool_use_block_id: str | None = None,
+        parent_session_id: str | None = None,
+        child_session_id: str | None = None,
+    ) -> ArchiveDelegationCard | None:
+        """Return the explicit bounded evidence card for one delegation."""
+
+        attempt = self.get_delegation_attempt(
+            instruction_tool_use_block_id=instruction_tool_use_block_id,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+        )
+        if attempt is None:
+            return None
+        if attempt.instruction_tool_use_block_id is not None:
+            delegation_ref = f"delegation:{attempt.instruction_tool_use_block_id}"
+        else:
+            if attempt.child_session_id is None:
+                raise ValueError("edge-only delegation card requires a child session id")
+            delegation_ref = "delegation:" + delegation_edge_object_id(
+                attempt.parent_session_id, attempt.child_session_id
+            )
+
+        title_row = self._conn.execute(
+            """
+            SELECT p.title AS parent_title, c.title AS child_title
+            FROM sessions p
+            LEFT JOIN sessions c ON c.session_id = ?
+            WHERE p.session_id = ?
+            """,
+            (attempt.child_session_id, attempt.parent_session_id),
+        ).fetchone()
+        parent_title = (
+            str(title_row["parent_title"]) if title_row is not None and title_row["parent_title"] is not None else None
+        )
+        child_title = (
+            str(title_row["child_title"]) if title_row is not None and title_row["child_title"] is not None else None
+        )
+
+        run_ref: str | None = None
+        run_title: str | None = None
+        if attempt.child_session_id is not None:
+            # source-derived run_relation_sql() (polylogue-dab) keys a
+            # subagent run's own `session_id`/`native_session_id` to the
+            # subagent's own session, not the parent -- unlike the old
+            # materialized writer, which grouped subagent run rows under
+            # the parent's session_id. Matching directly on
+            # native_session_id = child_session_id is therefore both
+            # sufficient and simpler than the old parent+native_session_id
+            # pairing. The old evidence_refs_json block-id fallback (for
+            # when only tool-use/artifact block ids are known, no resolved
+            # child_session_id) has no equivalent here: the source-derived
+            # CTE's evidence_refs_json carries only the owning session id,
+            # not per-block references, so that fallback path is not
+            # reconstructed -- native_session_id matching covers the
+            # common case where child_session_id is already resolved.
+            run_row = self._conn.execute(
+                f"""
+                {run_relation_sql()}
+                SELECT run_ref, title
+                FROM runs
+                WHERE native_session_id = ? AND role = 'subagent'
+                ORDER BY position, run_ref
+                LIMIT 1
+                """,
+                (attempt.child_session_id,),
+            ).fetchone()
+            if run_row is not None:
+                run_ref = str(run_row["run_ref"])
+                if run_row["title"]:
+                    run_title = str(run_row["title"])
+
+        instruction_position: int | None = None
+        if attempt.instruction_message_id is not None:
+            position_row = self._conn.execute(
+                "SELECT position FROM messages WHERE message_id = ?",
+                (attempt.instruction_message_id,),
+            ).fetchone()
+            if position_row is not None:
+                instruction_position = int(position_row["position"])
+
+        artifact_position: int | None = None
+        if attempt.artifact_block_id is not None:
+            artifact_row = self._conn.execute(
+                """
+                SELECT m.position
+                FROM blocks b
+                JOIN messages m ON m.message_id = b.message_id
+                WHERE b.block_id = ?
+                """,
+                (attempt.artifact_block_id,),
+            ).fetchone()
+            if artifact_row is not None:
+                artifact_position = int(artifact_row["position"])
+
+        if instruction_position is not None:
+            parent_context, parent_context_truncated = _delegation_message_window(
+                self._conn,
+                session_id=attempt.parent_session_id,
+                anchor_position=instruction_position,
+                before=True,
+            )
+        else:
+            parent_context, parent_context_truncated = (), False
+        followup_anchor = artifact_position if artifact_position is not None else instruction_position
+        if followup_anchor is not None:
+            parent_followup, parent_followup_truncated = _delegation_message_window(
+                self._conn,
+                session_id=attempt.parent_session_id,
+                anchor_position=followup_anchor,
+                before=False,
+            )
+        else:
+            parent_followup, parent_followup_truncated = (), False
+
+        dispatch_result, dispatch_result_truncated = _bounded_delegation_card_text(
+            attempt.artifact_text,
+            limit=4000,
+        )
+        child_excerpt_source: str | None = None
+        child_excerpt_message_id: str | None = None
+        if attempt.child_session_id is not None:
+            child_row = self._conn.execute(
+                """
+                SELECT
+                    m.message_id,
+                    COALESCE((
+                        SELECT group_concat(ordered.search_text, char(10))
+                        FROM (
+                            SELECT b.search_text
+                            FROM blocks b
+                            WHERE b.message_id = m.message_id
+                              AND b.search_text IS NOT NULL
+                            ORDER BY b.position, b.block_id
+                        ) AS ordered
+                    ), '') AS text
+                FROM messages m
+                WHERE m.session_id = ? AND m.role = 'assistant'
+                ORDER BY m.position DESC, m.message_id DESC
+                LIMIT 1
+                """,
+                (attempt.child_session_id,),
+            ).fetchone()
+            if child_row is not None:
+                child_excerpt_source = str(child_row["text"] or "")
+                child_excerpt_message_id = str(child_row["message_id"])
+        child_excerpt, child_excerpt_truncated = _bounded_delegation_card_text(
+            child_excerpt_source,
+            limit=4000,
+        )
+
+        annotation_refs: tuple[str, ...] = ()
+        if self.user_db_path.exists():
+            self._attach_user_tier_if_present()
+            assertion_rows = self._conn.execute(
+                """
+                SELECT assertion_id
+                FROM user_tier.assertions
+                WHERE target_ref = ?
+                ORDER BY updated_at_ms DESC, assertion_id
+                LIMIT 20
+                """,
+                (delegation_ref,),
+            ).fetchall()
+            annotation_refs = tuple(f"assertion:{row['assertion_id']}" for row in assertion_rows)
+
+        evidence_refs: list[str] = []
+        if attempt.instruction_tool_use_block_id is not None:
+            evidence_refs.append(f"block:{attempt.instruction_tool_use_block_id}")
+        elif attempt.instruction_message_id is not None:
+            evidence_refs.append(f"message:{attempt.instruction_message_id}")
+        if attempt.artifact_block_id is not None:
+            evidence_refs.append(f"block:{attempt.artifact_block_id}")
+        if child_excerpt_message_id is not None:
+            evidence_refs.append(f"message:{child_excerpt_message_id}")
+        evidence_refs.extend(f"message:{row.message_id}" for row in parent_context)
+        evidence_refs.extend(f"message:{row.message_id}" for row in parent_followup)
+
+        return ArchiveDelegationCard(
+            attempt=attempt,
+            delegation_ref=delegation_ref,
+            parent_session_title=parent_title,
+            child_session_title=child_title,
+            run_ref=run_ref,
+            run_title=run_title,
+            instruction=_delegation_instruction(attempt.instruction_payload),
+            parent_context=parent_context,
+            parent_context_truncated=parent_context_truncated,
+            dispatch_result=dispatch_result,
+            dispatch_result_truncated=dispatch_result_truncated,
+            child_excerpt=child_excerpt,
+            child_excerpt_truncated=child_excerpt_truncated,
+            parent_followup=parent_followup,
+            parent_followup_truncated=parent_followup_truncated,
+            annotation_refs=annotation_refs,
+            evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+        )
+
+    def query_delegations(
+        self,
+        predicate: QueryPredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[ArchiveDelegationQueryRow]:
+        """Return delegation attempts without inferring child utility or success."""
+
+        if sort is not None:
+            raise ValueError("delegation rows do not expose an honest time sort")
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        order_direction = _query_unit_order_direction(sort_direction)
+        clause, params = _structural_predicate_clause("delegation", "d", predicate, session_alias="s")
+        session_clause = ""
+        session_params: list[object] = []
+        if session_filters:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        rows = self._conn.execute(
+            f"""
+            SELECT d.*
+            FROM delegations d
+            JOIN sessions s ON s.session_id = d.parent_session_id
+            WHERE {clause}
+            {session_clause}
+            ORDER BY d.parent_session_id {order_direction},
+                     COALESCE(d.instruction_tool_use_block_id, d.child_session_id) {order_direction}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, *session_params, normalized_limit, normalized_offset],
+        ).fetchall()
+        return [_archive_delegation_query_row(row) for row in rows]
 
     def query_files(
         self,
@@ -6980,7 +8746,7 @@ class ArchiveStore:
                 b.text,
                 b.tool_name,
                 b.semantic_type,
-                b.tool_command,
+                {_action_command_expression("b")} AS tool_command,
                 b.tool_path
             FROM blocks b
             JOIN sessions s ON s.session_id = b.session_id
@@ -7120,7 +8886,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {run_relation_sql(include_materialized=_run_projection_table_exists(self._conn, "session_runs"))}
+            {run_relation_sql()}
             SELECT r.*, s.origin, s.title AS session_title
             FROM runs r
             JOIN sessions s ON r.session_id = s.session_id
@@ -7171,12 +8937,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {
-                observed_event_relation_sql(
-                    source_where=source_where,
-                    include_materialized=_run_projection_table_exists(self._conn, "session_observed_events"),
-                )
-            }
+            {observed_event_relation_sql(source_where=source_where)}
             SELECT e.*, s.origin, s.title
             FROM observed_events e
             JOIN sessions s ON e.session_id = s.session_id
@@ -7226,11 +8987,7 @@ class ArchiveStore:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
         rows = self._conn.execute(
             f"""
-            {
-                context_snapshot_relation_sql(
-                    include_materialized=_run_projection_table_exists(self._conn, "session_context_snapshots")
-                )
-            }
+            {context_snapshot_relation_sql()}
             SELECT c.*, s.origin, s.title AS session_title
             FROM context_snapshots c
             JOIN sessions s ON c.session_id = s.session_id
@@ -7536,7 +9293,6 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
         session_id=str(row["session_id"]),
         native_id=str(row["native_id"]),
         origin=origin,
-        provider=_provider_for_origin(origin),
         title=str(row["title"]) if row["title"] is not None else None,
         session_kind=str(row["session_kind"] or "standard"),
         created_at=_iso_from_ms(row["created_at_ms"]),
@@ -7802,37 +9558,24 @@ def _learning_correction_from_archive_row(row: sqlite3.Row | tuple[object, ...])
     )
 
 
-def _origin_for_provider_value(provider: str | None) -> str | None:
-    if provider is None:
+def _origin_value(origin: str | None) -> str | None:
+    if origin is None:
         return None
-    return origin_from_provider(Provider.from_string(provider)).value
+    if origin == "":
+        return Origin.UNKNOWN_EXPORT.value
+    return Origin(origin).value
 
 
-def _origin_for_tool_usage_filter(provider_or_origin: str | None) -> str | None:
-    if provider_or_origin is None:
-        return None
-    known_origin = {
-        "claude-code-session",
-        "codex-session",
-        "gemini-cli-session",
-        "hermes-session",
-        "antigravity-session",
-        "chatgpt-export",
-        "claude-ai-export",
-        "aistudio-drive",
-        "unknown-export",
-    }
-    if provider_or_origin in known_origin:
-        return provider_or_origin
-    return _origin_for_provider_value(provider_or_origin)
+def _origin_for_tool_usage_filter(origin: str | None) -> str | None:
+    return _origin_value(origin)
 
 
 def _tool_usage_builder_query(query: ToolUsageInsightQuery) -> ToolUsageInsightQuery:
-    origin = _origin_for_tool_usage_filter(query.provider)
+    origin = _origin_value(query.origin)
     updates: dict[str, object] = {"limit": None, "offset": 0}
     if origin is None:
         return query.model_copy(update=updates)
-    updates["provider"] = _provider_for_origin(origin).value
+    updates["origin"] = origin
     return query.model_copy(update=updates)
 
 
@@ -7869,6 +9612,9 @@ def _archive_provenance(materialization: ArchiveInsightMaterialization) -> Archi
         source_sort_key=(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
+        input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
+        time_confidence=time_confidence_for_source(materialization.input_high_water_mark_source),
     )
 
 
@@ -7879,6 +9625,9 @@ def _archive_inference_provenance(materialization: ArchiveInsightMaterialization
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         inference_version=materialization.materializer_version,
         inference_family="archive",
     )
@@ -7891,6 +9640,9 @@ def _archive_enrichment_provenance(materialization: ArchiveInsightMaterializatio
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         enrichment_version=materialization.materializer_version,
         enrichment_family="archive",
     )
@@ -7922,7 +9674,7 @@ def _work_event_insight_from_archive_row(
     return SessionWorkEventInsight(
         event_id=event.event_id,
         session_id=event.session_id,
-        source_name=_provider_for_origin(origin).value,
+        origin=origin,
         event_index=event.position,
         provenance=_archive_provenance(materialization),
         inference_provenance=_archive_inference_provenance(materialization),
@@ -7949,7 +9701,7 @@ def _phase_insight_from_archive_row(
     return SessionPhaseInsight(
         phase_id=phase.phase_id,
         session_id=phase.session_id,
-        source_name=_provider_for_origin(origin).value,
+        origin=origin,
         phase_index=phase.position,
         provenance=_archive_provenance(materialization),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
@@ -8081,7 +9833,7 @@ def _session_profile_insight_from_archive_row(
         semantic_tier=tier,
         session_id=session_id,
         logical_session_id=str(row["root_session_id"] or session_id),
-        source_name=_provider_for_origin(str(row["origin"])).value,
+        origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         evidence=evidence,
@@ -8113,7 +9865,7 @@ def _session_profile_record_from_archive_row(
     inference = components.inference
     enrichment = components.enrichment if components.enrichment is not None else SessionEnrichmentPayload()
     logical_session_id = str(row["root_session_id"] or session_id)
-    source_name = _provider_for_origin(str(row["origin"])).value
+    source_name = str(row["origin"])
     title = str(row["title"]) if row["title"] is not None else None
     workflow_shape = str(row["workflow_shape"] or "unknown")
     materialized_at = _iso_from_ms(materialization.materialized_at_ms) or "1970-01-01T00:00:00Z"
@@ -8130,7 +9882,7 @@ def _session_profile_record_from_archive_row(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
         input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
-        input_high_water_mark_source=None,
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
         input_row_count=materialization.input_row_count,
         source_name=source_name,
         title=title,
@@ -8182,7 +9934,7 @@ def _session_profile_record_from_archive_row(
 
 def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite3.Row) -> SessionCostInsight:
     session_id = str(row["session_id"])
-    source_name = _provider_for_origin(str(row["origin"])).value
+    source_name = str(row["origin"])
     total_usd = float(row["cost_usd"] or 0.0)
     cost_provenance = str(row["cost_provenance"] or "")
     try:
@@ -8215,12 +9967,12 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     return SessionCostInsight(
         session_id=session_id,
-        source_name=source_name,
+        origin=source_name,
         title=str(row["title"]) if row["title"] is not None else None,
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),
         estimate=CostEstimatePayload(
-            source_name=source_name,
+            origin=source_name,
             session_id=session_id,
             model_name=model_name,
             normalized_model=normalized_model,
@@ -8497,6 +10249,39 @@ def _predicate_uses_session_scope(predicate: QueryPredicate) -> bool:
     )
 
 
+_UNIT_SESSION_ID_EXPRESSION: dict[str, str] = {
+    "message": "{alias}.session_id",
+    "action": "{alias}.session_id",
+    "file": "{alias}.session_id",
+    "block": "{alias}.session_id",
+    "assertion": "substr({alias}.target_ref, 9)",
+    "run": "{alias}.session_id",
+    "observed-event": "{alias}.session_id",
+    "context-snapshot": "{alias}.session_id",
+    "delegation": "{alias}.parent_session_id",
+}
+
+
+def _unit_owned_session_identity_clause(
+    unit: str,
+    row_alias: str,
+    predicate: QueryFieldPredicate,
+    session_field: str,
+) -> tuple[str, list[object]] | None:
+    """Push exact owning-session identity onto the unit relation itself.
+
+    A semantically equivalent predicate on a joined ``sessions`` alias is not
+    planner-equivalent for views that rank both sides before joining. Keeping
+    the bound on the owning relation lets SQLite push it into those branches.
+    """
+    if session_field not in {"id", "session"} or not predicate.values:
+        return None
+    expression_template = _UNIT_SESSION_ID_EXPRESSION.get(unit)
+    if expression_template is None:
+        return None
+    return f"{expression_template.format(alias=row_alias)} = ?", [predicate.values[-1]]
+
+
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
     normalized = tuple(value.strip().lower() if lower else value.strip() for value in values if value.strip())
     if not normalized:
@@ -8653,7 +10438,7 @@ def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPre
             """.strip()
         else:
             action_column = {
-                "command": "COALESCE(filter_actions.tool_command, '')",
+                "command": f"COALESCE({_action_command_expression('filter_actions')}, '')",
                 "path": "REPLACE(COALESCE(filter_actions.tool_path, ''), char(92), '/')",
                 "output": "COALESCE(filter_actions.output_text, '')",
             }[field]
@@ -8679,7 +10464,7 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
     if field == "time":
         return _time_predicate_clause(_query_unit_time_expression("action", action_alias), predicate)
     if field == "command":
-        return _like_clause(f"COALESCE({action_alias}.tool_command, '')", predicate.values)
+        return _like_clause(f"COALESCE({_action_command_expression(action_alias)}, '')", predicate.values)
     if field == "path":
         return _like_clause(f"REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/')", predicate.values)
     if field == "output":
@@ -8706,7 +10491,7 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
             f"""
             COALESCE({action_alias}.tool_name, '') || ' ' ||
             COALESCE({action_alias}.semantic_type, '') || ' ' ||
-            COALESCE({action_alias}.tool_command, '') || ' ' ||
+            COALESCE({_action_command_expression(action_alias)}, '') || ' ' ||
             COALESCE({action_alias}.tool_path, '') || ' ' ||
             COALESCE({action_alias}.tool_input, '') || ' ' ||
             COALESCE({action_alias}.output_text, '')
@@ -8728,7 +10513,7 @@ def _file_field_predicate_clause(action_alias: str, predicate: QueryFieldPredica
             REPLACE(COALESCE({action_alias}.tool_path, ''), char(92), '/') || ' ' ||
             COALESCE({action_alias}.tool_name, '') || ' ' ||
             COALESCE({action_alias}.semantic_type, '') || ' ' ||
-            COALESCE({action_alias}.tool_command, '')
+            COALESCE({_action_command_expression(action_alias)}, '')
             """.strip(),
             predicate.values,
         )
@@ -8748,7 +10533,7 @@ def _block_field_predicate_clause(block_alias: str, predicate: QueryFieldPredica
     if field in {"action", "command", "path"}:
         column = {
             "action": f"{block_alias}.semantic_type",
-            "command": f"COALESCE({block_alias}.tool_command, '')",
+            "command": f"COALESCE({_action_command_expression(block_alias)}, '')",
             "path": f"REPLACE(COALESCE({block_alias}.tool_path, ''), char(92), '/')",
         }[field]
         if field == "action":
@@ -8787,6 +10572,8 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
         return _like_clause(f"{assertion_alias}.body_text", predicate.values)
     if field == "value":
         return _like_clause(f"{assertion_alias}.value_json", predicate.values)
+    if field.startswith("value.") and len(field) > len("value."):
+        return _assertion_value_path_predicate_clause(assertion_alias, field[len("value.") :], predicate)
     if field == "evidence":
         return _like_clause(f"{assertion_alias}.evidence_refs_json", predicate.values)
     if field == "context":
@@ -8794,6 +10581,77 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
         clause, params = _like_clause(f"COALESCE({assertion_alias}.context_policy_json, ?)", predicate.values)
         return clause, [default_context_json, *params]
     raise ValueError(f"unsupported assertion predicate field: {field}")
+
+
+def _assertion_value_path_predicate_clause(
+    assertion_alias: str, path: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    """Build a typed JSON-path predicate clause over ``assertions.value_json``.
+
+    ``path`` is a dot-separated JSON-object path below the assertion value
+    root (``value.score`` lowers to ``json_extract(value_json, '$.score')``).
+    The DSL layer (``_is_assertion_value_path_field``) only accepts plain
+    identifier segments, so ``path`` cannot carry SQLite JSON-path
+    metacharacters; it is still passed as a bound parameter rather than
+    interpolated, so this holds even if that upstream guarantee ever weakens.
+    Comparison operators (``>``, ``>=``, ``<``, ``<=``) require both the
+    stored JSON scalar and right-hand side to be numeric. Equality preserves
+    JSON scalar type, including the distinction between strings such as
+    ``"4"``/``"true"``/``"null"`` and their numeric/boolean/null peers.
+    """
+
+    if not predicate.values:
+        return "", []
+    json_path = f"$.{path}"
+    extract_expr = f"json_extract({assertion_alias}.value_json, ?)"
+    if predicate.op == "=":
+        clauses: list[str] = []
+        params: list[object] = []
+        for raw_value in predicate.values:
+            json_types, decoded = _decode_assertion_value_path_literal(raw_value)
+            type_placeholders = ", ".join("?" for _ in json_types)
+            clauses.append(
+                f"(json_type({assertion_alias}.value_json, ?) IN ({type_placeholders}) AND {extract_expr} IS ?)"
+            )
+            params.extend((json_path, *json_types, json_path, decoded))
+        return "(" + " OR ".join(clauses) + ")", params
+    op_sql = {">": ">", ">=": ">=", "<": "<", "<=": "<="}[predicate.op]
+    raw_value = predicate.values[0]
+    return (
+        f"(json_type({assertion_alias}.value_json, ?) IN ('integer', 'real') "
+        f"AND CAST({extract_expr} AS REAL) {op_sql} ?)",
+        [json_path, json_path, float(raw_value)],
+    )
+
+
+def _decode_assertion_value_path_literal(text: str) -> tuple[tuple[str, ...], object]:
+    """Decode one scalar DSL literal into accepted SQLite JSON types and value."""
+
+    stripped = text.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        return ("text",), stripped
+    if decoded is True:
+        return ("true",), 1
+    if decoded is False:
+        return ("false",), 0
+    if decoded is None:
+        return ("null",), None
+    if isinstance(decoded, str):
+        return ("text",), decoded
+    if isinstance(decoded, int):
+        if -(2**63) <= decoded <= 2**63 - 1:
+            return ("integer", "real"), decoded
+        numeric_value = float(decoded)
+        if not math.isfinite(numeric_value):
+            raise ValueError("assertion value-path equality requires a finite JSON number")
+        return ("integer", "real"), numeric_value
+    if isinstance(decoded, float):
+        if not math.isfinite(decoded):
+            raise ValueError("assertion value-path equality requires a finite JSON number")
+        return ("integer", "real"), decoded
+    raise ValueError("assertion value-path equality requires a JSON scalar")
 
 
 def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
@@ -8829,6 +10687,72 @@ def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) 
     if field == "text":
         return _like_clause(f"{run_alias}.search_text", predicate.values)
     raise ValueError(f"unsupported run predicate field: {field}")
+
+
+def _delegation_instruction_sql_expression(delegation_alias: str) -> str:
+    payload = f"{delegation_alias}.instruction_payload"
+    candidates = ", ".join(
+        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' THEN json_extract({payload}, '$.{key}') END, '')"
+        for key in ("prompt", "description", "instruction", "task")
+    )
+    return (
+        f"CASE WHEN NOT json_valid({payload}) THEN COALESCE({payload}, '') "
+        f"WHEN json_type({payload}) = 'object' THEN COALESCE({candidates}, '') "
+        "ELSE '' END"
+    )
+
+
+def _delegation_field_predicate_clause(
+    delegation_alias: str, predicate: QueryFieldPredicate
+) -> tuple[str, list[object]]:
+    field = predicate.bound_field_name(context="lowering delegation predicates")
+    if field in {"mapping_state", "result_status", "inheritance", "link_method"}:
+        return _in_or_equals_clause(f"{delegation_alias}.{field}", predicate.values, lower=True)
+    if field == "basis":
+        normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+        clauses: list[str] = []
+        if "action" in normalized:
+            clauses.append(f"{delegation_alias}.instruction_tool_use_block_id IS NOT NULL")
+        if "edge" in normalized:
+            clauses.append(f"{delegation_alias}.instruction_tool_use_block_id IS NULL")
+        return ("(" + " OR ".join(clauses) + ")" if clauses else "0=1"), []
+    if field in {"parent", "child"}:
+        column = "parent_session_id" if field == "parent" else "child_session_id"
+        return _like_clause(f"COALESCE({delegation_alias}.{column}, '')", predicate.values)
+    if field == "instruction":
+        instruction_expr = _delegation_instruction_sql_expression(delegation_alias)
+        return _like_clause(instruction_expr, predicate.values)
+    if field == "requested_model":
+        return _like_clause(f"COALESCE({delegation_alias}.requested_model, '')", predicate.values)
+    if field == "dispatch_model":
+        return _like_clause(f"COALESCE({delegation_alias}.dispatch_turn_model, '')", predicate.values)
+    if field == "child_model":
+        return _like_clause(f"COALESCE({delegation_alias}.child_session_dominant_model, '')", predicate.values)
+    if field == "is_error":
+        normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+        truthy = normalized & {"1", "true", "yes", "y", "error", "failed", "failure"}
+        falsy = normalized & {"0", "false", "no", "n", "ok", "passed"}
+        clauses = []
+        if truthy:
+            clauses.append(f"{delegation_alias}.result_is_error = 1")
+        if falsy:
+            clauses.append(f"{delegation_alias}.result_is_error = 0")
+        return ("(" + " OR ".join(clauses) + ")" if clauses else "0=1"), []
+    if field == "exit_code":
+        return _numeric_predicate_clause(f"{delegation_alias}.result_exit_code", predicate)
+    if field == "text":
+        return _like_clause(
+            f"""
+            COALESCE({delegation_alias}.parent_session_id, '') || ' ' ||
+            COALESCE({delegation_alias}.child_session_id, '') || ' ' ||
+            COALESCE({delegation_alias}.instruction_payload, '') || ' ' ||
+            COALESCE({delegation_alias}.artifact_text, '') || ' ' ||
+            COALESCE({delegation_alias}.dispatch_turn_model, '') || ' ' ||
+            COALESCE({delegation_alias}.requested_model, '')
+            """.strip(),
+            predicate.values,
+        )
+    raise ValueError(f"unsupported delegation predicate field: {field}")
 
 
 def _observed_event_field_predicate_clause(
@@ -8897,6 +10821,14 @@ def _structural_predicate_clause(
     if isinstance(predicate, QueryFieldPredicate):
         session_field = _predicate_session_field(predicate)
         if session_field is not None:
+            owned_identity_clause = _unit_owned_session_identity_clause(
+                unit,
+                row_alias,
+                predicate,
+                session_field,
+            )
+            if owned_identity_clause is not None:
+                return owned_identity_clause
             if session_alias is None:
                 raise ValueError(f"session-scoped {unit} predicate requires a session alias")
             return _field_predicate_clause(
@@ -8920,6 +10852,8 @@ def _structural_predicate_clause(
             return _observed_event_field_predicate_clause(row_alias, predicate)
         if unit == "context-snapshot":
             return _context_snapshot_field_predicate_clause(row_alias, predicate)
+        if unit == "delegation":
+            return _delegation_field_predicate_clause(row_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _structural_predicate_clause(unit, row_alias, predicate.child, session_alias=session_alias)
         return (f"NOT ({clause})" if clause else "", params)
@@ -9080,6 +11014,25 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             )
             """.strip(),
             [*relation_params, *params],
+        )
+    if predicate.unit == "delegation":
+        row_alias = "exists_delegations"
+        child_clause, params = _structural_predicate_clause(
+            predicate.unit,
+            row_alias,
+            predicate.child,
+            session_alias=table_alias,
+        )
+        return (
+            f"""
+            EXISTS (
+                SELECT 1
+                FROM delegations {row_alias}
+                WHERE {row_alias}.parent_session_id = {table_alias}.session_id
+                  AND {child_clause}
+            )
+            """.strip(),
+            params,
         )
     raise ValueError(f"unsupported structural query unit: {predicate.unit}")
 
@@ -9367,7 +11320,7 @@ def _session_filter_clause(
                   AND lower(
                       COALESCE(filter_actions.tool_name, '') || ' ' ||
                       COALESCE(filter_actions.semantic_type, '') || ' ' ||
-                      COALESCE(filter_actions.tool_command, '') || ' ' ||
+                      COALESCE({_action_command_expression("filter_actions")}, '') || ' ' ||
                       COALESCE(filter_actions.tool_path, '') || ' ' ||
                       COALESCE(filter_actions.tool_input, '') || ' ' ||
                       COALESCE(filter_actions.output_text, '')
@@ -9561,14 +11514,6 @@ def _count_scalar(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
 def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     """Raise ``DatabaseError`` unless message FTS is built and complete.
 
@@ -9697,7 +11642,7 @@ def _archive_insight_readiness_evidence(
     return tuple(values)
 
 
-def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
+def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsight:
     session_count = int(row["session_count"] or 0)
     message_count = int(row["message_count"] or 0)
     user_message_count = int(row["user_message_count"] or 0)
@@ -9709,11 +11654,10 @@ def _provider_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsi
     sessions_with_tools = int(row["sessions_with_tools"] or 0)
     sessions_with_thinking = int(row["sessions_with_thinking"] or 0)
     origin = str(row["origin"])
-    source_name = _provider_for_origin(origin).value
     return ArchiveCoverageInsight(
-        group_by="provider",
-        bucket=source_name,
-        source_name=source_name,
+        group_by="origin",
+        bucket=origin,
+        origin=origin,
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,
@@ -9974,7 +11918,7 @@ def _session_latency_profile_from_archive_row(
     materialization = _read_archive_materialization(conn, "latency", session_id)
     return SessionLatencyProfileInsight(
         session_id=session_id,
-        source_name=_provider_for_origin(str(row["origin"])).value,
+        origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         latency=SessionLatencyProfilePayload(
@@ -10266,20 +12210,6 @@ def _month_bucket_end_ms(bucket: str) -> int:
     month = int(month_text)
     end = datetime(year + 1, 1, 1, tzinfo=UTC) if month == 12 else datetime(year, month + 1, 1, tzinfo=UTC)
     return int(end.timestamp() * 1000)
-
-
-def _provider_for_origin(origin: str) -> Provider:
-    return {
-        "claude-code-session": Provider.CLAUDE_CODE,
-        "codex-session": Provider.CODEX,
-        "gemini-cli-session": Provider.GEMINI_CLI,
-        "hermes-session": Provider.HERMES,
-        "antigravity-session": Provider.ANTIGRAVITY,
-        "chatgpt-export": Provider.CHATGPT,
-        "claude-ai-export": Provider.CLAUDE_AI,
-        "aistudio-drive": Provider.GEMINI,
-        "unknown-export": Provider.UNKNOWN,
-    }.get(origin, Provider.UNKNOWN)
 
 
 __all__ = ["ArchiveFileQueryRow", "ArchiveStore", "ArchiveSessionSearchHit", "ArchiveSessionSummary"]

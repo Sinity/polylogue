@@ -272,6 +272,75 @@ class TestActiveAppendNoFullReread:
             f"tool-result amplification: appended {appended_bytes}, read {counter.total_bytes}\n{counter.summary()}"
         )
 
+    def test_growth_after_append_persistence_keeps_the_append_frontier(
+        self,
+        processor: tuple[LiveBatchProcessor, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A writer can append while the accepted append is being persisted.
+
+        This is the production race behind repeated ``archive_full`` retries:
+        append planning has already proved and persisted one complete record,
+        then a later record lands before cursor bookkeeping.  That later growth
+        must leave the accepted frontier usable for the next append batch;
+        treating it as a whole-file rewrite turns a small tail into a full raw
+        re-capture.
+
+        The harness keeps parsing/storage lightweight but executes the real
+        planner, cursor writer, and watcher-facing batch route.  It counts any
+        second-tick full-route entry and source/blob reads.
+        """
+        import asyncio
+
+        proc, root, _ = processor
+        session_id = "post-persist-race"
+        path = root / f"{session_id}.jsonl"
+        _write_jsonl(
+            path,
+            [_claude_code_record(session_id=session_id, uuid=f"baseline-{i}") for i in range(8)],
+        )
+        _seed_initial_ingest(proc, path, session_id=session_id)
+
+        _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="accepted")])
+        accepted_frontier = path.stat().st_size
+        appended_after_persistence = False
+
+        def append_after_persistence(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+            nonlocal appended_after_persistence
+            if not appended_after_persistence:
+                _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="later")])
+                appended_after_persistence = True
+            return set(paths), 0.0, {}, []
+
+        monkeypatch.setattr(proc, "_converge_paths", append_after_persistence)
+        full_route_paths: list[Path] = []
+        original_full_ingest = proc._ingest_full_paths
+
+        async def count_full_route(*args: Any, **kwargs: Any) -> _FullIngestResult:
+            full_route_paths.extend(args[0])
+            return await original_full_ingest(*args, **kwargs)
+
+        monkeypatch.setattr(proc, "_ingest_full_paths", count_full_route)
+
+        first = asyncio.run(proc.ingest_files([path], emit_event=False))
+        assert first.append_file_count == 1
+        assert first.stale_cursor_write_count == 0
+        first_cursor = proc._cursor.get_record(path)
+        assert first_cursor is not None
+        assert first_cursor.byte_offset == accepted_frontier
+
+        with read_counter() as counter:
+            second = asyncio.run(proc.ingest_files([path], emit_event=False))
+
+        assert second.append_file_count == 1
+        assert second.full_file_count == 0
+        assert full_route_paths == []
+        assert counter.calls_by_site.get("blob_store.write_from_path", 0) == 0, counter.summary()
+        second_cursor = proc._cursor.get_record(path)
+        assert second_cursor is not None
+        assert second_cursor.byte_offset == path.stat().st_size
+        assert second_cursor.content_fingerprint != first_cursor.content_fingerprint
+
 
 # ---------------------------------------------------------------------------
 # Scenario 2 — mtime-drift catch-up (H1)

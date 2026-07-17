@@ -5,17 +5,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from typing_extensions import TypedDict
 
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.mcp.archive_support import archive_query_filters, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -23,7 +23,11 @@ if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.mcp.server_support import ServerCallbacks
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
 
@@ -154,6 +158,29 @@ def _archive_prompt_session(session: ArchiveSessionEnvelope) -> PromptSession:
     )
 
 
+def _archive_prompt_session_page(archive: ArchiveStore, session_id: str, *, limit: int = 20) -> PromptSession:
+    """Build prompt context from a bounded message projection."""
+    summary = archive.read_summary(session_id)
+    rows = archive.query_session_messages((session_id,), limit=limit, offset=0)
+    return PromptSession(
+        id=summary.session_id,
+        origin=summary.origin,
+        display_title=summary.title or "(untitled)",
+        messages=tuple(
+            PromptMessage(
+                role=row.role,
+                text=row.text[:4000],
+                timestamp=(
+                    datetime.fromtimestamp(row.occurred_at_ms / 1000.0, UTC).isoformat()
+                    if row.occurred_at_ms is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ),
+    )
+
+
 def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> list[PromptSession]:
     filters = archive_query_filters(spec)
     limit = spec.limit or 10
@@ -187,32 +214,51 @@ def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> l
         if session_id in seen:
             continue
         seen.add(session_id)
-        sessions.append(_archive_prompt_session(archive.read_session(session_id)))
+        sessions.append(_archive_prompt_session_page(archive, session_id))
     return sessions
 
 
 def _archive_prompt_session_by_id(archive: ArchiveStore, token: str) -> PromptSession | None:
     try:
         session_id = archive.resolve_session_id(token)
-        return _archive_prompt_session(archive.read_session(session_id))
+        return _archive_prompt_session_page(archive, session_id)
     except (KeyError, ValueError):
         return None
 
 
-def _prompt_sessions_from_config(hooks: Any, spec: SessionQuerySpec) -> list[PromptSession]:
+async def _prompt_sessions_from_config(hooks: Any, spec: SessionQuerySpec) -> list[PromptSession]:
     config = hooks.get_config()
     try:
-        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-            return _archive_prompt_sessions(archive, spec)
+        return await run_archive_read(
+            mcp_archive_root(config),
+            operation="prompt.sessions",
+            arguments={
+                "query": spec.query_terms,
+                "limit": spec.limit,
+                "offset": spec.offset,
+                "origins": spec.origins,
+                "since": spec.since,
+            },
+            work=lambda archive: _archive_prompt_sessions(archive, spec),
+            page_size=spec.limit,
+            offset=spec.offset,
+            projection="prompt-session",
+            stable_order="date,session_id",
+        )
     except sqlite3.OperationalError:
         return []
 
 
-def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession | None:
+async def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession | None:
     config = hooks.get_config()
     try:
-        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-            return _archive_prompt_session_by_id(archive, token)
+        return await run_archive_read(
+            mcp_archive_root(config),
+            operation="prompt.session",
+            arguments={"session_id": token},
+            work=lambda archive: _archive_prompt_session_by_id(archive, token),
+            projection="prompt-session",
+        )
     except sqlite3.OperationalError:
         return None
 
@@ -257,7 +303,7 @@ Envelope:
             since=since,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         error_contexts: list[ErrorContextPayload] = []
         for conv in convs:
@@ -298,7 +344,7 @@ Error contexts:
             since=week_ago,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         by_origin: dict[str, int] = {}
         total_messages = 0
@@ -326,7 +372,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         spec = MCPSessionQueryRequest(limit=limit).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         code_snippets: list[ExtractedCodeSnippetPayload] = []
         for conv in convs:
@@ -356,8 +402,8 @@ Code snippets:
 
     @mcp.prompt()
     async def compare_sessions(id1: str, id2: str) -> str:
-        conv1 = _prompt_session_by_id_from_config(hooks, id1)
-        conv2 = _prompt_session_by_id_from_config(hooks, id2)
+        conv1 = await _prompt_session_by_id_from_config(hooks, id1)
+        conv2 = await _prompt_session_by_id_from_config(hooks, id2)
 
         return f"""Compare these two sessions and analyze:
 
@@ -379,7 +425,7 @@ Session 2:
             origin=origin,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         summaries: list[SessionPatternPayload] = []
         for conv in convs:
@@ -460,7 +506,7 @@ Rules:
         return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
 
 Call sequence:
-1. query_units(expression='sessions where repo:{repo_name} since:{since} AND exists action(output:failed)', limit=20) — sessions containing failed tool actions.
+1. query_units(expression='actions where session.repo:{repo_name} since:{since} AND output:failed', limit=20) — action rows for sessions containing failed tool outcomes.
 2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
 3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
 
@@ -475,7 +521,7 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
         return f"""Find sessions that touched file path '{path}'.
 
 Call sequence:
-1. query_units(expression='sessions where {repo_clause}exists file(action:file_edit AND path:{path})', limit=20) — sessions that edited the path.
+1. query_units(expression='files where {repo_clause}path:{path}', limit=20) — file/action rows for sessions that touched the path.
 2. query_units(expression='files where path:{path}', limit=20) — per-file action rows (edits, reads, shell references).
 3. search(query='"{path}"', limit=10) — mentions in prose that never became edits.
 4. get_session_summary(id=<session_id>) on each hit for orientation.

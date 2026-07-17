@@ -5,15 +5,135 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.raw_authority import (
+    RawReplayPlan,
+    RawReplayPlanOutcome,
+    RawReplayPlanStatus,
+    finalize_raw_authority_census,
+    record_raw_authority_census,
+    record_raw_replay_outcome,
+)
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
 
 
-def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path: Path) -> None:
+def test_raw_materialization_readiness_requires_completed_frontier_census() -> None:
+    counters_green: dict[str, object] = {"available": True}
+
+    assert raw_materialization_ready(counters_green) is False
+    assert (
+        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "interrupted"}})
+        is False
+    )
+    assert (
+        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
+        is True
+    )
+
+
+def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:
+    readiness = {
+        "available": True,
+        "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "raw_authority_blocker_count": 1,
+    }
+
+    assert raw_materialization_ready(readiness) is False
+
+
+def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -> None:
+    """An applied repair must not remain blocked by its immutable preflight."""
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="raw-authority-frontier:" + "a" * 64,
+        input_digest="b" * 64,
+        input_raw_ids=("raw-1",),
+        logical_keys=("chatgpt-export:conversation-1",),
+        authority_witness={"schema": "polylogue.raw-authority-frontier-plan.v1"},
+        source_preconditions={},
+        index_preconditions={},
+    )
+    preview = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids=set(),
+        executable_plan_ids={plan.plan_id},
+        mode="dry_run",
+        quiescent=True,
+        scope={
+            "schema": "polylogue.raw-authority-frontier-scope.v1",
+            "state_counts": {"missing_source_bytes": 1},
+        },
+        residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {"missing_source_bytes": 1},
+            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
+        },
+    )
+    dry_run_snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    dry_run_frontier = cast(Mapping[str, object], dry_run_snapshot["raw_authority_frontier"])
+    assert dry_run_frontier["census_id"] == preview.census_id
+    assert dry_run_frontier["state_counts"] == {"missing_source_bytes": 1, "proven_current": 2}
+    assert dry_run_frontier["blocking_count"] == 1
+
+    receipt = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        executable_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={
+            "schema": "polylogue.raw-authority-frontier-scope.v1",
+            "state_counts": {"missing_source_bytes": 1},
+        },
+        residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {"missing_source_bytes": 1},
+            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
+        },
+    )
+    record_raw_replay_outcome(
+        tmp_path,
+        receipt.census_id,
+        RawReplayPlanOutcome(
+            plan_id=plan.plan_id,
+            input_raw_ids=plan.input_raw_ids,
+            status=RawReplayPlanStatus.EXECUTED,
+            reason="fixture repaired the exact plan",
+            next_action="none",
+        ),
+    )
+    finalize_raw_authority_census(
+        tmp_path,
+        receipt.census_id,
+        post_plans=(),
+        post_residual={
+            "schema": "polylogue.raw-authority-frontier-residual.v1",
+            "state_counts": {},
+            "frontier_state_counts": {"proven_current": 3},
+        },
+    )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    frontier = cast(Mapping[str, object], snapshot["raw_authority_frontier"])
+
+    assert frontier["state_counts"] == {"proven_current": 3}
+    assert snapshot["raw_authority_frontier_blocking_count"] == 0
+    assert raw_materialization_ready(snapshot) is True
+
+
+def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
@@ -110,6 +230,17 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path
         "revision-application-terminal": 1,
         "adoption_deferred": 1,
     }
+
+    def fail_if_classified(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("bounded readiness must not classify individual raw gaps")
+
+    monkeypatch.setattr("polylogue.storage.archive_readiness._classify_raw_gap_rows", fail_if_classified)
+    aggregate = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+
+    assert aggregate["classification"] == "not_run"
+    assert aggregate["classified"] == 0
+    assert aggregate["unchecked"] == 9
+    assert aggregate["actionable"] == 0
 
 
 def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_path: Path) -> None:
@@ -445,6 +576,65 @@ def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost
     assert counts["raw_id_join_gap"] == 0
 
 
+def test_lost_source_evidence_samples_include_generated_session_identity(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('missing', 'codex-session', 'raw-missing', 'missing raw', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["lost_source_evidence_count"] == 1
+    samples = cast(list[dict[str, object]], snapshot["lost_source_evidence_samples"])
+    assert samples[0]["session_id"] == "codex-session:missing"
+    assert samples[0]["missing_raw_id"] == "raw-missing"
+
+
+def test_raw_materialization_snapshot_marks_reverse_authority_query_failure_unavailable(
+    tmp_path: Path,
+) -> None:
+    """A failed lost-source count cannot become a healthy zero."""
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                validation_status TEXT,
+                parse_error TEXT,
+                parsed_at_ms INTEGER
+            )
+            """
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.executescript(
+            """
+            CREATE TABLE session_rows (raw_value INTEGER NOT NULL);
+            INSERT INTO session_rows VALUES (-9223372036854775808);
+            CREATE VIEW sessions AS
+            SELECT abs(raw_value) AS raw_id
+            FROM session_rows;
+            """
+        )
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    assert snapshot["available"] is False
+    assert "integer overflow" in str(snapshot["error"])
+    assert raw_materialization_ready(snapshot) is False
+
+
 def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
@@ -702,3 +892,29 @@ def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidenc
     counts = _category_counts(snapshot)
     assert counts["lost-source-evidence-alias"] == 1
     assert counts["raw_id_join_gap"] == 0
+
+
+def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
+    """A readiness dict carrying debt_classifier_error must not read as ready.
+
+    paths._merge_raw_materialization_debt records classifier failures under
+    this key; the composed readiness contract requires the classifier, so a
+    recorded failure blocks the ready claim even when every structural count
+    is clean (removing the predicate's debt_classifier_error check fails this).
+    """
+    clean = {
+        "available": True,
+        "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "critical": 0,
+        "warning": 0,
+        "actionable": 0,
+        "blocked": 0,
+        "affected_actionable": 0,
+        "affected_blocked": 0,
+        "affected_open": 0,
+        "lost_source_evidence_count": 0,
+        "unchecked": 0,
+        "affected_unchecked": 0,
+    }
+    assert raw_materialization_ready(clean) is True
+    assert raw_materialization_ready({**clean, "debt_classifier_error": "RuntimeError: ops.db locked"}) is False

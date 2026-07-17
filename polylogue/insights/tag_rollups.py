@@ -14,8 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.insights.archive import SessionTagRollupInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
 
@@ -25,10 +24,10 @@ if TYPE_CHECKING:
 _ORIGIN_TAG_PREFIX = "origin:"
 
 
-def synthesize_provider_tag_rollups(
+def synthesize_origin_tag_rollups(
     archive: ArchiveStore,
     *,
-    provider: str | None = None,
+    origin: str | None = None,
     query: str | None = None,
     since_ms: int | None = None,
     until_ms: int | None = None,
@@ -46,7 +45,7 @@ def synthesize_provider_tag_rollups(
         until_ms=until_ms,
     )
     needle = query.strip().lower() if query else None
-    origin_filter = origin_from_provider(Provider.from_string(provider)).value if provider is not None else None
+    origin_filter = Origin(origin).value if origin is not None else None
     rollups: list[SessionTagRollupInsight] = []
     for origin_value, count in counts.items():
         if origin_filter is not None and origin_value != origin_filter:

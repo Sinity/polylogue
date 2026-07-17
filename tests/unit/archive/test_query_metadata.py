@@ -5,6 +5,8 @@ import subprocess
 import sys
 from typing import cast, get_args, get_type_hints
 
+import pytest
+
 
 def test_query_completions_do_not_import_expression_parser() -> None:
     script = """
@@ -130,6 +132,7 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
         "assertion",
         "block",
         "context-snapshot",
+        "delegation",
         "file",
         "message",
         "observed-event",
@@ -144,6 +147,7 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
         "run",
         "observed-event",
         "context-snapshot",
+        "delegation",
     )
     assert tuple(descriptor.unit for descriptor in query_unit_descriptors(lowerer_kind="runtime_transform")) == ()
     assert "boundary" in structural_query_fields("context-snapshot")
@@ -208,3 +212,13 @@ def test_terminal_query_completion_payloads_expose_payload_model() -> None:
     ]
     field_candidate = next(candidate for candidate in field_candidates if candidate["value"] == "kind")
     assert field_candidate["payload_model"] == "AssertionQueryRowPayload"
+
+
+def test_delegation_unit_does_not_advertise_or_accept_time_sort() -> None:
+    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+    from polylogue.archive.query.metadata import terminal_query_pipeline_stage_infos
+
+    stage_values = {stage.value for stage in terminal_query_pipeline_stage_infos("delegations")}
+    assert "sort by time" not in stage_values
+    with pytest.raises(ExpressionCompileError, match="sort by time.*not supported"):
+        parse_unit_source_expression("delegations where mapping_state:resolved | sort by time desc")

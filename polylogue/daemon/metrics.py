@@ -33,7 +33,12 @@ Exposed series (label policy: use labels only when a series naturally
 varies on a known-bounded dimension):
 
 - ``polylogue_daemon_uptime_seconds`` (gauge) — process uptime
-- ``polylogue_daemon_build_info`` (gauge, value 1) — labels: version
+- ``polylogue_daemon_build_info`` (gauge, value 1) — labels: version,
+  revision, dirty. ``revision`` is the full (not truncated) git commit
+  the running build was compiled from — join it against a consuming
+  flake's ``flake.lock`` ``rev``/``narHash`` entry for the ``polylogue``
+  input to attest that the deployed runtime matches the locked source
+  (polylogue-6rvt).
 - ``polylogue_status_snapshot_age_seconds`` (gauge) — cached status age
 - ``polylogue_status_snapshot_state`` (gauge) — labels: state
 - ``polylogue_live_ingest_attempts_total`` (counter) — labels: status
@@ -98,6 +103,7 @@ from polylogue.storage.archive_layout import (
 )
 from polylogue.storage.archive_readiness import active_rebuild_index_attempts
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -217,14 +223,6 @@ def _emit_metric(
 # ---------------------------------------------------------------------------
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: str) -> bool:
     if not schema_name.replace("_", "").isalnum() or not table.replace("_", "").isalnum():
         return False
@@ -233,7 +231,8 @@ def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: st
             f"SELECT 1 FROM {schema_name}.sqlite_master WHERE type='table' AND name=?",
             (table,),
         ).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: attached-table probe failed for %s.%s: %s", schema_name, table, exc, exc_info=True)
         return False
     return row is not None
 
@@ -299,7 +298,8 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
             rows = conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status").fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops attempt-counts query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
     if not rows:
         return None
@@ -365,7 +365,8 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops attempt-durations query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [max(0.0, (int(row[1]) - int(row[0])) / 1000.0) for row in rows if row[0] is not None and row[1] is not None]
 
@@ -408,7 +409,8 @@ def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, int]]
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops convergence-debt-by-stage query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
 
@@ -506,7 +508,8 @@ def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops latest-ingest-memory query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
     if row is None:
         return []
@@ -630,7 +633,8 @@ def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
             return counts
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops storage-route-counts query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
 
 
@@ -802,7 +806,8 @@ def _archive_latest_embedding_run_state(ops_db: Path | None) -> ArchiveEmbedding
             runs = list_embedding_catchup_runs(conn)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: archive latest-embedding-run query failed for %s: %s", ops_db, exc, exc_info=True)
         return None
     if not runs:
         return None
@@ -922,10 +927,12 @@ def format_metrics(
     tables. Missing tables degrade to zero samples rather than raising.
     Caller injects ``now_monotonic`` in tests to keep uptime stable.
     """
+    from polylogue.paths import sibling_index_db
+
     uptime_s = uptime_seconds(now_monotonic=now_monotonic)
     lines: list[str] = []
-    index_db = db.with_name("index.db")
-    if db.name != "index.db" and index_db.exists():
+    index_db = sibling_index_db(db, require_exists=True)
+    if index_db is not None:
         db = index_db
 
     _emit_metric(
@@ -936,17 +943,34 @@ def format_metrics(
         samples=[(None, uptime_s)],
     )
 
-    # Build info — version label so dashboards can break out per-release.
+    # Build info — version/revision/dirty labels so dashboards can break out
+    # per-release and operators can attest a running daemon against a
+    # consuming flake's locked `rev`/`narHash` for this input (polylogue-6rvt).
     try:
-        from polylogue import __version__ as polylogue_version
+        from polylogue.version import VERSION_INFO
+
+        build_version = VERSION_INFO.version
+        build_revision = VERSION_INFO.commit or "unknown"
+        build_dirty = VERSION_INFO.dirty
     except Exception:
-        polylogue_version = "unknown"
+        build_version = "unknown"
+        build_revision = "unknown"
+        build_dirty = False
     _emit_metric(
         lines,
         name="polylogue_daemon_build_info",
         help_text="Constant 1 gauge labelled with daemon build identity.",
         metric_type="gauge",
-        samples=[({"version": str(polylogue_version)}, 1)],
+        samples=[
+            (
+                {
+                    "version": str(build_version),
+                    "revision": str(build_revision),
+                    "dirty": "true" if build_dirty else "false",
+                },
+                1,
+            )
+        ],
     )
     _emit_archive_storage_metrics(lines, db)
     _emit_hook_flow_metrics(lines, db)
@@ -1252,7 +1276,11 @@ def _emit_hook_flow_metrics(lines: list[str], db: Path) -> None:
 
     try:
         statuses = hook_statuses(coverage=True, archive_root_path=db.parent)
-    except Exception:
+    except Exception as exc:
+        # statuses=() reads identically to "no hooks configured" on the
+        # emitted gauges. Log so a hook_statuses() bug doesn't masquerade as
+        # a clean hook-flow dashboard.
+        logger.warning("metrics: hook-flow status query failed: %s", exc, exc_info=True)
         statuses = ()
     healthy_samples: list[tuple[dict[str, str] | None, float | int]] = []
     state_samples: list[tuple[dict[str, str] | None, float | int]] = []
@@ -1434,7 +1462,8 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: ops throughput query failed for %s: %s", ops_db, exc, exc_info=True)
         return False
 
     if row is None:
@@ -1551,8 +1580,8 @@ def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
             )
         finally:
             space_conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("metrics: db-space query failed for %s: %s", db, exc, exc_info=True)
 
 
 def _emit_archive_storage_metrics(lines: list[str], db: Path) -> None:
@@ -1798,7 +1827,8 @@ def _archive_user_version(path: Path) -> int:
             return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         finally:
             conn.close()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("metrics: archive user_version probe failed for %s: %s", path, exc, exc_info=True)
         return 0
 
 
@@ -1820,8 +1850,8 @@ def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection, *, db_p
                         return
                 finally:
                     source_conn.close()
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as exc:
+                logger.warning("metrics: source.db raw-record probe failed for %s: %s", source_db, exc, exc_info=True)
     if not _table_exists(conn, "raw_sessions"):
         _emit_metric(
             lines, name="polylogue_raw_records_total", help_text="Total raw records.", metric_type="gauge", samples=[]

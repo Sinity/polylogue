@@ -24,6 +24,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     message_fts_search_readiness_sync,
     restore_fts_triggers_sync,
 )
+from polylogue.storage.search.query_support import normalize_fts5_query
 
 
 def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) -> None:
@@ -62,6 +63,68 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
     assert threads == 1
     assert states["session_work_events_fts"] == "ready"
     assert states["threads_fts"] == "ready"
+
+
+def test_dangling_derived_repairs_preserve_l_stroke_recall(tmp_path: Path) -> None:
+    """Both keyed derived-surface repair inserts use the canonical Polish fold."""
+    db = tmp_path / "archive.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE blocks (
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
+                content='', contentless_delete=1,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE TABLE session_work_events (
+                event_id TEXT PRIMARY KEY, session_id TEXT, work_event_type TEXT, search_text TEXT
+            );
+            CREATE VIRTUAL TABLE session_work_events_fts USING fts5(
+                event_id UNINDEXED, session_id UNINDEXED, work_event_type UNINDEXED, text,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
+            CREATE VIRTUAL TABLE threads_fts USING fts5(
+                thread_id UNINDEXED, root_id UNINDEXED, text,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+            INSERT INTO session_work_events VALUES (
+                'event-polish', 'conv-polish', 'decision', 'Bardzo łatwo zrobiłem to zadanie'
+            );
+            INSERT INTO threads VALUES ('thread-polish', 'To był łatwy wątek');
+            """
+        )
+        restore_fts_triggers_sync(conn)
+
+        outcome = repair_missing_fts_rows(conn)
+
+        assert outcome.success is True
+        for query in ("zrobilem", "zrobiłem"):
+            normalized = normalize_fts5_query(query)
+            assert normalized is not None
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM session_work_events_fts WHERE session_work_events_fts MATCH ?",
+                    (normalized,),
+                ).fetchone()[0]
+                == 1
+            )
+        for query in ("latwy", "łatwy"):
+            normalized = normalize_fts5_query(query)
+            assert normalized is not None
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM threads_fts WHERE threads_fts MATCH ?",
+                    (normalized,),
+                ).fetchone()[0]
+                == 1
+            )
+    finally:
+        conn.close()
 
 
 def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) -> None:

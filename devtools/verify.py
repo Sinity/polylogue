@@ -31,6 +31,8 @@ import selectors
 import shlex
 import shutil
 import signal
+import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -39,20 +41,51 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from devtools.pytest_supervisor import (
+    SupervisorLaunch,
+    build_supervisor_launch,
+    descendant_process_identities,
+    enable_child_subreaper,
+    read_receipt,
+    reap_exited_children,
+    signal_descendant_identities,
+    signal_owned_process_group,
+    signal_process_identity,
+    update_receipt,
+    write_termination_request,
+)
 from devtools.verify_runs import (
+    CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
+    PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
     VerifyRun,
+    adaptive_pytest_worker_count,
+    apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     latest_event_from_paths,
     merge_worker_events,
+    normalize_pytest_basetemp_env,
+    pytest_basetemp_path,
+    pytest_tmpfs_budget_kb,
     utc_now,
+)
+from polylogue.scenarios.workload import (
+    BudgetMeasure,
+    BudgetSemantics,
+    MeasurementScope,
+    WorkloadBudget,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,30 +147,6 @@ def _warn_low_memory() -> None:
         sys.stderr.write(f"verify: low memory ({avail_gb:.1f} GB free) — pytest may be slow or OOM\n")
 
 
-def _shm_free_gb() -> float | None:
-    try:
-        stat = os.statvfs("/dev/shm")
-    except OSError:
-        return None
-    return (stat.f_bavail * stat.f_frsize) / 1024 / 1024 / 1024
-
-
-def _enable_tmpfs_for_broad_pytest(label: str, env: dict[str, str]) -> bool:
-    if not (label == "pytest seed-testmon" or label == "pytest testmon (broad)" or label.startswith("pytest full")):
-        return False
-    if env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") or env.get("POLYLOGUE_PYTEST_TMPFS"):
-        return False
-    mem = _check_available_memory()
-    shm_free = _shm_free_gb()
-    if mem is None or shm_free is None:
-        return False
-    available_gb = mem[0] / 1024 / 1024
-    if available_gb < 10.0 or shm_free < 8.0:
-        return False
-    env["POLYLOGUE_PYTEST_TMPFS"] = "1"
-    return True
-
-
 # ── completion notification ────────────────────────────────────────
 
 
@@ -174,6 +183,9 @@ def _format_completion_notification(
 HISTORY_PATH = Path(".cache/verify-history.jsonl")
 TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
+TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
+TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
+TESTMON_SEED_PROTOCOL_VERSION = 3
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -184,13 +196,16 @@ PYTEST_EVENTS_DIR = CURRENT_EVENTS_DIR
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
+PYTEST_CONTAINMENT_PATH = CURRENT_CONTAINMENT_PATH
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
+DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 DEFAULT_TESTMON_WORKERS = "4"
 
@@ -333,6 +348,177 @@ def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     return metadata
 
 
+def _nonnegative_int_delta(
+    first: Mapping[str, object] | None,
+    last: Mapping[str, object] | None,
+    key: str,
+) -> int | None:
+    if first is None or last is None:
+        return None
+    first_value = first.get(key)
+    last_value = last.get(key)
+    if not isinstance(first_value, int) or not isinstance(last_value, int):
+        return None
+    return max(0, last_value - first_value)
+
+
+def _pytest_workload_receipt(
+    *,
+    label: str,
+    cmd: list[str],
+    elapsed_s: float,
+    returncode: int,
+    termination_reason: str | None,
+    resource_summary: Mapping[str, object],
+    last_resource_sample: Mapping[str, object] | None,
+    tmpfs_budget_mb: float | None,
+    basetemp_cleanup: Path | None,
+    concurrency: int,
+) -> dict[str, Any]:
+    """Adapt managed-pytest accounting to the shared workload receipt."""
+    input_digest = hashlib.sha256(
+        json.dumps(cmd, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    budgets: list[WorkloadBudget] = []
+    if (timeout_s := _pytest_timeout_s()) > 0:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.WALL_MS,
+                timeout_s * 1000,
+                BudgetSemantics.CONTAINMENT,
+                phase="execute",
+            )
+        )
+    if tmpfs_budget_mb is not None:
+        budgets.append(
+            WorkloadBudget(
+                BudgetMeasure.TEMP_STORAGE_BYTES,
+                tmpfs_budget_mb * 1024 * 1024,
+                BudgetSemantics.CONTAINMENT,
+                phase="execute",
+            )
+        )
+    spec = WorkloadEnvelopeSpec(
+        workload_id=f"verify:{label}",
+        family_id="verify-pytest",
+        version=1,
+        inputs=(WorkloadInputRef(input_id=f"pytest-selection:sha256:{input_digest}"),),
+        phases=("execute", "quiescent"),
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+        concurrency=concurrency,
+        admission="memory-headroom",
+        budgets=tuple(budgets),
+    )
+    peak_rss_kb = resource_summary.get("peak_tree_rss_kb")
+    peak_pss_kb = resource_summary.get("peak_tree_pss_kb")
+    peak_anon_pss_kb = resource_summary.get("peak_tree_anon_pss_kb")
+    peak_file_pss_kb = resource_summary.get("peak_tree_file_pss_kb")
+    peak_swap_pss_kb = resource_summary.get("peak_tree_swap_pss_kb")
+    read_bytes = resource_summary.get("tree_read_bytes_delta")
+    write_bytes = resource_summary.get("tree_write_bytes_delta")
+    peak_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
+    final_rss_kb = last_resource_sample.get("tree_rss_kb") if last_resource_sample is not None else None
+    final_pss_kb = last_resource_sample.get("tree_pss_kb") if last_resource_sample is not None else None
+    total_cpu_s = last_resource_sample.get("tree_cpu_s") if last_resource_sample is not None else None
+    execute_unavailable = [
+        "current_rss_bytes",
+        "current_pss_bytes",
+        "storage_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "progress_completed",
+        "progress_total",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+    ]
+    if not isinstance(peak_rss_kb, int):
+        execute_unavailable.append("peak_rss_bytes")
+    if not isinstance(peak_pss_kb, int):
+        execute_unavailable.append("peak_pss_bytes")
+    if not isinstance(peak_basetemp_kb, int):
+        execute_unavailable.append("temp_storage_bytes")
+    if not isinstance(peak_anon_pss_kb, int):
+        execute_unavailable.append("anon_bytes")
+    if not isinstance(peak_file_pss_kb, int):
+        execute_unavailable.append("file_cache_bytes")
+    if not isinstance(peak_swap_pss_kb, int):
+        execute_unavailable.append("swap_bytes")
+    if not isinstance(read_bytes, int):
+        execute_unavailable.append("read_io_bytes")
+    if not isinstance(write_bytes, int):
+        execute_unavailable.append("write_io_bytes")
+    if not isinstance(total_cpu_s, int | float):
+        execute_unavailable.append("cpu_ms")
+    quiescent_unavailable = [
+        "wall_ms",
+        "cpu_ms",
+        "peak_rss_bytes",
+        "peak_pss_bytes",
+        "anon_bytes",
+        "file_cache_bytes",
+        "swap_bytes",
+        "temp_storage_bytes",
+        "storage_bytes",
+        "read_io_bytes",
+        "write_io_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "progress_completed",
+        "progress_total",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+    ]
+    if not isinstance(final_rss_kb, int):
+        quiescent_unavailable.append("current_rss_bytes")
+    if not isinstance(final_pss_kb, int):
+        quiescent_unavailable.append("current_pss_bytes")
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=(
+            WorkloadRunStatus.CANCELLED
+            if termination_reason is not None
+            else WorkloadRunStatus.SUCCEEDED
+            if returncode == 0
+            else WorkloadRunStatus.FAILED
+        ),
+        build_id=f"git:{head}" if (head := _git_head()) is not None else None,
+        runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(
+                name="execute",
+                wall_ms=elapsed_s * 1000,
+                cpu_ms=float(total_cpu_s) * 1000 if isinstance(total_cpu_s, int | float) else None,
+                peak_rss_bytes=peak_rss_kb * 1024 if isinstance(peak_rss_kb, int) else None,
+                peak_pss_bytes=peak_pss_kb * 1024 if isinstance(peak_pss_kb, int) else None,
+                anon_bytes=peak_anon_pss_kb * 1024 if isinstance(peak_anon_pss_kb, int) else None,
+                file_cache_bytes=peak_file_pss_kb * 1024 if isinstance(peak_file_pss_kb, int) else None,
+                swap_bytes=peak_swap_pss_kb * 1024 if isinstance(peak_swap_pss_kb, int) else None,
+                temp_storage_bytes=peak_basetemp_kb * 1024 if isinstance(peak_basetemp_kb, int) else None,
+                read_io_bytes=read_bytes if isinstance(read_bytes, int) else None,
+                write_io_bytes=write_bytes if isinstance(write_bytes, int) else None,
+                unavailable=tuple(execute_unavailable),
+            ),
+            WorkloadPhaseObservation(
+                name="quiescent",
+                current_rss_bytes=final_rss_kb * 1024 if isinstance(final_rss_kb, int) else None,
+                current_pss_bytes=final_pss_kb * 1024 if isinstance(final_pss_kb, int) else None,
+                cleanup_complete=True if basetemp_cleanup is not None else None,
+                quiescent=final_rss_kb == 0,
+                unavailable=tuple(quiescent_unavailable),
+            ),
+        ),
+        cancellation_requested=termination_reason is not None,
+        cleanup_complete=True if basetemp_cleanup is not None else None,
+        notes=("Managed pytest process-tree sampler adapter.",),
+    )
+    return dict(receipt.to_payload())
+
+
 def _pytest_artifact_paths(cmd: Sequence[str]) -> tuple[Path, ...]:
     json_paths: list[Path] = []
     junit_paths: list[Path] = []
@@ -364,6 +550,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         PYTEST_OUTPUT_PATH,
         CURRENT_RESOURCES_PATH,
         CURRENT_POSTMORTEM_PATH,
+        CURRENT_CONTAINMENT_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
             if path.is_dir():
@@ -394,6 +581,7 @@ def _write_pytest_progress(
     run_id: str | None = None,
     artifact_dir: str | None = None,
     resources: Mapping[str, Any] | None = None,
+    containment: Mapping[str, Any] | None = None,
 ) -> None:
     """Write a live pytest progress artifact for long verify runs."""
     if elapsed_s is None:
@@ -425,6 +613,8 @@ def _write_pytest_progress(
         payload["artifact_dir"] = artifact_dir
     if resources is not None:
         payload["resources"] = dict(resources)
+    if containment is not None:
+        payload["containment"] = dict(containment)
     latest_event = _read_latest_pytest_event()
     if latest_event is not None:
         payload["latest_test_event"] = {
@@ -493,22 +683,185 @@ def _pytest_stall_timeout_s() -> float:
     return _float_env(PYTEST_STALL_TIMEOUT_ENV, DEFAULT_PYTEST_STALL_TIMEOUT_S)
 
 
+def _pytest_term_grace_s() -> float:
+    return _float_env(PYTEST_TERM_GRACE_ENV, DEFAULT_PYTEST_TERM_GRACE_S)
+
+
 def _pytest_resource_interval_s() -> float:
     return _float_env(PYTEST_RESOURCE_INTERVAL_ENV, DEFAULT_PYTEST_RESOURCE_INTERVAL_S)
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=5)
+def _containment_summary(launch: SupervisorLaunch, receipt: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "mode": launch.mode,
+        "unit": launch.unit,
+        "receipt_path": str(launch.receipt_path),
+        "runtime_cap_s": launch.runtime_cap_s,
+    }
+    if receipt is not None:
+        for key in (
+            "supervisor_pid",
+            "controller_pid",
+            "controller_pgid",
+            "controller_sid",
+            "cgroup_path",
+            "cgroup_owned",
+            "signals_sent",
+            "escalated_to_sigkill",
+            "controller_group_alive",
+        ):
+            if key in receipt:
+                payload[key] = receipt[key]
+    return payload
+
+
+def _request_supervisor_termination(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    reason: str,
+) -> None:
+    write_termination_request(launch.request_path, reason=reason)
+    receipt = read_receipt(launch.receipt_path)
+    supervisor_pid = receipt.get("supervisor_pid") if receipt is not None else None
+    supervisor_start = receipt.get("supervisor_start_ticks") if receipt is not None else None
+    signalled = False
+    if isinstance(supervisor_pid, int) and isinstance(supervisor_start, int):
+        signalled = signal_process_identity(supervisor_pid, supervisor_start, signal.SIGTERM)
+    if not signalled and process.poll() is None:
+        process.send_signal(signal.SIGTERM)
+
+
+def _force_kill_owned_run(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    preserved_runner_descendants: Sequence[tuple[int, int]] = (),
+) -> None:
+    """Escalate only through identities recorded for this pytest run."""
+    receipt = read_receipt(launch.receipt_path)
+    controller_pgid = receipt.get("controller_pgid") if receipt is not None else None
+    controller_sid = receipt.get("controller_sid") if receipt is not None else None
+    controller_start = receipt.get("controller_start_ticks") if receipt is not None else None
+    supervisor_pid = receipt.get("supervisor_pid") if receipt is not None else None
+    supervisor_start = receipt.get("supervisor_start_ticks") if receipt is not None else None
+    if launch.unit is not None and shutil.which("systemctl"):
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            result = subprocess.run(
+                ["systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", launch.unit],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+    if isinstance(controller_pgid, int) and isinstance(controller_sid, int):
+        signal_owned_process_group(
+            pgid=controller_pgid,
+            sid=controller_sid,
+            leader_start_ticks=controller_start if isinstance(controller_start, int) else None,
+            sig=signal.SIGKILL,
+        )
+    if isinstance(supervisor_pid, int) and isinstance(supervisor_start, int):
+        signal_process_identity(supervisor_pid, supervisor_start, signal.SIGKILL)
+    signal_descendant_identities(
+        os.getpid(),
+        signal.SIGKILL,
+        preserved_roots=preserved_runner_descendants,
+    )
+    if process.poll() is None:
+        process.kill()
+
+
+def _wait_for_supervisor_start(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        receipt = read_receipt(launch.receipt_path)
+        if receipt is not None:
+            return receipt
+        if process.poll() is not None:
+            return None
+        time.sleep(0.01)
+    return read_receipt(launch.receipt_path)
+
+
+def _startup_wait_s(*, t0: float, timeout_s: float) -> float:
+    if timeout_s <= 0:
+        return 5.0
+    return max(0.0, min(5.0, t0 + timeout_s - time.monotonic()))
+
+
+def _finish_supervisor_startup_failure(
+    cmd: list[str],
+    *,
+    launch: SupervisorLaunch,
+    process: subprocess.Popen[bytes],
+    t0: float,
+    timeout_s: float,
+    term_grace_s: float,
+    reason: str,
+    exit_code: int,
+    stdout: bytes,
+    stderr: bytes,
+    runner_subreaper_enabled: bool,
+    run: VerifyRun | None,
+    artifacts: PytestStepArtifacts | None,
+) -> subprocess.CompletedProcess[str]:
+    receipt = update_receipt(
+        launch.receipt_path,
+        {
+            "schema_version": 1,
+            "status": "terminated",
+            "finished_at": utc_now(),
+            "duration_s": round(time.monotonic() - t0, 4),
+            "controller_command": list(cmd),
+            "mode": launch.mode,
+            "unit": launch.unit,
+            "cgroup_owned": launch.mode == "systemd-scope",
+            "timeout_s": timeout_s,
+            "term_grace_s": term_grace_s,
+            "runtime_cap_s": launch.runtime_cap_s,
+            "exit_code": exit_code,
+            "supervisor_exit_code": process.poll(),
+            "termination_reason": reason,
+            "signals_sent": ["SIGKILL"],
+            "escalated_to_sigkill": True,
+            "runner_forced_cleanup": True,
+            "runner_forced_at": utc_now(),
+            "runner_pid": os.getpid(),
+            "runner_subreaper_enabled": runner_subreaper_enabled,
+            "startup_failure": True,
+        },
+    )
+    rendered_stdout = stdout.decode(errors="replace")
+    rendered_stderr = stderr.decode(errors="replace")
+    rendered_stderr = f"{rendered_stderr}\nverify: {reason}; pytest supervisor startup was contained\n"
+    output_bytes = {"stdout": len(stdout), "stderr": len(rendered_stderr.encode())}
+    _write_pytest_progress(
+        event="terminated",
+        cmd=cmd,
+        started_at=t0,
+        pid=process.pid,
+        returncode=exit_code,
+        output_bytes=output_bytes,
+        termination_reason=reason,
+        run_id=run.run_id if run is not None else None,
+        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+        containment=_containment_summary(launch, receipt),
+    )
+    _write_pytest_output(rendered_stdout, rendered_stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(rendered_stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(rendered_stderr, encoding="utf-8")
+        artifacts.output_path.write_text(rendered_stdout + rendered_stderr, encoding="utf-8")
+    reap_exited_children()
+    return subprocess.CompletedProcess(cmd, exit_code, rendered_stdout, rendered_stderr)
 
 
 def _run_pytest_with_heartbeat(
@@ -523,19 +876,209 @@ def _run_pytest_with_heartbeat(
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s()
     stall_timeout_s = _pytest_stall_timeout_s()
+    term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
-    sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
-    sys.stderr.flush()
-    process = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
+    tmpfs_budget_kb = pytest_tmpfs_budget_kb(env)
+    runner_subreaper_enabled = enable_child_subreaper()
+    preserved_runner_descendants = tuple(descendant_process_identities(os.getpid()))
+    receipt_path = (
+        artifacts.containment_path
+        if artifacts is not None
+        else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
+    pytest_run_id = run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(os.getpid()))
+    tmpfs_cleanup_path = (
+        pytest_basetemp_path(
+            root=Path(cwd) if cwd is not None else Path.cwd(),
+            run_id=pytest_run_id,
+            env=env,
+        )
+        if tmpfs_budget_kb is not None
+        else None
+    )
+    launch = build_supervisor_launch(
+        cmd,
+        owner_pid=os.getpid(),
+        timeout_s=timeout_s,
+        term_grace_s=term_grace_s,
+        receipt_path=receipt_path,
+        run_id=pytest_run_id,
+        env=env,
+        cleanup_path=tmpfs_cleanup_path,
+    )
+    sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
+    sys.stderr.write(
+        f"    containment: mode={launch.mode}"
+        f"{f', unit={launch.unit}' if launch.unit is not None else ''}, receipt={launch.receipt_path}\n"
+    )
+    sys.stderr.flush()
+    if not runner_subreaper_enabled:
+        reason = "pytest runner could not become a Linux child subreaper"
+        preflight_receipt = update_receipt(
+            launch.receipt_path,
+            {
+                "schema_version": 1,
+                "status": "terminated",
+                "started_at": utc_now(),
+                "finished_at": utc_now(),
+                "duration_s": round(time.monotonic() - t0, 4),
+                "runner_pid": os.getpid(),
+                "runner_subreaper_enabled": False,
+                "controller_command": list(cmd),
+                "mode": launch.mode,
+                "unit": launch.unit,
+                "cgroup_owned": False,
+                "timeout_s": timeout_s,
+                "term_grace_s": term_grace_s,
+                "runtime_cap_s": launch.runtime_cap_s,
+                "exit_code": 125,
+                "termination_reason": reason,
+                "signals_sent": [],
+                "escalated_to_sigkill": False,
+                "controller_group_alive": False,
+                "startup_failure": True,
+            },
+        )
+        rendered_stderr = f"verify: {reason}; refusing an unowned pytest launch\n"
+        _write_pytest_progress(
+            event="terminated",
+            cmd=cmd,
+            started_at=t0,
+            returncode=125,
+            termination_reason=reason,
+            run_id=run.run_id if run is not None else None,
+            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            containment=_containment_summary(launch, preflight_receipt),
+        )
+        _write_pytest_output("", rendered_stderr)
+        if artifacts is not None:
+            artifacts.stdout_path.write_text("", encoding="utf-8")
+            artifacts.stderr_path.write_text(rendered_stderr, encoding="utf-8")
+            artifacts.output_path.write_text(rendered_stderr, encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 125, "", rendered_stderr)
+
+    def _spawn_supervisor(argv: Sequence[str]) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+    def _stop_startup_attempt(
+        startup_process: subprocess.Popen[bytes],
+        startup_launch: SupervisorLaunch,
+    ) -> tuple[bytes, bytes]:
+        _force_kill_owned_run(
+            startup_process,
+            startup_launch,
+            preserved_runner_descendants=preserved_runner_descendants,
+        )
+        try:
+            result = startup_process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            startup_process.kill()
+            result = startup_process.communicate(timeout=1)
+        reap_exited_children()
+        return result
+
+    process = _spawn_supervisor(launch.argv)
     assert process.stdout is not None
     assert process.stderr is not None
+    startup_receipt = _wait_for_supervisor_start(process, launch, timeout_s=_startup_wait_s(t0=t0, timeout_s=timeout_s))
+    startup_stdout = b""
+    startup_stderr = b""
+    if startup_receipt is None:
+        startup_stdout, startup_stderr = _stop_startup_attempt(process, launch)
+        if timeout_s > 0 and time.monotonic() - t0 >= timeout_s:
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=f"pytest runtime exceeded {timeout_s:g}s",
+                exit_code=124,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+        if launch.fallback_argv is None:
+            detail = startup_stderr.decode(errors="replace").strip()
+            reason = "pytest supervisor failed before publishing ownership"
+            if detail:
+                reason = f"{reason}: {detail}"
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=reason,
+                exit_code=125,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+        fallback_message = (
+            b"pytest supervisor: systemd scope launch failed; retrying with the Linux process-group boundary\n"
+        )
+        startup_stderr += fallback_message
+        sys.stderr.write((startup_stdout + startup_stderr).decode(errors="replace"))
+        sys.stderr.flush()
+        launch = SupervisorLaunch(
+            launch.fallback_argv,
+            launch.receipt_path,
+            launch.request_path,
+            "process-group",
+            None,
+            None,
+        )
+        process = _spawn_supervisor(launch.argv)
+        assert process.stdout is not None
+        assert process.stderr is not None
+        startup_receipt = _wait_for_supervisor_start(
+            process,
+            launch,
+            timeout_s=_startup_wait_s(t0=t0, timeout_s=timeout_s),
+        )
+        if startup_receipt is None:
+            fallback_stdout, fallback_stderr = _stop_startup_attempt(process, launch)
+            startup_stdout += fallback_stdout
+            startup_stderr += fallback_stderr
+            timed_out = timeout_s > 0 and time.monotonic() - t0 >= timeout_s
+            reason = (
+                f"pytest runtime exceeded {timeout_s:g}s"
+                if timed_out
+                else "pytest process-group supervisor failed before publishing ownership"
+            )
+            return _finish_supervisor_startup_failure(
+                cmd,
+                launch=launch,
+                process=process,
+                t0=t0,
+                timeout_s=timeout_s,
+                term_grace_s=term_grace_s,
+                reason=reason,
+                exit_code=124 if timed_out else 125,
+                stdout=startup_stdout,
+                stderr=startup_stderr,
+                runner_subreaper_enabled=runner_subreaper_enabled,
+                run=run,
+                artifacts=artifacts,
+            )
+    stdout_pipe = process.stdout
+    stderr_pipe = process.stderr
+    assert stdout_pipe is not None
+    assert stderr_pipe is not None
     sampler = (
         ResourceSampler(
             root_pid=process.pid,
@@ -557,17 +1100,26 @@ def _run_pytest_with_heartbeat(
         output_bytes={"stdout": 0, "stderr": 0},
         run_id=run.run_id if run is not None else None,
         artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+        containment=_containment_summary(launch, startup_receipt),
     )
     selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    output: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
-    output_bytes = {"stdout": 0, "stderr": 0}
+    selector.register(stdout_pipe, selectors.EVENT_READ, "stdout")
+    selector.register(stderr_pipe, selectors.EVENT_READ, "stderr")
+    output: dict[str, list[bytes]] = {
+        "stdout": [startup_stdout] if startup_stdout else [],
+        "stderr": [startup_stderr] if startup_stderr else [],
+    }
+    output_bytes = {"stdout": len(startup_stdout), "stderr": len(startup_stderr)}
     last_cpu = _process_cpu_seconds(process.pid)
     last_sample = time.monotonic()
     last_output = last_sample
     last_resource_sample = last_sample
     termination_reason: str | None = None
+    termination_requested_at: float | None = None
+    forced_cleanup = False
+    supervisor_finished_at: float | None = None
+    post_exit_forced_at: float | None = None
+    forced_returncode: int | None = None
     # Test-event progress, not raw output bytes: an xdist master can keep
     # emitting output (its own heartbeat chatter) while every worker is
     # wedged (e.g. a D-state deadlock), so output-silence alone never fires
@@ -592,153 +1144,285 @@ def _run_pytest_with_heartbeat(
             last_progress_marker = marker
             last_progress_at = at
 
-    while True:
-        now = time.monotonic()
-        elapsed = now - t0
-        idle = now - last_output
-        progress_idle = now - last_progress_at
-        if timeout_s > 0 and elapsed >= timeout_s:
-            termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
-        elif stall_timeout_s > 0 and idle >= stall_timeout_s:
-            termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
-        elif stall_timeout_s > 0 and seen_any_progress_event and progress_idle >= stall_timeout_s:
-            termination_reason = (
-                f"pytest reported no test progress for {stall_timeout_s:g}s "
-                f"(output kept flowing; last progress marker: {last_progress_marker})"
-            )
-        if termination_reason is not None:
-            _terminate_process_group(process)
-            break
+    try:
+        while True:
+            now = time.monotonic()
+            elapsed = now - t0
+            idle = now - last_output
+            progress_idle = now - last_progress_at
+            receipt = read_receipt(launch.receipt_path)
+            if receipt is not None and receipt.get("status") in {"finished", "terminated"} and selector.get_map():
+                if supervisor_finished_at is None:
+                    supervisor_finished_at = now
+                elif now - supervisor_finished_at >= max(0.2, term_grace_s) and post_exit_forced_at is None:
+                    receipt_reason = receipt.get("termination_reason")
+                    termination_reason = (
+                        termination_reason
+                        or (str(receipt_reason) if isinstance(receipt_reason, str) else None)
+                        or "pytest supervisor exited while owned output pipes remained open"
+                    )
+                    _force_kill_owned_run(
+                        process,
+                        launch,
+                        preserved_runner_descendants=preserved_runner_descendants,
+                    )
+                    forced_cleanup = True
+                    forced_returncode = 125
+                    post_exit_forced_at = now
+                    receipt = update_receipt(
+                        launch.receipt_path,
+                        {
+                            "status": "terminated",
+                            "supervisor_exit_code": receipt.get("exit_code"),
+                            "exit_code": forced_returncode,
+                            "termination_reason": termination_reason,
+                            "runner_forced_cleanup": True,
+                            "runner_forced_at": datetime.now(timezone.utc).isoformat(),
+                            "runner_pid": os.getpid(),
+                            "runner_subreaper_enabled": runner_subreaper_enabled,
+                        },
+                    )
+                elif post_exit_forced_at is not None and now - post_exit_forced_at >= 1.0:
+                    for selector_key in list(selector.get_map().values()):
+                        with contextlib.suppress(KeyError):
+                            selector.unregister(selector_key.fileobj)
+                        if selector_key.fileobj is stdout_pipe:
+                            stdout_pipe.close()
+                        elif selector_key.fileobj is stderr_pipe:
+                            stderr_pipe.close()
+                        else:
+                            with contextlib.suppress(OSError):
+                                os.close(selector_key.fd)
+                    if process.poll() is None:
+                        process.kill()
+            if termination_reason is None and timeout_s > 0 and elapsed >= timeout_s:
+                termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
+            elif termination_reason is None and stall_timeout_s > 0 and idle >= stall_timeout_s:
+                termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
+            elif (
+                termination_reason is None
+                and stall_timeout_s > 0
+                and seen_any_progress_event
+                and progress_idle >= stall_timeout_s
+            ):
+                termination_reason = (
+                    f"pytest reported no test progress for {stall_timeout_s:g}s "
+                    f"(output kept flowing; last progress marker: {last_progress_marker})"
+                )
+            if termination_reason is not None and termination_requested_at is None:
+                _request_supervisor_termination(process, launch, reason=termination_reason)
+                termination_requested_at = now
+            if (
+                termination_requested_at is not None
+                and now - termination_requested_at >= term_grace_s + 1.0
+                and not forced_cleanup
+            ):
+                _force_kill_owned_run(
+                    process,
+                    launch,
+                    preserved_runner_descendants=preserved_runner_descendants,
+                )
+                forced_cleanup = True
+                forced_returncode = 124
+                receipt = update_receipt(
+                    launch.receipt_path,
+                    {
+                        "status": "terminated",
+                        "supervisor_exit_code": process.poll(),
+                        "exit_code": forced_returncode,
+                        "termination_reason": termination_reason,
+                        "runner_forced_cleanup": True,
+                        "runner_forced_at": datetime.now(timezone.utc).isoformat(),
+                        "runner_pid": os.getpid(),
+                        "runner_subreaper_enabled": runner_subreaper_enabled,
+                    },
+                )
 
-        deadlines: list[float] = []
-        if heartbeat_s > 0:
-            deadlines.append(heartbeat_s)
-        if timeout_s > 0:
-            deadlines.append(max(timeout_s - elapsed, 0.0))
-        if stall_timeout_s > 0:
-            deadlines.append(max(stall_timeout_s - idle, 0.0))
-        if stall_timeout_s > 0 and seen_any_progress_event:
-            deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
-        timeout = min(deadlines) if deadlines else None
-        events = selector.select(timeout=timeout)
-        if events:
-            for selector_key, _mask in events:
-                chunk = os.read(selector_key.fd, 65536)
-                if chunk:
-                    stream_name = str(selector_key.data)
-                    output[stream_name].append(chunk)
-                    output_bytes[stream_name] += len(chunk)
-                    sys.stderr.write(chunk.decode(errors="replace"))
-                    sys.stderr.flush()
-                    last_output = time.monotonic()
-                    _refresh_progress_marker(last_output)
-                    _write_pytest_progress(
-                        event="output",
-                        cmd=cmd,
-                        started_at=t0,
-                        pid=process.pid,
-                        idle_s=last_output - last_progress_at,
-                        output_bytes=output_bytes,
-                        status=_process_status(process.pid),
-                        run_id=run.run_id if run is not None else None,
-                        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            deadlines: list[float] = []
+            if heartbeat_s > 0:
+                deadlines.append(heartbeat_s)
+            if timeout_s > 0 and termination_reason is None:
+                deadlines.append(max(timeout_s - elapsed, 0.0))
+            if stall_timeout_s > 0 and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - idle, 0.0))
+            if stall_timeout_s > 0 and seen_any_progress_event and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
+            if termination_requested_at is not None and not forced_cleanup:
+                deadlines.append(max(term_grace_s + 1.0 - (now - termination_requested_at), 0.0))
+            if supervisor_finished_at is not None and post_exit_forced_at is None:
+                deadlines.append(max(max(0.2, term_grace_s) - (now - supervisor_finished_at), 0.0))
+            if post_exit_forced_at is not None:
+                deadlines.append(max(1.0 - (now - post_exit_forced_at), 0.0))
+            selector_timeout = min(deadlines) if deadlines else None
+            events = selector.select(timeout=selector_timeout)
+            if events:
+                for selector_key, _mask in events:
+                    chunk = os.read(selector_key.fd, 65536)
+                    if chunk:
+                        stream_name = str(selector_key.data)
+                        output[stream_name].append(chunk)
+                        output_bytes[stream_name] += len(chunk)
+                        sys.stderr.write(chunk.decode(errors="replace"))
+                        sys.stderr.flush()
+                        last_output = time.monotonic()
+                        _refresh_progress_marker(last_output)
+                        receipt = read_receipt(launch.receipt_path)
+                        _write_pytest_progress(
+                            event="output",
+                            cmd=cmd,
+                            started_at=t0,
+                            pid=process.pid,
+                            idle_s=last_output - last_progress_at,
+                            output_bytes=output_bytes,
+                            status=_process_status(process.pid),
+                            run_id=run.run_id if run is not None else None,
+                            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+                            containment=_containment_summary(launch, receipt),
+                        )
+                    else:
+                        selector.unregister(selector_key.fileobj)
+            else:
+                status = _process_status(process.pid)
+                cpu_now = _process_cpu_seconds(process.pid)
+                cpu_pct = None
+                sample_now = time.monotonic()
+                if cpu_now is not None and last_cpu is not None and sample_now > last_sample:
+                    cpu_pct = ((cpu_now - last_cpu) / (sample_now - last_sample)) * 100.0
+                last_cpu = cpu_now
+                last_sample = sample_now
+                rss = status["rss_kb"]
+                rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
+                cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
+                state_text = f", state={status['state']}" if status["state"] is not None else ""
+                latest_event = _read_latest_pytest_event()
+                _refresh_progress_marker(sample_now, latest_event)
+                if latest_event is not None:
+                    event = latest_event.get("event")
+                    nodeid = latest_event.get("nodeid")
+                    node_text = (
+                        f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
                     )
                 else:
-                    selector.unregister(selector_key.fileobj)
-        else:
-            status = _process_status(process.pid)
-            cpu_now = _process_cpu_seconds(process.pid)
-            cpu_pct = None
+                    node_text = ""
+                progress_idle_text = (
+                    f", progress_idle={sample_now - last_progress_at:.0f}s" if seen_any_progress_event else ""
+                )
+                receipt = read_receipt(launch.receipt_path)
+                controller_pid = receipt.get("controller_pid") if receipt is not None else None
+                controller_text = f", controller={controller_pid}" if isinstance(controller_pid, int) else ""
+                sys.stderr.write(
+                    f"    still running: supervisor={process.pid}{controller_text}, elapsed={sample_now - t0:.0f}s, "
+                    f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
+                )
+                sys.stderr.flush()
+                _write_pytest_progress(
+                    event="heartbeat",
+                    cmd=cmd,
+                    started_at=t0,
+                    pid=process.pid,
+                    elapsed_s=sample_now - t0,
+                    idle_s=sample_now - last_progress_at,
+                    output_bytes=output_bytes,
+                    status=status,
+                    cpu_pct=cpu_pct,
+                    run_id=run.run_id if run is not None else None,
+                    artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+                    containment=_containment_summary(launch, receipt),
+                )
             sample_now = time.monotonic()
-            if cpu_now is not None and last_cpu is not None and sample_now > last_sample:
-                cpu_pct = ((cpu_now - last_cpu) / (sample_now - last_sample)) * 100.0
-            last_cpu = cpu_now
-            last_sample = sample_now
-            rss = status["rss_kb"]
-            rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
-            cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
-            state_text = f", state={status['state']}" if status["state"] is not None else ""
-            latest_event = _read_latest_pytest_event()
-            _refresh_progress_marker(sample_now, latest_event)
-            if latest_event is not None:
-                event = latest_event.get("event")
-                nodeid = latest_event.get("nodeid")
-                node_text = f", latest={event}:{nodeid}" if isinstance(event, str) and isinstance(nodeid, str) else ""
-            else:
-                node_text = ""
-            progress_idle_text = (
-                f", progress_idle={sample_now - last_progress_at:.0f}s" if seen_any_progress_event else ""
-            )
-            sys.stderr.write(
-                f"    still running: pid={process.pid}, elapsed={sample_now - t0:.0f}s, "
-                f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
-            )
-            sys.stderr.flush()
-            _write_pytest_progress(
-                event="heartbeat",
-                cmd=cmd,
-                started_at=t0,
-                pid=process.pid,
-                elapsed_s=sample_now - t0,
-                idle_s=sample_now - last_progress_at,
-                output_bytes=output_bytes,
-                status=status,
-                cpu_pct=cpu_pct,
-                run_id=run.run_id if run is not None else None,
-                artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
-            )
-        sample_now = time.monotonic()
-        if sampler is not None and resource_interval_s > 0 and sample_now - last_resource_sample >= resource_interval_s:
-            sampler.sample(event="sample")
-            last_resource_sample = sample_now
-        if process.poll() is not None and not selector.get_map():
-            break
+            if (
+                sampler is not None
+                and resource_interval_s > 0
+                and sample_now - last_resource_sample >= resource_interval_s
+            ):
+                resource_sample = sampler.sample(event="sample")
+                basetemp_size_kb = resource_sample.get("basetemp_size_kb")
+                if (
+                    termination_reason is None
+                    and tmpfs_budget_kb is not None
+                    and isinstance(basetemp_size_kb, int)
+                    and basetemp_size_kb > tmpfs_budget_kb
+                ):
+                    termination_reason = (
+                        f"pytest tmpfs budget exceeded: {basetemp_size_kb / 1024:.1f} MiB "
+                        f"> {tmpfs_budget_kb / 1024:.0f} MiB"
+                    )
+                last_resource_sample = sample_now
+            if process.poll() is not None and not selector.get_map():
+                break
+    except BaseException:
+        if process.poll() is None:
+            _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+        raise
+    finally:
+        selector.close()
+    reap_exited_children()
 
-    for stream in (process.stdout, process.stderr):
+    for stream in (stdout_pipe, stderr_pipe):
+        if stream.closed:
+            continue
         with contextlib.suppress(OSError):
             remaining = stream.read()
         if remaining:
-            stream_name = "stdout" if stream is process.stdout else "stderr"
+            stream_name = "stdout" if stream is stdout_pipe else "stderr"
             output[stream_name].append(remaining)
             output_bytes[stream_name] += len(remaining)
     stdout = b"".join(output["stdout"]).decode(errors="replace")
     stderr = b"".join(output["stderr"]).decode(errors="replace")
-    _write_pytest_output(stdout, stderr)
-    if artifacts is not None:
-        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
-        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
-        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    receipt = read_receipt(launch.receipt_path)
+    if termination_reason is None and receipt is not None and receipt.get("status") == "terminated":
+        receipt_reason = receipt.get("termination_reason")
+        if isinstance(receipt_reason, str):
+            termination_reason = receipt_reason
+    receipt_exit = receipt.get("exit_code") if receipt is not None else None
+    returncode = (
+        forced_returncode
+        if forced_returncode is not None
+        else (int(receipt_exit) if isinstance(receipt_exit, int) else (process.returncode or 0))
+    )
+    containment = _containment_summary(launch, receipt)
     resource_summary: dict[str, Any] = {}
     if sampler is not None:
         sampler.sample(event="finished" if termination_reason is None else "terminated")
         resource_summary = sampler.summary()
     if termination_reason is not None:
+        controller_pgid = containment.get("controller_pgid", process.pid)
+        stderr = (
+            f"{stderr}\nverify: {termination_reason}; terminated owned pytest process group "
+            f"{controller_pgid} ({launch.mode})\n"
+        )
         _write_pytest_progress(
             event="terminated",
             cmd=cmd,
             started_at=t0,
             pid=process.pid,
-            returncode=124,
+            returncode=returncode,
             output_bytes=output_bytes,
             termination_reason=termination_reason,
             run_id=run.run_id if run is not None else None,
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
+            containment=containment,
         )
-        stderr = f"{stderr}\nverify: {termination_reason}; terminated pytest process group {process.pid}\n"
-        return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
-    _write_pytest_progress(
-        event="finished",
-        cmd=cmd,
-        started_at=t0,
-        pid=process.pid,
-        returncode=process.returncode or 0,
-        output_bytes=output_bytes,
-        run_id=run.run_id if run is not None else None,
-        artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
-        resources=resource_summary,
-    )
-    return subprocess.CompletedProcess(cmd, process.returncode or 0, stdout, stderr)
+    else:
+        _write_pytest_progress(
+            event="finished",
+            cmd=cmd,
+            started_at=t0,
+            pid=process.pid,
+            returncode=returncode,
+            output_bytes=output_bytes,
+            run_id=run.run_id if run is not None else None,
+            artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
+            resources=resource_summary,
+            containment=containment,
+        )
+    _write_pytest_output(stdout, stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
+        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _run(
@@ -757,17 +1441,34 @@ def _run(
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
     pytest_tmpfs = False
+    pytest_tmpfs_budget_mb: float | None = None
+    runtime_policy = None
     basetemp_cleanup: Path | None = None
     if is_pytest:
-        pytest_tmpfs = _enable_tmpfs_for_broad_pytest(label, env)
+        try:
+            env, runtime_policy = apply_managed_pytest_runtime_policy(env)
+        except PytestResourceError as exc:
+            elapsed = time.monotonic() - t0
+            sys.stderr.write(f"FAILED ({elapsed:.1f}s)\nverify: {exc}\n")
+            return 125, elapsed, {"diagnosis": "pytest_resource_preflight_failed", "error": str(exc)}
+        pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
+        budget_kb = pytest_tmpfs_budget_kb(env)
+        pytest_tmpfs_budget_mb = budget_kb / 1024 if budget_kb is not None else None
+        if label.startswith("pytest seed-testmon"):
+            # A complete corpus is currently ~16K nodes. Preserve the whole
+            # selection in the attempt receipt so interrupted seeds can prove
+            # eventual coverage instead of relying on a 500-node sample.
+            env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-        result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
-        basetemp_cleanup = cleanup_managed_pytest_basetemp(
-            root=ROOT,
-            run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
-            env=env,
-        )
+        try:
+            result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+        finally:
+            basetemp_cleanup = cleanup_managed_pytest_basetemp(
+                root=ROOT,
+                run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
+                env=env,
+            )
         if artifacts is not None:
             merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
             with contextlib.suppress(FileNotFoundError):
@@ -784,8 +1485,11 @@ def _run(
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
+        metadata["term_grace_s"] = _pytest_term_grace_s()
         metadata["resource_interval_s"] = _pytest_resource_interval_s()
         metadata["pytest_tmpfs"] = pytest_tmpfs
+        metadata["pytest_tmpfs_budget_mb"] = pytest_tmpfs_budget_mb
+        metadata["pytest_runtime_policy"] = runtime_policy.to_dict() if runtime_policy is not None else None
         metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
         metadata["events_path"] = str(PYTEST_EVENTS_PATH)
         metadata["events_dir"] = str(PYTEST_EVENTS_DIR)
@@ -794,6 +1498,7 @@ def _run(
         metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
         metadata["resources_path"] = str(CURRENT_RESOURCES_PATH)
         metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
+        metadata["containment_path"] = str(PYTEST_CONTAINMENT_PATH)
         metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
@@ -845,12 +1550,32 @@ def _run(
             slowest_reports = summary.get("slowest_reports")
             if isinstance(slowest_reports, list):
                 metadata["slowest_report_count"] = len(slowest_reports)
+        containment_path = artifacts.containment_path if artifacts is not None else PYTEST_CONTAINMENT_PATH
+        containment = _read_json_artifact(containment_path)
+        if containment is not None:
+            for source_key, metadata_key in (
+                ("mode", "containment_mode"),
+                ("unit", "containment_unit"),
+                ("cgroup_path", "containment_cgroup_path"),
+                ("controller_pid", "pytest_controller_pid"),
+                ("controller_pgid", "pytest_controller_pgid"),
+                ("signals_sent", "containment_signals_sent"),
+                ("escalated_to_sigkill", "containment_escalated_to_sigkill"),
+            ):
+                if source_key in containment:
+                    metadata[metadata_key] = containment[source_key]
         resource_summary: dict[str, Any] = {}
+        last_resource_row: dict[str, Any] | None = None
         if artifacts is not None and artifacts.resources_path.exists():
             sample_count = 0
+            first_resource_row: dict[str, Any] | None = None
             peak_rss = 0
             peak_pss: int | None = None
+            peak_anon_pss: int | None = None
+            peak_file_pss: int | None = None
+            peak_swap_pss: int | None = None
             peak_process_count = 0
+            peak_basetemp_size_kb: int | None = None
             with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
                 for line in resource_handle:
                     if not line.strip():
@@ -859,11 +1584,27 @@ def _run(
                         row = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(row, dict):
+                        continue
+                    if first_resource_row is None:
+                        first_resource_row = row
+                    last_resource_row = row
                     sample_count += 1
                     peak_rss = max(peak_rss, int(row.get("tree_rss_kb") or 0))
                     if row.get("tree_pss_kb") is not None:
                         peak_pss = max(peak_pss or 0, int(row["tree_pss_kb"]))
+                    if row.get("tree_anon_pss_kb") is not None:
+                        peak_anon_pss = max(peak_anon_pss or 0, int(row["tree_anon_pss_kb"]))
+                    if row.get("tree_file_pss_kb") is not None:
+                        peak_file_pss = max(peak_file_pss or 0, int(row["tree_file_pss_kb"]))
+                    if row.get("tree_swap_pss_kb") is not None:
+                        peak_swap_pss = max(peak_swap_pss or 0, int(row["tree_swap_pss_kb"]))
                     peak_process_count = max(peak_process_count, int(row.get("process_count") or 0))
+                    if row.get("basetemp_size_kb") is not None:
+                        peak_basetemp_size_kb = max(
+                            peak_basetemp_size_kb or 0,
+                            int(row["basetemp_size_kb"]),
+                        )
             if sample_count:
                 resource_summary = {
                     "resource_sample_count": sample_count,
@@ -871,7 +1612,37 @@ def _run(
                     "peak_tree_rss_mb": round(peak_rss / 1024, 1),
                     "peak_tree_pss_kb": peak_pss,
                     "peak_tree_pss_mb": round(peak_pss / 1024, 1) if peak_pss is not None else None,
+                    "peak_tree_anon_pss_kb": peak_anon_pss,
+                    "peak_tree_file_pss_kb": peak_file_pss,
+                    "peak_tree_swap_pss_kb": peak_swap_pss,
+                    "start_tree_swap_pss_kb": (
+                        first_resource_row.get("tree_swap_pss_kb") if first_resource_row is not None else None
+                    ),
+                    "final_tree_swap_pss_kb": (
+                        last_resource_row.get("tree_swap_pss_kb") if last_resource_row is not None else None
+                    ),
+                    "tree_swap_pss_delta_kb": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_swap_pss_kb"
+                    ),
+                    "tree_read_bytes": last_resource_row.get("tree_read_bytes") if last_resource_row else None,
+                    "tree_write_bytes": last_resource_row.get("tree_write_bytes") if last_resource_row else None,
+                    "tree_cancelled_write_bytes": (
+                        last_resource_row.get("tree_cancelled_write_bytes") if last_resource_row else None
+                    ),
+                    "tree_read_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_read_bytes"
+                    ),
+                    "tree_write_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_write_bytes"
+                    ),
+                    "tree_cancelled_write_bytes_delta": _nonnegative_int_delta(
+                        first_resource_row, last_resource_row, "tree_cancelled_write_bytes"
+                    ),
                     "peak_process_count": peak_process_count,
+                    "peak_basetemp_size_kb": peak_basetemp_size_kb,
+                    "peak_basetemp_size_mb": (
+                        round(peak_basetemp_size_kb / 1024, 1) if peak_basetemp_size_kb is not None else None
+                    ),
                 }
                 metadata.update(resource_summary)
         diagnosis = classify_pytest_result(
@@ -884,6 +1655,22 @@ def _run(
             progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
         )
         metadata["diagnosis"] = diagnosis
+        termination_reason = (
+            metadata.get("termination_reason") if isinstance(metadata.get("termination_reason"), str) else None
+        )
+        workload_receipt = _pytest_workload_receipt(
+            label=label,
+            cmd=cmd,
+            elapsed_s=elapsed,
+            returncode=result.returncode,
+            termination_reason=termination_reason,
+            resource_summary=resource_summary,
+            last_resource_sample=last_resource_row,
+            tmpfs_budget_mb=pytest_tmpfs_budget_mb,
+            basetemp_cleanup=basetemp_cleanup,
+            concurrency=runtime_policy.workers if runtime_policy is not None else 1,
+        )
+        metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
             postmortem = {
                 "updated_at": utc_now(),
@@ -892,6 +1679,14 @@ def _run(
                 "report_status": metadata.get("report_status"),
                 "progress_event": metadata.get("progress_event"),
                 "summary_exitstatus": summary.get("exitstatus") if isinstance(summary, dict) else None,
+                "containment_mode": metadata.get("containment_mode"),
+                "containment_unit": metadata.get("containment_unit"),
+                "containment_cgroup_path": metadata.get("containment_cgroup_path"),
+                "pytest_controller_pid": metadata.get("pytest_controller_pid"),
+                "pytest_controller_pgid": metadata.get("pytest_controller_pgid"),
+                "containment_signals_sent": metadata.get("containment_signals_sent"),
+                "containment_escalated_to_sigkill": metadata.get("containment_escalated_to_sigkill"),
+                "workload_receipt": workload_receipt,
                 **resource_summary,
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")
@@ -922,9 +1717,11 @@ def _run(
 
 
 def _subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
+    env = normalize_pytest_basetemp_env(os.environ)
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
@@ -948,6 +1745,7 @@ def build_verify_steps(
     skip_slow: bool,
     commit: bool = False,
     seed_testmon: bool = False,
+    resume_testmon_seed: bool = False,
     full_pytest: bool = False,
     broad_testmon: bool = False,
 ) -> list[tuple[str, list[str]]]:
@@ -968,8 +1766,11 @@ def build_verify_steps(
                 ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
+                ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify test-clock-hygiene", _devtools_cmd("verify test-clock-hygiene")),
+                ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
+                ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
             ]
         )
 
@@ -1000,8 +1801,15 @@ def build_verify_steps(
         ]
         base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
         if seed_testmon:
-            pytest_cmd.extend(["-m", base_marker, "--testmon", "--testmon-noselect", *_pytest_worker_args(default="4")])
-            steps.append(("pytest seed-testmon", pytest_cmd))
+            pytest_cmd.extend(["-m", base_marker, "--testmon"])
+            if resume_testmon_seed:
+                pytest_cmd.append("--testmon-forceselect")
+                label = "pytest seed-testmon (resume)"
+            else:
+                pytest_cmd.append("--testmon-noselect")
+                label = "pytest seed-testmon"
+            pytest_cmd.extend(_pytest_worker_args(default="4"))
+            steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
             # xdist parallelism but deselects wall-clock-bound tests; the
@@ -1045,7 +1853,9 @@ def build_verify_steps(
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
+        steps.append(("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")))
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
+        steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
     return steps
 
 
@@ -1118,8 +1928,8 @@ def _file_fingerprint(path: Path) -> str:
 
 
 def _pytest_worker_args(*, default: str) -> list[str]:
-    workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", default).strip() or default
-    return ["-n", workers]
+    del default
+    return ["-n", str(adaptive_pytest_worker_count(os.environ))]
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {
@@ -1128,8 +1938,7 @@ _BROAD_TESTMON_CHANGED_PATHS = {
 }
 
 
-def _default_testmon_is_broad_change() -> bool:
-    """Return true when affected-test selection should be treated as broad."""
+def _changed_paths() -> set[str]:
     changed: set[str] = set()
     commands = (
         ["git", "diff", "--name-only", "HEAD", "--"],
@@ -1142,7 +1951,61 @@ def _default_testmon_is_broad_change() -> bool:
             continue
         if result.returncode == 0:
             changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
-    return bool(changed & _BROAD_TESTMON_CHANGED_PATHS)
+    return changed
+
+
+def _default_testmon_is_broad_change() -> bool:
+    """Return true when affected-test selection should be treated as broad."""
+    return bool(_changed_paths() & _BROAD_TESTMON_CHANGED_PATHS)
+
+
+def _changed_executable_paths() -> tuple[str, ...]:
+    """Return changed paths whose behavior should select at least one test."""
+    roots = ("polylogue/", "devtools/", "tests/", "packaging/")
+    exact = {"pyproject.toml", "uv.lock"}
+    return tuple(sorted(path for path in _changed_paths() if path in exact or path.startswith(roots)))
+
+
+def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any]:
+    """Identify the exact worktree contents covered by an affected/full run."""
+    return {
+        "worktree_fingerprint": _worktree_fingerprint(),
+        "executable_paths": list(executable_paths),
+    }
+
+
+def _matching_testmon_coverage(executable_paths: Sequence[str]) -> str | None:
+    """Return the receipt kind proving that zero new selection is legitimate."""
+    identity = _testmon_coverage_identity(executable_paths)
+    seed = _read_json_artifact(TESTMON_SEED_STAMP)
+    if isinstance(seed, dict):
+        seed_identity = seed.get("identity")
+        if (
+            seed.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
+            and seed.get("status") == "complete"
+            and isinstance(seed_identity, dict)
+            and seed_identity.get("worktree_fingerprint") == identity["worktree_fingerprint"]
+        ):
+            return "complete_seed"
+    affected = _read_json_artifact(TESTMON_AFFECTED_STAMP)
+    if isinstance(affected, dict) and affected.get("identity") == identity:
+        return "successful_affected_run"
+    return None
+
+
+def _record_testmon_affected_coverage(*, executable_paths: Sequence[str], selected_count: int, run_id: str) -> None:
+    """Persist proof that testmon exercised dependencies for these contents."""
+    _atomic_write_json(
+        TESTMON_AFFECTED_STAMP,
+        {
+            "protocol_version": 1,
+            "status": "complete",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "selected_count": selected_count,
+            "identity": _testmon_coverage_identity(executable_paths),
+        },
+    )
 
 
 def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
@@ -1167,6 +2030,11 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
             "verify: pytest-testmon seed stamp has an invalid shape; run `devtools verify --seed-testmon` "
             "to refresh .cache/testmon/testmondata and .cache/testmon/seed.json.\n"
         )
+    if stamp.get("protocol_version") != TESTMON_SEED_PROTOCOL_VERSION or stamp.get("status") != "complete":
+        return (
+            "verify: pytest-testmon has no validated complete seed receipt; run "
+            "`devtools verify --seed-testmon` to resume or rebuild the dependency baseline.\n"
+        )
     current_head = _git_head()
     stamped_head = stamp.get("git_head")
     if current_head is not None and stamped_head != current_head:
@@ -1182,15 +2050,369 @@ def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, co
     return None
 
 
-def _write_testmon_seed_stamp(result: dict[str, Any]) -> None:
-    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "git_head": result.get("git_head"),
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-        "steps": result.get("steps", []),
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _worktree_fingerprint() -> str:
+    """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    digest = hashlib.sha256()
+    for command in (
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["git", "diff", "--binary", "HEAD", "--"],
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return "unavailable"
+        if result.returncode != 0:
+            return "unavailable"
+        digest.update(result.stdout)
+        digest.update(b"\0")
+    try:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if untracked.returncode != 0:
+        return "unavailable"
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        try:
+            path_text = os.fsdecode(raw_path)
+            path = Path(path_text)
+            mode = path.lstat().st_mode
+            digest.update(raw_path)
+            digest.update(b"\0")
+            if stat.S_ISLNK(mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(mode):
+                digest.update(b"file\0")
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
+            digest.update(b"\0")
+        except OSError:
+            return "unavailable"
+    return digest.hexdigest()
+
+
+def _testmon_seed_identity(*, git_head: str | None, skip_slow: bool, lab: bool) -> dict[str, Any]:
+    return {
+        "git_head": git_head,
+        "worktree_fingerprint": _worktree_fingerprint(),
+        "python": sys.version,
+        "skip_slow": skip_slow,
+        "lab": lab,
     }
-    TESTMON_SEED_STAMP.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+
+
+def _read_testmon_seed_attempt() -> dict[str, Any] | None:
+    payload = _read_json_artifact(TESTMON_SEED_ATTEMPT)
+    return payload if isinstance(payload, dict) else None
+
+
+def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
+    """Recover the seed ledger, including after an abrupt outer-run exit."""
+    expected = attempt.get("expected_nodeids")
+    if isinstance(expected, list) and expected and all(isinstance(nodeid, str) for nodeid in expected):
+        return list(expected)
+
+    artifact_dir_raw = attempt.get("artifact_dir")
+    if not isinstance(artifact_dir_raw, str):
+        return []
+    artifact_dir = Path(artifact_dir_raw)
+    for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
+        selection = _read_json_artifact(selection_path)
+        if not isinstance(selection, dict) or int(selection.get("selected_nodeids_omitted") or 0) != 0:
+            continue
+        selected = selection.get("selected_nodeids")
+        if isinstance(selected, list) and selected and all(isinstance(nodeid, str) for nodeid in selected):
+            return list(selected)
+    return []
+
+
+def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Return inputs that change which corpus a seed promises to cover."""
+    return {key: identity.get(key) for key in ("worktree_fingerprint", "python", "skip_slow", "lab")}
+
+
+def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
+    attempt = _read_testmon_seed_attempt()
+    if attempt is None or not TESTMON_DATA.exists():
+        return False
+    prior_identity = attempt.get("identity")
+    return (
+        attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
+        and attempt.get("status") in {"running", "incomplete"}
+        and isinstance(prior_identity, dict)
+        and _testmon_seed_resume_contract(prior_identity) == _testmon_seed_resume_contract(identity)
+        and bool(_testmon_seed_expected_nodeids(attempt))
+    )
+
+
+def _prepare_testmon_seed_attempt(
+    *,
+    identity: Mapping[str, Any],
+    run: VerifyRun,
+    resume: bool,
+) -> dict[str, Any]:
+    prior = _read_testmon_seed_attempt() if resume else None
+    expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
+    payload = {
+        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+        "status": "running",
+        "identity": dict(identity),
+        "resume": resume,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run.run_id,
+        "artifact_dir": str(run.relative_run_dir),
+        "testmon_data_before": _file_fingerprint(TESTMON_DATA),
+    }
+    TESTMON_SEED_STAMP.unlink(missing_ok=True)
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    return payload
+
+
+def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
+    if not TESTMON_DATA.exists():
+        return {
+            "recorded_count": 0,
+            "failed_count": 0,
+            "missing_nodeids": list(expected_nodeids),
+            "failed_nodeids": [],
+            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
+            "error": "missing",
+        }
+    try:
+        with sqlite3.connect(TESTMON_DATA) as conn:
+            rows = conn.execute(
+                """
+                SELECT current.test_name, current.failed
+                FROM test_execution AS current
+                JOIN (
+                    SELECT test_name, MAX(id) AS latest_id
+                    FROM test_execution
+                    GROUP BY test_name
+                ) AS latest ON latest.latest_id = current.id
+                """
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return {
+            "recorded_count": 0,
+            "failed_count": 0,
+            "missing_nodeids": list(expected_nodeids),
+            "failed_nodeids": [],
+            "node_outcomes": dict.fromkeys(expected_nodeids, "missing"),
+            "error": str(exc),
+        }
+    recorded = {str(name): bool(failed) for name, failed in rows}
+    expected = set(expected_nodeids)
+    failed = sorted(nodeid for nodeid in expected if recorded.get(nodeid) is True)
+    return {
+        "recorded_count": len(recorded),
+        "failed_count": sum(recorded.values()),
+        "missing_nodeids": sorted(expected - recorded.keys()),
+        "failed_nodeids": failed,
+        "node_outcomes": {
+            nodeid: ("failed" if recorded.get(nodeid) is True else "passed" if nodeid in recorded else "missing")
+            for nodeid in sorted(expected)
+        },
+        "error": None,
+    }
+
+
+def _seed_node_outcomes_from_events(
+    path: Path,
+    *,
+    expected_nodeids: Sequence[str],
+    database: Mapping[str, Any],
+    pytest_step: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Classify every promised seed node into one explicit terminal state."""
+    reports: dict[str, list[dict[str, Any]]] = {}
+    started: set[str] = set()
+    finished: set[str] = set()
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                with contextlib.suppress(json.JSONDecodeError):
+                    event = json.loads(line)
+                    nodeid = event.get("nodeid")
+                    if not isinstance(nodeid, str) or not nodeid:
+                        continue
+                    if event.get("event") == "test_started":
+                        started.add(nodeid)
+                    elif event.get("event") == "test_finished":
+                        finished.add(nodeid)
+                    elif event.get("event") == "test_report":
+                        reports.setdefault(nodeid, []).append(event)
+    except OSError:
+        pass
+
+    database_outcomes = database.get("node_outcomes")
+    recorded = database_outcomes if isinstance(database_outcomes, dict) else {}
+    diagnosis = str((pytest_step or {}).get("diagnosis") or "").lower()
+    results: list[dict[str, Any]] = []
+    for nodeid in expected_nodeids:
+        node_reports = reports.get(nodeid, [])
+        failed_reports = [report for report in node_reports if report.get("outcome") == "failed"]
+        call_reports = [report for report in node_reports if report.get("when") == "call"]
+        longrepr = "\n".join(str(report.get("longrepr") or "") for report in failed_reports).lower()
+        outcome: str
+        reason: str
+        if "timeout" in longrepr:
+            outcome, reason = "timeout", "pytest-timeout report"
+        elif any(report.get("when") in {"setup", "teardown"} for report in failed_reports):
+            outcome, reason = "error", "fixture setup/teardown failed"
+        elif any(report.get("outcome") == "failed" for report in call_reports):
+            outcome, reason = "failed", "test call failed"
+        elif any(report.get("outcome") == "passed" for report in call_reports):
+            outcome, reason = "passed", "test call passed"
+        elif any(report.get("outcome") == "skipped" for report in call_reports):
+            outcome, reason = "skipped", "test call skipped"
+        elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
+            outcome, reason = "timeout", "supervisor timed out while node was active"
+        elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
+            outcome, reason = "worker_crash", "worker exited while node was active"
+        elif (
+            nodeid in started
+            and nodeid not in finished
+            and any(marker in diagnosis for marker in ("interrupt", "signal", "terminated"))
+        ):
+            outcome, reason = "interrupted", "run ended while node was active"
+        elif recorded.get(nodeid) == "passed":
+            outcome, reason = "passed", "testmon database recorded success"
+        elif recorded.get(nodeid) == "failed":
+            outcome, reason = "failed", "testmon database recorded failure"
+        else:
+            outcome, reason = "missing", "no terminal report or testmon execution row"
+        results.append(
+            {
+                "nodeid": nodeid,
+                "outcome": outcome,
+                "reason": reason,
+                "started": nodeid in started,
+                "finished": nodeid in finished,
+                "phases": [
+                    {
+                        "when": report.get("when"),
+                        "outcome": report.get("outcome"),
+                        "duration_s": report.get("duration_s"),
+                    }
+                    for report in node_reports
+                ],
+            }
+        )
+    return results
+
+
+def _finalize_testmon_seed_attempt(
+    *,
+    prepared: Mapping[str, Any],
+    step_results: Sequence[Mapping[str, Any]],
+    exit_code: int,
+) -> dict[str, Any]:
+    pytest_step = next(
+        (step for step in step_results if str(step.get("name", "")).startswith("pytest seed-testmon")), None
+    )
+    selection: dict[str, Any] = {}
+    events_path: Path | None = None
+    if pytest_step is not None:
+        artifact_dir_raw = pytest_step.get("artifact_dir")
+        if isinstance(artifact_dir_raw, str):
+            artifact_dir = Path(artifact_dir_raw)
+            selection_payload = _read_json_artifact(artifact_dir / "selection.json")
+            if isinstance(selection_payload, dict):
+                selection = selection_payload
+            events_path = artifact_dir / "events.jsonl"
+
+    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selection.get("selected_nodeids")
+    expected = [str(nodeid) for nodeid in expected_raw] if isinstance(expected_raw, list) else []
+    omitted = int(selection.get("selected_nodeids_omitted") or 0)
+    database = _testmon_database_state(expected)
+    node_outcomes = _seed_node_outcomes_from_events(
+        events_path or Path(".missing-testmon-events"),
+        expected_nodeids=expected,
+        database=database,
+        pytest_step=pytest_step,
+    )
+    unsuccessful_nodeids = [
+        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+    ]
+    complete = (
+        exit_code == 0
+        and bool(expected)
+        and (bool(prepared.get("resume")) or omitted == 0)
+        and database["error"] is None
+        and not database["missing_nodeids"]
+        and not database["failed_nodeids"]
+        and not unsuccessful_nodeids
+    )
+    payload = {
+        **dict(prepared),
+        "status": "complete" if complete else "incomplete",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "exit_code": exit_code,
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
+        "selection": {
+            key: selection.get(key)
+            for key in (
+                "selected_count",
+                "deselected_count",
+                "selected_nodeids_omitted",
+                "deselected_nodeids_omitted",
+                "collection_duration_s",
+            )
+        },
+        "database": database,
+        "node_outcomes": node_outcomes,
+        "node_outcome_counts": dict(
+            sorted(
+                {
+                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
+                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
+                }.items()
+            )
+        ),
+        "unsuccessful_nodeids": unsuccessful_nodeids,
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+        "pytest_step": dict(pytest_step) if pytest_step is not None else None,
+    }
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    if complete:
+        stamp = {
+            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
+            "status": "complete",
+            "timestamp": payload["finished_at"],
+            "git_head": dict(prepared["identity"]).get("git_head"),
+            "identity": prepared["identity"],
+            "expected_count": payload["expected_count"],
+            "expected_digest": payload["expected_digest"],
+            "testmon_data": payload["testmon_data"],
+            "database": {
+                "recorded_count": database["recorded_count"],
+                "failed_count": database["failed_count"],
+            },
+            "run_id": payload["run_id"],
+            "artifact_dir": payload["artifact_dir"],
+        }
+        _atomic_write_json(TESTMON_SEED_STAMP, stamp)
+    return payload
 
 
 # ── main ────────────────────────────────────────────────────────────
@@ -1261,6 +2483,23 @@ def main(argv: list[str] | None = None) -> int:
     head = _git_head()
     t0 = time.monotonic()
     verify_run = VerifyRun(tier=tier, argv=list(sys.argv[1:] if argv is None else argv), git_head=head)
+    seed_identity: dict[str, Any] | None = None
+    resume_testmon_seed = False
+    prepared_seed_attempt: dict[str, Any] | None = None
+    if args.seed_testmon:
+        seed_identity = _testmon_seed_identity(
+            git_head=head,
+            skip_slow=bool(args.skip_slow),
+            lab=bool(args.lab),
+        )
+        resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
+        prepared_seed_attempt = _prepare_testmon_seed_attempt(
+            identity=seed_identity,
+            run=verify_run,
+            resume=resume_testmon_seed,
+        )
+        if resume_testmon_seed:
+            sys.stderr.write("verify: resuming the matching incomplete pytest-testmon seed\n")
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
@@ -1270,15 +2509,21 @@ def main(argv: list[str] | None = None) -> int:
         _warn_low_memory()
 
     exit_code = 0
-    steps = build_verify_steps(
-        quick=bool(args.quick),
-        commit=bool(args.commit),
-        lab=bool(args.lab),
-        skip_slow=bool(args.skip_slow),
-        seed_testmon=bool(args.seed_testmon),
-        full_pytest=full_pytest,
-        broad_testmon=_default_testmon_is_broad_change(),
-    )
+    try:
+        steps = build_verify_steps(
+            quick=bool(args.quick),
+            commit=bool(args.commit),
+            lab=bool(args.lab),
+            skip_slow=bool(args.skip_slow),
+            seed_testmon=bool(args.seed_testmon),
+            resume_testmon_seed=resume_testmon_seed,
+            full_pytest=full_pytest,
+            broad_testmon=_default_testmon_is_broad_change(),
+        )
+    except PytestResourceError as exc:
+        sys.stderr.write(f"verify: {exc}\n")
+        verify_run.finish(exit_code=125, duration_s=time.monotonic() - t0, diagnosis="pytest_resource_preflight_failed")
+        return 125
 
     step_results: list[dict[str, Any]] = []
 
@@ -1286,6 +2531,28 @@ def main(argv: list[str] | None = None) -> int:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
+        if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
+            executable_paths = _changed_executable_paths()
+            selected_count = metadata.get("selected_count")
+            if selected_count == 0 and executable_paths:
+                coverage = _matching_testmon_coverage(executable_paths)
+                if coverage is None:
+                    rc = 5
+                    metadata["diagnosis"] = "zero_testmon_selection_for_executable_change"
+                    metadata["zero_selection_changed_paths"] = list(executable_paths)
+                    sys.stderr.write(
+                        "verify: pytest-testmon selected zero tests for executable changes and no "
+                        "matching successful coverage receipt exists; refresh the seed or repair "
+                        "dependency capture: " + ", ".join(executable_paths) + "\n"
+                    )
+                else:
+                    metadata["zero_selection_coverage"] = coverage
+            elif isinstance(selected_count, int) and selected_count > 0:
+                _record_testmon_affected_coverage(
+                    executable_paths=executable_paths,
+                    selected_count=selected_count,
+                    run_id=verify_run.run_id,
+                )
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
@@ -1294,10 +2561,24 @@ def main(argv: list[str] | None = None) -> int:
             if _stop_after_failed_step(label):
                 break
 
+    seed_receipt: dict[str, Any] | None = None
+    if prepared_seed_attempt is not None:
+        seed_receipt = _finalize_testmon_seed_attempt(
+            prepared=prepared_seed_attempt,
+            step_results=step_results,
+            exit_code=exit_code,
+        )
+        if exit_code == 0 and seed_receipt["status"] != "complete":
+            exit_code = 5
+            sys.stderr.write(
+                "verify: pytest passed but the testmon dependency baseline is incomplete; "
+                f"inspect {TESTMON_SEED_ATTEMPT}.\n"
+            )
+
     total_duration = round(time.monotonic() - t0, 2)
 
     # Build history entry.
-    history_entry = {
+    history_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
         "tier": tier,
@@ -1317,6 +2598,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     if pytest_diagnosis is not None:
         history_entry["diagnosis"] = pytest_diagnosis
+    if seed_receipt is not None:
+        history_entry["testmon_seed"] = {
+            "status": seed_receipt["status"],
+            "resume": seed_receipt["resume"],
+            "expected_count": seed_receipt["expected_count"],
+            "attempt_path": str(TESTMON_SEED_ATTEMPT),
+            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["status"] == "complete" else None,
+        }
 
     if use_json:
         _print_json(history_entry)
@@ -1340,8 +2629,6 @@ def main(argv: list[str] | None = None) -> int:
     verify_run.finish(exit_code=exit_code, duration_s=total_duration, diagnosis=pytest_diagnosis)
     if exit_code == 0:
         _stamp_head()
-        if args.seed_testmon:
-            _write_testmon_seed_stamp(history_entry)
 
     # Notify only on failure. Passing runs stay silent — the terminal
     # already shows the green summary and a desktop popup per run is

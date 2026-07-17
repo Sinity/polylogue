@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -62,10 +63,15 @@ from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
 from polylogue.version import POLYLOGUE_VERSION
 
+if TYPE_CHECKING:
+    from polylogue.daemon.lifecycle import DaemonLifecycle
+
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 1
+_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
+_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -87,6 +93,7 @@ _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
+_daemon_lifecycle: DaemonLifecycle | None = None
 
 
 def _cleanup_pidfile() -> None:
@@ -399,6 +406,30 @@ async def _periodic_heartbeat() -> None:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
 
 
+async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> None:
+    """Advance the ops-only heartbeat even when archive work is blocked.
+
+    This must remain independent of index stats and convergence: a daemon that
+    deliberately keeps only API/health surfaces available after schema
+    preflight failure is still alive and must not age into a false vanished
+    state.
+    """
+    from polylogue.daemon.lifecycle import DAEMON_HEARTBEAT_INTERVAL_SECONDS
+
+    interval = DAEMON_HEARTBEAT_INTERVAL_SECONDS if interval_s is None else interval_s
+    while True:
+        await asyncio.sleep(interval)
+        lifecycle = _daemon_lifecycle
+        if lifecycle is None:
+            continue
+        try:
+            await daemon_write_coordinator().run_sync("daemon.lifecycle.heartbeat", lifecycle.heartbeat)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("daemon: lifecycle heartbeat write failed", exc_info=True)
+
+
 async def _periodic_db_optimize() -> None:
     """Run SQLite PRAGMA optimize once daily to keep query plans current.
 
@@ -478,6 +509,10 @@ async def _periodic_raw_materialization_convergence_after(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
+        if _browser_capture_spool_has_pending_files():
+            logger.info("raw materialization: yielding to pending browser-capture spool files")
+            await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
+            continue
         try:
             materialized = await daemon_write_coordinator().run_sync(
                 "maintenance.raw_materialization",
@@ -597,13 +632,136 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
         render_root=render_root(),
         sources=[],
     )
+    from polylogue.storage.raw_reconciler import recover_interrupted_raw_authority_frontier
+
+    recover_interrupted_raw_authority_frontier(config)
     try:
-        result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+        result = repair_raw_materialization(
+            config,
+            dry_run=False,
+            raw_artifact_limit=limit,
+            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        )
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")
+    _emit_raw_materialization_pass(result)
+    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-    return result.repaired_count
+    return result.repaired_count + frontier_repaired
+
+
+def _browser_capture_spool_has_pending_files() -> bool:
+    """Whether live browser evidence is awaiting its normal ingest route."""
+    from polylogue.paths import browser_capture_spool_root
+    from polylogue.sources.live.batch import fingerprint_file
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+
+    spool = browser_capture_spool_root()
+    if not spool.exists():
+        return False
+    cursor_store = CursorStore(_active_index_db_path())
+    for path in spool.rglob("*.json"):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        cursor = cursor_store.get_record(path)
+        if cursor is None or cursor.excluded or cursor.failure_count:
+            return True
+        if (
+            cursor.parser_fingerprint != _PARSER_FINGERPRINT
+            or cursor.byte_size != stat.st_size
+            or cursor.st_dev != stat.st_dev
+            or cursor.st_ino != stat.st_ino
+            or cursor.mtime_ns != stat.st_mtime_ns
+            or cursor.content_fingerprint is None
+        ):
+            try:
+                fingerprint, _last_newline = fingerprint_file(path)
+            except OSError:
+                return True
+            if fingerprint != cursor.content_fingerprint:
+                return True
+    return False
+
+
+def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:
+    """Census the entire accepted frontier and execute a bounded safe slice.
+
+    This runs only beneath ``DaemonWriteCoordinator``. Conflicts, missing
+    bytes, unresolved provenance, and corruption are persisted as obligations;
+    only strategies carrying an exact deterministic proof become selectable.
+    """
+    from polylogue.storage.raw_reconciler import (
+        apply_raw_authority_frontier,
+        inspect_raw_authority_frontier,
+    )
+
+    census = inspect_raw_authority_frontier(config)
+    executable = tuple(item.plan_id for item in census.items if item.executable)[:limit]
+    if not executable:
+        return 0
+    report = apply_raw_authority_frontier(
+        config,
+        preview_census_id=census.census_id,
+        selected_plan_ids=executable,
+    )
+    if report.retryable_plan_count:
+        logger.warning(
+            "raw authority: %d/%d selected frontier plans remain retryable; census=%s",
+            report.retryable_plan_count,
+            report.selected_plan_count,
+            report.census_id,
+        )
+    return report.executed_plan_count
+
+
+def _emit_raw_materialization_pass(result: Any) -> None:
+    """Persist the conserved plan outcomes for one bounded daemon pass."""
+    outcomes = tuple(getattr(result, "plan_outcomes", ()))
+    outcome_sample_limit = 8
+    from polylogue.daemon.events import emit_daemon_event
+
+    metrics = dict(getattr(result, "metrics", {}))
+    census = getattr(result, "census_receipt", None)
+    census_payload = None
+    if census is not None:
+        census_payload = {
+            "census_id": census.census_id,
+            "sequence_no": census.sequence_no,
+            "inventory_digest": census.inventory_digest,
+            "residual_digest": census.residual_digest,
+            "plan_count": census.plan_count,
+            "post_inventory_digest": census.post_inventory_digest,
+            "post_residual_digest": census.post_residual_digest,
+            "post_plan_count": census.post_plan_count,
+            "executable_plan_count": census.executable_plan_count,
+            "residual_plan_count": census.residual_plan_count,
+            "predecessor_census_id": census.predecessor_census_id,
+            "mode": census.mode,
+            "lifecycle_status": census.lifecycle_status,
+            "quiescent": census.quiescent,
+            "fixed_point": census.fixed_point,
+            "query_handle": census.query_handle,
+        }
+    payload = {
+        "pass_id": f"raw-materialization:{os.urandom(16).hex()}",
+        "success": bool(result.success),
+        "repaired_count": int(result.repaired_count),
+        "detail": str(result.detail),
+        "metrics": metrics,
+        "plan_outcome_count": len(outcomes),
+        "plan_outcome_sample": [outcome.to_summary_dict() for outcome in outcomes[:outcome_sample_limit]],
+        "plan_outcome_sample_truncated": len(outcomes) > outcome_sample_limit,
+    }
+    if census_payload is not None:
+        payload["census"] = census_payload
+    emit_daemon_event(
+        "raw_materialization_pass",
+        payload=payload,
+    )
 
 
 def _close_raw_materialization_fts(index_db: Path) -> None:
@@ -706,7 +864,13 @@ def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BA
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
-    """Retry due derived convergence debt without rereading source payloads."""
+    """Retry due derived convergence debt without rereading source payloads.
+
+    Debt identity is stage-scoped. A retry therefore runs only the recorded
+    stage for the recorded subject and updates that same ops-ledger row on a
+    further deferral/failure. The legacy ``convergence`` stage remains an
+    all-stage fallback for older generic rows.
+    """
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.cursor import CursorStore
@@ -720,60 +884,109 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     ]
     if not due_debt:
         return 0
-    session_ids = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "session_id"))
-    paths = tuple(dict.fromkeys([Path(debt.subject_id) for debt in due_debt if debt.subject_type == "source_path"]))
+
     fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
-    if not paths and not session_ids and not fts_surfaces:
-        return 0
     fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
-    converger = DaemonConverger(stages=make_default_convergence_stages(db), max_workers=2)
-    path_states, _path_timings = converger.converge_batch(paths)
-    session_states, _session_timings = converger.converge_sessions(session_ids)
+
+    subject_states: dict[tuple[str, str, str], object] = {}
+    retryable_debt = tuple(debt for debt in due_debt if debt.subject_type in {"source_path", "session_id"})
+    if retryable_debt:
+        default_stages = make_default_convergence_stages(db)
+        stages_by_name = {stage.name: stage for stage in default_stages}
+        for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
+            selected_stages = (
+                default_stages
+                if stage_name == "convergence"
+                else (stages_by_name[stage_name],)
+                if stage_name in stages_by_name
+                else ()
+            )
+            if not selected_stages:
+                continue
+            stage_debt = tuple(debt for debt in retryable_debt if debt.stage == stage_name)
+            paths = tuple(
+                dict.fromkeys(Path(debt.subject_id) for debt in stage_debt if debt.subject_type == "source_path")
+            )
+            session_ids = tuple(
+                dict.fromkeys(debt.subject_id for debt in stage_debt if debt.subject_type == "session_id")
+            )
+            converger = DaemonConverger(stages=selected_stages, max_workers=2)
+            path_states, _path_timings = converger.converge_batch(paths)
+            session_states, _session_timings = converger.converge_sessions(session_ids)
+            subject_states.update(
+                ((stage_name, "source_path", str(path)), state) for path, state in path_states.items()
+            )
+            subject_states.update(
+                ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
+            )
+
     retried = 0
     for debt in due_debt:
-        subject_states: list[object | None]
-        if debt.subject_type == "session_id":
-            subject_states = [session_states.get(debt.subject_id)]
-        elif debt.subject_type == "fts_surface":
+        retried += 1
+        if debt.subject_type == "fts_surface":
             if fts_surface_results.get(debt.subject_id) is True:
-                cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
-                retried += 1
+                cursor.clear_convergence_debt(
+                    stage=debt.stage,
+                    subject_type=debt.subject_type,
+                    subject_id=debt.subject_id,
+                )
                 continue
-            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
             cursor.record_convergence_debt(
                 stage=debt.stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
                 error="FTS freshness convergence did not converge",
+                materializer_version=debt.materializer_version,
             )
-            retried += 1
             continue
-        else:
-            subject_states = [path_states.get(Path(debt.subject_id))]
-        converged = all(state is not None and bool(getattr(state, "converged", False)) for state in subject_states)
-        if converged:
-            cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
-            retried += 1
+
+        state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
+        if state is None:
+            cursor.record_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error=f"convergence retry stage unavailable: {debt.stage}",
+                materializer_version=debt.materializer_version,
+            )
             continue
-        failed_stages: tuple[str, ...] = ()
-        last_error: object = None
-        for state in subject_states:
-            stages = getattr(state, "stages", {}) if state is not None else {}
-            last_error = getattr(state, "last_error", None) if state is not None else None
-            failed_stages = _failed_convergence_stage_names(stages)
-            if failed_stages:
-                break
-        if not failed_stages:
-            failed_stages = ("convergence",)
-        cursor.clear_convergence_debt(subject_type=debt.subject_type, subject_id=debt.subject_id)
+        if bool(getattr(state, "converged", False)):
+            cursor.clear_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+            )
+            continue
+
+        last_error = getattr(state, "last_error", None)
+        retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
+        if debt.stage != "convergence":
+            cursor.record_convergence_debt(
+                stage=debt.stage,
+                subject_type=debt.subject_type,
+                subject_id=debt.subject_id,
+                error=retry_error,
+                materializer_version=debt.materializer_version,
+            )
+            continue
+
+        # Generic rows predate stage-scoped retry identity. Preserve the old
+        # migration behavior by replacing only that generic row with the exact
+        # stages that remain pending; other stage rows for the subject survive.
+        failed_stages = _failed_convergence_stage_names(getattr(state, "stages", {})) or ("convergence",)
+        cursor.clear_convergence_debt(
+            stage=debt.stage,
+            subject_type=debt.subject_type,
+            subject_id=debt.subject_id,
+        )
         for stage in failed_stages:
             cursor.record_convergence_debt(
                 stage=stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
-                error=last_error if isinstance(last_error, str) and last_error else "retry did not converge",
+                error=retry_error,
+                materializer_version=debt.materializer_version,
             )
-        retried += 1
     return retried
 
 
@@ -999,7 +1212,7 @@ async def run_daemon_services(
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
-    global _pidfile_path
+    global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
     from polylogue.paths import active_index_db_path
@@ -1082,13 +1295,30 @@ async def run_daemon_services(
     # attempt by an ephemeral instance would still atexit-unlink the live
     # daemon's pidfile.
     _pidfile_path = pidfile
+    from polylogue.daemon.lifecycle import DaemonLifecycle, install_signal_handlers, restore_signal_handlers
+
+    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
+    try:
+        _daemon_lifecycle = await write_coordinator.run_sync(
+            "daemon.lifecycle.start",
+            DaemonLifecycle.start,
+            details={"archive_root": str(archive_root_path)},
+        )
+        previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
+    except BaseException:
+        lifecycle = _daemon_lifecycle
+        if lifecycle is not None:
+            with contextlib.suppress(Exception):
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
+        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        _daemon_lifecycle = None
+        raise
 
     # Ensure all configured source roots exist so health checks don't flag
     # never-yet-used sources (e.g. hooks sidecar dir) as missing.
     for src in sources:
         src.root.mkdir(parents=True, exist_ok=True)
-
-    write_coordinator: DaemonWriteCoordinator = daemon_write_coordinator()
 
     if lifecycle_events_enabled:
         await _emit_daemon_lifecycle_event(
@@ -1117,10 +1347,16 @@ async def run_daemon_services(
     # Several maintenance loops can write the archive, especially convergence
     # debt retry; starting them before FTS startup freshness recovery self-contends on
     # SQLite during daemon bootstrap.
-    maintenance_tasks: list[asyncio.Task[None]] = []
+    # The lifecycle tick is deliberately scheduled before the schema-block
+    # guard. It writes only the disposable ops tier and proves that the
+    # surviving API/health process is still alive while archive work is
+    # intentionally withheld.
+    maintenance_tasks: list[asyncio.Task[None]] = [asyncio.create_task(_periodic_lifecycle_heartbeat())]
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
+    uds_server: Any | None = None
+    uds_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
@@ -1130,6 +1366,7 @@ async def run_daemon_services(
     tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
+    termination: BaseException | None = None
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -1175,6 +1412,16 @@ async def run_daemon_services(
             )
             api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
             tasks.append(api_server_task)
+            from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
+
+            uds_server = DaemonAPIUnixHTTPServer(
+                daemon_socket_path(),
+                DaemonAPIHandler,
+                auth_token=api_auth_token,
+                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+            )
+            uds_server_task = asyncio.create_task(asyncio.to_thread(uds_server.serve_forever, 0.5))
+            tasks.append(uds_server_task)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -1190,7 +1437,10 @@ async def run_daemon_services(
         if not watcher_blocked:
             from polylogue.daemon.convergence import DaemonConverger
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
-            from polylogue.daemon.embedding_backlog import periodic_embedding_backlog_check
+            from polylogue.daemon.embedding_backlog import (
+                periodic_embedding_backlog_check,
+                periodic_embedding_orphan_reconcile_check,
+            )
 
             await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -1229,6 +1479,7 @@ async def run_daemon_services(
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
                 periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
+                periodic_embedding_orphan_reconcile_check(catch_up_complete=catch_up_complete_gate),
                 _periodic_health_check(),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
@@ -1311,6 +1562,7 @@ async def run_daemon_services(
                     )
                 await asyncio.gather(*maintenance_tasks)
         except BaseException as exc:
+            termination = exc
             if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
                 _log_completed_daemon_tasks(tasks + maintenance_tasks)
             raise
@@ -1321,7 +1573,9 @@ async def run_daemon_services(
             for _ in range(cleanup_cancel_requests):
                 cleanup_task.uncancel()
         try:
-            if lifecycle_events_enabled:
+            lifecycle = _daemon_lifecycle
+            signal_termination = lifecycle.received_signal_name is not None or isinstance(termination, SystemExit)
+            if lifecycle_events_enabled and not signal_termination:
                 await _emit_daemon_lifecycle_event(
                     "shutdown_started",
                     archive_root_path=archive_root_path,
@@ -1339,6 +1593,8 @@ async def run_daemon_services(
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:
                 await _shutdown_server_if_serving(api_server, api_server_task, label="api")
+            if uds_server is not None:
+                await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
 
             # Cancel all component tasks.
             for task in tasks:
@@ -1370,6 +1626,24 @@ async def run_daemon_services(
             except TimeoutError:
                 logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
+            if lifecycle is not None:
+                exit_kind = "clean"
+                if signal_termination:
+                    exit_kind = "signal"
+                elif termination is not None and not isinstance(
+                    termination, (KeyboardInterrupt, asyncio.CancelledError)
+                ):
+                    exit_kind = "error"
+                try:
+                    await write_coordinator.run_sync(
+                        "daemon.lifecycle.stop",
+                        lifecycle.stop,
+                        exit_kind=exit_kind,
+                        bounded=signal_termination,
+                    )
+                except Exception:
+                    logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
+
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
@@ -1379,9 +1653,14 @@ async def run_daemon_services(
             if api_server is not None:
                 with contextlib.suppress(Exception):
                     api_server.server_close()
+            if uds_server is not None:
+                with contextlib.suppress(Exception):
+                    uds_server.server_close()
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
+            restore_signal_handlers(previous_signal_handlers)
+            _daemon_lifecycle = None
 
     logger.info("daemon stopped")
 

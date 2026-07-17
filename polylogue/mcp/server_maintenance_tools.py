@@ -7,13 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -45,7 +43,7 @@ def _build_mcp_scope_filter(
 
     return MaintenanceScopeFilter(
         session_ids=tuple(session_ids) if session_ids else None,
-        provider=provider_from_origin(Origin(origin)).value if origin is not None else None,
+        origin=Origin(origin).value if origin is not None else None,
         source_family=source_family,
         source_root=Path(source_root) if source_root else None,
         time_range=time_range,
@@ -54,7 +52,7 @@ def _build_mcp_scope_filter(
     )
 
 
-def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_maintenance_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def maintenance_preview(
         targets: list[str] | None = None,
@@ -104,7 +102,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             envelope = envelope_from_operation(result, origin="mcp", mode="preview")
             return hooks.json_payload(envelope)
 
-        return await hooks.async_safe_call("maintenance_preview", run)
+        return await hooks.async_safe_call(
+            "maintenance_preview",
+            run,
+            session_ids=tuple(session_ids or ()),
+        )
 
     @mcp.tool()
     async def maintenance_execute(
@@ -154,7 +156,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             envelope = envelope_from_operation(result, origin="mcp", mode="execute")
             return hooks.json_payload(envelope)
 
-        return await hooks.async_safe_call("maintenance_execute", run)
+        return await hooks.async_safe_call(
+            "maintenance_execute",
+            run,
+            session_ids=tuple(session_ids or ()),
+        )
 
     @mcp.tool()
     async def maintenance_status(operation_id: str) -> str:
@@ -268,7 +274,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("update_index", run)
+        return await hooks.async_safe_call("update_index", run, session_ids=tuple(session_ids))
 
     @mcp.tool()
     async def rebuild_session_insights(session_ids: list[str] | None = None) -> str:
@@ -287,7 +293,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("rebuild_session_insights", run)
+        return await hooks.async_safe_call(
+            "rebuild_session_insights",
+            run,
+            session_ids=tuple(session_ids or ()),
+        )
 
 
 __all__ = ["register_maintenance_tools"]

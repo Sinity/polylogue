@@ -15,7 +15,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, list_assertions_for_target
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -235,7 +235,9 @@ async def test_blackboard_public_surface_writes_assertion_metadata(
         )
         notes = await poly.list_blackboard_notes(kind="finding", limit=5)
 
-    assert [listed.note_id for listed in notes] == [note.note_id]
+    # Agent-authored claims enter the judgment queue; they are not active
+    # blackboard context until an operator accepts them.
+    assert notes == []
     with sqlite3.connect(archive_root / "user.db") as conn:
         conn.row_factory = sqlite3.Row
         mirrored = list_assertions_for_target(conn, f"session:{session_id}", kind=AssertionKind.NOTE)
@@ -243,6 +245,7 @@ async def test_blackboard_public_surface_writes_assertion_metadata(
     assert len(mirrored) == 1
     assertion = mirrored[0]
     assert assertion.key == note.note_id
+    assert assertion.status is AssertionStatus.CANDIDATE
     assert assertion.author_ref == "agent:codex-session:unit"
     assert assertion.author_kind == "agent"
     assert assertion.evidence_refs == [f"message:{message_id}"]

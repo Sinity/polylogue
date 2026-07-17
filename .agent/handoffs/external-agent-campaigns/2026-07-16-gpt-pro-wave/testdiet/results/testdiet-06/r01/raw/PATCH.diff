@@ -1,0 +1,3627 @@
+diff --git a/docs/cost-model.md b/docs/cost-model.md
+index 166221506e3110cf421aaffbfbc55646a3c9a540..3b157516a8a147088bedb8b6812f18f41314a622 100644
+--- a/docs/cost-model.md
++++ b/docs/cost-model.md
+@@ -113,6 +113,16 @@ elsewhere:
+   `tests/unit/storage/test_cost_queries.py`). It is `0.0` for models without
+   a declared credit rate (non-Claude models) — never a fabricated figure.
+ 
++Catalog coverage is explicit. When any model row lacks a catalog price, the
++complete `catalog_api_equivalent_usd` is `null` and its evidence value is
++`unknown`; exact token evidence remains `known`.
++`catalog_priced_subtotal_usd` retains the numeric subtotal for matched rows,
++with the unmatched row count and coverage exclusion explaining why it is not
++the complete total. Empty usage frames are unknown rather than a measured
++zero. The same contract is carried by each lane and the physical/logical
++archive totals through `exact_total_tokens_evidence` and
++`catalog_api_equivalent_evidence`.
++
+ The two bases are always reported separately and never summed; a
+ cache-heavy Claude session's `subscription_credit_usd` is strictly below its
+ `catalog_api_equivalent_usd` for the same lane. Both draw from the shared
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index f7f9c974216bc0c67829c306b658e87429bb1728..e2e2ad79d8303980a4c6b2fcd6bcf6afc26166dc 100644
+--- a/docs/plans/topology-target.yaml
++++ b/docs/plans/topology-target.yaml
+@@ -422,12 +422,12 @@ files:
+     owner: archive-query
+     reason: archive-domain query semantics
+   - path: polylogue/archive/query/source_freshness.py
+-    loc: 1756
++    loc: 1946
+     target: polylogue/archive/query/source_freshness.py
+     owner: archive-query
+     reason: archive-domain query semantics
+   - path: polylogue/archive/query/source_freshness_surfaces.py
+-    loc: 261
++    loc: 272
+     target: polylogue/archive/query/source_freshness_surfaces.py
+     owner: archive-query
+     reason: archive-domain query semantics
+@@ -456,7 +456,7 @@ files:
+     owner: archive-raw-payload
+     reason: archive-domain semantics
+   - path: polylogue/archive/raw_payload/decode.py
+-    loc: 323
++    loc: 354
+     target: polylogue/archive/raw_payload/decode.py
+     owner: archive-raw-payload
+     reason: archive-domain semantics
+@@ -480,7 +480,7 @@ files:
+     target: polylogue/archive/resume_routing.py
+     owner: stable
+   - path: polylogue/archive/revision_authority.py
+-    loc: 158
++    loc: 242
+     target: polylogue/archive/revision_authority.py
+     owner: stable
+   - path: polylogue/archive/revision_replay.py
+@@ -821,7 +821,7 @@ files:
+     target: polylogue/cli/commands/demo.py
+     owner: stable
+   - path: polylogue/cli/commands/diagnostics.py
+-    loc: 743
++    loc: 759
+     target: polylogue/cli/commands/diagnostics.py
+     owner: stable
+   - path: polylogue/cli/commands/embed.py
+@@ -1286,6 +1286,11 @@ files:
+     target: polylogue/core/errors.py
+     owner: core-primitive
+     reason: core primitive
++  - path: polylogue/core/evidence_value.py
++    loc: 1136
++    target: polylogue/core/evidence_value.py
++    owner: core-primitive
++    reason: core primitive
+   - path: polylogue/core/hashing.py
+     loc: 65
+     target: polylogue/core/hashing.py
+@@ -1361,6 +1366,11 @@ files:
+     target: polylogue/core/stats.py
+     owner: core-primitive
+     reason: core primitive
++  - path: polylogue/core/temporal.py
++    loc: 85
++    target: polylogue/core/temporal.py
++    owner: core-primitive
++    reason: core primitive
+   - path: polylogue/core/timestamps.py
+     loc: 167
+     target: polylogue/core/timestamps.py
+@@ -1418,7 +1428,7 @@ files:
+     target: polylogue/daemon/catchup_status.py
+     owner: stable
+   - path: polylogue/daemon/cli.py
+-    loc: 2018
++    loc: 2065
+     target: polylogue/daemon/cli.py
+     owner: stable
+   - path: polylogue/daemon/compare.py
+@@ -1583,7 +1593,7 @@ files:
+     target: polylogue/daemon/status.py
+     owner: stable
+   - path: polylogue/daemon/status_snapshot.py
+-    loc: 377
++    loc: 486
+     target: polylogue/daemon/status_snapshot.py
+     owner: stable
+   - path: polylogue/daemon/thread_continue.py
+@@ -1607,7 +1617,7 @@ files:
+     target: polylogue/daemon/web_auth.py
+     owner: stable
+   - path: polylogue/daemon/web_shell.py
+-    loc: 3260
++    loc: 3263
+     target: polylogue/daemon/web_shell.py
+     owner: stable
+   - path: polylogue/daemon/web_shell_attachments.py
+@@ -1896,7 +1906,7 @@ files:
+     target: polylogue/insights/tag_rollups.py
+     owner: stable
+   - path: polylogue/insights/temporal_source.py
+-    loc: 292
++    loc: 219
+     target: polylogue/insights/temporal_source.py
+     owner: stable
+   - path: polylogue/insights/timeline_renderer.py
+@@ -2433,7 +2443,7 @@ files:
+     target: polylogue/scenarios/specs.py
+     owner: stable
+   - path: polylogue/scenarios/workload.py
+-    loc: 645
++    loc: 674
+     target: polylogue/scenarios/workload.py
+     owner: stable
+   - path: polylogue/schemas/__init__.py
+@@ -2517,7 +2527,7 @@ files:
+     target: polylogue/schemas/generation/archive_workload_profile.py
+     owner: stable
+   - path: polylogue/schemas/generation/cluster_collection.py
+-    loc: 288
++    loc: 292
+     target: polylogue/schemas/generation/cluster_collection.py
+     owner: stable
+   - path: polylogue/schemas/generation/cluster_support.py
+@@ -2537,7 +2547,7 @@ files:
+     target: polylogue/schemas/generation/models.py
+     owner: stable
+   - path: polylogue/schemas/generation/observation_journal.py
+-    loc: 1151
++    loc: 1205
+     target: polylogue/schemas/generation/observation_journal.py
+     owner: stable
+   - path: polylogue/schemas/generation/packages.py
+@@ -2731,7 +2741,7 @@ files:
+     target: polylogue/schemas/sampling.py
+     owner: stable
+   - path: polylogue/schemas/sampling_db.py
+-    loc: 452
++    loc: 467
+     target: polylogue/schemas/sampling_db.py
+     owner: stable
+   - path: polylogue/schemas/sampling_sessions.py
+@@ -2994,11 +3004,11 @@ files:
+     target: polylogue/sources/live/_lag_sample_ddl.py
+     owner: stable
+   - path: polylogue/sources/live/append_ingest.py
+-    loc: 240
++    loc: 233
+     target: polylogue/sources/live/append_ingest.py
+     owner: stable
+   - path: polylogue/sources/live/batch.py
+-    loc: 2396
++    loc: 2382
+     target: polylogue/sources/live/batch.py
+     owner: stable
+   - path: polylogue/sources/live/batch_observability.py
+@@ -3199,7 +3209,7 @@ files:
+     owner: stable
+     cross_cut: { lifecycle: model }
+   - path: polylogue/sources/revision_backfill.py
+-    loc: 514
++    loc: 603
+     target: polylogue/sources/revision_backfill.py
+     owner: stable
+   - path: polylogue/sources/source_acquisition.py
+@@ -3240,7 +3250,7 @@ files:
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_readiness.py
+-    loc: 818
++    loc: 839
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_views.py
+@@ -3521,11 +3531,11 @@ files:
+     target: polylogue/storage/raw/models.py
+     owner: stable
+   - path: polylogue/storage/raw_authority.py
+-    loc: 1633
++    loc: 1668
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_reconciler.py
+-    loc: 1411
++    loc: 1426
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_retention.py
+@@ -3534,7 +3544,7 @@ files:
+     owner: storage-root
+     reason: storage-root cross-cutting helper
+   - path: polylogue/storage/repair.py
+-    loc: 6288
++    loc: 6317
+     target: polylogue/storage/repair.py
+     owner: storage-root
+     reason: storage-root cross-cutting helper
+@@ -3746,7 +3756,7 @@ files:
+     target: polylogue/storage/sqlite/archive_tiers/__init__.py
+     owner: stable
+   - path: polylogue/storage/sqlite/archive_tiers/archive.py
+-    loc: 11547
++    loc: 11588
+     target: polylogue/storage/sqlite/archive_tiers/archive.py
+     owner: stable
+   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
+@@ -4141,7 +4151,7 @@ files:
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/usage.py
+-    loc: 1766
++    loc: 2099
+     target: polylogue/storage/usage.py
+     owner: storage-root
+     reason: storage-root cross-cutting helper
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index d8e0e49740260b6a6a23dd76a91192d6d66d485e..e422b25eb6cf51492d3bc43c774000c1ebb93e38 100644
+--- a/docs/topology-status.md
++++ b/docs/topology-status.md
+@@ -24,7 +24,7 @@ Generated by `devtools render topology-status`. Reads `docs/plans/topology-targe
+ | archive-semantic | — | 12 | 12 | 0 | 0 |
+ | archive-session | — | 18 | 18 | 0 | 0 |
+ | archive-viewport | — | 6 | 6 | 0 | 0 |
+-| core-primitive | — | 26 | 26 | 0 | 0 |
++| core-primitive | — | 28 | 28 | 0 | 0 |
+ 
+ ### Summary
+ 
+@@ -32,8 +32,8 @@ Generated by `devtools render topology-status`. Reads `docs/plans/topology-targe
+ - **Kernel** (polylogue/ root): 7
+ - **Primitives** (storage-root): 18
+ - **TBD** (cell needs explicit assignment): 9
+-- **Total declared**: 1007
+-- **Realized polylogue/**/*.py**: 1007 files declared
++- **Total declared**: 1009
++- **Realized polylogue/**/*.py**: 1009 files declared
+ 
+ ### TBD cells (require explicit routing)
+ 
+diff --git a/polylogue/archive/query/source_freshness.py b/polylogue/archive/query/source_freshness.py
+index 1497d8e1fea72d1a597dc6c2ba08bb724909d5e7..c5c73daef157d6a3134063ff718d564e2a2f14b7 100644
+--- a/polylogue/archive/query/source_freshness.py
++++ b/polylogue/archive/query/source_freshness.py
+@@ -18,6 +18,7 @@ import hashlib
+ import json
+ import os
+ import sqlite3
++from collections.abc import Iterable, Sequence
+ from contextlib import AbstractContextManager
+ from dataclasses import dataclass, fields, is_dataclass
+ from datetime import UTC, datetime
+@@ -27,10 +28,54 @@ from typing import Any, Final, Literal, cast
+ from urllib.parse import quote
+ 
+ from polylogue.core.dates import utc_now
++from polylogue.core.evidence_value import (
++    CoverageExclusion,
++    EvidenceValue,
++    FactFamilySpec,
++    FrameCoverage,
++    FreshnessProvenance,
++    TemporalProvenance,
++    ValueState,
++    sum_evidence_values,
++)
++from polylogue.core.refs import ObjectRef
+ 
+ _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
+ _REPLAY_PREVENTION_OWNER: Final = "polylogue-yla8"
+ 
++_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF: Final = ObjectRef(
++    kind="insight",
++    object_id="source-cursor-byte-lag:v1",
++)
++SOURCE_CURSOR_BYTE_LAG_FAMILY: Final = FactFamilySpec(
++    family="archive.source_cursor_byte_lag",
++    owner="polylogue.archive.query.source_freshness",
++    source_adapter="project_named_source_freshness",
++    public_field="byte_lag",
++    renderer_label="cursor byte lag",
++    value_schema="integer",
++    unit="bytes",
++    grain="source_path",
++    denominator="declared exact source paths",
++    definition_ref=_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF,
++    required_axes=frozenset(
++        {
++            "value_state",
++            "measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++        }
++    ),
++    allowed_states=frozenset({"known", "unknown", "unavailable"}),
++    allowed_authorities=frozenset({"structural"}),
++    authority_precedence=("structural",),
++    requires_last_good_when_degraded=True,
++)
++
+ 
+ class NamedSourceStage(str, Enum):
+     """Monotone named-source path used by miss diagnostics."""
+@@ -247,6 +292,7 @@ class NamedSourceFreshness:
+     operational_reason: NamedSourceOperationalReason
+     source_stat: SourceStatEvidence
+     cursor: CursorEvidence
++    byte_lag: EvidenceValue[int]
+     retry: RetryEvidence
+     accepted_raw_revision: RawRevisionEvidence | None
+     raw_revisions: tuple[RawRevisionEvidence, ...]
+@@ -427,6 +473,7 @@ def project_named_source_freshness(
+         receipt=receipt,
+         errors=errors,
+     )
++    byte_lag = _source_cursor_byte_lag(source_key, source_stat, cursor, observed=observed)
+     retry = _load_retry_evidence(
+         archive_root,
+         source_key,
+@@ -511,6 +558,7 @@ def project_named_source_freshness(
+         "operational_reason": operational_reason.value,
+         "source_stat": _jsonable(source_stat),
+         "cursor": _jsonable(cursor),
++        "byte_lag": _jsonable(byte_lag),
+         "retry": _jsonable(retry),
+         "accepted_raw_revision": _jsonable(accepted_raw),
+         "raw_revisions": _jsonable(raw_revisions),
+@@ -541,6 +589,7 @@ def project_named_source_freshness(
+         operational_reason=operational_reason,
+         source_stat=source_stat,
+         cursor=cursor,
++        byte_lag=byte_lag,
+         retry=retry,
+         accepted_raw_revision=accepted_raw,
+         raw_revisions=raw_revisions,
+@@ -558,6 +607,143 @@ def project_named_source_freshness(
+     )
+ 
+ 
++def aggregate_named_source_byte_lag(
++    freshnesses: Iterable[NamedSourceFreshness],
++    *,
++    expected_source_paths: Sequence[str | Path],
++    now: datetime | None = None,
++) -> EvidenceValue[int]:
++    """Conserve byte-lag totals across a declared exact-source frame.
++
++    Repeated projections for the same source deduplicate by ``file`` identity;
++    contradictory duplicates, missing sources, or unknown lag keep the total
++    unknown instead of contributing a numeric zero.
++    """
++
++    expected_refs = tuple(
++        sorted(
++            {ObjectRef(kind="file", object_id=os.fspath(path)) for path in expected_source_paths},
++            key=lambda ref: ref.format(),
++        )
++    )
++    normalized = "\n".join(ref.format() for ref in expected_refs)
++    aggregate_ref = ObjectRef(
++        kind="insight",
++        object_id="source-cursor-byte-lag-total:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
++    )
++    observed_at = _as_utc(now or utc_now()).isoformat()
++    return sum_evidence_values(
++        (freshness.byte_lag for freshness in freshnesses),
++        spec=SOURCE_CURSOR_BYTE_LAG_FAMILY,
++        fact_ref=aggregate_ref,
++        observed_at=observed_at,
++        intended_frame="named source byte lag for exact source paths",
++        expected_fact_refs=expected_refs,
++    )
++
++
++def _source_cursor_byte_lag(
++    source_key: str,
++    source_stat: SourceStatEvidence,
++    cursor: CursorEvidence,
++    *,
++    observed: datetime,
++) -> EvidenceValue[int]:
++    fact_ref = ObjectRef(kind="file", object_id=source_key)
++    cursor_ref = ObjectRef(kind="run", object_id=f"ingest-cursor:{source_key}")
++    evidence_refs = (fact_ref, cursor_ref) if cursor.present else (fact_ref,)
++    exclusions = (CoverageExclusion(subject_ref=fact_ref, reason="ingest-cursor-excluded"),) if cursor.excluded else ()
++
++    value_state: ValueState
++    if source_stat.error is not None:
++        value_state = "unavailable"
++        value = None
++        freshness = FreshnessProvenance(
++            state="unavailable",
++            evaluated_at=observed.isoformat(),
++            cause="source-stat-error",
++        )
++    elif cursor.pending_bytes is None:
++        value_state = "unknown"
++        value = None
++        if cursor.present:
++            freshness = FreshnessProvenance(
++                state="degraded",
++                evaluated_at=observed.isoformat(),
++                cause="source-size-or-cursor-offset-unavailable",
++                last_good_at=_timestamp_iso(cursor.updated_at_ms),
++                last_good_evidence_refs=(cursor_ref,),
++            )
++        else:
++            freshness = FreshnessProvenance(
++                state="unavailable",
++                evaluated_at=observed.isoformat(),
++                cause="cursor-missing",
++            )
++    else:
++        value_state = "known"
++        value = cursor.pending_bytes
++        degradation_cause: str | None = None
++        if cursor.excluded:
++            degradation_cause = "cursor-excluded"
++        elif cursor.failure_count > 0:
++            degradation_cause = "cursor-retrying"
++        elif (cursor.cursor_ahead_bytes or 0) > 0 or (cursor.observed_size_ahead_bytes or 0) > 0:
++            degradation_cause = "cursor-ahead"
++        elif not source_stat.exists:
++            degradation_cause = "source-missing"
++        if degradation_cause is None:
++            freshness = FreshnessProvenance(
++                state="fresh",
++                evaluated_at=observed.isoformat(),
++            )
++        else:
++            freshness = FreshnessProvenance(
++                state="degraded",
++                evaluated_at=observed.isoformat(),
++                cause=degradation_cause,
++                last_good_at=_timestamp_iso(cursor.updated_at_ms),
++                last_good_evidence_refs=(cursor_ref,),
++            )
++
++    evidence = EvidenceValue(
++        family=SOURCE_CURSOR_BYTE_LAG_FAMILY.family,
++        fact_ref=fact_ref,
++        value_state=value_state,
++        value=value,
++        measurement_authority=("structural",),
++        weakest_measurement_authority="structural",
++        evidence_refs=evidence_refs,
++        definition_ref=SOURCE_CURSOR_BYTE_LAG_FAMILY.definition_ref,
++        temporal=TemporalProvenance.from_source(
++            observed_at=observed.isoformat(),
++            time_source="materialization_ts",
++        ),
++        enumeration="census",
++        coverage=FrameCoverage(
++            intended_frame="one exact source path",
++            grain=SOURCE_CURSOR_BYTE_LAG_FAMILY.grain,
++            denominator=SOURCE_CURSOR_BYTE_LAG_FAMILY.denominator,
++            intended_count=1,
++            observed_count=1,
++            supported_count=1 if value_state == "known" else 0,
++            complete=value_state == "known" and not cursor.excluded,
++            intended_refs=(fact_ref,),
++            observed_refs=(fact_ref,),
++            exclusions=exclusions,
++        ),
++        freshness=freshness,
++    )
++    SOURCE_CURSOR_BYTE_LAG_FAMILY.require(cast(EvidenceValue[object], evidence))
++    return evidence
++
++
++def _timestamp_iso(value_ms: int | None) -> str | None:
++    if value_ms is None:
++        return None
++    return datetime.fromtimestamp(value_ms / 1000.0, tz=UTC).isoformat()
++
++
+ def _stat_source(source_path: Path) -> SourceStatEvidence:
+     try:
+         stat = source_path.stat()
+@@ -1725,6 +1911,8 @@ def _jsonable(value: object) -> object:
+         return str(value)
+     if isinstance(value, bytes):
+         return value.hex()
++    if isinstance(value, EvidenceValue):
++        return value.to_dict()
+     if is_dataclass(value) and not isinstance(value, type):
+         return {field.name: _jsonable(getattr(value, field.name)) for field in fields(value)}
+     if isinstance(value, dict):
+@@ -1751,6 +1939,8 @@ __all__ = [
+     "RawRevisionEvidence",
+     "RetryEvidence",
+     "RevisionApplicationEvidence",
++    "SOURCE_CURSOR_BYTE_LAG_FAMILY",
+     "SourceStatEvidence",
++    "aggregate_named_source_byte_lag",
+     "project_named_source_freshness",
+ ]
+diff --git a/polylogue/archive/query/source_freshness_surfaces.py b/polylogue/archive/query/source_freshness_surfaces.py
+index 098b3c5bc4a2bf49435770e7a18f22760cc9a17a..e892c570fdcc9bad45ecc6a2bc0b4a28a9631311 100644
+--- a/polylogue/archive/query/source_freshness_surfaces.py
++++ b/polylogue/archive/query/source_freshness_surfaces.py
+@@ -45,6 +45,7 @@ class NamedSourceFreshnessStatusPayload(TypedDict):
+     excluded: bool
+     failure_count: int
+     pending_bytes: int | None
++    byte_lag: dict[str, object]
+     unobserved_growth_bytes: int | None
+     cursor_ahead_bytes: int | None
+     observed_size_ahead_bytes: int | None
+@@ -86,6 +87,7 @@ def source_freshness_status_payload(
+         "excluded": freshness.cursor.excluded,
+         "failure_count": freshness.cursor.failure_count,
+         "pending_bytes": freshness.cursor.pending_bytes,
++        "byte_lag": freshness.byte_lag.to_dict(),
+         "unobserved_growth_bytes": freshness.cursor.unobserved_growth_bytes,
+         "cursor_ahead_bytes": freshness.cursor.cursor_ahead_bytes,
+         "observed_size_ahead_bytes": freshness.cursor.observed_size_ahead_bytes,
+@@ -120,6 +122,11 @@ def render_source_freshness_status(freshness: NamedSourceFreshness) -> str:
+         or (freshness.fts.reason if not freshness.fts.converged else None)
+         or (freshness.insights.reason if not freshness.insights.converged else None)
+     )
++    byte_lag = (
++        str(freshness.byte_lag.value)
++        if freshness.byte_lag.value_state == "known"
++        else freshness.byte_lag.value_state
++    )
+     lines = [
+         (
+             f"{freshness.source_path}: stage={freshness.stage.value} "
+@@ -130,9 +137,13 @@ def render_source_freshness_status(freshness: NamedSourceFreshness) -> str:
+             f"cursor_observed={freshness.cursor.observed_size_bytes} "
+             f"cursor_offset={freshness.cursor.byte_offset} "
+             f"excluded={str(freshness.cursor.excluded).lower()} "
+-            f"pending_bytes={freshness.cursor.pending_bytes} "
++            f"pending_bytes={byte_lag} "
+             f"cursor_ahead_bytes={freshness.cursor.cursor_ahead_bytes}"
+         ),
++        (
++            f"  byte_lag_evidence={freshness.byte_lag.freshness.state} "
++            f"definition={freshness.byte_lag.definition_ref.format()}"
++        ),
+         (
+             "  raw="
+             + ("none" if raw is None else raw.raw_id)
+diff --git a/polylogue/cli/commands/diagnostics.py b/polylogue/cli/commands/diagnostics.py
+index 4e7659027261b891740cb5086ccf7a46bff74671..3504bb3e12605b1caf3839ec1bfff2c9281aa227 100644
+--- a/polylogue/cli/commands/diagnostics.py
++++ b/polylogue/cli/commands/diagnostics.py
+@@ -301,24 +301,28 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
+             f"  stored/origin-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
+         )
+         env.ui.console.print(
+-            f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
++            "  catalog API-equivalent cost: "
++            + _format_optional_usd(getattr(report, "catalog_api_equivalent_usd", None))
++        )
++        env.ui.console.print(
++            "  known catalog-priced subtotal: "
++            + _format_optional_usd(getattr(report, "catalog_priced_subtotal_usd", None))
+         )
+         env.ui.console.print(
+             "  catalog subscription-credit cost (Claude Code Pro tier, non-authoritative): "
+             f"${float(getattr(report, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
+         )
+         logical_catalog_api_equivalent_usd = getattr(report, "logical_catalog_api_equivalent_usd", None)
+-        if logical_catalog_api_equivalent_usd is not None:
+-            env.ui.console.print(
+-                "  catalog API-equivalent cost "
+-                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+-                f"${float(logical_catalog_api_equivalent_usd or 0.0):,.2f}"
+-            )
+-            env.ui.console.print(
+-                "  catalog subscription-credit cost "
+-                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+-                f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
+-            )
++        env.ui.console.print(
++            "  catalog API-equivalent cost "
++            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
++            + _format_optional_usd(logical_catalog_api_equivalent_usd)
++        )
++        env.ui.console.print(
++            "  catalog subscription-credit cost "
++            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
++            f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
++        )
+         for lane in pricing_lanes:
+             env.ui.console.print(
+                 "    pricing lane "
+@@ -327,7 +331,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
+                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
+                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
+                 f"stored=${float(getattr(lane, 'stored_cost_usd', 0.0) or 0.0):,.2f} "
+-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
++                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
++                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
+                 f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
+             )
+         logical_pricing_lanes = tuple(getattr(report, "logical_pricing_lanes", ()))
+@@ -338,7 +343,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
+                 f"rows={getattr(lane, 'row_count', 0)} "
+                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
+                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
+-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
++                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
++                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
+                 f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
+             )
+     if not origins:
+@@ -401,6 +407,16 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
+             env.ui.console.print("    stale-rollup samples: " + ", ".join(row.sample_stale_rollup_sessions))
+ 
+ 
++def _format_optional_usd(value: object) -> str:
++    if isinstance(value, bool) or not isinstance(value, int | float | str):
++        return "unknown"
++    try:
++        amount = float(value)
++    except ValueError:
++        return "unknown"
++    return f"${amount:,.2f}"
++
++
+ def _usage_counter_line(counters: object) -> str:
+     values = counters.to_dict() if hasattr(counters, "to_dict") else {}
+     return (
+diff --git a/polylogue/core/evidence_value.py b/polylogue/core/evidence_value.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9196a8e23ac656f94053065a748a224b5c1e889
+--- /dev/null
++++ b/polylogue/core/evidence_value.py
+@@ -0,0 +1,1136 @@
++"""Storage-free evidence values and conservative quantitative composition.
++
++``EvidenceValue`` is a wire/domain protocol embedded by owning models. It does
++not own persistence, fact lifecycle, or a universal registry. The helpers here
++only validate declared axes and compose already-owned observations without
++losing unknowns, contradictions, duplicate identity, or weak provenance.
++"""
++
++from __future__ import annotations
++
++import math
++from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Generic, Literal, TypeAlias, TypeVar, cast
++
++from polylogue.core.refs import EvidenceRef, ObjectRef, PublicRef
++from polylogue.core.temporal import (
++    TemporalSource,
++    TimeConfidence,
++    time_confidence_for_source,
++    weakest_of,
++)
++
++T = TypeVar("T")
++T_co = TypeVar("T_co", covariant=True)
++N = TypeVar("N", int, float)
++Numeric: TypeAlias = int | float
++
++ValueState = Literal[
++    "known",
++    "unknown",
++    "unavailable",
++    "skipped",
++    "not_applicable",
++    "redacted",
++]
++MeasurementAuthority = Literal[
++    "structural",
++    "provider-reported",
++    "catalog-derived",
++    "rule-derived",
++    "model-derived",
++    "agent-declared",
++    "judged",
++]
++EnumerationKind = Literal["census", "sample", "inferred-partial", "not-applicable"]
++FreshnessState = Literal["fresh", "stale", "timed-out", "unavailable", "degraded"]
++EvidenceAxis = Literal[
++    "value_state",
++    "measurement_authority",
++    "evidence_refs",
++    "definition_ref",
++    "temporal",
++    "enumeration",
++    "coverage",
++    "freshness",
++    "calibrated_confidence",
++]
++ValueSchema = Literal["integer", "number", "string", "boolean", "object", "array"]
++
++_VALUE_STATES: frozenset[ValueState] = frozenset(
++    {"known", "unknown", "unavailable", "skipped", "not_applicable", "redacted"}
++)
++_AUTHORITIES: frozenset[MeasurementAuthority] = frozenset(
++    {
++        "structural",
++        "provider-reported",
++        "catalog-derived",
++        "rule-derived",
++        "model-derived",
++        "agent-declared",
++        "judged",
++    }
++)
++_ENUMERATIONS: frozenset[EnumerationKind] = frozenset({"census", "sample", "inferred-partial", "not-applicable"})
++_FRESHNESS_STATES: frozenset[FreshnessState] = frozenset({"fresh", "stale", "timed-out", "unavailable", "degraded"})
++_EVIDENCE_AXES: frozenset[EvidenceAxis] = frozenset(
++    {
++        "value_state",
++        "measurement_authority",
++        "evidence_refs",
++        "definition_ref",
++        "temporal",
++        "enumeration",
++        "coverage",
++        "freshness",
++        "calibrated_confidence",
++    }
++)
++_FRESHNESS_WEAKNESS: Mapping[FreshnessState, int] = {
++    "fresh": 0,
++    "stale": 1,
++    "degraded": 2,
++    "timed-out": 3,
++    "unavailable": 4,
++}
++_ENUMERATION_WEAKNESS: Mapping[EnumerationKind, int] = {
++    "census": 0,
++    "sample": 1,
++    "inferred-partial": 2,
++    "not-applicable": 3,
++}
++
++
++class EvidenceInvariantError(ValueError):
++    """An evidence value or composition would violate a survivor law."""
++
++
++@dataclass(frozen=True, slots=True)
++class CoverageExclusion:
++    """One explicitly excluded member of an intended frame."""
++
++    subject_ref: ObjectRef
++    reason: str
++
++    def __post_init__(self) -> None:
++        if not self.reason.strip():
++            raise EvidenceInvariantError("coverage exclusion reason cannot be empty")
++
++    def to_dict(self) -> dict[str, str]:
++        return {"subject_ref": self.subject_ref.format(), "reason": self.reason}
++
++
++@dataclass(frozen=True, slots=True)
++class FrameCoverage:
++    """Population/grain coverage independent of value and authority."""
++
++    intended_frame: str
++    grain: str
++    denominator: str
++    intended_count: int | None = None
++    observed_count: int | None = None
++    supported_count: int | None = None
++    complete: bool | None = None
++    intended_refs: tuple[ObjectRef, ...] = ()
++    observed_refs: tuple[ObjectRef, ...] = ()
++    exclusions: tuple[CoverageExclusion, ...] = ()
++
++    def __post_init__(self) -> None:
++        for name in ("intended_frame", "grain", "denominator"):
++            if not str(getattr(self, name)).strip():
++                raise EvidenceInvariantError(f"coverage {name} cannot be empty")
++        for name in ("intended_count", "observed_count", "supported_count"):
++            value = getattr(self, name)
++            if value is not None and (isinstance(value, bool) or value < 0):
++                raise EvidenceInvariantError(f"coverage {name} must be a non-negative integer")
++        if (
++            self.intended_count is not None
++            and self.observed_count is not None
++            and self.observed_count > self.intended_count
++        ):
++            raise EvidenceInvariantError("coverage observed_count cannot exceed intended_count")
++        if (
++            self.observed_count is not None
++            and self.supported_count is not None
++            and self.supported_count > self.observed_count
++        ):
++            raise EvidenceInvariantError("coverage supported_count cannot exceed observed_count")
++        intended_refs = _normalize_object_refs(self.intended_refs)
++        observed_refs = _normalize_object_refs(self.observed_refs)
++        if intended_refs and any(ref not in set(intended_refs) for ref in observed_refs):
++            raise EvidenceInvariantError("coverage observed_refs must belong to intended_refs")
++        exclusions = tuple(
++            sorted(
++                _dedupe_by_key(self.exclusions, lambda item: (item.subject_ref.format(), item.reason)),
++                key=lambda item: (item.subject_ref.format(), item.reason),
++            )
++        )
++        object.__setattr__(self, "intended_refs", intended_refs)
++        object.__setattr__(self, "observed_refs", observed_refs)
++        object.__setattr__(self, "exclusions", exclusions)
++
++    @property
++    def ratio(self) -> float | None:
++        intended_count = self.intended_count
++        if intended_count is None or intended_count == 0 or self.observed_count is None:
++            return None
++        return self.observed_count / intended_count
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "intended_frame": self.intended_frame,
++            "grain": self.grain,
++            "denominator": self.denominator,
++            "intended_count": self.intended_count,
++            "observed_count": self.observed_count,
++            "supported_count": self.supported_count,
++            "complete": self.complete,
++            "coverage_ratio": self.ratio,
++            "intended_refs": [ref.format() for ref in self.intended_refs],
++            "observed_refs": [ref.format() for ref in self.observed_refs],
++            "exclusions": [item.to_dict() for item in self.exclusions],
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class TemporalProvenance:
++    """Observation time plus the independently declared source-clock quality."""
++
++    observed_at: str | None
++    time_source: TemporalSource | None
++    time_confidence: TimeConfidence
++    frame_start: str | None = None
++    frame_end: str | None = None
++
++    def __post_init__(self) -> None:
++        for name in ("observed_at", "frame_start", "frame_end"):
++            value = getattr(self, name)
++            if value is not None:
++                _require_aware_iso8601(name, value)
++        expected = time_confidence_for_source(self.time_source)
++        if self.time_confidence != expected:
++            raise EvidenceInvariantError(
++                f"time_confidence {self.time_confidence!r} overstates source {self.time_source!r}; expected {expected!r}"
++            )
++        if (
++            self.frame_start is not None
++            and self.frame_end is not None
++            and _parse_aware_iso8601(self.frame_start) > _parse_aware_iso8601(self.frame_end)
++        ):
++            raise EvidenceInvariantError("temporal frame_start cannot be after frame_end")
++
++    @classmethod
++    def from_source(
++        cls,
++        *,
++        observed_at: str | None,
++        time_source: TemporalSource | None,
++        frame_start: str | None = None,
++        frame_end: str | None = None,
++    ) -> TemporalProvenance:
++        return cls(
++            observed_at=observed_at,
++            time_source=time_source,
++            time_confidence=time_confidence_for_source(time_source),
++            frame_start=frame_start,
++            frame_end=frame_end,
++        )
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "observed_at": self.observed_at,
++            "time_source": self.time_source,
++            "time_confidence": self.time_confidence,
++            "frame_start": self.frame_start,
++            "frame_end": self.frame_end,
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class FreshnessProvenance:
++    """Current degradation state with an explainable last-good anchor."""
++
++    state: FreshnessState
++    evaluated_at: str | None
++    cause: str | None = None
++    last_good_at: str | None = None
++    last_good_evidence_refs: tuple[PublicRef, ...] = ()
++
++    def __post_init__(self) -> None:
++        if self.state not in _FRESHNESS_STATES:
++            raise EvidenceInvariantError(f"unsupported freshness state: {self.state!r}")
++        if self.evaluated_at is not None:
++            _require_aware_iso8601("freshness evaluated_at", self.evaluated_at)
++        if self.last_good_at is not None:
++            _require_aware_iso8601("freshness last_good_at", self.last_good_at)
++        if self.state != "fresh" and not (self.cause or "").strip():
++            raise EvidenceInvariantError(f"freshness state {self.state!r} requires a degradation cause")
++        object.__setattr__(self, "last_good_evidence_refs", _normalize_public_refs(self.last_good_evidence_refs))
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "state": self.state,
++            "evaluated_at": self.evaluated_at,
++            "cause": self.cause,
++            "last_good_at": self.last_good_at,
++            "last_good_evidence_refs": [_format_public_ref(ref) for ref in self.last_good_evidence_refs],
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class CalibratedConfidence:
++    """Optional calibrated probability; never an unreferenced generic float."""
++
++    value: float
++    calibration_ref: ObjectRef
++    definition_ref: ObjectRef
++
++    def __post_init__(self) -> None:
++        if not math.isfinite(self.value) or not 0.0 <= self.value <= 1.0:
++            raise EvidenceInvariantError("calibrated confidence must be finite and within [0, 1]")
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "value": self.value,
++            "calibration_ref": self.calibration_ref.format(),
++            "definition_ref": self.definition_ref.format(),
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class EvidenceObservation(Generic[T_co]):
++    """One independently identifiable observation used by reconciliation/sums."""
++
++    fact_ref: ObjectRef
++    value_state: ValueState
++    value: T_co | None
++    measurement_authority: tuple[MeasurementAuthority, ...]
++    evidence_refs: tuple[PublicRef, ...]
++    temporal: TemporalProvenance
++    enumeration: EnumerationKind
++    coverage: FrameCoverage
++    freshness: FreshnessProvenance
++
++    def __post_init__(self) -> None:
++        _validate_value_state(self.value_state, self.value)
++        _validate_authorities(self.measurement_authority)
++        if self.enumeration not in _ENUMERATIONS:
++            raise EvidenceInvariantError(f"unsupported enumeration: {self.enumeration!r}")
++        object.__setattr__(self, "measurement_authority", _normalize_authorities(self.measurement_authority))
++        object.__setattr__(self, "evidence_refs", _normalize_public_refs(self.evidence_refs))
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "fact_ref": self.fact_ref.format(),
++            "value_state": self.value_state,
++            "value": self.value,
++            "measurement_authority": list(self.measurement_authority),
++            "evidence_refs": [_format_public_ref(ref) for ref in self.evidence_refs],
++            "temporal": self.temporal.to_dict(),
++            "enumeration": self.enumeration,
++            "coverage": self.coverage.to_dict(),
++            "freshness": self.freshness.to_dict(),
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class EvidenceConflict(Generic[T_co]):
++    """Order-independent contradictory observations for one fact identity."""
++
++    fact_ref: ObjectRef
++    reason: str
++    observations: tuple[EvidenceObservation[T_co], ...]
++
++    def __post_init__(self) -> None:
++        if not self.reason.strip():
++            raise EvidenceInvariantError("evidence conflict reason cannot be empty")
++        if len(self.observations) < 2:
++            raise EvidenceInvariantError("evidence conflict requires at least two observations")
++        if any(observation.fact_ref != self.fact_ref for observation in self.observations):
++            raise EvidenceInvariantError("conflict observations must share fact_ref")
++        observations = tuple(sorted(self.observations, key=_observation_sort_key))
++        object.__setattr__(self, "observations", observations)
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "fact_ref": self.fact_ref.format(),
++            "reason": self.reason,
++            "observations": [observation.to_dict() for observation in self.observations],
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class EvidenceValue(Generic[T_co]):
++    """Typed public claim carrying independent evidence/provenance axes."""
++
++    family: str
++    fact_ref: ObjectRef
++    value_state: ValueState
++    value: T_co | None
++    measurement_authority: tuple[MeasurementAuthority, ...]
++    evidence_refs: tuple[PublicRef, ...]
++    definition_ref: ObjectRef
++    temporal: TemporalProvenance
++    enumeration: EnumerationKind
++    coverage: FrameCoverage
++    freshness: FreshnessProvenance
++    weakest_measurement_authority: MeasurementAuthority | None = None
++    calibrated_confidence: CalibratedConfidence | None = None
++    contributions: tuple[EvidenceObservation[T_co], ...] = ()
++    conflicts: tuple[EvidenceConflict[T_co], ...] = ()
++
++    def __post_init__(self) -> None:
++        if not self.family.strip():
++            raise EvidenceInvariantError("evidence family cannot be empty")
++        _validate_value_state(self.value_state, self.value)
++        _validate_authorities(self.measurement_authority)
++        if self.enumeration not in _ENUMERATIONS:
++            raise EvidenceInvariantError(f"unsupported enumeration: {self.enumeration!r}")
++        authorities = _normalize_authorities(self.measurement_authority)
++        if self.weakest_measurement_authority is not None and self.weakest_measurement_authority not in authorities:
++            raise EvidenceInvariantError("weakest_measurement_authority must occur in measurement_authority")
++        object.__setattr__(self, "measurement_authority", authorities)
++        object.__setattr__(self, "evidence_refs", _normalize_public_refs(self.evidence_refs))
++        object.__setattr__(
++            self,
++            "contributions",
++            tuple(sorted(_dedupe_by_key(self.contributions, _observation_identity), key=_observation_sort_key)),
++        )
++        object.__setattr__(
++            self,
++            "conflicts",
++            tuple(sorted(_dedupe_by_key(self.conflicts, _conflict_identity), key=lambda item: item.fact_ref.format())),
++        )
++
++    def as_observation(self) -> EvidenceObservation[T_co]:
++        return EvidenceObservation(
++            fact_ref=self.fact_ref,
++            value_state=self.value_state,
++            value=self.value,
++            measurement_authority=self.measurement_authority,
++            evidence_refs=self.evidence_refs,
++            temporal=self.temporal,
++            enumeration=self.enumeration,
++            coverage=self.coverage,
++            freshness=self.freshness,
++        )
++
++    def leaf_observations(self) -> tuple[EvidenceObservation[T_co], ...]:
++        if not self.contributions and not self.conflicts:
++            return (self.as_observation(),)
++        observations = (
++            *self.contributions,
++            *(observation for conflict in self.conflicts for observation in conflict.observations),
++        )
++        return tuple(
++            sorted(
++                _dedupe_by_key(observations, _observation_identity),
++                key=_observation_sort_key,
++            )
++        )
++
++    def to_dict(self) -> dict[str, object]:
++        return {
++            "family": self.family,
++            "fact_ref": self.fact_ref.format(),
++            "value_state": self.value_state,
++            "value": self.value,
++            "measurement_authority": list(self.measurement_authority),
++            "weakest_measurement_authority": self.weakest_measurement_authority,
++            "evidence_refs": [_format_public_ref(ref) for ref in self.evidence_refs],
++            "definition_ref": self.definition_ref.format(),
++            "temporal": self.temporal.to_dict(),
++            "enumeration": self.enumeration,
++            "coverage": self.coverage.to_dict(),
++            "freshness": self.freshness.to_dict(),
++            "calibrated_confidence": (
++                None if self.calibrated_confidence is None else self.calibrated_confidence.to_dict()
++            ),
++            "contributions": [observation.to_dict() for observation in self.contributions],
++            "conflicts": [conflict.to_dict() for conflict in self.conflicts],
++        }
++
++
++@dataclass(frozen=True, slots=True)
++class FactFamilySpec:
++    """Minimal evidence-family declaration, not a universal declaration kernel."""
++
++    family: str
++    owner: str
++    source_adapter: str
++    public_field: str
++    renderer_label: str
++    value_schema: ValueSchema
++    unit: str
++    grain: str
++    denominator: str
++    definition_ref: ObjectRef
++    required_axes: frozenset[EvidenceAxis]
++    allowed_states: frozenset[ValueState]
++    allowed_authorities: frozenset[MeasurementAuthority]
++    authority_precedence: tuple[MeasurementAuthority, ...] = ()
++    requires_last_good_when_degraded: bool = False
++
++    def __post_init__(self) -> None:
++        for name in (
++            "family",
++            "owner",
++            "source_adapter",
++            "public_field",
++            "renderer_label",
++            "unit",
++            "grain",
++            "denominator",
++        ):
++            if not str(getattr(self, name)).strip():
++                raise EvidenceInvariantError(f"fact family {name} cannot be empty")
++        unknown_axes = set(self.required_axes) - _EVIDENCE_AXES
++        if unknown_axes:
++            raise EvidenceInvariantError(f"fact family has unsupported evidence axes: {sorted(unknown_axes)}")
++        if not self.allowed_states:
++            raise EvidenceInvariantError("fact family must allow at least one value state")
++        if not self.allowed_authorities:
++            raise EvidenceInvariantError("fact family must allow at least one authority")
++        unknown_states = set(self.allowed_states) - _VALUE_STATES
++        if unknown_states:
++            raise EvidenceInvariantError(f"fact family has unsupported states: {sorted(unknown_states)}")
++        unknown_authorities = set(self.allowed_authorities) - _AUTHORITIES
++        if unknown_authorities:
++            raise EvidenceInvariantError(f"fact family has unsupported authorities: {sorted(unknown_authorities)}")
++        if len(set(self.authority_precedence)) != len(self.authority_precedence):
++            raise EvidenceInvariantError("authority_precedence cannot contain duplicates")
++        if set(self.authority_precedence) != set(self.allowed_authorities):
++            raise EvidenceInvariantError("authority_precedence must enumerate every allowed authority exactly once")
++
++    def validate(self, value: EvidenceValue[object]) -> tuple[str, ...]:
++        diagnostics: list[str] = []
++        if value.family != self.family:
++            diagnostics.append(f"family expected {self.family!r}, got {value.family!r}")
++        if value.definition_ref != self.definition_ref:
++            diagnostics.append(
++                f"definition_ref expected {self.definition_ref.format()!r}, got {value.definition_ref.format()!r}"
++            )
++        if value.value_state not in self.allowed_states:
++            diagnostics.append(f"value_state {value.value_state!r} is not allowed")
++        disallowed_authorities = set(value.measurement_authority) - set(self.allowed_authorities)
++        if disallowed_authorities:
++            diagnostics.append(f"measurement_authority not allowed: {sorted(disallowed_authorities)}")
++        for axis in sorted(self.required_axes):
++            if axis == "definition_ref" and not value.definition_ref.object_id:
++                diagnostics.append("missing required definition_ref")
++            elif axis == "temporal" and value.temporal.observed_at is None:
++                diagnostics.append("missing required temporal observed_at")
++            elif axis == "coverage" and not value.coverage.intended_frame:
++                diagnostics.append("missing required coverage")
++            elif axis == "calibrated_confidence" and value.calibrated_confidence is None:
++                diagnostics.append("missing required calibrated_confidence")
++        if value.coverage.grain != self.grain:
++            diagnostics.append(f"coverage grain expected {self.grain!r}, got {value.coverage.grain!r}")
++        if value.coverage.denominator != self.denominator:
++            diagnostics.append(
++                f"coverage denominator expected {self.denominator!r}, got {value.coverage.denominator!r}"
++            )
++        if (
++            self.requires_last_good_when_degraded
++            and value.freshness.state in {"stale", "timed-out", "degraded"}
++            and not value.freshness.last_good_evidence_refs
++        ):
++            diagnostics.append("degraded value is missing last_good_evidence_refs")
++        if value.value_state == "known" and not value.measurement_authority:
++            diagnostics.append("known value is missing measurement_authority")
++        if value.value_state == "known" and not value.evidence_refs:
++            diagnostics.append("known value is missing evidence_refs")
++        return tuple(diagnostics)
++
++    def require(self, value: EvidenceValue[object]) -> None:
++        diagnostics = self.validate(value)
++        if diagnostics:
++            raise EvidenceInvariantError(f"{self.family}: " + "; ".join(diagnostics))
++
++    def public_schema(self) -> dict[str, object]:
++        required = [
++            "family",
++            "fact_ref",
++            "value_state",
++            "value",
++            "measurement_authority",
++            "weakest_measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++            "calibrated_confidence",
++            "contributions",
++            "conflicts",
++        ]
++        return {
++            "family": self.family,
++            "owner": self.owner,
++            "source_adapter": self.source_adapter,
++            "public_field": self.public_field,
++            "renderer_label": self.renderer_label,
++            "type": "object",
++            "required": required,
++            "value_schema": {"type": [self.value_schema, "null"]},
++            "allowed_states": sorted(self.allowed_states),
++            "allowed_authorities": sorted(self.allowed_authorities),
++            "unit": self.unit,
++            "grain": self.grain,
++            "denominator": self.denominator,
++            "definition_ref": self.definition_ref.format(),
++        }
++
++    def authority_rank(self, authority: MeasurementAuthority) -> int:
++        try:
++            return self.authority_precedence.index(authority)
++        except ValueError as exc:
++            raise EvidenceInvariantError(f"authority {authority!r} is not declared for {self.family}") from exc
++
++    def weakest_authority(self, authorities: Sequence[MeasurementAuthority]) -> MeasurementAuthority | None:
++        if not authorities:
++            return None
++        weakest = authorities[0]
++        for authority in authorities[1:]:
++            if self.authority_rank(authority) > self.authority_rank(weakest):
++                weakest = authority
++        return weakest
++
++
++@dataclass(frozen=True, slots=True)
++class FactFamilyDiagnostic:
++    """Source-locatable completeness failure for an evidence-family inventory."""
++
++    family: str
++    owner: str
++    message: str
++
++    def to_dict(self) -> dict[str, str]:
++        return {"family": self.family, "owner": self.owner, "message": self.message}
++
++
++def audit_fact_family_completeness(
++    specs: Iterable[FactFamilySpec],
++    values: Iterable[EvidenceValue[T]],
++    *,
++    required_families: Iterable[str] = (),
++) -> tuple[FactFamilyDiagnostic, ...]:
++    """Audit declarations and values without creating a global registry."""
++
++    diagnostics: list[FactFamilyDiagnostic] = []
++    by_family: dict[str, FactFamilySpec] = {}
++    for spec in specs:
++        if spec.family in by_family:
++            diagnostics.append(FactFamilyDiagnostic(spec.family, spec.owner, "duplicate fact-family declaration"))
++        else:
++            by_family[spec.family] = spec
++    for family in sorted(set(required_families)):
++        if family not in by_family:
++            diagnostics.append(FactFamilyDiagnostic(family, "unknown", "required fact-family declaration missing"))
++    for value in values:
++        family_spec = by_family.get(value.family)
++        if family_spec is None:
++            diagnostics.append(
++                FactFamilyDiagnostic(value.family, "unknown", "public value has no fact-family declaration")
++            )
++            continue
++        diagnostics.extend(
++            FactFamilyDiagnostic(value.family, family_spec.owner, message) for message in family_spec.validate(value)
++        )
++    return tuple(sorted(diagnostics, key=lambda item: (item.family, item.owner, item.message)))
++
++
++def refine_evidence_value(
++    current: EvidenceValue[T],
++    candidate: EvidenceValue[T],
++    *,
++    spec: FactFamilySpec,
++) -> EvidenceValue[T]:
++    """Refine one fact while conserving all support and explicit conflicts.
++
++    A stronger authority claim must contribute evidence not already present in
++    the current value. Contradictory equal-authority observations remain
++    unresolved and order-independent; a declared strictly stronger authority
++    may supersede while conserving the weaker observation's support refs.
++    """
++
++    spec.require(current)
++    spec.require(candidate)
++    if current.family != candidate.family or current.fact_ref != candidate.fact_ref:
++        raise EvidenceInvariantError("refinement requires the same family and fact_ref")
++    current_floor = spec.weakest_authority(current.measurement_authority)
++    candidate_floor = spec.weakest_authority(candidate.measurement_authority)
++    if (
++        current_floor is not None
++        and candidate_floor is not None
++        and spec.authority_rank(candidate_floor) < spec.authority_rank(current_floor)
++        and set(candidate.evidence_refs) <= set(current.evidence_refs)
++    ):
++        raise EvidenceInvariantError("measurement authority cannot strengthen without new evidence")
++    return _reconcile_same_fact(
++        (*current.leaf_observations(), *candidate.leaf_observations()),
++        spec=spec,
++    )
++
++
++def sum_evidence_values(
++    values: Iterable[EvidenceValue[N]],
++    *,
++    spec: FactFamilySpec,
++    fact_ref: ObjectRef,
++    observed_at: str,
++    intended_frame: str,
++    expected_fact_refs: Sequence[ObjectRef] | None = None,
++) -> EvidenceValue[N]:
++    """Sum disjoint quantitative facts without zero-coercion or double count.
++
++    Nested aggregates are flattened to their original contributions. Repeated
++    identical fact identities deduplicate. Contradictory duplicates, missing
++    expected facts, or non-known contributions make the total unknown while
++    preserving every observation and conflict witness.
++    """
++
++    _require_aware_iso8601("aggregate observed_at", observed_at)
++    materialized = tuple(values)
++    for value in materialized:
++        spec.require(value)
++        if value.family != spec.family:
++            raise EvidenceInvariantError("sum inputs must share the declared fact family")
++
++    observations = tuple(observation for value in materialized for observation in value.leaf_observations())
++    by_ref: dict[str, list[EvidenceObservation[N]]] = {}
++    for observation in observations:
++        by_ref.setdefault(observation.fact_ref.format(), []).append(observation)
++
++    resolved: list[EvidenceObservation[N]] = []
++    conflicts: list[EvidenceConflict[N]] = []
++    for ref_text in sorted(by_ref):
++        group = tuple(by_ref[ref_text])
++        resolution = _resolve_observation_group(group, spec=spec)
++        if isinstance(resolution, EvidenceConflict):
++            conflicts.append(resolution)
++        else:
++            resolved.append(resolution)
++
++    observed_refs = _normalize_object_refs(tuple(item.fact_ref for item in observations))
++    expected = observed_refs if expected_fact_refs is None else _normalize_object_refs(tuple(expected_fact_refs))
++    expected_set = set(expected)
++    observed_set = set(observed_refs)
++    missing_refs = tuple(ref for ref in expected if ref not in observed_set)
++    unexpected_refs = tuple(ref for ref in observed_refs if ref not in expected_set)
++    if unexpected_refs:
++        raise EvidenceInvariantError(
++            "aggregate received facts outside its intended frame: " + ", ".join(ref.format() for ref in unexpected_refs)
++        )
++
++    known = [item for item in resolved if item.value_state == "known"]
++    unsupported = [item for item in resolved if item.value_state != "known"]
++    numeric_values: list[N] = []
++    for item in known:
++        raw_value: object = item.value
++        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
++            raise EvidenceInvariantError("quantitative aggregation requires int or float values")
++        if isinstance(raw_value, float) and not math.isfinite(raw_value):
++            raise EvidenceInvariantError("quantitative aggregation requires finite values")
++        numeric_values.append(cast(N, raw_value))
++
++    unresolved = bool(not observations or conflicts or missing_refs or unsupported)
++    if unresolved:
++        value_state: ValueState = "unknown"
++        total: N | None = None
++    else:
++        value_state = "known"
++        total = cast(N, sum(numeric_values))
++
++    authorities = _normalize_authorities(
++        tuple(authority for item in observations for authority in item.measurement_authority)
++    )
++    evidence_refs = _normalize_public_refs(tuple(ref for item in observations for ref in item.evidence_refs))
++    temporal = _aggregate_temporal(tuple(item.temporal for item in observations), observed_at=observed_at)
++    enumeration = _weakest_enumeration(tuple(item.enumeration for item in observations))
++    conflict_refs = _normalize_object_refs(tuple(conflict.fact_ref for conflict in conflicts))
++    incomplete_resolved = tuple(item for item in resolved if item.coverage.complete is not True)
++    coverage_exclusion_items: list[CoverageExclusion] = [
++        exclusion for item in observations for exclusion in item.coverage.exclusions
++    ]
++    coverage_exclusion_items.extend(CoverageExclusion(ref, "missing-contribution") for ref in missing_refs)
++    coverage_exclusion_items.extend(CoverageExclusion(ref, "contradictory-contribution") for ref in conflict_refs)
++    coverage_exclusion_items.extend(
++        CoverageExclusion(item.fact_ref, f"unsupported-contribution:{item.value_state}") for item in unsupported
++    )
++    coverage_exclusion_items.extend(
++        CoverageExclusion(item.fact_ref, "contribution-coverage-incomplete") for item in incomplete_resolved
++    )
++    coverage_exclusions = tuple(coverage_exclusion_items)
++    supported_refs = {item.fact_ref for item in known}
++    coverage = FrameCoverage(
++        intended_frame=intended_frame,
++        grain=spec.grain,
++        denominator=spec.denominator,
++        intended_count=len(expected),
++        observed_count=len(observed_set & expected_set),
++        supported_count=len(supported_refs & expected_set),
++        complete=(
++            bool(observations)
++            and not conflicts
++            and not missing_refs
++            and not unsupported
++            and not incomplete_resolved
++            and observed_set == expected_set
++        ),
++        intended_refs=expected,
++        observed_refs=tuple(ref for ref in observed_refs if ref in expected_set),
++        exclusions=coverage_exclusions,
++    )
++    freshness = _weakest_freshness(tuple(item.freshness for item in observations), observed_at=observed_at)
++    if missing_refs and freshness.state == "fresh":
++        freshness = FreshnessProvenance(
++            state="degraded",
++            evaluated_at=observed_at,
++            cause="missing-contribution",
++            last_good_at=freshness.last_good_at,
++            last_good_evidence_refs=evidence_refs,
++        )
++    result: EvidenceValue[N] = EvidenceValue(
++        family=spec.family,
++        fact_ref=fact_ref,
++        value_state=value_state,
++        value=total,
++        measurement_authority=authorities,
++        weakest_measurement_authority=spec.weakest_authority(authorities),
++        evidence_refs=evidence_refs,
++        definition_ref=spec.definition_ref,
++        temporal=temporal,
++        enumeration=enumeration,
++        coverage=coverage,
++        freshness=freshness,
++        contributions=observations,
++        conflicts=tuple(conflicts),
++    )
++    spec.require(result)
++    return result
++
++
++def _reconcile_same_fact(
++    observations: Sequence[EvidenceObservation[T]],
++    *,
++    spec: FactFamilySpec,
++) -> EvidenceValue[T]:
++    resolution = _resolve_observation_group(tuple(observations), spec=spec)
++    all_evidence = _normalize_public_refs(tuple(ref for item in observations for ref in item.evidence_refs))
++    all_authorities = _normalize_authorities(
++        tuple(authority for item in observations for authority in item.measurement_authority)
++    )
++    temporal = _aggregate_temporal(tuple(item.temporal for item in observations))
++    coverage = _merge_same_fact_coverage(tuple(item.coverage for item in observations))
++    freshness = _weakest_freshness(tuple(item.freshness for item in observations), observed_at=temporal.observed_at)
++    enumeration = _weakest_enumeration(tuple(item.enumeration for item in observations))
++    conflicts: tuple[EvidenceConflict[T], ...]
++    if isinstance(resolution, EvidenceConflict):
++        value_state: ValueState = "unknown"
++        value: T | None = None
++        conflicts = (resolution,)
++    else:
++        value_state = resolution.value_state
++        value = resolution.value
++        conflicts = ()
++    result = EvidenceValue(
++        family=spec.family,
++        fact_ref=observations[0].fact_ref,
++        value_state=value_state,
++        value=value,
++        measurement_authority=all_authorities,
++        weakest_measurement_authority=spec.weakest_authority(all_authorities),
++        evidence_refs=all_evidence,
++        definition_ref=spec.definition_ref,
++        temporal=temporal,
++        enumeration=enumeration,
++        coverage=coverage,
++        freshness=freshness,
++        contributions=tuple(observations),
++        conflicts=conflicts,
++    )
++    spec.require(result)
++    return result
++
++
++def _resolve_observation_group(
++    observations: tuple[EvidenceObservation[T], ...],
++    *,
++    spec: FactFamilySpec,
++) -> EvidenceObservation[T] | EvidenceConflict[T]:
++    if not observations:
++        raise EvidenceInvariantError("cannot resolve an empty observation group")
++    fact_ref = observations[0].fact_ref
++    if any(item.fact_ref != fact_ref for item in observations):
++        raise EvidenceInvariantError("observation group must share fact_ref")
++    unique = tuple(sorted(_dedupe_by_key(observations, _observation_identity), key=_observation_sort_key))
++    known_by_value: dict[str, list[EvidenceObservation[T]]] = {}
++    for item in unique:
++        if item.value_state == "known":
++            known_by_value.setdefault(_stable_value_key(item.value), []).append(item)
++    if not known_by_value:
++        return _merge_equivalent_observations(unique)
++    if len(known_by_value) == 1:
++        selected = tuple(next(iter(known_by_value.values())))
++        return _merge_equivalent_observations((*selected, *(item for item in unique if item.value_state != "known")))
++
++    candidates: list[tuple[int, EvidenceObservation[T]]] = []
++    for item in unique:
++        if item.value_state != "known":
++            continue
++        floor = spec.weakest_authority(item.measurement_authority)
++        if floor is None:
++            continue
++        candidates.append((spec.authority_rank(floor), item))
++    if candidates:
++        best_rank = min(rank for rank, _ in candidates)
++        strongest = [item for rank, item in candidates if rank == best_rank]
++        strongest_values = {_stable_value_key(item.value) for item in strongest}
++        if len(strongest_values) == 1 and all(rank > best_rank for rank, item in candidates if item not in strongest):
++            return _merge_equivalent_observations(tuple(strongest))
++    return EvidenceConflict(
++        fact_ref=fact_ref,
++        reason="contradictory-observations",
++        observations=unique,
++    )
++
++
++def _merge_equivalent_observations(observations: Sequence[EvidenceObservation[T]]) -> EvidenceObservation[T]:
++    if not observations:
++        raise EvidenceInvariantError("cannot merge empty observations")
++    known = [item for item in observations if item.value_state == "known"]
++    selected = known[0] if known else min(observations, key=lambda item: _state_weakness(item.value_state))
++    return EvidenceObservation(
++        fact_ref=selected.fact_ref,
++        value_state=selected.value_state,
++        value=selected.value,
++        measurement_authority=_normalize_authorities(
++            tuple(authority for item in observations for authority in item.measurement_authority)
++        ),
++        evidence_refs=_normalize_public_refs(tuple(ref for item in observations for ref in item.evidence_refs)),
++        temporal=_aggregate_temporal(tuple(item.temporal for item in observations)),
++        enumeration=_weakest_enumeration(tuple(item.enumeration for item in observations)),
++        coverage=_merge_same_fact_coverage(tuple(item.coverage for item in observations)),
++        freshness=_weakest_freshness(tuple(item.freshness for item in observations)),
++    )
++
++
++def _aggregate_temporal(
++    values: Sequence[TemporalProvenance],
++    *,
++    observed_at: str | None = None,
++) -> TemporalProvenance:
++    sources = [item.time_source for item in values if item.time_source is not None]
++    weakest = weakest_of(cast(Sequence[TemporalSource], sources))
++    timestamps = [item.observed_at for item in values if item.observed_at is not None]
++    chosen_observed_at = observed_at or (max(timestamps) if timestamps else None)
++    frame_starts = [item.frame_start for item in values if item.frame_start is not None]
++    frame_ends = [item.frame_end for item in values if item.frame_end is not None]
++    return TemporalProvenance.from_source(
++        observed_at=chosen_observed_at,
++        time_source=weakest,
++        frame_start=min(frame_starts) if frame_starts else None,
++        frame_end=max(frame_ends) if frame_ends else None,
++    )
++
++
++def _weakest_freshness(
++    values: Sequence[FreshnessProvenance],
++    *,
++    observed_at: str | None = None,
++) -> FreshnessProvenance:
++    if not values:
++        return FreshnessProvenance(
++            state="unavailable",
++            evaluated_at=observed_at,
++            cause="no-freshness-evidence",
++        )
++    weakest = max(values, key=lambda item: _FRESHNESS_WEAKNESS[item.state])
++    refs = _normalize_public_refs(tuple(ref for item in values for ref in item.last_good_evidence_refs))
++    last_good_times = [item.last_good_at for item in values if item.last_good_at is not None]
++    evaluated_times = [item.evaluated_at for item in values if item.evaluated_at is not None]
++    return FreshnessProvenance(
++        state=weakest.state,
++        evaluated_at=observed_at or (max(evaluated_times) if evaluated_times else None),
++        cause=weakest.cause,
++        last_good_at=min(last_good_times) if last_good_times else None,
++        last_good_evidence_refs=refs,
++    )
++
++
++def _weakest_enumeration(values: Sequence[EnumerationKind]) -> EnumerationKind:
++    if not values:
++        return "inferred-partial"
++    return max(values, key=lambda item: _ENUMERATION_WEAKNESS[item])
++
++
++def _merge_same_fact_coverage(values: Sequence[FrameCoverage]) -> FrameCoverage:
++    if not values:
++        raise EvidenceInvariantError("cannot merge empty coverage")
++    first = values[0]
++    if any(
++        (item.intended_frame, item.grain, item.denominator) != (first.intended_frame, first.grain, first.denominator)
++        for item in values
++    ):
++        raise EvidenceInvariantError("same-fact refinement cannot change frame, grain, or denominator")
++    intended_counts = [item.intended_count for item in values if item.intended_count is not None]
++    observed_counts = [item.observed_count for item in values if item.observed_count is not None]
++    supported_counts = [item.supported_count for item in values if item.supported_count is not None]
++    return FrameCoverage(
++        intended_frame=first.intended_frame,
++        grain=first.grain,
++        denominator=first.denominator,
++        intended_count=max(intended_counts) if intended_counts else None,
++        observed_count=max(observed_counts) if observed_counts else None,
++        supported_count=max(supported_counts) if supported_counts else None,
++        complete=any(item.complete is True for item in values)
++        if any(item.complete is not None for item in values)
++        else None,
++        intended_refs=_normalize_object_refs(tuple(ref for item in values for ref in item.intended_refs)),
++        observed_refs=_normalize_object_refs(tuple(ref for item in values for ref in item.observed_refs)),
++        exclusions=tuple(exclusion for item in values for exclusion in item.exclusions),
++    )
++
++
++def _state_weakness(state: ValueState) -> int:
++    return {
++        "known": 0,
++        "not_applicable": 1,
++        "skipped": 2,
++        "unknown": 3,
++        "unavailable": 4,
++        "redacted": 5,
++    }[state]
++
++
++def _validate_value_state(state: ValueState, value: object) -> None:
++    if state not in _VALUE_STATES:
++        raise EvidenceInvariantError(f"unsupported value state: {state!r}")
++    if state == "known" and value is None:
++        raise EvidenceInvariantError("known evidence value requires a typed value")
++    if state != "known" and value is not None:
++        raise EvidenceInvariantError(f"{state} evidence value cannot carry a numeric/string sentinel")
++
++
++def _validate_authorities(authorities: Sequence[MeasurementAuthority]) -> None:
++    unknown = set(authorities) - _AUTHORITIES
++    if unknown:
++        raise EvidenceInvariantError(f"unsupported measurement authority: {sorted(unknown)}")
++
++
++def _normalize_authorities(
++    authorities: Sequence[MeasurementAuthority],
++) -> tuple[MeasurementAuthority, ...]:
++    _validate_authorities(authorities)
++    return tuple(sorted(set(authorities)))
++
++
++def _normalize_public_refs(refs: Sequence[PublicRef]) -> tuple[PublicRef, ...]:
++    return tuple(sorted(_dedupe_by_key(refs, _public_ref_identity), key=_public_ref_sort_key))
++
++
++def _normalize_object_refs(refs: Sequence[ObjectRef]) -> tuple[ObjectRef, ...]:
++    return tuple(sorted(_dedupe_by_key(refs, lambda ref: ref.format()), key=lambda ref: ref.format()))
++
++
++def _format_public_ref(ref: PublicRef) -> str:
++    return ref.format()
++
++
++def _public_ref_identity(ref: PublicRef) -> tuple[str, str]:
++    return ("evidence" if isinstance(ref, EvidenceRef) else "object", ref.format())
++
++
++def _public_ref_sort_key(ref: PublicRef) -> tuple[str, str]:
++    return _public_ref_identity(ref)
++
++
++def _observation_identity(observation: EvidenceObservation[object]) -> tuple[object, ...]:
++    return (
++        observation.fact_ref.format(),
++        observation.value_state,
++        _stable_value_key(observation.value),
++        tuple(observation.measurement_authority),
++        tuple(_public_ref_identity(ref) for ref in observation.evidence_refs),
++        repr(observation.temporal.to_dict()),
++        observation.enumeration,
++        repr(observation.coverage.to_dict()),
++        repr(observation.freshness.to_dict()),
++    )
++
++
++def _observation_sort_key(observation: EvidenceObservation[object]) -> tuple[str, str, str]:
++    return (observation.fact_ref.format(), observation.value_state, _stable_value_key(observation.value))
++
++
++def _conflict_identity(conflict: EvidenceConflict[object]) -> tuple[object, ...]:
++    return (
++        conflict.fact_ref.format(),
++        conflict.reason,
++        tuple(_observation_identity(item) for item in conflict.observations),
++    )
++
++
++def _stable_value_key(value: object) -> str:
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise EvidenceInvariantError("evidence values must be finite")
++        return f"float:{value.hex()}"
++    return f"{type(value).__name__}:{value!r}"
++
++
++def _dedupe_by_key(items: Iterable[T], key: Callable[[T], Hashable]) -> tuple[T, ...]:
++    result: list[T] = []
++    seen: set[Hashable] = set()
++    for item in items:
++        identity = key(item)
++        if identity in seen:
++            continue
++        seen.add(identity)
++        result.append(item)
++    return tuple(result)
++
++
++def _parse_aware_iso8601(value: str) -> datetime:
++    try:
++        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
++    except ValueError as exc:
++        raise EvidenceInvariantError(f"invalid ISO-8601 timestamp: {value!r}") from exc
++    if parsed.tzinfo is None:
++        raise EvidenceInvariantError(f"timestamp must be timezone-aware: {value!r}")
++    return parsed
++
++
++def _require_aware_iso8601(name: str, value: str) -> None:
++    try:
++        _parse_aware_iso8601(value)
++    except EvidenceInvariantError as exc:
++        raise EvidenceInvariantError(f"{name}: {exc}") from exc
++
++
++__all__ = [
++    "CalibratedConfidence",
++    "CoverageExclusion",
++    "EnumerationKind",
++    "EvidenceAxis",
++    "EvidenceConflict",
++    "EvidenceInvariantError",
++    "EvidenceObservation",
++    "EvidenceValue",
++    "FactFamilyDiagnostic",
++    "FactFamilySpec",
++    "FrameCoverage",
++    "FreshnessProvenance",
++    "FreshnessState",
++    "MeasurementAuthority",
++    "TemporalProvenance",
++    "ValueSchema",
++    "ValueState",
++    "audit_fact_family_completeness",
++    "refine_evidence_value",
++    "sum_evidence_values",
++]
+diff --git a/polylogue/core/temporal.py b/polylogue/core/temporal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e46e56fab8c1dea271ab4a54a9c5d827703caaf
+--- /dev/null
++++ b/polylogue/core/temporal.py
+@@ -0,0 +1,85 @@
++"""Shared temporal provenance vocabulary and weakest-source algebra.
++
++This module owns only the storage-free timestamp source/confidence contract.
++Domain classifiers remain in their owning packages; consumers can reduce
++provenance without importing an insight or surface layer.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++from typing import Literal, TypeGuard, get_args
++
++TemporalSource = Literal[
++    "provider_ts",
++    "hook_event_ts",
++    "sort_key",
++    "file_mtime",
++    "materialization_ts",
++    "fallback_date",
++]
++TimeConfidence = Literal["recorded", "estimated", "unknown"]
++
++TEMPORAL_SOURCE_VALUES: frozenset[TemporalSource] = frozenset(get_args(TemporalSource))
++TIME_CONFIDENCE_VALUES: frozenset[TimeConfidence] = frozenset(get_args(TimeConfidence))
++
++# Strongest first. A larger rank is weaker, so aggregate reduction is a max.
++_SOURCE_RANK: dict[TemporalSource, int] = {source: rank for rank, source in enumerate(get_args(TemporalSource))}
++_TIME_CONFIDENCE_BY_SOURCE: dict[TemporalSource, TimeConfidence] = {
++    "provider_ts": "recorded",
++    "hook_event_ts": "recorded",
++    "sort_key": "estimated",
++    "file_mtime": "estimated",
++    "materialization_ts": "unknown",
++    "fallback_date": "unknown",
++}
++
++
++def weakest_source(a: TemporalSource, b: TemporalSource) -> TemporalSource:
++    """Return the weaker (less event-authoritative) temporal source."""
++
++    return a if _SOURCE_RANK[a] >= _SOURCE_RANK[b] else b
++
++
++def weakest_of(sources: Sequence[TemporalSource]) -> TemporalSource | None:
++    """Reduce a sequence to its weakest source; return ``None`` when empty."""
++
++    if not sources:
++        return None
++    result = sources[0]
++    for source in sources[1:]:
++        result = weakest_source(result, source)
++    return result
++
++
++def time_confidence_for_source(source: str | None) -> TimeConfidence:
++    """Project source provenance to the public recorded/estimated/unknown axis."""
++
++    if source is None or not is_valid_temporal_source(source):
++        return "unknown"
++    return _TIME_CONFIDENCE_BY_SOURCE[source]
++
++
++def time_confidence_for_sources(sources: Sequence[TemporalSource]) -> TimeConfidence:
++    """Project an aggregate through the weakest source in the input set."""
++
++    return time_confidence_for_source(weakest_of(sources))
++
++
++def is_valid_temporal_source(value: str) -> TypeGuard[TemporalSource]:
++    """Return whether *value* belongs to the canonical temporal vocabulary."""
++
++    return value in TEMPORAL_SOURCE_VALUES
++
++
++__all__ = [
++    "TEMPORAL_SOURCE_VALUES",
++    "TIME_CONFIDENCE_VALUES",
++    "TemporalSource",
++    "TimeConfidence",
++    "is_valid_temporal_source",
++    "time_confidence_for_source",
++    "time_confidence_for_sources",
++    "weakest_of",
++    "weakest_source",
++]
+diff --git a/polylogue/daemon/status_snapshot.py b/polylogue/daemon/status_snapshot.py
+index 2944e364fa7550ea66c2eb47ef505396dd2affc7..b943e6f8d18caee78260e93b7852b9078e47a170 100644
+--- a/polylogue/daemon/status_snapshot.py
++++ b/polylogue/daemon/status_snapshot.py
+@@ -14,11 +14,19 @@ import threading
+ import time
+ from collections.abc import Mapping
+ from dataclasses import dataclass
+-from datetime import UTC, datetime
++from datetime import UTC, datetime, timedelta
+ from pathlib import Path
+ from typing import Any
+ 
++from polylogue.core.evidence_value import (
++    EvidenceValue,
++    FactFamilySpec,
++    FrameCoverage,
++    FreshnessProvenance,
++    TemporalProvenance,
++)
+ from polylogue.core.json import JSONDocument, json_document
++from polylogue.core.refs import ObjectRef
+ from polylogue.daemon.fts_status import fts_readiness_info
+ from polylogue.paths import active_index_db_path
+ from polylogue.readiness.capability import (
+@@ -32,6 +40,39 @@ _REFRESH_LOCK = threading.Lock()
+ _RUNTIME_COMPONENT_LOCK = threading.Lock()
+ _SNAPSHOT: StatusSnapshot | None = None
+ 
++_STATUS_SNAPSHOT_STATE_DEFINITION_REF = ObjectRef(
++    kind="insight",
++    object_id="daemon-status-snapshot-state:v1",
++)
++STATUS_SNAPSHOT_STATE_FAMILY = FactFamilySpec(
++    family="daemon.status_snapshot_state",
++    owner="polylogue.daemon.status_snapshot",
++    source_adapter="StatusSnapshot.with_metadata",
++    public_field="status_snapshot.state_evidence",
++    renderer_label="status snapshot state",
++    value_schema="string",
++    unit="state",
++    grain="status_snapshot",
++    denominator="one cached daemon status snapshot",
++    definition_ref=_STATUS_SNAPSHOT_STATE_DEFINITION_REF,
++    required_axes=frozenset(
++        {
++            "value_state",
++            "measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++        }
++    ),
++    allowed_states=frozenset({"known"}),
++    allowed_authorities=frozenset({"structural"}),
++    authority_precedence=("structural",),
++    requires_last_good_when_degraded=True,
++)
++
+ 
+ @dataclass(frozen=True, slots=True)
+ class RuntimeComponentState:
+@@ -65,16 +106,78 @@ class StatusSnapshot:
+             base_payload,
+             snapshot_state=state,
+         )
++        evaluated_at = (
++            datetime.fromisoformat(self.captured_at.replace("Z", "+00:00")) + timedelta(seconds=age_s)
++        ).isoformat()
+         payload["status_snapshot"] = {
+             "state": state,
+             "captured_at": self.captured_at,
+             "age_s": round(age_s, 3),
+             "refresh_error": self.refresh_error,
++            "state_evidence": _status_snapshot_state_evidence(
++                state=state,
++                captured_at=self.captured_at,
++                evaluated_at=evaluated_at,
++            ).to_dict(),
+         }
+         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
+         return json_document(payload)
+ 
+ 
++def _status_snapshot_state_evidence(
++    *,
++    state: str,
++    captured_at: str,
++    evaluated_at: str,
++) -> EvidenceValue[str]:
++    snapshot_ref = ObjectRef(kind="run", object_id=f"status-snapshot:{captured_at}")
++    if state == "fresh":
++        freshness = FreshnessProvenance(state="fresh", evaluated_at=evaluated_at)
++    elif state == "stale":
++        freshness = FreshnessProvenance(
++            state="stale",
++            evaluated_at=evaluated_at,
++            cause=f"snapshot-age-exceeded-{STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S:g}s",
++            last_good_at=captured_at,
++            last_good_evidence_refs=(snapshot_ref,),
++        )
++    else:
++        freshness = FreshnessProvenance(
++            state="unavailable",
++            evaluated_at=evaluated_at,
++            cause="rich-status-refresh-in-progress" if state == "refreshing" else "rich-status-unavailable",
++        )
++    evidence = EvidenceValue(
++        family=STATUS_SNAPSHOT_STATE_FAMILY.family,
++        fact_ref=snapshot_ref,
++        value_state="known",
++        value=state,
++        measurement_authority=("structural",),
++        weakest_measurement_authority="structural",
++        evidence_refs=(snapshot_ref,),
++        definition_ref=STATUS_SNAPSHOT_STATE_FAMILY.definition_ref,
++        temporal=TemporalProvenance.from_source(
++            observed_at=evaluated_at,
++            time_source="materialization_ts",
++        ),
++        enumeration="not-applicable",
++        coverage=FrameCoverage(
++            intended_frame="one cached daemon status snapshot",
++            grain=STATUS_SNAPSHOT_STATE_FAMILY.grain,
++            denominator=STATUS_SNAPSHOT_STATE_FAMILY.denominator,
++            intended_count=1,
++            observed_count=1,
++            supported_count=1,
++            complete=True,
++            intended_refs=(snapshot_ref,),
++            observed_refs=(snapshot_ref,),
++        ),
++        freshness=freshness,
++    )
++    STATUS_SNAPSHOT_STATE_FAMILY.require(evidence)
++    return evidence
++
++
+ def configure_runtime_components(
+     *,
+     api_enabled: bool | None = None,
+@@ -197,6 +300,11 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
+             "captured_at": now,
+             "age_s": 0.0,
+             "refresh_error": refresh_error,
++            "state_evidence": _status_snapshot_state_evidence(
++                state="refreshing" if refresh_in_progress else "minimal",
++                captured_at=now,
++                evaluated_at=now,
++            ).to_dict(),
+         },
+     }
+     payload["component_readiness"] = _minimal_component_readiness(payload)
+@@ -369,6 +477,7 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
+ 
+ 
+ __all__ = [
++    "STATUS_SNAPSHOT_STATE_FAMILY",
+     "configure_runtime_components",
+     "get_status_snapshot_payload",
+     "refresh_status_snapshot",
+diff --git a/polylogue/daemon/web_shell.py b/polylogue/daemon/web_shell.py
+index a6f88d659be1244fba3831b9c77a9c1c37c12b7d..b3bfe3d4778c01e30572a71f86136fd5f98e8da6 100644
+--- a/polylogue/daemon/web_shell.py
++++ b/polylogue/daemon/web_shell.py
+@@ -1816,6 +1816,7 @@ function renderAnalyzePanel() {
+   var html = '<div class="verb-panel">';
+   html += '<div class="panel-section"><h3>Archive-wide estimate</h3><div class="stat-row">'
+     + statTile('Catalog API-equivalent', formatUsd(data.catalog_api_equivalent_usd))
++    + statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))
+     + statTile('Logical (deduped)', formatUsd(data.logical_catalog_api_equivalent_usd))
+     + statTile('Provider-priced (stored)', formatUsd(data.stored_provider_priced_usd))
+     + '</div></div>';
+@@ -2622,7 +2623,9 @@ function retryCostPanel(id) {
+ }
+ 
+ function formatUsd(value) {
+-  var n = Number(value || 0);
++  if (value === null || value === undefined || value === '') return 'unknown';
++  var n = Number(value);
++  if (!Number.isFinite(n)) return 'unknown';
+   if (n === 0) return '$0.00';
+   if (n < 0.01) return '$' + n.toFixed(4);
+   if (n < 1) return '$' + n.toFixed(3);
+diff --git a/polylogue/insights/temporal_source.py b/polylogue/insights/temporal_source.py
+index 4414070ce7ddf5f21f9c4ef12becdbf889e93feb..7d0a64f0c05cf92d0f41466223dc97eb89a393e3 100644
+--- a/polylogue/insights/temporal_source.py
++++ b/polylogue/insights/temporal_source.py
+@@ -62,27 +62,19 @@ from __future__ import annotations
+ import ast
+ from collections.abc import Sequence
+ from datetime import datetime
+-from typing import Literal, Protocol, TypeGuard, get_args
+-
+-TemporalSource = Literal[
+-    "provider_ts",
+-    "hook_event_ts",
+-    "sort_key",
+-    "file_mtime",
+-    "materialization_ts",
+-    "fallback_date",
+-]
+-
+-TEMPORAL_SOURCE_VALUES: frozenset[TemporalSource] = frozenset(get_args(TemporalSource))
++from typing import Protocol
+ 
+-# Public rendering contract for timestamps.  This is intentionally separate
+-# from TemporalSource: consumers normally need to decide whether an observed
+-# value may be shown as event time, not learn every storage-clock detail.
+-#
+-# ``unknown`` is the explicit no-time state.  It must render as unknown rather
+-# than substituting materialization time or a deterministic fallback date.
+-TimeConfidence = Literal["recorded", "estimated", "unknown"]
+-TIME_CONFIDENCE_VALUES: frozenset[TimeConfidence] = frozenset(get_args(TimeConfidence))
++from polylogue.core.temporal import (
++    TEMPORAL_SOURCE_VALUES,
++    TIME_CONFIDENCE_VALUES,
++    TemporalSource,
++    TimeConfidence,
++    is_valid_temporal_source,
++    time_confidence_for_source,
++    time_confidence_for_sources,
++    weakest_of,
++    weakest_source,
++)
+ 
+ 
+ class HasTemporalSource(Protocol):
+@@ -91,65 +83,6 @@ class HasTemporalSource(Protocol):
+     input_high_water_mark_source: str | None
+ 
+ 
+-# Provenance lattice, strongest first. A lower rank is a stronger (more
+-# trustworthy/recency-anchored) signal; ``weakest_source`` picks the higher
+-# rank between two values. Order matches the docstring above verbatim.
+-_SOURCE_RANK: dict[TemporalSource, int] = {source: rank for rank, source in enumerate(get_args(TemporalSource))}
+-
+-_TIME_CONFIDENCE_BY_SOURCE: dict[TemporalSource, TimeConfidence] = {
+-    "provider_ts": "recorded",
+-    "hook_event_ts": "recorded",
+-    "sort_key": "estimated",
+-    "file_mtime": "estimated",
+-    "materialization_ts": "unknown",
+-    "fallback_date": "unknown",
+-}
+-
+-
+-def weakest_source(a: TemporalSource, b: TemporalSource) -> TemporalSource:
+-    """Return the weaker (less trustworthy) of two temporal sources."""
+-
+-    return a if _SOURCE_RANK[a] >= _SOURCE_RANK[b] else b
+-
+-
+-def weakest_of(sources: Sequence[TemporalSource]) -> TemporalSource | None:
+-    """Reduce a non-empty sequence to its weakest member; ``None`` if empty."""
+-
+-    if not sources:
+-        return None
+-    result = sources[0]
+-    for source in sources[1:]:
+-        result = weakest_source(result, source)
+-    return result
+-
+-
+-def time_confidence_for_source(source: str | None) -> TimeConfidence:
+-    """Project a source clock into the consumer-facing time-confidence signal.
+-
+-    Provider and hook timestamps are recorded event time. Sort keys and file
+-    mtimes preserve ordering evidence but are estimates of event time. A
+-    materialization timestamp, deterministic fallback date, missing tag, or
+-    unrecognized legacy tag says nothing reliable about when the event happened
+-    and therefore returns ``unknown``. Consumers must render that state without
+-    fabricating a timestamp.
+-    """
+-
+-    if source is None or not is_valid_temporal_source(source):
+-        return "unknown"
+-    return _TIME_CONFIDENCE_BY_SOURCE[source]
+-
+-
+-def time_confidence_for_sources(sources: Sequence[TemporalSource]) -> TimeConfidence:
+-    """Return aggregate confidence using the temporal lattice's weakest input.
+-
+-    This keeps confidence propagation aligned with provenance propagation: one
+-    weak contributor degrades the aggregate rather than being laundered by a
+-    stronger timestamp elsewhere in the input set.
+-    """
+-
+-    return time_confidence_for_source(weakest_of(sources))
+-
+-
+ def time_confidence_for_record(record: HasTemporalSource) -> TimeConfidence:
+     """Project a provenance-bearing API/CLI/MCP record without re-deriving time."""
+ 
+@@ -267,12 +200,6 @@ def audit_temporal_source_leaf_callers(package_root: str) -> list[str]:
+     return violations
+ 
+ 
+-def is_valid_temporal_source(value: str) -> TypeGuard[TemporalSource]:
+-    """Return True when *value* is a recognized temporal source token."""
+-
+-    return value in TEMPORAL_SOURCE_VALUES
+-
+-
+ __all__ = [
+     "HasTemporalSource",
+     "TEMPORAL_SOURCE_VALUES",
+diff --git a/polylogue/storage/usage.py b/polylogue/storage/usage.py
+index 41a3d90816059c7e9d767b81f1f2c7bf4486f825..c72cdf3752ae6b7e1514f6617e9f6481e63618e7 100644
+--- a/polylogue/storage/usage.py
++++ b/polylogue/storage/usage.py
+@@ -12,8 +12,9 @@ import sqlite3
+ from collections import Counter, defaultdict
+ from collections.abc import Iterable
+ from dataclasses import dataclass, field
++from datetime import UTC, datetime
+ from pathlib import Path
+-from typing import Literal
++from typing import Final, Literal, cast
+ 
+ from polylogue.archive.semantic.pricing import (
+     CATALOG_EFFECTIVE_DATE,
+@@ -29,6 +30,16 @@ from polylogue.archive.semantic.subscription_pricing import (
+     credits_to_usd,
+ )
+ from polylogue.core.enums import Origin, Provider
++from polylogue.core.evidence_value import (
++    CoverageExclusion,
++    EvidenceValue,
++    FactFamilySpec,
++    FrameCoverage,
++    FreshnessProvenance,
++    TemporalProvenance,
++    sum_evidence_values,
++)
++from polylogue.core.refs import ObjectRef
+ from polylogue.storage.table_existence import table_exists as _table_exists
+ 
+ UsageReportDetail = Literal["headline", "full"]
+@@ -44,6 +55,71 @@ _MODEL_NAME_STRIP_CHARS = (
+     "\u2028\u2029\u202f\u205f\u3000"
+ )
+ 
++_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF: Final = ObjectRef(
++    kind="insight",
++    object_id="usage-lane-exact-total-tokens:v1",
++)
++USAGE_LANE_EXACT_TOKENS_FAMILY: Final = FactFamilySpec(
++    family="usage.pricing_lane_exact_total_tokens",
++    owner="polylogue.storage.usage",
++    source_adapter="_pricing_lane_reports",
++    public_field="pricing_lanes[].exact_total_tokens_evidence",
++    renderer_label="exact total tokens",
++    value_schema="integer",
++    unit="tokens",
++    grain="pricing_lane",
++    denominator="session_model_usage rows in the declared lane",
++    definition_ref=_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF,
++    required_axes=frozenset(
++        {
++            "value_state",
++            "measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++        }
++    ),
++    allowed_states=frozenset({"known", "unknown"}),
++    allowed_authorities=frozenset({"provider-reported", "model-derived", "structural"}),
++    authority_precedence=("provider-reported", "structural", "model-derived"),
++)
++
++_USAGE_LANE_CATALOG_COST_DEFINITION_REF: Final = ObjectRef(
++    kind="insight",
++    object_id="usage-lane-catalog-api-equivalent-cost:v1",
++)
++USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
++    family="usage.pricing_lane_catalog_api_equivalent_cost",
++    owner="polylogue.storage.usage",
++    source_adapter="_pricing_lane_reports",
++    public_field="pricing_lanes[].catalog_api_equivalent_evidence",
++    renderer_label="catalog API-equivalent cost",
++    value_schema="number",
++    unit="USD",
++    grain="pricing_lane",
++    denominator="session_model_usage rows in the declared lane",
++    definition_ref=_USAGE_LANE_CATALOG_COST_DEFINITION_REF,
++    required_axes=frozenset(
++        {
++            "value_state",
++            "measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++        }
++    ),
++    allowed_states=frozenset({"known", "unknown"}),
++    allowed_authorities=frozenset({"catalog-derived"}),
++    authority_precedence=("catalog-derived",),
++)
++
++
+ 
+ def _normalize_model_name(value: object) -> str:
+     return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
+@@ -326,16 +402,12 @@ class OriginUsageReport:
+ 
+ @dataclass(frozen=True, slots=True)
+ class PricingLaneReport:
+-    """Fast repricing headline for one ``session_model_usage`` provenance lane.
+-
+-    Carries two independent cost bases (polylogue-f2qv.3 / polylogue-5hf):
+-    ``catalog_api_equivalent_usd`` is what the lane's usage would cost at
+-    API list price, and ``subscription_credit_usd`` is what it would cost
+-    against the curated Claude Code subscription credit model (cache reads
+-    free, output billed at 5x input). They are never conflated into one
+-    number; see docs/cost-model.md for the subscription-tier assumption and
+-    non-authoritative caveats. ``subscription_credit_usd`` is 0.0 for lanes/
+-    models without a declared credit rate (e.g. non-Claude models).
++    """Repricing evidence for one ``session_model_usage`` provenance lane.
++
++    Exact tokens and catalog cost are deliberately independent. Missing model
++    prices keep the exact token total known while the complete catalog cost is
++    ``None``/``unknown``; ``catalog_priced_subtotal_usd`` preserves the priced
++    subset rather than silently treating unmatched rows as zero-cost.
+     """
+ 
+     provenance: str
+@@ -345,9 +417,18 @@ class PricingLaneReport:
+     unmatched_model_row_count: int = 0
+     usage: UsageCounters = field(default_factory=UsageCounters)
+     stored_cost_usd: float = 0.0
+-    catalog_api_equivalent_usd: float = 0.0
++    catalog_api_equivalent_usd: float | None = None
++    catalog_priced_subtotal_usd: float = 0.0
+     subscription_credit_usd: float = 0.0
++    grain: str = "physical_session"
++    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+     caveats: tuple[str, ...] = ()
++    exact_total_tokens_evidence: EvidenceValue[int] = field(init=False, repr=False)
++    catalog_api_equivalent_evidence: EvidenceValue[float] = field(init=False, repr=False)
++
++    def __post_init__(self) -> None:
++        object.__setattr__(self, "exact_total_tokens_evidence", _pricing_lane_token_evidence(self))
++        object.__setattr__(self, "catalog_api_equivalent_evidence", _pricing_lane_cost_evidence(self))
+ 
+     def to_dict(self) -> dict[str, object]:
+         return {
+@@ -358,8 +439,13 @@ class PricingLaneReport:
+             "unmatched_model_row_count": self.unmatched_model_row_count,
+             "usage": self.usage.to_dict(),
+             "stored_cost_usd": round(self.stored_cost_usd, 6),
+-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
++            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
++            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
+             "subscription_credit_usd": round(self.subscription_credit_usd, 6),
++            "grain": self.grain,
++            "observed_at": self.observed_at,
++            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
++            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
+             "caveats": list(self.caveats),
+         }
+ 
+@@ -394,20 +480,67 @@ class ProviderUsageReport:
+     logical_pricing_lanes: tuple[PricingLaneReport, ...] = ()
+     logical_pricing_grain: str = "logical_session_model_high_water"
+     stored_provider_priced_usd: float = 0.0
+-    catalog_api_equivalent_usd: float = 0.0
+-    logical_catalog_api_equivalent_usd: float = 0.0
+-    # Dual cost view (polylogue-f2qv.3 / polylogue-5hf): subscription_credit_usd
+-    # is the API-equivalent usage priced against the curated Claude Code
+-    # subscription credit model instead of API list price (cache reads free,
+-    # output at 5x input); it is always <= the API-equivalent figure for the
+-    # same usage and is 0.0 for models without a declared credit rate. The two
+-    # bases are reported separately and never summed into one number.
++    catalog_api_equivalent_usd: float | None = None
++    catalog_priced_subtotal_usd: float = 0.0
++    logical_catalog_api_equivalent_usd: float | None = None
++    logical_catalog_priced_subtotal_usd: float = 0.0
+     subscription_credit_catalog_provenance: str = SUBSCRIPTION_CATALOG_PROVENANCE
+     subscription_credit_catalog_effective_date: str = SUBSCRIPTION_CATALOG_EFFECTIVE_DATE
+     subscription_credit_usd: float = 0.0
+     logical_subscription_credit_usd: float = 0.0
++    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+     caveats: tuple[str, ...] = ()
+     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
++    exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
++    catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
++    logical_exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
++    logical_catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
++
++    def __post_init__(self) -> None:
++        object.__setattr__(
++            self,
++            "exact_total_tokens_evidence",
++            _aggregate_pricing_lane_evidence(
++                self.pricing_lanes,
++                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
++                metric="exact-total-tokens",
++                observed_at=self.observed_at,
++                logical=False,
++            ),
++        )
++        object.__setattr__(
++            self,
++            "catalog_api_equivalent_evidence",
++            _aggregate_pricing_lane_evidence(
++                self.pricing_lanes,
++                spec=USAGE_LANE_CATALOG_COST_FAMILY,
++                metric="catalog-api-equivalent-cost",
++                observed_at=self.observed_at,
++                logical=False,
++            ),
++        )
++        object.__setattr__(
++            self,
++            "logical_exact_total_tokens_evidence",
++            _aggregate_pricing_lane_evidence(
++                self.logical_pricing_lanes,
++                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
++                metric="exact-total-tokens",
++                observed_at=self.observed_at,
++                logical=True,
++            ),
++        )
++        object.__setattr__(
++            self,
++            "logical_catalog_api_equivalent_evidence",
++            _aggregate_pricing_lane_evidence(
++                self.logical_pricing_lanes,
++                spec=USAGE_LANE_CATALOG_COST_FAMILY,
++                metric="catalog-api-equivalent-cost",
++                observed_at=self.observed_at,
++                logical=True,
++            ),
++        )
+ 
+     def to_dict(self) -> dict[str, object]:
+         return {
+@@ -425,17 +558,184 @@ class ProviderUsageReport:
+             "logical_pricing_lanes": [lane.to_dict() for lane in self.logical_pricing_lanes],
+             "logical_pricing_grain": self.logical_pricing_grain,
+             "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
+-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+-            "logical_catalog_api_equivalent_usd": round(self.logical_catalog_api_equivalent_usd, 6),
++            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
++            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
++            "logical_catalog_api_equivalent_usd": _round_optional(self.logical_catalog_api_equivalent_usd),
++            "logical_catalog_priced_subtotal_usd": round(self.logical_catalog_priced_subtotal_usd, 6),
+             "subscription_credit_catalog_provenance": self.subscription_credit_catalog_provenance,
+             "subscription_credit_catalog_effective_date": self.subscription_credit_catalog_effective_date,
+             "subscription_credit_usd": round(self.subscription_credit_usd, 6),
+             "logical_subscription_credit_usd": round(self.logical_subscription_credit_usd, 6),
++            "observed_at": self.observed_at,
++            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
++            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
++            "logical_exact_total_tokens_evidence": self.logical_exact_total_tokens_evidence.to_dict(),
++            "logical_catalog_api_equivalent_evidence": self.logical_catalog_api_equivalent_evidence.to_dict(),
+             "origins": [origin.to_dict() for origin in self.origins],
+             "caveats": list(self.caveats),
+         }
+ 
+ 
++def _pricing_lane_storage_ref(lane: PricingLaneReport) -> ObjectRef:
++    return ObjectRef(
++        kind="insight",
++        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}",
++    )
++
++
++def _pricing_lane_fact_ref(lane: PricingLaneReport, metric: str) -> ObjectRef:
++    return ObjectRef(
++        kind="insight",
++        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}:{metric}",
++    )
++
++
++def _usage_lane_authority(provenance: str) -> Literal["provider-reported", "model-derived", "structural"]:
++    if provenance == "estimated":
++        return "model-derived"
++    if provenance in {"priced", "origin_reported"}:
++        return "provider-reported"
++    return "structural"
++
++
++def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
++    storage_ref = _pricing_lane_storage_ref(lane)
++    fact_ref = _pricing_lane_fact_ref(lane, "exact-total-tokens")
++    known = lane.row_count > 0
++    evidence = EvidenceValue(
++        family=USAGE_LANE_EXACT_TOKENS_FAMILY.family,
++        fact_ref=fact_ref,
++        value_state="known" if known else "unknown",
++        value=lane.usage.total_tokens if known else None,
++        measurement_authority=(_usage_lane_authority(lane.provenance),),
++        weakest_measurement_authority=_usage_lane_authority(lane.provenance),
++        evidence_refs=(storage_ref,),
++        definition_ref=USAGE_LANE_EXACT_TOKENS_FAMILY.definition_ref,
++        temporal=TemporalProvenance.from_source(
++            observed_at=lane.observed_at,
++            time_source="materialization_ts",
++        ),
++        enumeration="census",
++        coverage=FrameCoverage(
++            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
++            grain=USAGE_LANE_EXACT_TOKENS_FAMILY.grain,
++            denominator=USAGE_LANE_EXACT_TOKENS_FAMILY.denominator,
++            intended_count=lane.row_count,
++            observed_count=lane.row_count,
++            supported_count=lane.row_count if known else 0,
++            complete=known,
++        ),
++        freshness=FreshnessProvenance(
++            state="fresh",
++            evaluated_at=lane.observed_at,
++        ),
++    )
++    USAGE_LANE_EXACT_TOKENS_FAMILY.require(cast(EvidenceValue[object], evidence))
++    return evidence
++
++
++def _pricing_lane_cost_evidence(lane: PricingLaneReport) -> EvidenceValue[float]:
++    storage_ref = _pricing_lane_storage_ref(lane)
++    catalog_ref = ObjectRef(
++        kind="insight",
++        object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}",
++    )
++    fact_ref = _pricing_lane_fact_ref(lane, "catalog-api-equivalent-cost")
++    known = (
++        lane.row_count > 0
++        and lane.unmatched_model_row_count == 0
++        and lane.catalog_api_equivalent_usd is not None
++    )
++    exclusions: tuple[CoverageExclusion, ...] = ()
++    if lane.unmatched_model_row_count > 0:
++        exclusions = (
++            CoverageExclusion(
++                subject_ref=storage_ref,
++                reason=f"unpriced-model-rows:{lane.unmatched_model_row_count}",
++            ),
++        )
++    elif lane.row_count > 0 and lane.catalog_api_equivalent_usd is None:
++        exclusions = (
++            CoverageExclusion(
++                subject_ref=storage_ref,
++                reason="catalog-cost-not-materialized",
++            ),
++        )
++    evidence = EvidenceValue(
++        family=USAGE_LANE_CATALOG_COST_FAMILY.family,
++        fact_ref=fact_ref,
++        value_state="known" if known else "unknown",
++        value=lane.catalog_api_equivalent_usd if known else None,
++        measurement_authority=("catalog-derived",),
++        weakest_measurement_authority="catalog-derived",
++        evidence_refs=(storage_ref, catalog_ref),
++        definition_ref=USAGE_LANE_CATALOG_COST_FAMILY.definition_ref,
++        temporal=TemporalProvenance.from_source(
++            observed_at=lane.observed_at,
++            time_source="materialization_ts",
++        ),
++        enumeration="census",
++        coverage=FrameCoverage(
++            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
++            grain=USAGE_LANE_CATALOG_COST_FAMILY.grain,
++            denominator=USAGE_LANE_CATALOG_COST_FAMILY.denominator,
++            intended_count=lane.row_count,
++            observed_count=lane.row_count,
++            supported_count=lane.matched_model_row_count,
++            complete=known,
++            exclusions=exclusions,
++        ),
++        freshness=FreshnessProvenance(
++            state="fresh",
++            evaluated_at=lane.observed_at,
++        ),
++    )
++    USAGE_LANE_CATALOG_COST_FAMILY.require(cast(EvidenceValue[object], evidence))
++    return evidence
++
++
++def _aggregate_pricing_lane_evidence(
++    lanes: tuple[PricingLaneReport, ...],
++    *,
++    spec: FactFamilySpec,
++    metric: str,
++    observed_at: str,
++    logical: bool,
++) -> EvidenceValue[int | float]:
++    values: tuple[EvidenceValue[int | float], ...]
++    if spec is USAGE_LANE_EXACT_TOKENS_FAMILY:
++        values = cast(
++            tuple[EvidenceValue[int | float], ...],
++            tuple(lane.exact_total_tokens_evidence for lane in lanes),
++        )
++    elif spec is USAGE_LANE_CATALOG_COST_FAMILY:
++        values = cast(
++            tuple[EvidenceValue[int | float], ...],
++            tuple(lane.catalog_api_equivalent_evidence for lane in lanes),
++        )
++    else:
++        raise ValueError(f"unsupported usage evidence family: {spec.family}")
++    prefix = "logical-" if logical else "physical-"
++    return sum_evidence_values(
++        values,
++        spec=spec,
++        fact_ref=ObjectRef(kind="insight", object_id=f"provider-usage:{prefix}{metric}:total"),
++        observed_at=observed_at,
++        intended_frame=f"{prefix.rstrip('-')} provider usage pricing lanes",
++        expected_fact_refs=tuple(value.fact_ref for value in values),
++    )
++
++
++def _complete_catalog_total(lanes: tuple[PricingLaneReport, ...]) -> float | None:
++    if not lanes or any(lane.catalog_api_equivalent_usd is None for lane in lanes):
++        return None
++    return round(sum(cast(float, lane.catalog_api_equivalent_usd) for lane in lanes), 6)
++
++
++def _round_optional(value: float | None) -> float | None:
++    return None if value is None else round(value, 6)
++
++
+ def provider_usage_report_for_archive_root(
+     archive_root: Path,
+     *,
+@@ -470,10 +770,12 @@ def provider_usage_report_from_connection(
+     origin: str | None = None,
+     limit: int | None = 25,
+     detail: UsageReportDetail = "full",
++    observed_at: str | None = None,
+ ) -> ProviderUsageReport:
+     """Return a provider usage report for an already-open index connection."""
+ 
+     conn.row_factory = sqlite3.Row
++    report_observed_at = observed_at or datetime.now(UTC).isoformat()
+     caveats: list[str] = [
+         "provider usage events, transcript text volume, and model rollups are separate evidence streams",
+         "this report does not query provider billing and is not a precise cost report",
+@@ -487,6 +789,7 @@ def provider_usage_report_from_connection(
+             archive_root=str(archive_root),
+             origins=(),
+             detail_level=detail,
++            observed_at=report_observed_at,
+             caveats=tuple(caveats + ["sessions table is missing"]),
+         )
+ 
+@@ -497,8 +800,16 @@ def provider_usage_report_from_connection(
+     logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
+     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
+     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
+-    pricing_lanes = _pricing_lane_reports(conn, origin) if model_table_present else ()
+-    logical_pricing_lanes = _pricing_lane_reports(conn, origin, logical=True) if model_table_present else ()
++    pricing_lanes = (
++        _pricing_lane_reports(conn, origin, observed_at=report_observed_at)
++        if model_table_present
++        else ()
++    )
++    logical_pricing_lanes = (
++        _pricing_lane_reports(conn, origin, logical=True, observed_at=report_observed_at)
++        if model_table_present
++        else ()
++    )
+     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
+         conn, archive_root=Path(archive_root), origin=origin, limit=limit
+     )
+@@ -632,6 +943,11 @@ def provider_usage_report_from_connection(
+             "(cache reads free, output at 5x input) and is 0.0 for models without a "
+             "declared credit rate; it is not vendor-authoritative billing"
+         )
++    if any(lane.catalog_api_equivalent_usd is None for lane in pricing_lanes):
++        caveats.append(
++            "catalog_api_equivalent_usd is unknown because at least one model row has no catalog price; "
++            "catalog_priced_subtotal_usd preserves the known priced subset"
++        )
+     return ProviderUsageReport(
+         archive_root=str(archive_root),
+         origins=tuple(reports),
+@@ -641,10 +957,19 @@ def provider_usage_report_from_connection(
+         pricing_lanes=pricing_lanes,
+         logical_pricing_lanes=logical_pricing_lanes,
+         stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
+-        catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
+-        logical_catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in logical_pricing_lanes),
++        catalog_api_equivalent_usd=_complete_catalog_total(pricing_lanes),
++        catalog_priced_subtotal_usd=round(
++            sum(lane.catalog_priced_subtotal_usd for lane in pricing_lanes),
++            6,
++        ),
++        logical_catalog_api_equivalent_usd=_complete_catalog_total(logical_pricing_lanes),
++        logical_catalog_priced_subtotal_usd=round(
++            sum(lane.catalog_priced_subtotal_usd for lane in logical_pricing_lanes),
++            6,
++        ),
+         subscription_credit_usd=sum(lane.subscription_credit_usd for lane in pricing_lanes),
+         logical_subscription_credit_usd=sum(lane.subscription_credit_usd for lane in logical_pricing_lanes),
++        observed_at=report_observed_at,
+         caveats=tuple(caveats),
+     )
+ 
+@@ -1232,6 +1557,7 @@ def _pricing_lane_reports(
+     origin: str | None,
+     *,
+     logical: bool = False,
++    observed_at: str,
+ ) -> tuple[PricingLaneReport, ...]:
+     if logical:
+         session_count_rows = conn.execute(
+@@ -1398,8 +1724,15 @@ def _pricing_lane_reports(
+                 unmatched_model_row_count=bucket.unmatched_model_row_count,
+                 usage=bucket.usage,
+                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
+-                catalog_api_equivalent_usd=round(bucket.catalog_api_equivalent_usd, 6),
++                catalog_api_equivalent_usd=(
++                    None
++                    if bucket.unmatched_model_row_count > 0
++                    else round(bucket.catalog_api_equivalent_usd, 6)
++                ),
++                catalog_priced_subtotal_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                 subscription_credit_usd=round(bucket.subscription_credit_usd, 6),
++                grain=("logical_session_model_high_water" if logical else "physical_session"),
++                observed_at=observed_at,
+                 caveats=tuple(sorted(caveats_by_provenance.get(provenance, ()))),
+             )
+         )
+diff --git a/tests/unit/archive/test_source_freshness.py b/tests/unit/archive/test_source_freshness.py
+index 7f1c10c0042a7bca080bbe0b5683a1db1ca99cf0..0a15b649bcd0557a4cef66f22804c97246a4876d 100644
+--- a/tests/unit/archive/test_source_freshness.py
++++ b/tests/unit/archive/test_source_freshness.py
+@@ -7,6 +7,7 @@ import inspect
+ import json
+ import sqlite3
+ from collections.abc import Awaitable, Callable
++from dataclasses import replace
+ from datetime import UTC, datetime
+ from pathlib import Path
+ from typing import Any
+@@ -15,12 +16,14 @@ import pytest
+ 
+ import polylogue.archive.query.source_freshness as source_freshness_module
+ from polylogue.archive.query.source_freshness import (
++    SOURCE_CURSOR_BYTE_LAG_FAMILY,
+     NamedSourceOperationalReason,
+     NamedSourceOperationalState,
+     NamedSourceStage,
+     ProjectionLimits,
+     SourceStatEvidence,
+     _unsafe_plan_details,
++    aggregate_named_source_byte_lag,
+     project_named_source_freshness,
+ )
+ from polylogue.archive.query.source_freshness_surfaces import (
+@@ -356,6 +359,14 @@ def test_excluded_growing_source_is_degraded_before_idle_and_retains_reason(tmp_
+     assert projection.cursor.excluded is True
+     assert projection.cursor.pending_bytes == expected["pending_bytes"]
+     assert projection.cursor.unobserved_growth_bytes == expected["unobserved_growth_bytes"]
++    assert projection.byte_lag.value_state == "known"
++    assert projection.byte_lag.value == expected["pending_bytes"]
++    assert projection.byte_lag.freshness.state == "degraded"
++    assert projection.byte_lag.freshness.cause == "cursor-excluded"
++    assert projection.byte_lag.freshness.last_good_evidence_refs
++    assert projection.byte_lag.coverage.complete is False
++    assert projection.byte_lag.coverage.exclusions[0].reason == "ingest-cursor-excluded"
++    assert SOURCE_CURSOR_BYTE_LAG_FAMILY.validate(projection.byte_lag) == ()
+     assert projection.retry.reason == fixture["attempt_error"]
+     assert projection.accepted_raw_revision is not None
+     assert projection.accepted_raw_revision.raw_id == expected["accepted_raw_id"]
+@@ -413,6 +424,12 @@ def test_healthy_quiet_source_reports_every_checkpoint(tmp_path: Path) -> None:
+     assert projection.stage.value == expected["stage"]
+     assert projection.cursor.pending_bytes == expected["pending_bytes"]
+     assert projection.cursor.unobserved_growth_bytes == expected["unobserved_growth_bytes"]
++    assert projection.byte_lag.value_state == "known"
++    assert projection.byte_lag.value == expected["pending_bytes"]
++    assert projection.byte_lag.freshness.state == "fresh"
++    assert projection.byte_lag.freshness.cause is None
++    assert projection.byte_lag.coverage.exclusions == ()
++    assert SOURCE_CURSOR_BYTE_LAG_FAMILY.validate(projection.byte_lag) == ()
+     assert projection.accepted_raw_revision is not None
+     assert projection.accepted_raw_revision.raw_id == expected["accepted_raw_id"]
+     assert projection.accepted_raw_revision.authority_owner == "polylogue-lkrc"
+@@ -531,6 +548,9 @@ def test_existing_source_without_cursor_is_active(tmp_path: Path) -> None:
+     assert projection.stage is NamedSourceStage.UNSEEN
+     assert projection.operational_state is NamedSourceOperationalState.ACTIVE
+     assert projection.operational_reason is NamedSourceOperationalReason.CURSOR_MISSING
++    assert projection.byte_lag.value_state == "unknown"
++    assert projection.byte_lag.value is None
++    assert projection.byte_lag.freshness.state == "unavailable"
+ 
+ 
+ def test_source_without_filesystem_or_archive_evidence_is_unseen(tmp_path: Path) -> None:
+@@ -875,6 +895,10 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
+     assert status["source_size_bytes"] == 64
+     assert status["cursor_observed_size_bytes"] == 64
+     assert status["cursor_byte_offset"] == 64
++    assert status["pending_bytes"] == 0
++    assert status["byte_lag"] == projection.byte_lag.to_dict()
++    assert status["byte_lag"]["value_state"] == "known"
++    assert status["byte_lag"]["value"] == 0
+     assert status["revision_authority_owner"] == "polylogue-lkrc"
+     assert status["replay_prevention_owner"] == "polylogue-yla8"
+     assert status["revision_application_count"] == 1
+@@ -888,16 +912,25 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
+     assert "operational_reason=caught-up" in rendered
+     assert "file_size=64" in rendered
+     assert "cursor_offset=64" in rendered
++    assert "pending_bytes=0" in rendered
++    assert "byte_lag_evidence=fresh" in rendered
+     assert "errors=0" in rendered
+ 
+     exit_code = source_freshness_cli(["--archive-root", str(root), "--source", str(source), "--format", "json"])
+     assert exit_code == 0
+-    assert json.loads(capsys.readouterr().out)["stage"] == "searchable"
++    cli_payload = json.loads(capsys.readouterr().out)
++    assert cli_payload["stage"] == "searchable"
++    assert cli_payload["byte_lag"]["value_state"] == "known"
++    assert cli_payload["byte_lag"]["value"] == 0
+ 
+     handler = make_source_freshness_mcp_handler(root)
+     assert tuple(inspect.signature(handler).parameters) == ("source_path",)
+     payload: dict[str, object] = asyncio.run(_invoke_handler(handler, str(source)))
+     assert payload["stage"] == "searchable"
++    mcp_byte_lag = payload["byte_lag"]
++    assert isinstance(mcp_byte_lag, dict)
++    assert mcp_byte_lag["value_state"] == "known"
++    assert mcp_byte_lag["value"] == 0
+ 
+     class FakeMcp:
+         registered_name: str | None = None
+@@ -916,3 +949,114 @@ def test_status_cli_and_mcp_adapters_preserve_typed_projection(
+     registered = register_source_freshness_mcp_tool(server, handler)
+     assert server.registered_name == "named_source_freshness"
+     assert registered is handler
++
++
++def test_named_source_byte_lag_aggregate_conserves_disjoint_sources_and_deduplicates_identity(
++    tmp_path: Path,
++) -> None:
++    left_root = tmp_path / "left-archive"
++    right_root = tmp_path / "right-archive"
++    _create_schema(left_root)
++    _create_schema(right_root)
++    left_source = _source(left_root, size=100)
++    right_source = _source(right_root, size=250)
++    _seed_cursor(left_root, left_source, observed_size=70, offset=70)
++    _seed_cursor(right_root, right_source, observed_size=200, offset=200)
++    left = project_named_source_freshness(left_root, left_source, now=_NOW)
++    right = project_named_source_freshness(right_root, right_source, now=_NOW)
++    expected = (left_source, right_source)
++
++    direct = aggregate_named_source_byte_lag((left, right), expected_source_paths=expected, now=_NOW)
++    reordered_duplicate = aggregate_named_source_byte_lag(
++        (right, left, left),
++        expected_source_paths=(right_source, left_source, left_source),
++        now=_NOW,
++    )
++
++    assert direct.value_state == "known"
++    assert direct.value == 80
++    assert direct.to_dict() == reordered_duplicate.to_dict()
++    assert direct.coverage.intended_count == 2
++    assert direct.coverage.observed_count == 2
++    assert direct.coverage.supported_count == 2
++    assert len(direct.contributions) == 2
++
++
++def test_excluded_source_aggregate_retains_known_lag_but_degrades_coverage(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "archive"
++    _create_schema(root)
++    source = _source(root, size=96)
++    _seed_cursor(root, source, observed_size=64, offset=64, excluded=True)
++    projection = project_named_source_freshness(root, source, now=_NOW)
++
++    total = aggregate_named_source_byte_lag(
++        (projection,),
++        expected_source_paths=(source,),
++        now=_NOW,
++    )
++
++    assert total.value_state == "known"
++    assert total.value == 32
++    assert total.coverage.complete is False
++    assert {item.reason for item in total.coverage.exclusions} == {
++        "ingest-cursor-excluded",
++        "contribution-coverage-incomplete",
++    }
++    assert total.freshness.state == "degraded"
++    assert total.freshness.last_good_evidence_refs
++
++
++def test_named_source_byte_lag_aggregate_dropped_source_and_unknown_lag_never_become_zero(
++    tmp_path: Path,
++) -> None:
++    known_root = tmp_path / "known-archive"
++    unknown_root = tmp_path / "unknown-archive"
++    _create_schema(known_root)
++    unknown_root.mkdir()
++    known_source = _source(known_root, size=64)
++    unknown_source = _source(unknown_root, size=64)
++    _seed_cursor(known_root, known_source, observed_size=32, offset=32)
++    known = project_named_source_freshness(known_root, known_source, now=_NOW)
++    unknown = project_named_source_freshness(unknown_root, unknown_source, now=_NOW)
++    expected = (known_source, unknown_source)
++
++    with_unknown = aggregate_named_source_byte_lag((known, unknown), expected_source_paths=expected, now=_NOW)
++    dropped = aggregate_named_source_byte_lag((known,), expected_source_paths=expected, now=_NOW)
++
++    assert with_unknown.value_state == "unknown"
++    assert with_unknown.value is None
++    assert with_unknown.coverage.observed_count == 2
++    assert with_unknown.coverage.supported_count == 1
++    assert dropped.value_state == "unknown"
++    assert dropped.value is None
++    assert dropped.coverage.observed_count == 1
++    assert dropped.coverage.exclusions[0].reason == "missing-contribution"
++
++
++def test_named_source_byte_lag_aggregate_rejects_contradictory_duplicate_instead_of_order_winner(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "archive"
++    _create_schema(root)
++    source = _source(root, size=64)
++    _seed_cursor(root, source, observed_size=32, offset=32)
++    projection = project_named_source_freshness(root, source, now=_NOW)
++    changed_evidence = replace(
++        projection.byte_lag,
++        value=12,
++        evidence_refs=(*projection.byte_lag.evidence_refs, projection.byte_lag.definition_ref),
++    )
++    contradictory = replace(projection, byte_lag=changed_evidence)
++
++    total = aggregate_named_source_byte_lag(
++        (projection, contradictory),
++        expected_source_paths=(source,),
++        now=_NOW,
++    )
++
++    assert total.value_state == "unknown"
++    assert total.value is None
++    assert len(total.conflicts) == 1
++    assert {observation.value for observation in total.conflicts[0].observations} == {12, 32}
+diff --git a/tests/unit/cli/test_diagnostics.py b/tests/unit/cli/test_diagnostics.py
+index 5ab41d48dd890c5ad9cf1ec379f942ade1696b69..a11a8bd51b323884f782577372a255bc16a06932 100644
+--- a/tests/unit/cli/test_diagnostics.py
++++ b/tests/unit/cli/test_diagnostics.py
+@@ -94,7 +94,8 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
+         logical_model_rollup_grain="logical_session_model_high_water",
+         logical_model_rollup_usage=SimpleNamespace(to_dict=lambda: {}),
+         stored_provider_priced_usd=12.5,
+-        catalog_api_equivalent_usd=18.75,
++        catalog_api_equivalent_usd=None,
++        catalog_priced_subtotal_usd=18.75,
+         logical_pricing_grain="logical_session_model_high_water",
+         logical_catalog_api_equivalent_usd=14.25,
+         pricing_lanes=(
+@@ -105,6 +106,7 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
+                 unmatched_model_row_count=0,
+                 stored_cost_usd=12.5,
+                 catalog_api_equivalent_usd=12.5,
++                catalog_priced_subtotal_usd=12.5,
+             ),
+             SimpleNamespace(
+                 provenance="origin_reported",
+@@ -112,7 +114,8 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
+                 matched_model_row_count=1,
+                 unmatched_model_row_count=0,
+                 stored_cost_usd=0.0,
+-                catalog_api_equivalent_usd=6.25,
++                catalog_api_equivalent_usd=None,
++                catalog_priced_subtotal_usd=6.25,
+             ),
+         ),
+         logical_pricing_lanes=(
+@@ -122,6 +125,7 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
+                 matched_model_row_count=1,
+                 unmatched_model_row_count=0,
+                 catalog_api_equivalent_usd=4.25,
++                catalog_priced_subtotal_usd=4.25,
+             ),
+         ),
+     )
+@@ -130,9 +134,11 @@ def test_usage_report_text_renders_pricing_lanes() -> None:
+ 
+     rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
+     assert "stored/origin-priced cost: $12.50" in rendered
+-    assert "catalog API-equivalent cost: $18.75" in rendered
++    assert "catalog API-equivalent cost: unknown" in rendered
++    assert "known catalog-priced subtotal: $18.75" in rendered
+     assert "catalog API-equivalent cost (logical_session_model_high_water): $14.25" in rendered
+     assert "pricing lane origin_reported" in rendered
++    assert "catalog=unknown catalog_subtotal=$6.25" in rendered
+     assert "logical pricing lane origin_reported" in rendered
+ 
+ 
+diff --git a/tests/unit/core/test_evidence_value.py b/tests/unit/core/test_evidence_value.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ba775f1ba9b8fcb1621b5f4bf2a0c63979b1ec6
+--- /dev/null
++++ b/tests/unit/core/test_evidence_value.py
+@@ -0,0 +1,437 @@
++"""Survivor laws for the storage-free EvidenceValue protocol."""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++from dataclasses import replace
++
++import pytest
++
++from polylogue.core.evidence_value import (
++    CalibratedConfidence,
++    CoverageExclusion,
++    EvidenceInvariantError,
++    EvidenceValue,
++    FactFamilySpec,
++    FrameCoverage,
++    FreshnessProvenance,
++    TemporalProvenance,
++    audit_fact_family_completeness,
++    refine_evidence_value,
++    sum_evidence_values,
++)
++from polylogue.core.refs import ObjectRef
++
++_NOW = "2026-07-17T08:00:00+00:00"
++_DEFINITION = ObjectRef(kind="insight", object_id="test-quantitative-family:v1")
++_SPEC = FactFamilySpec(
++    family="test.quantitative",
++    owner="tests exercise polylogue.core.evidence_value",
++    source_adapter="tests.unit.core.test_evidence_value._value",
++    public_field="value",
++    renderer_label="test value",
++    value_schema="integer",
++    unit="item",
++    grain="source",
++    denominator="declared source frame",
++    definition_ref=_DEFINITION,
++    required_axes=frozenset(
++        {
++            "value_state",
++            "measurement_authority",
++            "evidence_refs",
++            "definition_ref",
++            "temporal",
++            "enumeration",
++            "coverage",
++            "freshness",
++        }
++    ),
++    allowed_states=frozenset({"known", "unknown", "unavailable", "skipped", "not_applicable", "redacted"}),
++    allowed_authorities=frozenset(
++        {
++            "structural",
++            "provider-reported",
++            "catalog-derived",
++            "rule-derived",
++            "model-derived",
++            "agent-declared",
++            "judged",
++        }
++    ),
++    authority_precedence=(
++        "structural",
++        "provider-reported",
++        "judged",
++        "catalog-derived",
++        "rule-derived",
++        "model-derived",
++        "agent-declared",
++    ),
++)
++
++
++def _value(
++    name: str,
++    value: int | None,
++    *,
++    state: str = "known",
++    authority: str = "structural",
++    evidence_suffix: str = "observed",
++    time_source: str = "provider_ts",
++    freshness: str = "fresh",
++) -> EvidenceValue[int]:
++    fact_ref = ObjectRef(kind="insight", object_id=f"test-fact:{name}")
++    evidence_ref = ObjectRef(kind="run", object_id=f"test-evidence:{name}:{evidence_suffix}")
++    coverage = FrameCoverage(
++        intended_frame="test frame",
++        grain="source",
++        denominator="declared source frame",
++        intended_count=1,
++        observed_count=1,
++        supported_count=1 if state == "known" else 0,
++        complete=state == "known",
++        intended_refs=(fact_ref,),
++        observed_refs=(fact_ref,),
++    )
++    freshness_refs = (evidence_ref,) if freshness != "fresh" else ()
++    return EvidenceValue(
++        family=_SPEC.family,
++        fact_ref=fact_ref,
++        value_state=state,  # type: ignore[arg-type]
++        value=value,
++        measurement_authority=(authority,),  # type: ignore[arg-type]
++        weakest_measurement_authority=authority,  # type: ignore[arg-type]
++        evidence_refs=(evidence_ref,),
++        definition_ref=_DEFINITION,
++        temporal=TemporalProvenance.from_source(
++            observed_at=_NOW,
++            time_source=time_source,  # type: ignore[arg-type]
++        ),
++        enumeration="census",
++        coverage=coverage,
++        freshness=FreshnessProvenance(
++            state=freshness,  # type: ignore[arg-type]
++            evaluated_at=_NOW,
++            cause=None if freshness == "fresh" else freshness,
++            last_good_at=_NOW if freshness != "fresh" else None,
++            last_good_evidence_refs=freshness_refs,
++        ),
++    )
++
++
++def _aggregate(values: Sequence[EvidenceValue[int]], expected: Sequence[ObjectRef]) -> EvidenceValue[int]:
++    return sum_evidence_values(
++        values,
++        spec=_SPEC,
++        fact_ref=ObjectRef(kind="insight", object_id="test-total"),
++        observed_at=_NOW,
++        intended_frame="test total frame",
++        expected_fact_refs=expected,
++    )
++
++
++def test_known_zero_and_unknown_are_distinct_without_sentinel_coercion() -> None:
++    zero = _value("zero", 0)
++    unknown = _value("unknown", None, state="unknown")
++
++    assert zero.value_state == "known"
++    assert zero.value == 0
++    assert unknown.value_state == "unknown"
++    assert unknown.value is None
++    assert zero.to_dict()["value"] == 0
++    assert unknown.to_dict()["value"] is None
++
++
++def test_every_absence_state_round_trips_independently() -> None:
++    for state in ("unknown", "unavailable", "skipped", "not_applicable", "redacted"):
++        value = _value(state, None, state=state)
++        assert value.to_dict()["value_state"] == state
++        assert value.to_dict()["value"] is None
++
++
++def test_calibrated_confidence_requires_calibration_and_definition_refs() -> None:
++    confidence = CalibratedConfidence(
++        value=0.8,
++        calibration_ref=ObjectRef(kind="insight", object_id="calibration:v2"),
++        definition_ref=_DEFINITION,
++    )
++    assert confidence.to_dict()["calibration_ref"] == "insight:calibration:v2"
++    with pytest.raises(EvidenceInvariantError, match="within \\[0, 1\\]"):
++        CalibratedConfidence(
++            value=1.1,
++            calibration_ref=ObjectRef(kind="insight", object_id="calibration:v2"),
++            definition_ref=_DEFINITION,
++        )
++
++
++def test_temporal_confidence_cannot_be_strengthened_without_source_provenance() -> None:
++    with pytest.raises(EvidenceInvariantError, match="overstates source"):
++        TemporalProvenance(
++            observed_at=_NOW,
++            time_source="materialization_ts",
++            time_confidence="recorded",
++        )
++
++
++def test_refinement_adds_known_evidence_without_discarding_unknown_support() -> None:
++    unknown = _value("same", None, state="unknown", evidence_suffix="missing")
++    known = _value("same", 7, evidence_suffix="provider")
++
++    refined = refine_evidence_value(unknown, known, spec=_SPEC)
++
++    assert refined.value_state == "known"
++    assert refined.value == 7
++    assert [ref.format() for ref in refined.evidence_refs] == [
++        "run:test-evidence:same:missing",
++        "run:test-evidence:same:provider",
++    ]
++
++
++def test_authority_cannot_strengthen_without_new_evidence() -> None:
++    weak = _value("same", 7, authority="model-derived", evidence_suffix="same")
++    strong = _value("same", 7, authority="structural", evidence_suffix="same")
++
++    with pytest.raises(EvidenceInvariantError, match="cannot strengthen without new evidence"):
++        refine_evidence_value(weak, strong, spec=_SPEC)
++
++
++def test_contradictory_equal_authority_is_explicit_and_order_independent() -> None:
++    left = _value("same", 7, evidence_suffix="left")
++    right = _value("same", 9, evidence_suffix="right")
++
++    first = refine_evidence_value(left, right, spec=_SPEC)
++    second = refine_evidence_value(right, left, spec=_SPEC)
++
++    assert first.to_dict() == second.to_dict()
++    assert first.value_state == "unknown"
++    assert first.value is None
++    assert len(first.conflicts) == 1
++    assert {item.value for item in first.conflicts[0].observations} == {7, 9}
++
++
++def test_declared_stronger_observation_supersedes_but_preserves_support() -> None:
++    weak = _value("same", 7, authority="model-derived", evidence_suffix="model")
++    strong = _value("same", 9, authority="structural", evidence_suffix="filesystem")
++
++    resolved = refine_evidence_value(weak, strong, spec=_SPEC)
++
++    assert resolved.value_state == "known"
++    assert resolved.value == 9
++    # The selected value is deterministic, while both evidence refs remain.
++    assert {ref.format() for ref in resolved.evidence_refs} == {
++        "run:test-evidence:same:model",
++        "run:test-evidence:same:filesystem",
++    }
++    assert {item.value for item in resolved.contributions} == {7, 9}
++
++
++def test_sum_conserves_disjoint_totals_deduplicates_identity_and_is_order_independent() -> None:
++    a = _value("a", 3)
++    b = _value("b", 5)
++    expected = (a.fact_ref, b.fact_ref)
++
++    direct = _aggregate((a, b), expected)
++    reversed_and_duplicate = _aggregate((b, a, a), expected)
++
++    assert direct.to_dict() == reversed_and_duplicate.to_dict()
++    assert direct.value_state == "known"
++    assert direct.value == 8
++    assert direct.coverage.observed_count == 2
++    assert direct.coverage.supported_count == 2
++    assert len(direct.contributions) == 2
++
++
++def test_nested_grouping_conserves_leaf_contributions() -> None:
++    a = _value("a", 2)
++    b = _value("b", 3)
++    c = _value("c", 7)
++    expected = (a.fact_ref, b.fact_ref, c.fact_ref)
++    ab = sum_evidence_values(
++        (a, b),
++        spec=_SPEC,
++        fact_ref=ObjectRef(kind="insight", object_id="subtotal-ab"),
++        observed_at=_NOW,
++        intended_frame="test subtotal frame",
++        expected_fact_refs=(a.fact_ref, b.fact_ref),
++    )
++
++    grouped = _aggregate((ab, c), expected)
++    direct = _aggregate((a, b, c), expected)
++
++    assert grouped.value == direct.value == 12
++    assert [item.fact_ref.format() for item in grouped.contributions] == [
++        "insight:test-fact:a",
++        "insight:test-fact:b",
++        "insight:test-fact:c",
++    ]
++
++
++def test_dropping_expected_source_reduces_coverage_and_never_becomes_zero() -> None:
++    a = _value("a", 4)
++    b = _value("b", 6)
++
++    incomplete = _aggregate((a,), (a.fact_ref, b.fact_ref))
++
++    assert incomplete.value_state == "unknown"
++    assert incomplete.value is None
++    assert incomplete.coverage.complete is False
++    assert incomplete.coverage.observed_count == 1
++    assert incomplete.coverage.supported_count == 1
++    assert incomplete.coverage.exclusions[0].reason == "missing-contribution"
++
++
++def test_unknown_contribution_does_not_become_numeric_zero() -> None:
++    known = _value("known", 4)
++    unknown = _value("unknown", None, state="unknown")
++
++    total = _aggregate((known, unknown), (known.fact_ref, unknown.fact_ref))
++
++    assert total.value_state == "unknown"
++    assert total.value is None
++    assert total.coverage.observed_count == 2
++    assert total.coverage.supported_count == 1
++
++
++def test_conflicting_duplicate_fact_blocks_total_instead_of_double_counting() -> None:
++    first = _value("same", 4, evidence_suffix="first")
++    second = _value("same", 6, evidence_suffix="second")
++
++    total = _aggregate((first, second), (first.fact_ref,))
++
++    assert total.value_state == "unknown"
++    assert total.value is None
++    assert len(total.conflicts) == 1
++    assert total.coverage.observed_count == 1
++    assert total.coverage.supported_count == 0
++    assert {item.reason for item in total.coverage.exclusions} == {"contradictory-contribution"}
++    assert {ref.format() for ref in total.evidence_refs} == {
++        "run:test-evidence:same:first",
++        "run:test-evidence:same:second",
++    }
++    assert total.measurement_authority == ("structural",)
++
++
++def test_nested_conflict_grouping_preserves_raw_witnesses_and_unknown_total() -> None:
++    first = _value("same", 4, evidence_suffix="first")
++    second = _value("same", 6, evidence_suffix="second")
++    other = _value("other", 3, evidence_suffix="other")
++    conflict = refine_evidence_value(first, second, spec=_SPEC)
++    expected = (first.fact_ref, other.fact_ref)
++
++    grouped = _aggregate((conflict, other), expected)
++    direct = _aggregate((first, second, other), expected)
++
++    assert grouped.to_dict() == direct.to_dict()
++    assert grouped.value_state == "unknown"
++    assert {item.value for item in grouped.conflicts[0].observations} == {4, 6}
++    assert {ref.format() for ref in grouped.evidence_refs} == {
++        "run:test-evidence:other:other",
++        "run:test-evidence:same:first",
++        "run:test-evidence:same:second",
++    }
++
++
++def test_known_value_with_weaker_coverage_stays_numeric_but_cannot_claim_complete_frame() -> None:
++    complete = _value("a", 4)
++    incomplete = replace(
++        complete,
++        coverage=replace(
++            complete.coverage,
++            complete=False,
++            exclusions=(CoverageExclusion(complete.fact_ref, "source-excluded"),),
++        ),
++    )
++
++    total = _aggregate((incomplete,), (incomplete.fact_ref,))
++
++    assert total.value_state == "known"
++    assert total.value == 4
++    assert total.coverage.complete is False
++    assert {item.reason for item in total.coverage.exclusions} == {
++        "source-excluded",
++        "contribution-coverage-incomplete",
++    }
++
++
++def test_aggregate_keeps_weakest_temporal_authority_and_freshness() -> None:
++    strong = _value("strong", 4, authority="structural", time_source="provider_ts")
++    weak = _value(
++        "weak",
++        6,
++        authority="model-derived",
++        time_source="materialization_ts",
++        freshness="stale",
++    )
++
++    total = _aggregate((strong, weak), (strong.fact_ref, weak.fact_ref))
++
++    assert total.value == 10
++    assert total.weakest_measurement_authority == "model-derived"
++    assert total.temporal.time_source == "materialization_ts"
++    assert total.temporal.time_confidence == "unknown"
++    assert total.freshness.state == "stale"
++    assert total.freshness.last_good_evidence_refs
++
++
++def test_empty_aggregate_is_unknown_not_known_zero() -> None:
++    total = _aggregate((), ())
++
++    assert total.value_state == "unknown"
++    assert total.value is None
++
++
++def test_declared_required_axis_mutations_are_source_locatable_failures() -> None:
++    value = _value("a", 1)
++    mutations = (
++        (replace(value, measurement_authority=(), weakest_measurement_authority=None), "measurement_authority"),
++        (replace(value, evidence_refs=()), "evidence_refs"),
++        (
++            replace(
++                value,
++                definition_ref=ObjectRef(kind="insight", object_id="wrong-definition:v1"),
++            ),
++            "definition_ref expected",
++        ),
++        (
++            replace(
++                value,
++                temporal=TemporalProvenance.from_source(
++                    observed_at=None,
++                    time_source=None,
++                ),
++            ),
++            "temporal observed_at",
++        ),
++        (
++            replace(
++                value,
++                coverage=replace(value.coverage, grain="wrong-grain"),
++            ),
++            "coverage grain expected",
++        ),
++    )
++
++    for mutated, expected_message in mutations:
++        diagnostics = _SPEC.validate(mutated)
++        assert any(expected_message in item for item in diagnostics)
++        with pytest.raises(EvidenceInvariantError, match=expected_message):
++            _SPEC.require(mutated)
++
++
++def test_value_state_mutation_cannot_pair_unknown_with_numeric_sentinel() -> None:
++    value = _value("a", 1)
++
++    with pytest.raises(EvidenceInvariantError, match="cannot carry"):
++        replace(value, value_state="unknown")
++
++
++def test_fact_family_completeness_fails_when_declaration_or_definition_is_removed() -> None:
++    value = _value("a", 1)
++    assert audit_fact_family_completeness((_SPEC,), (value,), required_families=(_SPEC.family,)) == ()
++
++    no_spec = audit_fact_family_completeness((), (value,), required_families=(_SPEC.family,))
++    assert {item.message for item in no_spec} == {
++        "required fact-family declaration missing",
++        "public value has no fact-family declaration",
++    }
+diff --git a/tests/unit/daemon/test_daemon_http_contracts.py b/tests/unit/daemon/test_daemon_http_contracts.py
+index c860cfb15054fdf44792cfbc8d5efcaf5fa54762..47dd17d7b3f25b940691652141a932253b72c408 100644
+--- a/tests/unit/daemon/test_daemon_http_contracts.py
++++ b/tests/unit/daemon/test_daemon_http_contracts.py
+@@ -719,6 +719,14 @@ class TestPrivacyContract:
+ 
+         assert sentinel not in WEB_SHELL_HTML
+ 
++    def test_web_shell_usage_cost_preserves_unknown_and_known_subtotal(self) -> None:
++        """The current web rewrite boundary must not coerce absent price to zero."""
++        from polylogue.daemon.web_shell import WEB_SHELL_HTML
++
++        assert "statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))" in WEB_SHELL_HTML
++        assert "if (value === null || value === undefined || value === '') return 'unknown';" in WEB_SHELL_HTML
++        assert "var n = Number(value || 0);" not in WEB_SHELL_HTML
++
+     def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
+         """Dogfood regression (2026-07-08): loadStatus()'s success path set
+         state.routeStates.status to 'ready' but never called renderFacets(),
+diff --git a/tests/unit/daemon/test_daemon_status.py b/tests/unit/daemon/test_daemon_status.py
+index 2368dcf13d400fda054cb8475545c92a9b790881..d9511a32cbf3574b64cc4a0f2ff93cd5b5c0d469 100644
+--- a/tests/unit/daemon/test_daemon_status.py
++++ b/tests/unit/daemon/test_daemon_status.py
+@@ -21,6 +21,7 @@ from polylogue.daemon.status import (
+     format_daemon_status_lines,
+ )
+ from polylogue.daemon.status_snapshot import (
++    STATUS_SNAPSHOT_STATE_FAMILY,
+     configure_runtime_components,
+     get_status_snapshot_payload,
+     refresh_status_snapshot,
+@@ -84,6 +85,13 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
+     snapshot = result["status_snapshot"]
+     assert isinstance(snapshot, dict)
+     assert snapshot["state"] == "fresh"
++    state_evidence = cast(dict[str, Any], snapshot["state_evidence"])
++    state_freshness = cast(dict[str, Any], state_evidence["freshness"])
++    assert state_evidence["family"] == STATUS_SNAPSHOT_STATE_FAMILY.family
++    assert state_evidence["value_state"] == "known"
++    assert state_evidence["value"] == "fresh"
++    assert state_evidence["definition_ref"] == STATUS_SNAPSHOT_STATE_FAMILY.definition_ref.format()
++    assert state_freshness["state"] == "fresh"
+     writer = result["daemon_write_coordinator"]
+     assert isinstance(writer, dict)
+     assert "active_actor" in writer
+@@ -159,6 +167,14 @@ def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytes
+     stale_guard = cast(dict[str, Any], stale["claim_guard"])
+     stale_converged = cast(dict[str, Any], stale_guard["converged"])
+     assert stale_snapshot["state"] == "stale"
++    stale_evidence = cast(dict[str, Any], stale_snapshot["state_evidence"])
++    stale_freshness = cast(dict[str, Any], stale_evidence["freshness"])
++    assert stale_evidence["value_state"] == "known"
++    assert stale_evidence["value"] == "stale"
++    assert stale_freshness["state"] == "stale"
++    assert stale_freshness["cause"] == "snapshot-age-exceeded-30s"
++    assert stale_freshness["last_good_at"] == stale_snapshot["captured_at"]
++    assert stale_freshness["last_good_evidence_refs"] == stale_evidence["evidence_refs"]
+     assert stale["ok"] is False
+     assert stale_frontier["overall_status"] == "unknown"
+     assert stale_component["state"] == "unknown"
+@@ -183,6 +199,12 @@ def test_status_snapshot_minimal_refresh_stays_request_safe(
+     status_snapshot = snapshot.payload["status_snapshot"]
+     assert isinstance(status_snapshot, dict)
+     assert status_snapshot["state"] == "minimal"
++    state_evidence = cast(dict[str, Any], status_snapshot["state_evidence"])
++    state_freshness = cast(dict[str, Any], state_evidence["freshness"])
++    assert state_evidence["value_state"] == "known"
++    assert state_evidence["value"] == "minimal"
++    assert state_freshness["state"] == "unavailable"
++    assert state_freshness["cause"] == "rich-status-unavailable"
+     assert snapshot.payload["ok"] is False
+     frontier = snapshot.payload["raw_frontier_integrity"]
+     assert isinstance(frontier, dict)
+diff --git a/tests/unit/storage/test_provider_usage_report.py b/tests/unit/storage/test_provider_usage_report.py
+index 3468d0925db160522c75e9964a57adf3bcf0a19d..cb9f183ab82cb874ddddaf320671b178f2df679d 100644
+--- a/tests/unit/storage/test_provider_usage_report.py
++++ b/tests/unit/storage/test_provider_usage_report.py
+@@ -12,7 +12,12 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
+ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+-from polylogue.storage.usage import provider_usage_coverage_matrix, provider_usage_report_from_connection
++from polylogue.storage.usage import (
++    USAGE_LANE_CATALOG_COST_FAMILY,
++    USAGE_LANE_EXACT_TOKENS_FAMILY,
++    provider_usage_coverage_matrix,
++    provider_usage_report_from_connection,
++)
+ 
+ 
+ def _connect(path: Path, tier: ArchiveTier = ArchiveTier.INDEX) -> sqlite3.Connection:
+@@ -294,29 +299,58 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
+     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+     logical_lanes = {lane.provenance: lane for lane in report.logical_pricing_lanes}
+     assert report.stored_provider_priced_usd == pytest.approx(1.25)
+-    assert report.catalog_api_equivalent_usd == pytest.approx(4.9)
++    assert report.catalog_api_equivalent_usd is None
++    assert report.catalog_priced_subtotal_usd == pytest.approx(4.9)
+     assert report.pricing_grain == "physical_session"
+     assert report.logical_pricing_grain == "logical_session_model_high_water"
+-    assert report.logical_catalog_api_equivalent_usd == pytest.approx(3.6551)
++    assert report.logical_catalog_api_equivalent_usd is None
++    assert report.logical_catalog_priced_subtotal_usd == pytest.approx(3.6551)
+     assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
+     assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
++    assert lanes["priced"].catalog_priced_subtotal_usd == pytest.approx(1.25)
+     assert lanes["origin_reported"].stored_cost_usd == 0
+-    assert lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
++    assert lanes["origin_reported"].catalog_api_equivalent_usd is None
++    assert lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
+     assert lanes["origin_reported"].row_count == 3
+     assert lanes["origin_reported"].session_count == 2
+     assert lanes["origin_reported"].matched_model_row_count == 2
+     assert lanes["origin_reported"].unmatched_model_row_count == 1
+     assert lanes["origin_reported"].caveats == ("missing_price",)
++    assert lanes["origin_reported"].exact_total_tokens_evidence.value_state == "known"
++    assert lanes["origin_reported"].exact_total_tokens_evidence.value == 2_101_100
++    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value_state == "unknown"
++    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value is None
++    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.supported_count == 2
++    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.exclusions[0].reason == (
++        "unpriced-model-rows:1"
++    )
++    assert USAGE_LANE_EXACT_TOKENS_FAMILY.validate(lanes["origin_reported"].exact_total_tokens_evidence) == ()
++    assert USAGE_LANE_CATALOG_COST_FAMILY.validate(lanes["origin_reported"].catalog_api_equivalent_evidence) == ()
++    assert report.exact_total_tokens_evidence.value_state == "known"
++    assert report.exact_total_tokens_evidence.value == 2_104_200
++    assert report.catalog_api_equivalent_evidence.value_state == "unknown"
++    assert report.catalog_api_equivalent_evidence.value is None
++    assert report.catalog_api_equivalent_evidence.coverage.supported_count == 1
+     assert logical_lanes["priced"].stored_cost_usd == 0
+     assert logical_lanes["priced"].catalog_api_equivalent_usd == pytest.approx(0.0051)
+-    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd == pytest.approx(3.65)
++    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd is None
++    assert logical_lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
+     assert logical_lanes["origin_reported"].session_count == 2
+     payload = report.to_dict()
+     assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
+     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
++    assert payload["catalog_api_equivalent_usd"] is None
++    assert payload["catalog_priced_subtotal_usd"] == pytest.approx(4.9)
+     assert payload["pricing_grain"] == "physical_session"
+     assert payload["logical_pricing_grain"] == "logical_session_model_high_water"
+-    assert payload["logical_catalog_api_equivalent_usd"] == pytest.approx(3.6551)
++    assert payload["logical_catalog_api_equivalent_usd"] is None
++    assert payload["logical_catalog_priced_subtotal_usd"] == pytest.approx(3.6551)
++    exact_payload = payload["exact_total_tokens_evidence"]
++    cost_payload = payload["catalog_api_equivalent_evidence"]
++    assert isinstance(exact_payload, dict)
++    assert isinstance(cost_payload, dict)
++    assert exact_payload["value_state"] == "known"
++    assert cost_payload["value_state"] == "unknown"
+ 
+ 
+ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_api_equivalent(
+@@ -359,17 +393,23 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
+     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
+ 
+     priced_lane = lanes["priced"]
+-    assert priced_lane.catalog_api_equivalent_usd == pytest.approx(1.25)
++    priced_catalog_cost = priced_lane.catalog_api_equivalent_usd
++    assert priced_catalog_cost is not None
++    assert priced_catalog_cost == pytest.approx(1.25)
+     assert priced_lane.subscription_credit_usd == pytest.approx(0.000553, abs=1e-6)
+-    assert priced_lane.subscription_credit_usd < priced_lane.catalog_api_equivalent_usd
++    assert priced_lane.subscription_credit_usd < priced_catalog_cost
+ 
+     # gpt-4o has no declared Claude Code credit rate: never fabricate a figure.
+     origin_reported_lane = lanes["origin_reported"]
++    origin_catalog_cost = origin_reported_lane.catalog_api_equivalent_usd
++    assert origin_catalog_cost is not None
+     assert origin_reported_lane.subscription_credit_usd == 0.0
+-    assert origin_reported_lane.catalog_api_equivalent_usd > 0.0
++    assert origin_catalog_cost > 0.0
+ 
++    report_catalog_cost = report.catalog_api_equivalent_usd
++    assert report_catalog_cost is not None
+     assert report.subscription_credit_usd == pytest.approx(priced_lane.subscription_credit_usd)
+-    assert report.subscription_credit_usd < report.catalog_api_equivalent_usd
++    assert report.subscription_credit_usd < report_catalog_cost
+     assert any("subscription_credit_usd assumes" in caveat for caveat in report.caveats)
+ 
+     payload = report.to_dict()
+@@ -387,6 +427,12 @@ def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> No
+     report = provider_usage_report_from_connection(conn, archive_root=tmp_path, origin="codex-session")
+ 
+     assert report.origins == ()
++    assert report.catalog_api_equivalent_usd is None
++    assert report.catalog_priced_subtotal_usd == 0.0
++    assert report.exact_total_tokens_evidence.value_state == "unknown"
++    assert report.exact_total_tokens_evidence.value is None
++    assert report.catalog_api_equivalent_evidence.value_state == "unknown"
++    assert report.catalog_api_equivalent_evidence.value is None
+     assert "no sessions found for origin 'codex-session'" in report.caveats
+ 
+ 

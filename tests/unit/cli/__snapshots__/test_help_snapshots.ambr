@@ -132,6 +132,8 @@
     --set TEXT...                   Set metadata key value
     --add-tag TEXT                  Add tags (comma-separated)
     --plain                         Force non-interactive plain output
+    --no-daemon                     Run archive reads in-process instead of using
+                                    the local daemon.
     -v, --verbose                   Verbose output
     --diagnose                      Explain CLI parser decisions on stderr before
                                     running. Useful when query-first dispatch
@@ -147,10 +149,11 @@
       read      Read matched sessions (route to view/destination).
       select    Select one matched session or print candidate identities.
       mark      Mark selected sessions; review candidates under mark candidates.
+      note      Capture a terminal memory candidate.
       analyze   Analyze matched sessions and named facet families.
       facets    Show global or scoped archive facet families.
       delete    Delete matched sessions.
-      continue  Compile a successor-agent continuation report.
+      continue  Resume a session or compile successor context as JSON.
       Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
       command.
   
@@ -175,6 +178,10 @@
       ops     Run operational archive and daemon commands.
       `polylogue status` is the root shortcut for `polylogue ops status`; deeper
       maintenance stays under `ops`.
+  
+    Other commands:
+      annotations  Import typed annotation batches.
+      judge        Interactively triage candidate assertions.
   
   '''
 # ---

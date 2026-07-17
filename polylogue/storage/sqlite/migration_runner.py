@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import stat
+from contextlib import closing
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -23,6 +24,7 @@ DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE,
 _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
 
 
 class MigrationError(RuntimeError):
@@ -35,6 +37,7 @@ class MigrationStep:
     version: int
     name: str
     sql: str
+    requires_backup: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,17 @@ def _migration_package(tier: ArchiveTier) -> str:
     return f"polylogue.storage.sqlite.migrations.{tier.value}"
 
 
+def _requires_migration_backup(sql: str) -> bool:
+    """A migration opts out of the backup requirement only via a header directive.
+
+    Substring matching would waive the backup requirement if the marker text
+    ever appeared in a comment, SQL string literal, or later in the file --
+    require it to be the file's first non-blank line instead.
+    """
+    first_nonblank = next((line.strip() for line in sql.splitlines() if line.strip()), "")
+    return first_nonblank != _ADDITIVE_NO_BACKUP_MARKER
+
+
 def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
     if tier not in DURABLE_MIGRATION_TIERS:
         return ()
@@ -62,12 +76,14 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
         match = _MIGRATION_NAME_RE.match(item.name)
         if match is None:
             continue
+        sql = item.read_text(encoding="utf-8")
         steps.append(
             MigrationStep(
                 tier=tier,
                 version=int(match.group("version")),
                 name=item.name,
-                sql=item.read_text(encoding="utf-8"),
+                sql=sql,
+                requires_backup=_requires_migration_backup(sql),
             )
         )
     versions = [step.version for step in steps]
@@ -170,13 +186,72 @@ def _backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
     return rows
 
 
+@dataclass(frozen=True, slots=True)
+class _BackupInventoryCacheEntry:
+    stat_signature: tuple[tuple[str, int, int], ...]
+    artifact_inventory: tuple[dict[str, object], ...]
+
+
+# Process-lifetime cache: a durable migration runs as a short-lived actuator
+# invocation (devtools schema fast-forward, `polylogue ops` maintenance, or
+# one daemon-startup migration), so this never needs cross-process
+# persistence or eviction -- it exists to collapse the four SHA-256 scans of
+# one immutable backup tree that `migrate_archive_tier` otherwise performs
+# per activation (pre-BEGIN + in-transaction, times two durable tiers) into
+# one.
+_backup_artifact_inventory_cache: dict[Path, _BackupInventoryCacheEntry] = {}
+
+
+def _backup_root_stat_signature(backup_root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Cheap, content-free fingerprint used only to decide whether the
+    expensive SHA-256 scan below can be skipped.
+
+    This is deliberately not evidence by itself: every entry the cache
+    returns still carries the SHA-256 computed the last time the signature
+    changed.  A stat-identical-but-content-tampered backup (same size and
+    mtime, different bytes) is outside this actuator's threat model already
+    -- ``backup_attestation.py`` documents it is "not a privilege boundary
+    against arbitrary code running as the same Unix user" -- and any
+    genuine artifact/manifest/receipt mutation changes size or mtime and is
+    still caught below.
+    """
+    entries: list[tuple[str, int, int]] = []
+    for candidate in sorted(backup_root.rglob("*")):
+        relative = candidate.relative_to(backup_root)
+        if relative == Path(_VERIFICATION_RECEIPT_FILE):
+            continue
+        metadata = candidate.lstat()
+        entries.append((str(relative), metadata.st_size, metadata.st_mtime_ns))
+    return tuple(entries)
+
+
+def _cached_backup_artifact_inventory(backup_root: Path) -> list[dict[str, object]]:
+    """Reuse a SHA-256'd backup artifact inventory while its bytes are unchanged."""
+    resolved = backup_root.resolve(strict=True)
+    signature = _backup_root_stat_signature(resolved)
+    cached = _backup_artifact_inventory_cache.get(resolved)
+    if cached is not None and cached.stat_signature == signature:
+        return [dict(item) for item in cached.artifact_inventory]
+    inventory = _backup_artifact_inventory(resolved)
+    # Guard a scan-time mutation race: only cache a result whose signature is
+    # still what it was before the (potentially slow) hashing pass began.
+    if _backup_root_stat_signature(resolved) == signature:
+        _backup_artifact_inventory_cache[resolved] = _BackupInventoryCacheEntry(
+            stat_signature=signature,
+            artifact_inventory=tuple(dict(item) for item in inventory),
+        )
+    else:
+        _backup_artifact_inventory_cache.pop(resolved, None)
+    return inventory
+
+
 def _canonical_json_sha256(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -455,7 +530,7 @@ def validate_migration_backup_manifest(
         raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
     if receipt.get("verdict") != "success":
         raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    artifact_inventory = _backup_artifact_inventory(backup_root)
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
     file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
     manifest_evidence = file_evidence.get("manifest.json", {})
     if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
@@ -481,27 +556,89 @@ def validate_migration_backup_manifest(
 
 
 def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
-    statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
-    for statement in statements:
-        conn.execute(statement)
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise MigrationError("migration SQL ended with an incomplete statement")
+
+
+def _pending_migration_steps(
+    conn: sqlite3.Connection,
+    tier: ArchiveTier,
+    *,
+    current_version: int,
+    target_version: int,
+) -> tuple[MigrationStep, ...]:
+    steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
+    expected_versions = tuple(range(current_version + 1, target_version + 1))
+    actual_versions = tuple(step.version for step in steps)
+    if actual_versions != expected_versions:
+        raise MigrationError(
+            f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
+        )
+    return steps
 
 
 def migrate_archive_tier(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
     *,
-    backup_manifest: Path,
+    backup_manifest: Path | None,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier does not support in-place migrations")
     _checkpoint_live_tier(conn)
-    validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+    target_version = ARCHIVE_VERSION_BY_TIER[tier]
+
+    # Lock-free precheck: fail fast (no wasted write-lock acquisition) when a
+    # backup manifest is required but missing. This read is intentionally not
+    # authoritative -- a concurrent migrate_archive_tier call could change the
+    # version before this one acquires BEGIN IMMEDIATE below, so every value
+    # computed here is re-derived from a fresh read once the lock is held.
+    precheck_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    if precheck_version == target_version:
+        return MigrationResult(
+            tier=tier,
+            from_version=precheck_version,
+            to_version=target_version,
+            applied_versions=(),
+        )
+    if precheck_version == 0:
+        raise MigrationError(f"{tier.value} tier is empty; initialize it fresh instead of migrating")
+    if precheck_version > target_version:
+        raise MigrationError(
+            f"{tier.value} tier version {precheck_version} is newer than this runtime expects ({target_version})"
+        )
+    precheck_steps = _pending_migration_steps(
+        conn, tier, current_version=precheck_version, target_version=target_version
+    )
+    precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
+    if precheck_requires_backup and backup_manifest is None:
+        raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
+    if precheck_requires_backup:
+        # Baseline validation before acquiring the write lock. The paired
+        # post-lock call below re-validates with the same connection;
+        # _validate_live_source_fingerprint rejects a nonempty WAL, so a
+        # write that lands on the live tier between this call and BEGIN
+        # IMMEDIATE is caught as "changed before the migration lock" instead
+        # of migrating over data the verified backup never covered.
+        assert backup_manifest is not None
+        validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+
     try:
         conn.execute("BEGIN IMMEDIATE")
-        backup_receipt = validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+        # Authoritative re-read: a concurrent migration may have advanced (or
+        # completed) the tier between the precheck above and this lock
+        # acquisition. Recomputing here instead of trusting the precheck
+        # avoids failing the per-step version check below with a confusing
+        # "expected version N, found M" instead of the correct no-op result.
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        target_version = ARCHIVE_VERSION_BY_TIER[tier]
         if current_version == target_version:
             conn.rollback()
             return MigrationResult(
@@ -509,23 +646,20 @@ def migrate_archive_tier(
                 from_version=current_version,
                 to_version=target_version,
                 applied_versions=(),
-                backup_receipt=backup_receipt,
             )
-        if current_version == 0:
-            raise MigrationError(f"{tier.value} tier is empty; initialize it fresh instead of migrating")
         if current_version > target_version:
             raise MigrationError(
                 f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
             )
-
-        steps = tuple(step for step in _load_migrations(tier) if current_version < step.version <= target_version)
-        expected_versions = tuple(range(current_version + 1, target_version + 1))
-        actual_versions = tuple(step.version for step in steps)
-        if actual_versions != expected_versions:
-            raise MigrationError(
-                f"{tier.value} migration chain is incomplete: expected {expected_versions}, found {actual_versions}"
-            )
-
+        steps = _pending_migration_steps(conn, tier, current_version=current_version, target_version=target_version)
+        requires_backup = any(step.requires_backup for step in steps)
+        if requires_backup and backup_manifest is None:
+            raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
+        backup_receipt = (
+            validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
+            if requires_backup and backup_manifest is not None
+            else None
+        )
         start_version = current_version
         applied: list[int] = []
         for step in steps:
@@ -535,6 +669,12 @@ def migrate_archive_tier(
                     f"{tier.value} migration {step.name} expected version {step.version - 1}, found {before}"
                 )
             _execute_migration_sql(conn, step.sql)
+            # Saved-query migration now runs after v8 has installed the
+            # definition-version column consumed by the canonical identity API.
+            if tier is ArchiveTier.USER and step.version == 8:
+                from polylogue.storage.sqlite.query_objects import migrate_saved_query_assertions
+
+                migrate_saved_query_assertions(conn)
             conn.execute(f"PRAGMA user_version = {step.version}")
             applied.append(step.version)
         quick_check = conn.execute("PRAGMA quick_check").fetchone()

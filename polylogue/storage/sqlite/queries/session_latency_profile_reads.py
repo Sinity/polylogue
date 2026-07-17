@@ -6,9 +6,9 @@ import sqlite3
 
 import aiosqlite
 
+from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionLatencyProfileRecord
 from polylogue.storage.sqlite.queries.mappers_support import _row_float, _row_int, _row_text
-from polylogue.types import SessionId
 
 
 def _row_to_session_latency_profile_record(row: sqlite3.Row) -> SessionLatencyProfileRecord:
@@ -78,16 +78,16 @@ async def find_stuck_session_latency_profiles(
 async def list_session_latency_profiles(
     conn: aiosqlite.Connection,
     *,
-    provider: str | None = None,
+    origin: str | None = None,
     since: str | None = None,
     until: str | None = None,
     limit: int | None = 500,
 ) -> list[SessionLatencyProfileRecord]:
     where: list[str] = []
     params: list[object] = []
-    if provider:
+    if origin:
         where.append("source_name = ?")
-        params.append(provider)
+        params.append(origin)
     if since:
         where.append("COALESCE(last_message_at, source_updated_at, first_message_at) >= ?")
         params.append(since)

@@ -7,25 +7,16 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_session_search_query, session_web_url
 from polylogue.storage.search.query_support import normalize_fts5_query, sort_key_to_iso
 from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 _MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
 
 
 @lru_cache(maxsize=128)

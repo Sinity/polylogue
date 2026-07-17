@@ -1,4 +1,4 @@
-"""Materialized run-projection read band for SQLiteQueryStore."""
+"""Source-derived run-projection read band for SQLiteQueryStore."""
 
 from __future__ import annotations
 

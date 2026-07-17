@@ -1,0 +1,10 @@
+{
+  "anti_grep_failed_actions": 0,
+  "anti_grep_text_hits": 2,
+  "archive_root": "polylogue-receipts-demo/archive",
+  "failed_exit_code": 1,
+  "ok": true,
+  "recovery_exit_code": 0,
+  "seeded_for_command": true,
+  "verdict": "contradicted_at_claim_time_then_repaired"
+}

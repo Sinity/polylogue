@@ -7,17 +7,21 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session, SessionSummary
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, BranchType, Provider
+from polylogue.core.json import json_document
 from polylogue.core.refs import EvidenceRef
+from polylogue.core.types import SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 from polylogue.surfaces.payloads import (
@@ -29,7 +33,6 @@ from polylogue.surfaces.payloads import (
     ImportProducedRowsPayload,
     PublicRefResolutionPayload,
 )
-from polylogue.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.mcp import (
     EXPECTED_PROMPT_NAMES,
@@ -56,6 +59,8 @@ def _write_archive_session(
     text: str = "archive message",
     working_directories: list[str] | None = None,
     blocks: list[dict[str, Any]] | None = None,
+    parent_session_provider_id: str | None = None,
+    branch_type: BranchType | None = None,
 ) -> str:
     parsed_blocks = (
         [ParsedContentBlock.model_validate(block) for block in blocks]
@@ -68,6 +73,8 @@ def _write_archive_session(
             provider_session_id=native_id,
             title=title,
             working_directories=working_directories or [],
+            parent_session_provider_id=parent_session_provider_id,
+            branch_type=branch_type,
             messages=[
                 ParsedMessage(
                     provider_message_id=f"{native_id}-m1",
@@ -183,6 +190,13 @@ class TestServerSurfaceRegistration:
         assert "terminal_state" in signature.parameters
         assert "limit" in signature.parameters
         assert not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+
+    def test_named_source_freshness_accepts_only_the_exact_source_path(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        signature = inspect.signature(mcp_server._tool_manager._tools["named_source_freshness"].fn)
+
+        assert tuple(signature.parameters) == ("source_path",)
 
     @pytest.mark.parametrize(
         ("surface_attr", "actual_getter", "expected"),
@@ -546,6 +560,92 @@ class TestResourceSurfaces:
         assert component_readiness["index"]["state"] == "degraded"
         assert component_readiness["index"]["caveats"] == ["messages_fts_row_mismatch"]
 
+    def test_raw_authority_census_query_handle_resolves_bounded_ledger(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root):
+            pass
+        receipt = record_raw_authority_census(
+            archive_root,
+            (),
+            selected_plan_ids=set(),
+            executable_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"origin": "codex-session"},
+            residual={},
+        )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://raw-authority-census/{census_id}/{offset}"].fn,
+                census_id=receipt.census_id,
+                offset="0",
+            )
+
+        payload = json.loads(result)
+        assert payload["query_handle"] == receipt.query_handle
+        assert payload["census"]["census_id"] == receipt.census_id
+        assert payload["plans"] == []
+
+    def test_raw_authority_mcp_bounds_oversized_plan_and_pages_detail(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        with ArchiveStore(archive_root):
+            pass
+        raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
+        plan = RawReplayPlan(
+            "raw-replay:mcp-oversized",
+            "c" * 64,
+            raw_ids,
+            ("codex:oversized",),
+            json_document({"raw_ids": list(raw_ids)}),
+            json_document({"raw_ids": list(raw_ids)}),
+            json_document({"raw_ids": list(raw_ids)}),
+        )
+        receipt = record_raw_authority_census(
+            archive_root,
+            (plan,),
+            selected_plan_ids=set(),
+            executable_plan_ids={plan.plan_id},
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": "mcp-oversized"},
+            residual={},
+        )
+        with patch("polylogue.mcp.server._get_config") as mock_get_config:
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            census_result = invoke_surface(
+                mcp_server._resource_manager._templates["polylogue://raw-authority-census/{census_id}/{offset}"].fn,
+                census_id=receipt.census_id,
+                offset="0",
+            )
+            census_payload = json.loads(census_result)
+            item = census_payload["plans"][0]
+            assert len(census_result) < 8_000
+            assert item["plan"]["input_raw_count"] == 2_000
+            detail_result = invoke_surface(
+                mcp_server._resource_manager._templates[
+                    "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
+                ].fn,
+                census_id=receipt.census_id,
+                record_id=plan.plan_id,
+                revision="current",
+                offset="0",
+            )
+
+        detail_payload = json.loads(detail_result)
+        assert len(detail_payload["chunk"]) <= 16_384
+        assert detail_payload["next_query_handle"] is not None
+
 
 class TestArchiveGenericToolSurfaces:
     @pytest.mark.asyncio
@@ -673,12 +773,76 @@ class TestArchiveGenericToolSurfaces:
         assert [item["session_id"] for item in payload["items"]] == [kept_id]
 
     @pytest.mark.asyncio
+    async def test_query_units_tool_returns_bounded_delegation_rows(
+        self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        instruction = "inspect delegation routing " + "carefully " * 40
+        with ArchiveStore(archive_root) as archive:
+            parent_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-delegation",
+                title="Delegation query parent",
+                text="dispatch a bounded subagent task",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "task-delegation",
+                        "tool_name": "Task",
+                        "tool_input": {"prompt": instruction, "model": "haiku"},
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_id": "task-delegation",
+                        "text": "dispatch failed before child creation",
+                        "tool_result_is_error": 1,
+                    },
+                ],
+            )
+
+        with (
+            patch("polylogue.mcp.server._get_config") as mock_get_config,
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue,
+        ):
+            mock_get_config.return_value = SimpleNamespace(
+                archive_root=archive_root,
+                db_path=archive_root / "index.db",
+            )
+            mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["query_units"].fn,
+                expression="delegations where mapping_state:unresolved AND instruction:routing",
+            )
+
+        payload = json.loads(result)
+        assert payload["mode"] == "query-unit"
+        assert payload["unit"] == "delegation"
+        [item] = payload["items"]
+        assert item["parent_session_id"] == parent_id
+        assert item["mapping_state"] == "unresolved"
+        assert item["instruction_preview"] == instruction[:240]
+        assert item["instruction_truncated"] is True
+        assert "instruction_payload" not in item
+
+        async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as facade:
+            with patch("polylogue.mcp.server._get_polylogue", return_value=facade):
+                resolved = await invoke_surface_async(
+                    mcp_server._tool_manager._tools["resolve_ref"].fn,
+                    ref=item["delegation_ref"],
+                )
+        card = json.loads(resolved)
+        assert card["payload_kind"] == "delegation-card"
+        assert card["summary"] == instruction[:240]
+        assert card["payload"]["instruction"] == instruction
+        assert card["payload"]["attempt"]["parent_session_id"] == parent_id
+
+    @pytest.mark.asyncio
     async def test_query_units_tool_returns_run_rows_without_archive_operations(
         self: object, mcp_server: MCPServerUnderTest, tmp_path: Path
     ) -> None:
         archive_root = tmp_path / "archive"
         with ArchiveStore(archive_root) as archive:
-            session_id = _write_archive_session(
+            parent_id = _write_archive_session(
                 archive,
                 native_id="tool-query-units-run",
                 title="Tool query units run",
@@ -703,6 +867,15 @@ class TestArchiveGenericToolSurfaces:
                     },
                 ],
             )
+            session_id = _write_archive_session(
+                archive,
+                native_id="tool-query-units-run-child",
+                title="Explore subagent run",
+                text="Subagent run terminal row",
+                parent_session_provider_id="tool-query-units-run",
+                branch_type=BranchType.SUBAGENT,
+            )
+            assert parent_id != session_id
         _materialize_run_projection(archive_root / "index.db")
         with (
             patch("polylogue.mcp.server._get_config") as mock_get_config,
@@ -715,7 +888,7 @@ class TestArchiveGenericToolSurfaces:
             mock_get_polylogue.side_effect = AssertionError("query_units tool must not open archive operations")
             result = await invoke_surface_async(
                 mcp_server._tool_manager._tools["query_units"].fn,
-                expression="runs where role:subagent AND status:completed AND agent:Explore",
+                expression="runs where role:subagent AND status:completed AND agent:codex",
             )
 
         payload = json.loads(result)
@@ -726,7 +899,7 @@ class TestArchiveGenericToolSurfaces:
         assert item["session_id"] == session_id
         assert item["role"] == "subagent"
         assert item["status"] == "completed"
-        assert item["agent_ref"] == "agent:codex/Explore"
+        assert item["agent_ref"] == "agent:codex/subagent"
 
     @pytest.mark.asyncio
     async def test_query_units_tool_returns_observed_event_rows_without_archive_operations(
@@ -1016,6 +1189,97 @@ class TestArchiveGenericToolSurfaces:
         assert called_spec.read_views == ("messages",)
         assert called_spec.max_tokens == 1000
 
+    def test_context_delivery_payload_mapper_annotations_resolve_at_runtime(self: object) -> None:
+        from polylogue.mcp.payloads import MCPContextDeliveryPayload
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        hints = get_type_hints(MCPContextDeliveryPayload.from_envelope)
+
+        assert hints["envelope"] is ArchiveContextDeliveryEnvelope
+        assert hints["return"] is MCPContextDeliveryPayload
+
+    @pytest.mark.asyncio
+    async def test_get_context_delivery_reads_recipient_scoped_facade_receipt(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_image_sha256
+        from polylogue.core.refs import EvidenceRef
+        from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+        image = ContextImage(
+            spec=ContextSpec(seed_refs=("session:session-1",), read_views=()),
+            segments=(
+                ContextSegment(
+                    segment_id="read-view:session-1:messages",
+                    kind="read_view",
+                    title="Delivered context",
+                    markdown="exact bytes",
+                    evidence_refs=(EvidenceRef(session_id="session-1"),),
+                    token_estimate=2,
+                ),
+            ),
+            evidence_refs=(EvidenceRef(session_id="session-1"),),
+            token_estimate=2,
+        )
+        receipt = ArchiveContextDeliveryEnvelope(
+            snapshot_ref="context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:hermes-main",
+            run_ref=None,
+            boundary="explicit-recall",
+            inheritance_mode="explicit",
+            context_image_sha256=context_image_sha256(image),
+            context_image=image,
+            segment_refs=("read-view:session-1:messages",),
+            evidence_refs=("session-1",),
+            assertion_refs=(),
+            omissions=(),
+            caveats=("quoted evidence",),
+            metadata={"context_image_sha256": context_image_sha256(image)},
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=receipt)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref=receipt.snapshot_ref,
+                recipient_ref=receipt.recipient_ref,
+            )
+
+        payload = json.loads(result)
+        assert payload["snapshot_ref"] == receipt.snapshot_ref
+        assert payload["context_image_sha256"] == receipt.context_image_sha256
+        assert payload["context_image"]["segments"][0]["markdown"] == "exact bytes"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            receipt.snapshot_ref,
+            recipient_ref=receipt.recipient_ref,
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_context_delivery_hides_missing_receipt_or_recipient_mismatch(
+        self: object, mcp_server: MCPServerUnderTest
+    ) -> None:
+        mock_poly = make_polylogue_mock()
+        mock_poly.get_context_delivery = AsyncMock(return_value=None)
+
+        with patch("polylogue.mcp.server._get_polylogue", return_value=mock_poly):
+            result = await invoke_surface_async(
+                mcp_server._tool_manager._tools["get_context_delivery"].fn,
+                snapshot_ref="context-snapshot:session-1:explicit-recall",
+                recipient_ref="agent:other-recipient",
+            )
+
+        payload = json.loads(result)
+        assert payload["is_error"] is True
+        assert payload["code"] == "not_found"
+        assert payload["tool"] == "get_context_delivery"
+        mock_poly.get_context_delivery.assert_awaited_once_with(
+            "context-snapshot:session-1:explicit-recall",
+            recipient_ref="agent:other-recipient",
+        )
+
     @pytest.mark.asyncio
     async def test_list_assertion_claims_reads_shared_facade_claims(
         self: object, mcp_server: MCPServerUnderTest
@@ -1193,6 +1457,11 @@ class TestPromptSurfaces:
         )
         assert "path:polylogue/cli/click_app.py" in touching
         assert "repo:polylogue" in touching
+        assert "sessions where" not in touching
+
+        failures = await invoke_surface_async(prompts["unacknowledged_failures"].fn, repo="polylogue")
+        assert "actions where" in failures
+        assert "sessions where" not in failures
 
         decisions = await invoke_surface_async(prompts["decisions_about"].fn, topic="lineage")
         assert 'near:"lineage"' in decisions

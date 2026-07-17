@@ -1,0 +1,136 @@
+schema_version: 1
+tiers:
+- hero
+- proof_card
+- experiment
+- torture
+- field_packet
+demos:
+- id: polylogue.receipts
+  project: polylogue
+  tier: hero
+  status: planned_vertical_slice
+  beads:
+  - polylogue-212.2
+  - polylogue-ap7
+  question: The assistant said the tests passed. What actually happened?
+  claim: Assistant claims and structural tool outcomes are distinct and evidence-addressable.
+  oracle: Provider-native tool-result metadata and process exit code.
+  negative_controls:
+  - failure-like prose with successful result
+  - error text without tool failure
+  - missing result renders unknown
+  surface: semantic transcript + evidence drilldown
+- id: polylogue.history-has-branches
+  project: polylogue
+  tier: hero
+  status: substrate_present_story_planned
+  beads:
+  - polylogue-4ts
+  question: How much distinct work happened across a copied-prefix fork?
+  claim: Physical evidence is preserved while logical composition avoids double-counting
+    supported copied prefixes.
+  oracle: Fixture branch manifest and message IDs.
+  negative_controls:
+  - fresh subagent
+  - coincidentally identical text
+  - compaction summary
+  surface: topology + physical/logical counts + chronicle
+- id: polylogue.resume-reviewed
+  project: polylogue
+  tier: hero
+  status: planned
+  beads:
+  - polylogue-37t
+  - polylogue-212.6
+  question: What should the next agent receive, and why?
+  claim: Bounded context includes eligible reviewed assertions and reports omissions.
+  oracle: Assertion lifecycle, context policy, segment manifest, delivery snapshot.
+  negative_controls:
+  - candidate
+  - rejected assertion
+  - stale assertion
+  - over-budget evidence
+  surface: context image + delivery ledger
+- id: polylogue.honest-no
+  project: joint
+  tier: hero
+  status: partial
+  beads:
+  - polylogue-212.8
+  - sinex-4j2.2
+  question: What ambient activity surrounded this session?
+  claim: Standalone Polylogue reports unsupported evidence classes; Sinex-backed mode
+    can supply them with coverage.
+  oracle: Declared source/capability availability.
+  negative_controls:
+  - healthy empty source
+  - source unavailable
+  - stale projection
+  surface: verdict + missing-evidence explanation
+- id: sinex.reconstruct-tuesday
+  project: sinex
+  tier: hero
+  status: planned
+  beads:
+  - sinex-cem.8
+  - sinex-jdp
+  question: What happened around the failed build, including missing evidence?
+  claim: Heterogeneous evidence can be joined around an interval with byte provenance
+    and honest gaps.
+  oracle: Multi-source fixture manifests and induced outage interval.
+  negative_controls:
+  - healthy empty interval
+  - captured but unparsed material
+  - out-of-window similar event
+  surface: multi-track moment timeline
+- id: sinex.changes-mind
+  project: sinex
+  tier: hero
+  status: planned
+  beads:
+  - sinex-cem.3
+  - sinex-cem.14
+  question: What happens after a historical parser bug is fixed?
+  claim: A new interpretation can replace the current projection without erasing source
+    bytes or the prior reading.
+  oracle: Immutable source fixture and expected v1/v2 readings.
+  negative_controls:
+  - unaffected record
+  - unaffected descendant
+  surface: before/after interpretation timeline
+- id: sinex.blind-spot
+  project: sinex
+  tier: hero
+  status: planned
+  beads:
+  - sinex-cem.2
+  - sinex-jdp
+  question: Can the system tell that a source was silent because capture broke?
+  claim: Source outage is surfaced as coverage error and remains visible after recovery.
+  oracle: Fault injector and heartbeat/material timeline.
+  negative_controls:
+  - healthy source with zero events
+  surface: source-health + query caveat + incident packet
+- id: joint.resume-this-bead
+  project: joint
+  tier: hero
+  status: vision_with_defined_proof
+  beads:
+  - sinex-a4w.3.9
+  - sinex-4j2
+  - polylogue-37t
+  - polylogue-4ts
+  question: Resume this work item from intent, agent history, machine evidence, and
+    reviewed memory.
+  claim: A bounded Agent Work Packet reconstructs intent, attempts, effects, verification,
+    uncertainty, and next context.
+  oracle: Independent Beads, transcript, Git, terminal, source coverage, and assertion
+    records.
+  negative_controls:
+  - contradicted claim
+  - source outage
+  - wrong candidate
+  - stale assertion
+  - copied prefix
+  surface: Agent Work Packet + context-delivery snapshot

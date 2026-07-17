@@ -32,8 +32,8 @@ class RepositoryArchiveQueryMixin:
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: list[str] | None = None,
+        origin: str | None = None,
+        origins: list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -55,8 +55,8 @@ class RepositoryArchiveQueryMixin:
         return await self.list_summaries_by_query(
             SessionRecordQuery(
                 source=source,
-                provider=provider,
-                providers=tuple(providers or ()),
+                origin=origin,
+                origins=tuple(origins or ()),
                 since=since,
                 until=until,
                 title_contains=title_contains,
@@ -82,8 +82,8 @@ class RepositoryArchiveQueryMixin:
         self,
         *,
         page_size: int = 50,
-        provider: str | None = None,
-        providers: list[str] | None = None,
+        origin: str | None = None,
+        origins: list[str] | None = None,
         source: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -107,8 +107,8 @@ class RepositoryArchiveQueryMixin:
             page = await self.list_summaries(
                 limit=page_size,
                 offset=offset,
-                provider=provider,
-                providers=providers,
+                origin=origin,
+                origins=origins,
                 source=source,
                 since=since,
                 until=until,
@@ -138,8 +138,8 @@ class RepositoryArchiveQueryMixin:
         self,
         limit: int | None = 50,
         offset: int = 0,
-        provider: str | None = None,
-        providers: list[str] | None = None,
+        origin: str | None = None,
+        origins: list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -159,8 +159,8 @@ class RepositoryArchiveQueryMixin:
     ) -> list[Session]:
         return await self.list_by_query(
             SessionRecordQuery(
-                provider=provider,
-                providers=tuple(providers or ()),
+                origin=origin,
+                origins=tuple(origins or ()),
                 since=since,
                 until=until,
                 title_contains=title_contains,
@@ -197,13 +197,13 @@ class RepositoryArchiveQueryMixin:
     ) -> AggregateMessageStats:
         return await self.queries.aggregate_message_stats(session_ids)
 
-    async def get_stats_by(self, group_by: str = "provider") -> dict[str, int]:
+    async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
         return await self.queries.get_stats_by(group_by)
 
     async def count(
         self,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
+        origin: str | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
         until: str | None = None,
         title_contains: str | None = None,
@@ -223,8 +223,8 @@ class RepositoryArchiveQueryMixin:
     ) -> int:
         return await self.count_by_query(
             SessionRecordQuery(
-                provider=provider,
-                providers=tuple(providers or ()),
+                origin=origin,
+                origins=tuple(origins or ()),
                 since=since,
                 until=until,
                 title_contains=title_contains,

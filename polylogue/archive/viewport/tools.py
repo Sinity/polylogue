@@ -79,7 +79,17 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         )
     ):
         return ToolCategory.SEARCH
-    if name_lower in ("bash", "shell", "terminal", "run", "exec_command", "shell_command"):
+    if name_lower in (
+        "bash",
+        "shell",
+        "terminal",
+        "run",
+        "exec",
+        "exec_command",
+        "functions.exec",
+        "functions.exec_command",
+        "shell_command",
+    ):
         cmd = input_data.get("command", input_data.get("cmd", ""))
         if isinstance(cmd, str) and cmd.strip().startswith("git "):
             return ToolCategory.GIT

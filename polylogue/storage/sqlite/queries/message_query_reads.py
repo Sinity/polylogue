@@ -17,6 +17,7 @@ from polylogue.storage.runtime import (
     LineageCompleteness,
     MessageRecord,
 )
+from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 logger = get_logger(__name__)
@@ -67,7 +68,7 @@ async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> st
 # Cycle/runaway guard only. Composition is iterative (not recursive), so this is
 # NOT a Python-stack limit — a deep acompact/fork chain composes fine. Kept large
 # so realistic lineages never truncate; a `visited` set is the real cycle guard.
-_MAX_LINEAGE_DEPTH = 1024
+_MAX_LINEAGE_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
 
 
 async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> tuple[str, str] | None:

@@ -1,7 +1,8 @@
 # Polylogue Browser Capture
 
 Local-first Manifest V3 extension for capturing ChatGPT and Claude.ai
-sessions into Polylogue.
+sessions into Polylogue, including resumable inventory-driven background
+backfills.
 
 ## Install
 
@@ -141,6 +142,43 @@ tab inventory, and injection mode. Set `POLYLOGUE_PROVIDER_SMOKE_HEADLESS=0` to
 repeat the same isolated-profile proof visibly, or use `--browser-live-proof`
 with a visible copied profile for operator-local live-page evidence.
 
+## Mission control, pairing, and ambient status
+
+The popup is the operator mission-control surface for all currently open
+supported conversation tabs. It uses one status vocabulary across active-page
+capture, queued capture retries, history backfill, and receiver-owned GPT-5.6
+Sol Pro work: **Safe / current**, **Catching up**, **Partial fidelity**, **Needs
+attention**, **Failed**, **Receiver offline**, **Provider warning**, plus
+**Queued**, **Running**, and **Completed** for external work. Sol Pro rows retain
+the receiver-provided title, phase, cadence, owner/lease, cooldown or backoff,
+and completion-handoff state rather than deriving a second queue model in the
+extension.
+
+A compatible receiver advertises `polylogue-browser-capture/v1` and a stable,
+non-secret `receiver_id` derived from its persisted local pairing root. Once
+observed, the extension binds endpoint, schema, and identity. A different
+identity fails closed; an unreachable noncanonical endpoint gets one bounded
+recovery attempt at `http://127.0.0.1:8765`, and only the already-paired identity
+can be adopted there. **Reset pairing** removes only that trust binding and
+preserves capture retries, backfill ledgers, Sol Pro work, and the extension
+instance identity. Token rotation intentionally appears as an identity change
+and requires operator verification plus reset/re-pair.
+
+ChatGPT and Claude pages also receive a fixed in-page status chip implemented in
+a closed Shadow DOM. It is read-only, uses bundled code and system fonts, does
+not change provider layout, follows light/dark and reduced-motion preferences,
+and can be disabled globally or per site. Selecting text inside one provider
+message creates an ephemeral assertion candidate in page memory. The Save
+control remains disabled because the current authenticated receiver contract has
+no assertion-persistence route. The reverse/posting section is visible for
+future architecture but the ambient surface never posts or submits; the
+extension and receiver posting gates remain separate and off by default.
+
+The per-conversation trail records decisions as well as actions. In particular,
+when Polylogue checks a conversation that is already current or already being
+processed, it records **Observed; no action needed** instead of making the
+absence of a duplicate capture look like inactivity.
+
 ## Supported Sites
 
 | Site | Provider | Notes |
@@ -164,7 +202,11 @@ pages the badge shows grey and no data is sent.
 - **Stale archive**: the receiver spool is newer than the indexed archive. Keep
   the daemon running; live convergence should advance this to **Archived**
   automatically.
-- **No background collection**: the extension only reads the DOM when you are actively on a supported page
+- **Explicit background collection only**: ordinary page capture reads content
+  only on an explicit capture action. A backfill runs in the service worker
+  only after **Start** is pressed with a provider and cutoff; it uses the
+  authenticated provider inventory/API, never activates foreground tabs, and
+  can be paused or cancelled from the popup.
 - **Local only**: content is posted to the configured `127.0.0.1` receiver and never leaves your machine
 - **Privacy diagnostics**: the popup shows capture counts and timestamps, never message content
 
@@ -198,6 +240,57 @@ polylogue browser-capture serve (Python)
     ▼
 polylogued daemon → ingests → FTS index
 ```
+
+## Resumable background backfill
+
+The popup's **Background backfill** panel starts a provider-native inventory
+delta from a user-selected cutoff. Jobs and queue entries live in IndexedDB,
+so MV3 service-worker suspension or a browser restart does not lose the cursor,
+captured artifact, retry deadline, or receiver receipt. `chrome.alarms` wakes
+the next eligible item; expired leases are recovered and only one extension
+instance may own an item at a time.
+
+Provider reads run through an already-open or inactive first-party tab, not
+the service worker's cookie context. ChatGPT bearer and selected-account values
+remain inside MAIN world; Claude resolves the exact organization selected by
+the UI. The broker accepts only fixed inventory and native-conversation
+operations, bounds time and response bytes, and never persists or logs
+credential values. Missing or stale page auth context pauses for operator
+action instead of accepting a plausible-looking empty inventory.
+Claude jobs pin the selected organization at inventory start. If the UI
+selection changes, the job pauses with a `selected_organization_stale` reason;
+cancel that job and start a new one rather than using Resume across accounts.
+
+The scheduler uses concurrency one per provider, a conservative learned
+request cadence, daily and per-wake budgets, `Retry-After`, exponential
+full-jitter backoff, and a circuit breaker. A 403/auth/challenge pauses for
+operator action; repeated 429s or transport failures pause the provider job.
+Native-empty conversations, authorization failures, bounded retry exhaustion,
+receiver outages, and successful durable ACKs remain distinct in the exported
+diagnostic ledger. Receiver-down artifacts remain queued and are retried
+without refetching provider data.
+
+Execution itself is leased in IndexedDB, not only the queue item. Request
+budget is reserved atomically before a provider call, and pause/cancel bumps a
+generation checked by every asynchronous continuation, so two service workers
+cannot spend the same token or resurrect cancelled work. Provider requests
+time out before the execution lease can expire. Exact provider revision
+timestamps are recorded in a durable native-id ledger; a later job skips only
+an exact known revision, while missing/untrusted revisions are fetched again.
+Receiver retries and stored native envelopes are bounded and fail-paused on
+attempt, byte, or IndexedDB quota exhaustion.
+
+Completion means the loopback receiver atomically wrote the artifact and
+returned both a request id and the exact submitted JSON-byte SHA-256. The
+deduplication identity is provider native id plus content hash. It does **not**
+mean the provider inventory was historically complete: Polylogue honors the
+provider's authentication, inventory visibility, rate limits, challenges, and
+deletion semantics and cannot prove completeness beyond what that authenticated
+inventory exposes. It does not bypass anti-bot controls or scrape records the
+provider does not enumerate.
+ChatGPT inventory traverses active, starred, archived, and archived-starred
+partitions under one durable cursor; repeated ids converge through the queue's
+native-id uniqueness constraint.
 
 ## Development
 

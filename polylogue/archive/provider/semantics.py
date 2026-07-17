@@ -13,6 +13,7 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sources import origin_from_provider
 
 
 def content_text(value: object) -> str | None:
@@ -64,7 +65,7 @@ def extract_reasoning_traces(content: Sequence[object] | None, provider: Provide
             text = _string_field(block, "text")
 
         if text:
-            traces.append(ReasoningTrace(text=text, provider=normalized_provider, raw=block))
+            traces.append(ReasoningTrace(text=text, origin=origin_from_provider(normalized_provider), raw=block))
 
     return traces
 
@@ -91,7 +92,7 @@ def extract_tool_calls(content: Sequence[object] | None, provider: Provider | st
                 id=_string_field(block, "id"),
                 input=normalized_input,
                 category=classify_tool(name, normalized_input),
-                provider=normalized_provider,
+                origin=origin_from_provider(normalized_provider),
                 raw=block,
             )
         )

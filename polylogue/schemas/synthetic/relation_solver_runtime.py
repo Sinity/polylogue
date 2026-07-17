@@ -141,6 +141,7 @@ class RelationConstraintSolverRuntimeMixin:
     _time_delta_cls: type[TimeDeltaConstraint]
     _mutual_exclusion_cls: type[MutualExclusionGroup]
     _string_length_cls: type[StringLengthConstraint]
+    _max_synthetic_string_length: int | None
 
     def _parse_foreign_keys(self, schema: SchemaRecord) -> None:
         for annotation in _foreign_key_annotations(schema):
@@ -227,6 +228,9 @@ class RelationConstraintSolverRuntimeMixin:
 
         target = int(rng.gauss(constraint.avg_length, constraint.stddev))
         target = max(constraint.min_length, min(constraint.max_length, target))
+        limit = self._max_synthetic_string_length
+        if limit is not None:
+            target = min(target, limit)
 
         if len(base_text) == 0:
             return base_text

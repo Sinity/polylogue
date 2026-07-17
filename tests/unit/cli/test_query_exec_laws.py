@@ -131,6 +131,20 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         )
         .save()
     )
+    (
+        SessionBuilder(index_db, "run-hit-subagent")
+        .provider("codex")
+        .parent_session("ext-run-hit")
+        .branch_type("subagent")
+        .git_repository_url("polylogue")
+        .git_branch("feature/query-runs")
+        .working_directories(["/realm/project/polylogue"])
+        .title("Run query rendering subagent")
+        .created_at((now - timedelta(minutes=29)).isoformat())
+        .updated_at((now - timedelta(minutes=29)).isoformat())
+        .add_message("m9", role="assistant", text="Run query unit rendered.")
+        .save()
+    )
 
     with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -150,11 +164,10 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
             now_ms=1_700_000_010_000,
         )
 
-    # Materialize derived insight read-models (session_profiles, work events,
-    # and the run-projection tables session_runs/session_observed_events/
-    # session_context_snapshots) so the SQL-backed run/observed-event/
-    # context-snapshot query units have rows to return, mirroring a real
-    # post-ingest archive.
+    # Materialize derived insight read-models (session_profiles, work events)
+    # so the SQL-backed query units have rows to return, mirroring a real
+    # post-ingest archive. Run/observed-event/context-snapshot query units are
+    # source-derived (polylogue-dab) and need no separate materialization.
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     with sqlite3.connect(index_db) as insight_conn:
@@ -452,7 +465,6 @@ def test_async_execute_query_archive_lists_archive(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -524,7 +536,6 @@ def test_async_execute_query_archive_projects_fields(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Projected",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -582,7 +593,6 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Structured",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -986,7 +996,6 @@ def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Fallback",
                     created_at="2026-01-02T03:04:05Z",
                     updated_at="2026-01-02T03:04:06Z",
@@ -1163,7 +1172,6 @@ def test_async_execute_query_archive_delivers_to_output_path(
                     session_id="codex-session:native-1",
                     native_id="native-1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Delivered",
                     created_at=None,
                     updated_at=None,
@@ -1593,7 +1601,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     snippet="[needle]",
                 )
@@ -1605,7 +1612,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Copied",
                 created_at=None,
                 updated_at=None,
@@ -1739,7 +1745,6 @@ def test_async_execute_query_archive_searches_within_session_id(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Copied",
                     snippet="[needle]",
                 )
@@ -1751,7 +1756,6 @@ def test_async_execute_query_archive_searches_within_session_id(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Copied",
                 created_at=None,
                 updated_at=None,
@@ -1844,7 +1848,6 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
             session_id=f"codex-session:{native_id}",
             native_id=native_id,
             origin="codex-session",
-            provider=Provider.CODEX,
             title=native_id,
             created_at=None,
             updated_at=None,
@@ -1972,7 +1975,6 @@ def test_async_execute_query_archive_open_uses_first_list_result(
                     session_id="codex-session:first",
                     native_id="first",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="First",
                     created_at=None,
                     updated_at=None,
@@ -2243,7 +2245,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 ),
@@ -2253,7 +2254,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                     block_id="codex-session:native-2:m1:0",
                     message_id="codex-session:native-2:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic 2",
                     snippet="semantic hit 2",
                 ),
@@ -2265,7 +2265,6 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
                 session_id=session_id,
                 native_id=native_id,
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title=f"Semantic {native_id[-1]}",
                 created_at=None,
                 updated_at=None,
@@ -2339,7 +2338,6 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 )
@@ -2351,7 +2349,6 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Semantic",
                 created_at=None,
                 updated_at=None,
@@ -2430,7 +2427,6 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                     block_id="codex-session:native-1:m1:0",
                     message_id="codex-session:native-1:m1",
                     origin="codex-session",
-                    provider=Provider.CODEX,
                     title="Semantic",
                     snippet="semantic hit",
                 )
@@ -2442,7 +2438,6 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
                 session_id=session_id,
                 native_id="native-1",
                 origin="codex-session",
-                provider=Provider.CODEX,
                 title="Semantic",
                 created_at=None,
                 updated_at=None,
@@ -2953,6 +2948,69 @@ SEARCH_FORMAT_CASES = [
 class TestSearchQueryContracts:
     """Matrix coverage for search filters and output formats."""
 
+    def test_bounded_pages_report_indexed_total(self, search_workspace: SearchWorkspace) -> None:
+        """A bounded page keeps the exact match count separate from page size."""
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(cli, ["--plain", "--no-daemon", "find", "query", "-f", "json", "--limit", "1"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert len(payload["items"]) == 1
+        assert payload["total"] == 2
+        assert payload["next_cursor"] is not None
+
+    def test_debug_timing_keeps_query_output_on_stdout(
+        self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opt-in timing reports real CLI phases without corrupting JSON output.
+
+        This invokes the production Click root, query compiler, archive open,
+        list execution, and renderer.  Removing any checkpoint around those
+        production dependencies makes the corresponding stderr phase assertion
+        fail while the JSON assertion protects the stdout/stderr contract.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        monkeypatch.setenv("POLYLOGUE_DEBUG_TIMING", "1")
+
+        result = CliRunner().invoke(cli, ["--plain", "find", "origin:chatgpt-export", "-f", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["mode"] == "list"
+        assert "polylogue timing" in result.stderr
+        for phase in ("cli-callback", "archive-query-import", "config", "compile", "db-open", "execute", "render"):
+            assert phase in result.stderr
+
+    def test_structured_only_cli_query_skips_absent_message_fts(self, search_workspace: SearchWorkspace) -> None:
+        """A field-only CLI query must keep working when lexical search is unavailable.
+
+        This exercises the production ``ArchiveStore.list_summaries`` route
+        against the same derived index the CLI opens.  Replacing the
+        structured-only discriminator in ``_execute_archive_query_stdout``
+        with an unconditional ``_query_hits`` call would instead invoke
+        ``ArchiveStore.search_summaries`` and fail its FTS-readiness check.
+        """
+        from polylogue.cli import cli
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        with sqlite3.connect(index_db) as conn:
+            for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE messages_fts")
+
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "find", "origin:chatgpt-export", "-f", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "list"
+        assert [item["id"] for item in payload["items"]] == ["chatgpt-export:ext-conv1"]
+
     @pytest.mark.parametrize(
         "case_id,args,expected_exit,error_hint",
         SEARCH_FILTER_CASES,
@@ -3171,6 +3229,110 @@ class TestSearchQueryContracts:
             {"group_key": item["group_key"], "count": item["count"]} for item in payload["items"]
         ]
 
+    def test_delegation_unit_source_renders_bounded_rows(self, search_workspace: SearchWorkspace) -> None:
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        instruction = "review CLI delegation evidence " + "carefully " * 40
+        parent_builder = (
+            SessionBuilder(index_db, "delegation-cli-parent")
+            .provider("codex")
+            .title("delegation parent session")
+            .add_message(
+                "dispatch",
+                role="assistant",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": "task-cli",
+                        "tool_name": "Task",
+                        "semantic_type": "subagent",
+                        "tool_input": {"prompt": instruction, "model": "mini"},
+                    },
+                    {"type": "tool_result", "tool_id": "task-cli", "text": "child report"},
+                ],
+            )
+        )
+        parent_id = parent_builder.native_session_id()
+        parent_builder.save()
+        child_builder = (
+            SessionBuilder(index_db, "delegation-cli-child")
+            .provider("codex")
+            .title("delegation child session")
+            .add_message("child-result", role="assistant", text="child report")
+        )
+        child_id = child_builder.native_session_id()
+        child_builder.save()
+        with sqlite3.connect(index_db) as conn:
+            conn.execute(
+                "UPDATE blocks SET semantic_type = 'subagent' WHERE tool_id = 'task-cli' AND block_type = 'tool_use'"
+            )
+            conn.execute(
+                """
+                INSERT INTO session_links (
+                    src_session_id, dst_origin, dst_native_id, link_type,
+                    resolved_dst_session_id, inheritance, method, observed_at_ms
+                ) VALUES (?, 'codex-session', ?, 'subagent', ?, 'spawned-fresh', 'test', 1)
+                """,
+                (child_id, "ext-delegation-cli-parent", parent_id),
+            )
+            delegation_blocks = conn.execute(
+                "SELECT block_type, tool_name, tool_id, semantic_type FROM blocks WHERE session_id = ?",
+                (parent_id,),
+            ).fetchall()
+            assert delegation_blocks, "delegation fixture wrote no blocks"
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM actions WHERE session_id = ? AND semantic_type = 'subagent'",
+                    (parent_id,),
+                ).fetchone()[0]
+                == 1
+            ), [tuple(row) for row in delegation_blocks]
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM delegations WHERE parent_session_id = ?",
+                    (parent_id,),
+                ).fetchone()[0]
+                == 1
+            )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "delegations",
+                "where",
+                "mapping_state:resolved",
+                "AND",
+                "instruction:evidence",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["unit"] == "delegation"
+        [item] = payload["items"]
+        assert item["parent_session_id"] == parent_id
+        assert item["child_session_id"] == child_id
+        assert item["instruction_preview"] == instruction[:240]
+        assert item["instruction_truncated"] is True
+        assert "instruction_payload" not in item
+
+        read_result = CliRunner().invoke(
+            cli,
+            ["--plain", "read", item["delegation_ref"], "--format", "json"],
+        )
+        assert read_result.exit_code == 0, read_result.output
+        card = json.loads(read_result.output)
+        assert card["payload_kind"] == "delegation-card"
+        assert card["summary"] == instruction[:240]
+        assert card["payload"]["instruction"] == instruction
+        assert card["payload"]["attempt"]["parent_session_id"] == parent_id
+        assert card["payload"]["attempt"]["child_session_id"] == child_id
+
     def test_run_unit_source_renders_plain_rows(self, search_workspace: SearchWorkspace) -> None:
         """Run terminal rows render through the CLI instead of failing after query execution."""
         from polylogue.cli import cli
@@ -3189,13 +3351,13 @@ class TestSearchQueryContracts:
                 "AND",
                 "role:subagent",
                 "AND",
-                "agent:Explore",
+                "agent:subagent",
             ],
         )
 
         assert result.exit_code == 0, result.output
-        assert "run:codex-session:ext-run-hit:subagent:0:tool-run [subagent/completed]" in result.output
-        assert "agent:codex/Explore" in result.output
+        assert "run:codex-session:ext-run-hit-subagent [subagent/completed]" in result.output
+        assert "agent:codex/subagent" in result.output
 
     def test_context_snapshot_unit_source_routes_to_query_units(self, search_workspace: SearchWorkspace) -> None:
         """Context snapshot expressions stay on terminal query-unit routing, not stats."""
@@ -3355,3 +3517,49 @@ class TestSearchIndexRebuild:
             assert "searchable" in result.output.lower() or "c1" in result.output
         else:
             assert "no session" in result.output.lower() or "matched" in result.output.lower()
+
+
+def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session-only flags on unit queries must keep failing, daemon or not.
+
+    Anti-vacuity: without the fast-path guard, a reachable daemon serves
+    /api/query-units rows for ``--count`` unit queries, silently ignoring the
+    flag instead of raising the local UsageError.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    config.db_path = archive_root / "index.db"
+    config.daemon_url = "http://127.0.0.1:9876"
+    config.api_auth_token = None
+    env = _make_env(repo=MagicMock(), config=config)
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query._fetch_daemon_payload",
+        MagicMock(side_effect=AssertionError("session-only unit query must not take the daemon fast path")),
+    )
+    store = MagicMock()
+    store.__enter__ = MagicMock(return_value=MagicMock())
+    store.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        MagicMock(return_value=store),
+    )
+
+    with pytest.raises(click.UsageError, match="do not combine"):
+        asyncio.run(
+            async_execute_query(
+                env,
+                {
+                    "archive": True,
+                    "query": ("messages where role:assistant AND text:timeout",),
+                    "count_only": True,
+                    "output_format": "json",
+                },
+            )
+        )

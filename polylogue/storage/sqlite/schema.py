@@ -13,7 +13,7 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.errors import SchemaVersionMismatchError
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,

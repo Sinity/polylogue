@@ -20,7 +20,8 @@ from pathlib import Path
 import aiosqlite
 
 import polylogue.paths as _paths
-from polylogue.errors import DatabaseError
+from polylogue.core.errors import DatabaseError
+from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
     MessageRecord,
     SessionPhaseRecord,
@@ -109,6 +110,7 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
     await _attach_sibling_tiers(conn)
+    await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection) -> None:
@@ -116,6 +118,7 @@ async def configure_read_connection(conn: aiosqlite.Connection) -> None:
     conn.row_factory = aiosqlite.Row
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
     await _attach_sibling_tiers(conn)
+    await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
 
 
 async def _read_schema_ready(backend: SQLiteBackend) -> bool:

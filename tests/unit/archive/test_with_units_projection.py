@@ -27,8 +27,6 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.enums import AssertionKind, BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
 # ---------------------------------------------------------------------------
@@ -156,7 +154,6 @@ def _seed_session_with_assertion(root: Path) -> str:
     session_id = "claude-ai-export:conv-alpha"
     conn = sqlite3.connect(root / "user.db")
     try:
-        initialize_archive_tier(conn, ArchiveTier.USER)
         upsert_assertion(
             conn,
             assertion_id="caveat-alpha",

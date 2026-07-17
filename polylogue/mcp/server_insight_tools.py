@@ -11,8 +11,6 @@ import inspect
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from polylogue.core.enums import Origin
-from polylogue.core.sources import provider_from_origin
 from polylogue.insights.archive import (
     SessionLatencyProfileInsightQuery,
 )
@@ -21,15 +19,13 @@ from polylogue.insights.registry import (
     InsightType,
     fetch_insights_async,
     insight_items_payload,
-    project_origin_payload,
 )
 from polylogue.mcp.insight_tool_contracts import InsightListToolSpec
 from polylogue.mcp.payloads import MCPRootPayload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -48,18 +44,8 @@ def _object_int(value: object) -> int:
     return int(str(value))
 
 
-def _origin_to_provider_token(value: str | None) -> str | None:
-    if value is None or value == "":
-        return None
-    return provider_from_origin(Origin(value)).value
-
-
-def _project_origin_payload(value: object) -> object:
-    return project_origin_payload(value)
-
-
 def _register_list_tool(
-    mcp: FastMCP,
+    mcp: ToolRegistrar,
     hooks: ServerCallbacks,
     pt: InsightType,
 ) -> None:
@@ -91,7 +77,7 @@ def _register_list_tool(
                 payload["limit"] = requested_limit
                 payload["offset"] = requested_offset
                 payload["truncated"] = requested_offset + len(page) < total
-            return hooks.json_payload(MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(payload))))
+            return hooks.json_payload(MCPRootPayload(root=payload))
 
         return await hooks.async_safe_call(pt.name, run)
 
@@ -112,7 +98,7 @@ def _register_list_tool(
     mcp.tool()(wrapper)
 
 
-def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_insight_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     """Register all insight-type list tools plus special tools."""
 
     # Register generic list tools from the registry
@@ -139,7 +125,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             result = await poly.tool_call_latency_distribution(
                 since=since,
                 until=until,
-                provider=_origin_to_provider_token(origin),
+                origin=origin,
                 tool_category=tool_category,
                 limit=hooks.clamp_limit(limit),
             )
@@ -161,15 +147,15 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     session_id=session_id,
                 )
             return hooks.json_payload(
-                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                MCPRootPayload(root=cast(dict[str, object], insight.model_dump(mode="json"))),
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_latency_profile", run)
+        return await hooks.async_safe_call("session_latency_profile", run, session_id=session_id)
 
     @mcp.tool()
     async def find_stuck_sessions(since: str | None = None, limit: int = 20) -> str:
-        """Find sessions with provider tool calls bounded as stuck."""
+        """Find sessions with origin tool calls bounded as stuck."""
 
         async def run() -> str:
             poly = hooks.get_polylogue()
@@ -184,7 +170,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 MCPRootPayload(
                     root={
                         "total": len(insights),
-                        "items": [_project_origin_payload(insight.model_dump(mode="json")) for insight in insights],
+                        "items": [insight.model_dump(mode="json") for insight in insights],
                     }
                 ),
                 exclude_none=True,
@@ -208,7 +194,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     group_by=group_by,
                     since=since,
                     until=until,
-                    provider=_origin_to_provider_token(origin),
+                    origin=origin,
                 )
             except ValueError:
                 return hooks.error_json(
@@ -263,11 +249,11 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             if insight is None:
                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(
-                MCPRootPayload(root=cast(dict[str, object], _project_origin_payload(insight.model_dump(mode="json")))),
+                MCPRootPayload(root=cast(dict[str, object], insight.model_dump(mode="json"))),
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_profile", run)
+        return await hooks.async_safe_call("session_profile", run, session_id=session_id)
 
     @mcp.tool()
     async def get_resume_brief(session_id: str, related_limit: int = 6) -> str:
@@ -286,7 +272,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(brief, exclude_none=False)
 
-        return await hooks.async_safe_call("get_resume_brief", run)
+        return await hooks.async_safe_call("get_resume_brief", run, session_id=session_id)
 
     @mcp.tool()
     async def find_resume_candidates(
@@ -413,7 +399,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     group_by=group_by,
                     since=since,
                     until=until,
-                    provider=_origin_to_provider_token(origin),
+                    origin=origin,
                 )
             except ValueError as exc:
                 return hooks.error_json(
@@ -463,7 +449,8 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
             result = await poly.compare_sessions(ids)
             return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
-        return await hooks.async_safe_call("compare_sessions", run)
+        correlated_ids = tuple(s.strip() for s in (session_ids or "").split(",") if s.strip())
+        return await hooks.async_safe_call("compare_sessions", run, session_ids=correlated_ids)
 
     @mcp.tool()
     async def find_similar_sessions(
@@ -556,7 +543,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 )
             return hooks.json_payload(MCPRootPayload(root=result), exclude_none=True)
 
-        return await hooks.async_safe_call("find_similar_sessions", run)
+        return await hooks.async_safe_call("find_similar_sessions", run, session_id=session_id)
 
     @mcp.tool()
     async def correlate_sessions(
@@ -587,7 +574,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 result = await poly.correlate_sessions(
                     metric_x=metric_x,
                     metric_y=metric_y,
-                    provider=_origin_to_provider_token(origin),
+                    origin=origin,
                     since=since,
                     until=until,
                 )
@@ -683,7 +670,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("correlate_session", run)
+        return await hooks.async_safe_call("correlate_session", run, session_id=session_id)
 
     @mcp.tool()
     async def session_tool_timing(session_id: str) -> str:
@@ -716,7 +703,7 @@ def register_insight_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                 exclude_none=True,
             )
 
-        return await hooks.async_safe_call("session_tool_timing", run)
+        return await hooks.async_safe_call("session_tool_timing", run, session_id=session_id)
 
     @mcp.tool()
     async def get_postmortem_bundle(

@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "clusters": [
+    {
+      "id": "seeded-artifact-integrity",
+      "title": "Seeded artifact integrity over realized workload canaries",
+      "responsibility": "A realized named workload canary is built through provider generation and real ingest, cached under shared workload/profile/build/archive identity, published atomically only after archive and independently planted-fact validation, and cloned without mutating its immutable base.",
+      "authoritative_routes": [
+        {"path": "tests/conftest.py", "symbols": ["_managed_pytest_temp_root", "_clone_archive_template", "seeded_db"]},
+        {"path": "tests/infra/corpus_fixtures.py", "symbols": ["_seed_db", "corpus_seeded_db"]},
+        {"path": "polylogue/scenarios/corpus.py", "symbols": ["CorpusSpec", "build_default_corpus_specs"]},
+        {"path": "polylogue/schemas/synthetic/runtime.py", "symbols": ["_generate_from_schema"]},
+        {"path": "tests/infra/semantic_facts.py", "symbols": ["SessionFacts", "ArchiveFacts"]}
+      ],
+      "test_files": ["tests/conftest.py", "tests/infra/corpus_fixtures.py", "tests/infra/semantic_facts.py"],
+      "helper_files": ["tests/infra/state_machines.py", "tests/infra/growth_budgets.py", "tests/infra/scale_fixtures.py", "tests/benchmarks/conftest.py"],
+      "planned_files": ["tests/infra/corpus_artifacts.py", "tests/unit/core/test_corpus_artifacts.py"],
+      "avoid_files": ["polylogue/schemas/generation/workload_profiles.py", "polylogue/schemas/generation/archive_workload_profile.py", "polylogue/schemas/field_stats/distributions.py", "polylogue/schemas/synthetic/runtime.py", "tests/unit/core/test_schema_workload_profiles.py"],
+      "incoming_prerequisites": [
+        {"bead": "polylogue-1xc.14.1", "required_paths_after_merge": ["polylogue/schemas/generation/workload_profiles.py", "polylogue/schemas/generation/archive_workload_profile.py", "polylogue/schemas/field_stats/distributions.py", "tests/unit/core/test_schema_workload_profiles.py"], "reason": "Treat bounded package/archive profiles, correlated variants, named tiers, C-03, privacy review, and workload/profile/build/archive identity as realized authority."},
+        {"bead": "polylogue-1xc.14", "reason": "Reuse its workload phase/resource/cancellation/cleanup receipt contract; do not mint a Diet receipt vocabulary."},
+        {"bead": "polylogue-b054.1.1.3", "reason": "Reuse complete seed identity, node outcomes, and physical resource accounting."},
+        {"bead": "polylogue-b054.1.1.4", "reason": "Reuse the real affected-selection production-mutation mechanism for sensitivity."}
+      ],
+      "obligations": ["cache identity extends the shared workload/profile/build/archive identity with schema, DDL, parser, and materializer inputs", "any ingest failure prevents publication", "independent canary facts and archive quick-check/counts/hashes agree", "publish is atomic across interruption and concurrent builders", "writable clones cannot mutate the immutable base", "resource and cleanup evidence uses the shared 1xc.14/b054 receipts"],
+      "proposed_survivors": ["tests/unit/core/test_corpus_artifacts.py::test_artifact_identity_and_atomic_publication", "tests/unit/core/test_corpus_artifacts.py::test_artifact_rejects_ingest_failure_and_corruption", "tests/unit/core/test_corpus_artifacts.py::test_writable_clone_preserves_base"],
+      "sensitivity_witnesses": [
+        {"kind": "real-testmon-production-mutation", "description": "Use the b054.1.1.4 reversible production-mutation mechanism to convert one provider ingest exception back into a warning; the ordinary affected gate must select and fail the publication test.", "evidence_globs": [".local/testsuite-diet/sensitivity/seeded-artifact-ingest-failure*.json", ".local/**/*testmon*mutation*.json"]},
+        {"kind": "fault-injection", "description": "Interrupt before directory rename and corrupt a completed DB/manifest; reuse must reject both.", "evidence_globs": [".local/testsuite-diet/sensitivity/seeded-artifact-interruption*.json"]}
+      ],
+      "deletion_candidates": ["tests/conftest.py:seeded_repository", "tests/conftest.py:seeded_db_writable", "tests/infra/state_machines.py", "tests/infra/growth_budgets.py", "tests/infra/test_growth_budgets.py", "benchmark-only realistic seeder after all consumers migrate"],
+      "focused_tests": ["devtools test tests/unit/core/test_corpus_artifacts.py", "devtools test -k seeded_db"],
+      "history_paths": ["tests/conftest.py", "tests/infra/corpus_fixtures.py", "tests/infra/scale_fixtures.py", "tests/benchmarks/conftest.py"],
+      "dogfood_terms": ["seeded db", "build.done", "partial DB", "corpus cache"],
+      "mutation_globs": [".local/mutation-campaigns/**/*seed*", ".local/testsuite-diet/sensitivity/seeded-artifact-*.json"]
+    },
+    {
+      "id": "exact-query-selection",
+      "title": "Exact query selection, composition, and work bounds",
+      "responsibility": "Public query expressions select exactly the planted fact set; membership, counts, partitions, pages, preview/apply, and bounded work agree through real routes.",
+      "authoritative_routes": [
+        {"path": "polylogue/archive/query/expression.py", "symbols": ["parse_expression_ast", "compile_expression", "compile_expression_into"]},
+        {"path": "polylogue/archive/query/spec.py", "symbols": ["build_query_spec_from_params", "query_spec_to_plan"]},
+        {"path": "polylogue/archive/query/plan.py", "symbols": ["SessionQueryPlan"]},
+        {"path": "polylogue/archive/query/archive_execution.py", "symbols": []},
+        {"path": "polylogue/cli/query.py", "symbols": []}
+      ],
+      "test_files": ["tests/unit/cli/test_query_expression.py", "tests/unit/cli/test_query_exec_laws.py"],
+      "helper_files": ["tests/infra/query_cases.py", "tests/infra/surfaces.py", "tests/infra/semantic_facts.py"],
+      "planned_files": ["tests/infra/query_manifest_oracle.py", "tests/unit/cli/test_query_composition_laws.py"],
+      "avoid_files": ["polylogue/mcp", "polylogue/web", "tests/unit/mcp"],
+      "incoming_prerequisites": [{"cluster": "seeded-artifact-integrity", "reason": "Requires the cache adapter and independent facts attached to a realized named workload canary."}, {"bead": "polylogue-1xc.14.1", "reason": "Begin with the realized C-03 exact-session actions canary, scale/selectivity tier, and workload receipt rather than designing a parallel corpus."}, {"bead": "polylogue-b054.1.1.4", "reason": "Reuse the real testmon database and reversible production-mutation proof for sensitivity."}],
+      "obligations": ["canonical and native identity remain exact under ambiguity", "boolean precedence, quoting, escaping, and diagnostics stay public-contract correct", "membership equals count and grouped partitions", "concatenated pages equal stable unpaged order", "preview and apply share effective selection", "irrelevant archive growth preserves result and bounded SQLite work", "unique FTS, vector, lineage, cancellation, and terminal-unit branches survive"],
+      "proposed_survivors": ["tests/unit/cli/test_query_composition_laws.py::test_c03_workload_truth_across_repository_facade_cli_and_http", "tests/unit/cli/test_query_composition_laws.py::test_query_partitions_pages_and_preview_apply_agree", "tests/unit/cli/test_query_composition_laws.py::test_irrelevant_growth_preserves_bounded_work", "reviewed parser diagnostic decision table in test_query_expression.py"],
+      "sensitivity_witnesses": [
+        {"kind": "temporary-production-mutation", "description": "Drop one structural predicate or weaken exact identity to suffix matching; manifest membership must fail.", "evidence_globs": [".local/testsuite-diet/sensitivity/exact-query-selection*.json"]},
+        {"kind": "work-bound-mutation", "description": "Reuse the C-03 global-first ranking mutant or an equivalent production mutation; the exact-session irrelevant-growth VM-step law must fail.", "evidence_globs": [".local/testsuite-diet/sensitivity/query-work-bound*.json", ".local/**/*c-03*.json", ".local/**/*c03*.json"]}
+      ],
+      "deletion_candidates": ["mock-forwarding permutations in tests/unit/cli/test_query_exec_laws.py", "repetitive one-field lowering examples dominated by the reviewed decision table", "tests/infra/query_cases.py shadow fields after public-expression migration", "tests/infra/surfaces.py partial query translator after manifest oracle migration"],
+      "focused_tests": ["devtools test tests/unit/cli/test_query_composition_laws.py", "devtools test -k 'query_expression and (precedence or quoting or exact)'"],
+      "history_paths": ["polylogue/archive/query", "polylogue/cli/query.py", "tests/unit/cli/test_query_expression.py", "tests/unit/cli/test_query_exec_laws.py"],
+      "dogfood_terms": ["dropped filter", "exact selection", "unbounded query", "query composition"],
+      "mutation_globs": [".local/mutation-campaigns/**/*query*", ".local/testsuite-diet/sensitivity/*query*.json"]
+    },
+    {
+      "id": "convergence-restart-retry",
+      "title": "Convergence debt across restart, retry, and quiescence",
+      "responsibility": "Bounded convergence work that remains pending is durably recorded, survives restart, retries without duplication, and reaches the same final facts as uninterrupted execution.",
+      "authoritative_routes": [
+        {"path": "polylogue/daemon/convergence.py", "symbols": ["ConvergenceStage", "DaemonConverger"]},
+        {"path": "polylogue/daemon/convergence_stages.py", "symbols": []},
+        {"path": "polylogue/sources/live/convergence_debt.py", "symbols": ["convergence_debt_from_states", "convergence_debt_from_state"]},
+        {"path": "polylogue/sources/live/convergence_debt_retry.py", "symbols": ["convergence_debt_retry_at", "same_pending_convergence_debt"]},
+        {"path": "polylogue/daemon/convergence_debt_status.py", "symbols": []}
+      ],
+      "test_files": ["tests/unit/daemon/test_daemon_convergence.py", "tests/unit/daemon/test_convergence_stages.py", "tests/unit/daemon/test_convergence_final_state.py", "tests/unit/daemon/test_convergence_debt_alert.py"],
+      "helper_files": ["tests/infra/frozen_clock.py"],
+      "planned_files": ["tests/infra/convergence_harness.py", "tests/unit/daemon/test_convergence_restart_law.py"],
+      "avoid_files": ["tests/unit/daemon/test_http_server.py", "tests/unit/daemon/test_maintenance_endpoints.py", "polylogue/daemon/http.py"],
+      "incoming_prerequisites": [{"cluster": "seeded-artifact-integrity", "reason": "Use independent facts attached to the realized named workload artifact for final comparison."}, {"bead": "polylogue-1xc.14.1", "reason": "Reuse realized active-growing and partial-convergence variants and the shared workload receipt."}],
+      "obligations": ["false_means_pending records remaining work without reporting failure", "debt survives process restart", "session-scoped retry does not widen to irrelevant backlog", "retries are idempotent and do not duplicate material", "final durable/public facts equal uninterrupted execution", "status and alert projections agree with debt and quiescence"],
+      "proposed_survivors": ["tests/unit/daemon/test_convergence_restart_law.py::test_pending_debt_survives_restart_and_reaches_quiescence", "tests/unit/daemon/test_convergence_restart_law.py::test_retry_is_scoped_idempotent_and_matches_uninterrupted"],
+      "sensitivity_witnesses": [{"kind": "temporary-production-mutation", "description": "Remove debt persistence, false_means_pending handling, session scoping, or retry execution; durable/public final-state law must fail.", "evidence_globs": [".local/testsuite-diet/sensitivity/convergence-restart-retry*.json"]}],
+      "deletion_candidates": ["internal repository/converger call-order tests whose only obligation is covered by the restart law", "sleep/polling tests replaced by frozen barriers", "duplicate status projections after durable/public agreement is proved"],
+      "focused_tests": ["devtools test tests/unit/daemon/test_convergence_restart_law.py"],
+      "history_paths": ["polylogue/daemon/convergence.py", "polylogue/daemon/convergence_stages.py", "polylogue/sources/live/convergence_debt.py", "tests/unit/daemon"],
+      "dogfood_terms": ["convergence debt", "false_means_pending", "restart retry", "quiescence"],
+      "mutation_globs": [".local/mutation-campaigns/**/*convergence*", ".local/testsuite-diet/sensitivity/convergence-*.json"]
+    },
+    {
+      "id": "incremental-rebuild-equivalence",
+      "title": "Incremental versus rebuild storage equivalence",
+      "responsibility": "Rebuilding derived tiers from durable inputs yields the same public/logical archive facts and declared identities as incremental ingestion, without importing user overlay state into content identity.",
+      "authoritative_routes": [
+        {"path": "polylogue/storage/sqlite/archive_tiers/write.py", "symbols": []},
+        {"path": "polylogue/cli/commands/maintenance/_rebuild_index.py", "symbols": ["_rebuild_index_selection_plan", "rebuild_index_command"]},
+        {"path": "devtools/index_fast_forward.py", "symbols": ["plan_index", "validate_clone", "fast_forward_clone"]},
+        {"path": "polylogue/storage/insights/session/rebuild.py", "symbols": ["rebuild_session_insights_sync", "rebuild_session_insights_async"]}
+      ],
+      "test_files": ["tests/unit/storage/test_index_fast_forward_lifecycle.py", "tests/unit/storage/test_session_insight_rebuild_progress.py", "tests/unit/storage/test_convergence_stale_to_healthy.py"],
+      "helper_files": ["tests/infra/semantic_facts.py", "tests/property/test_write_path_state_machine.py"],
+      "planned_files": ["tests/unit/storage/test_incremental_rebuild_equivalence.py"],
+      "avoid_files": ["polylogue/storage/sqlite/migrations", "tests/unit/storage/test_migrations.py", "tests/unit/storage/test_blob_gc.py", "tests/unit/storage/test_lineage_normalization.py"],
+      "incoming_prerequisites": [{"cluster": "seeded-artifact-integrity", "reason": "Requires a stable realized workload artifact and independent planted facts."}, {"bead": "polylogue-1xc.14.1", "reason": "Replay one identical workload identity through incremental and rebuild routes; do not define another corpus."}],
+      "obligations": ["incremental and source replay expose equal public/logical facts", "FTS and materialized insights are neither stale nor missing", "reordered independent artifacts converge", "user tags/corrections/annotations do not change ingest content identity", "durable migration, blob, lineage, and recovery obligations remain in their focused suites"],
+      "proposed_survivors": ["tests/unit/storage/test_incremental_rebuild_equivalence.py::test_incremental_and_rebuild_public_facts_match", "tests/unit/storage/test_incremental_rebuild_equivalence.py::test_overlay_state_does_not_change_rebuild_identity"],
+      "sensitivity_witnesses": [{"kind": "temporary-production-mutation", "description": "Skip one materializer, leave FTS stale, reorder replay incorrectly, or include user overlay state in content identity; equivalence must fail.", "evidence_globs": [".local/testsuite-diet/sensitivity/incremental-rebuild*.json"]}],
+      "deletion_candidates": ["narrow rebuild/refresh parity tests with no unique crash, migration, security, or diagnostic branch", "private row-order comparisons dominated by public fact equality", "duplicated sync/async examples after both routes enter one law"],
+      "focused_tests": ["devtools test tests/unit/storage/test_incremental_rebuild_equivalence.py"],
+      "history_paths": ["polylogue/storage/sqlite", "polylogue/storage/insights/session/rebuild.py", "devtools/index_fast_forward.py", "tests/unit/storage"],
+      "dogfood_terms": ["incremental rebuild", "rebuild equivalence", "stale FTS", "fast forward"],
+      "mutation_globs": [".local/mutation-campaigns/**/*rebuild*", ".local/testsuite-diet/sensitivity/*rebuild*.json"]
+    },
+    {
+      "id": "devtools-verification-subtraction",
+      "title": "Devtools verification subtraction without proof loops",
+      "responsibility": "Retired conductor and self-referential verification machinery are removed while executable lanes, live inventory/docs checks, mutation/benchmark receipts, and branch-local dev-loop behavior remain.",
+      "authoritative_routes": [
+        {"path": "devtools/devloop_temporal.py", "symbols": ["operating_log_events", "structured_devloop_events", "build_report", "main"]},
+        {"path": "devtools/command_catalog.py", "symbols": ["CommandSpec"]},
+        {"path": "devtools/verify_closure_matrix.py", "symbols": ["_validate", "main"]},
+        {"path": "devtools/scenario_coverage.py", "symbols": ["build_runtime_scenario_coverage"]},
+        {"path": "devtools/verify_manifests.py", "symbols": ["check_coverage_gaps", "check_campaign_coverage_catalog", "check_test_coverage_domains", "main"]}
+      ],
+      "test_files": ["tests/unit/devtools/test_devloop_temporal.py", "tests/unit/devtools/test_verify_closure_matrix.py", "tests/unit/devtools/test_scenario_coverage.py", "tests/unit/devtools/test_verify_manifests.py", "tests/unit/devtools/test_render_quality_reference.py"],
+      "helper_files": [],
+      "planned_files": [],
+      "avoid_files": ["devtools/dev_loop.py", "tests/unit/devtools/test_dev_loop.py", "polylogue/mcp", "polylogue/web"],
+      "incoming_prerequisites": [{"bead": "polylogue-b054.1.1.3", "reason": "Preserve the complete seed/resource receipt and avoid its implementation files."}, {"bead": "polylogue-b054.1.1.4", "reason": "Preserve the real production-mutation/testmon proof and avoid its implementation files."}, {"bead": "polylogue-b054.1.1.5", "reason": "Preserve repeated isolated/xdist hang-witness evidence and avoid its implementation files."}],
+      "obligations": ["retired temporal conductor has no live consumer", "branch-local dev-loop operations remain", "executable validation lanes propagate failures", "mutation and benchmark receipt freshness checks real artifacts", "live docs inventory detects an undocumented public surface", "authored mirrors cannot claim behavioral completeness"],
+      "proposed_survivors": ["focused command-catalog dispatch tests", "live docs inventory mutation test", "executable validation-lane failure propagation test", "mutation/benchmark real-receipt freshness tests", "branch-local dev-loop focused tests"],
+      "sensitivity_witnesses": [{"kind": "consumer-and-behavior-differential", "description": "Deleting devloop_temporal leaves live routes green; deleting dev_loop or bypassing an executable lane/docs inventory must fail focused survivors.", "evidence_globs": [".local/testsuite-diet/sensitivity/devtools-verification-subtraction*.json"]}],
+      "deletion_candidates": ["devtools/devloop_temporal.py", "tests/unit/devtools/test_devloop_temporal.py", "workspace temporal-devloop CommandSpec", "verify_closure_matrix path/prose mirror", "scenario coverage completeness claims", "verify_manifests authored coverage-gap/domain/CI-substring checks"],
+      "focused_tests": ["devtools test tests/unit/devtools/test_devloop_temporal.py", "devtools test -k 'command_catalog or docs_coverage or validation_lane or mutation_catalog or benchmark_catalog'"],
+      "history_paths": ["devtools/devloop_temporal.py", "devtools/dev_loop.py", "devtools/verify_closure_matrix.py", "devtools/scenario_coverage.py", "devtools/verify_manifests.py"],
+      "dogfood_terms": ["temporal-devloop", "closure matrix", "scenario coverage", "test coverage domains"],
+      "mutation_globs": [".local/testsuite-diet/sensitivity/devtools-verification-*.json"]
+    }
+  ]
+}

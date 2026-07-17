@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "prompt_profile": "polylogue-chatgpt-pro-implementation-v3",
+  "prompt_contract": "../../contracts/chatgpt-pro-implementation.md",
+  "snapshot_gate": "Regenerate the Lynchpin Chisel project-state attachment after the local test-harness foundation is merged.",
+  "jobs": [
+    {"id":"testdiet-01","slug":"query-algebra-cardinality","title":"Query algebra and cardinality survivor","brief":"briefs/01-query-algebra-cardinality.md","prompt":"prompts/01-query-algebra-cardinality.md","result_prefix":"testdiet-01-query-algebra-cardinality","depends_on":["foundation"]},
+    {"id":"testdiet-02","slug":"convergence-liveness","title":"Convergence restart and debt liveness","brief":"briefs/02-convergence-liveness.md","prompt":"prompts/02-convergence-liveness.md","result_prefix":"testdiet-02-convergence-liveness","depends_on":["foundation"]},
+    {"id":"testdiet-03","slug":"rebuild-equivalence","title":"Incremental and rebuild equivalence","brief":"briefs/03-rebuild-equivalence.md","prompt":"prompts/03-rebuild-equivalence.md","result_prefix":"testdiet-03-rebuild-equivalence","depends_on":["foundation"]},
+    {"id":"testdiet-04","slug":"derived-freshness","title":"Monotonic derived freshness","brief":"briefs/04-derived-freshness.md","prompt":"prompts/04-derived-freshness.md","result_prefix":"testdiet-04-derived-freshness","depends_on":["testdiet-02","testdiet-03"]},
+    {"id":"testdiet-05","slug":"query-bounds-progress","title":"Bounded query work, cancellation, and cleanup","brief":"briefs/05-query-bounds-progress.md","prompt":"prompts/05-query-bounds-progress.md","result_prefix":"testdiet-05-query-bounds-progress","depends_on":["testdiet-01"]},
+    {"id":"testdiet-06","slug":"evidence-provenance","title":"Evidence monotonicity and provenance conservation","brief":"briefs/06-evidence-provenance.md","prompt":"prompts/06-evidence-provenance.md","result_prefix":"testdiet-06-evidence-provenance","depends_on":["foundation"]},
+    {"id":"testdiet-07","slug":"public-fact-parity","title":"One public fact algebra across stable surfaces","brief":"briefs/07-public-fact-parity.md","prompt":"prompts/07-public-fact-parity.md","result_prefix":"testdiet-07-public-fact-parity","depends_on":["testdiet-01","testdiet-06"]},
+    {"id":"testdiet-08","slug":"chatgpt-normalization","title":"ChatGPT capture and export normalization laws","brief":"briefs/08-chatgpt-normalization.md","prompt":"prompts/08-chatgpt-normalization.md","result_prefix":"testdiet-08-chatgpt-normalization","depends_on":["foundation"]},
+    {"id":"testdiet-09","slug":"claude-code-normalization","title":"Claude Code normalization laws","brief":"briefs/09-claude-code-normalization.md","prompt":"prompts/09-claude-code-normalization.md","result_prefix":"testdiet-09-claude-code-normalization","depends_on":["foundation"]},
+    {"id":"testdiet-10","slug":"claude-web-normalization","title":"Claude web normalization laws","brief":"briefs/10-claude-web-normalization.md","prompt":"prompts/10-claude-web-normalization.md","result_prefix":"testdiet-10-claude-web-normalization","depends_on":["foundation"]},
+    {"id":"testdiet-11","slug":"codex-normalization","title":"Codex session normalization laws","brief":"briefs/11-codex-normalization.md","prompt":"prompts/11-codex-normalization.md","result_prefix":"testdiet-11-codex-normalization","depends_on":["foundation"]},
+    {"id":"testdiet-12","slug":"gemini-drive-normalization","title":"Gemini and AI Studio Drive normalization laws","brief":"briefs/12-gemini-drive-normalization.md","prompt":"prompts/12-gemini-drive-normalization.md","result_prefix":"testdiet-12-gemini-drive-normalization","depends_on":["foundation"]},
+    {"id":"testdiet-13","slug":"output-injection-safety","title":"Output and schema injection safety","brief":"briefs/13-output-injection-safety.md","prompt":"prompts/13-output-injection-safety.md","result_prefix":"testdiet-13-output-injection-safety","depends_on":["foundation"]},
+    {"id":"testdiet-14","slug":"config-path-coherence","title":"Configuration composition and path coherence","brief":"briefs/14-config-path-coherence.md","prompt":"prompts/14-config-path-coherence.md","result_prefix":"testdiet-14-config-path-coherence","depends_on":["foundation"]},
+    {"id":"testdiet-15","slug":"temporal-equivalence","title":"Equivalent-instant temporal behavior","brief":"briefs/15-temporal-equivalence.md","prompt":"prompts/15-temporal-equivalence.md","result_prefix":"testdiet-15-temporal-equivalence","depends_on":["foundation"]},
+    {"id":"testdiet-16","slug":"inventory-authority","title":"Executable inventory and test-selection authority","brief":"briefs/16-inventory-authority.md","prompt":"prompts/16-inventory-authority.md","result_prefix":"testdiet-16-inventory-authority","depends_on":["foundation"]}
+  ]
+}

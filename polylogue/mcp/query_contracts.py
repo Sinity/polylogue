@@ -12,10 +12,12 @@ from typing import Annotated, Any, TypeAlias
 from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
+from polylogue.core.enums import Origin, enum_values
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
+MCPCharacterLimit: TypeAlias = Annotated[int, Field(ge=1)] | None
 #: Optional non-negative count bound (min_messages/max_messages/min_words).
 #: ``ge=0`` rejects negatives at the MCP boundary, symmetric with the
 #: ``ge=1``/``ge=0`` guards already on limit/offset (#1749).
@@ -26,6 +28,22 @@ _QUERY_PARAM_ALIASES = {
     "has_thinking": "filter_has_thinking",
     "has_paste_evidence": "filter_has_paste",
 }
+
+
+def _validate_origin_filters(params: Mapping[str, object]) -> None:
+    """Reject unknown public origin tokens before query-spec normalization.
+
+    ``Origin.from_string`` deliberately maps unknown parser input to
+    ``unknown-export``. That is appropriate while ingesting imperfect source
+    material, but it turns an MCP typo into a misleading empty archive query.
+    The agent-facing query boundary is closed, so return the same typed query
+    error used for invalid sort and message-type filters instead.
+    """
+    valid_origins = frozenset(enum_values(Origin))
+    for field in ("origin", "exclude_origin"):
+        for value in split_csv(params.get(field)):
+            if value not in valid_origins:
+                raise QuerySpecError(field, value)
 
 
 def normalize_query_params(params: Mapping[str, object]) -> dict[str, object]:
@@ -47,6 +65,7 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     :meth:`~polylogue.cli.root_request.RootModeRequest.query_spec`.
     """
     normalized = normalize_query_params(params)
+    _validate_origin_filters(normalized)
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
 
@@ -109,6 +128,7 @@ class MCPSessionQueryRequest:
     offset: MCPToolOffset = 0
     limit: MCPToolLimit = 10
     cursor: str | None = None
+    include_affordances: bool = False
 
     def build_spec(self, clamp_limit: Callable[[int | object], int]) -> SessionQuerySpec:
         """Build a SessionQuerySpec from this request using the given clamp helper."""
@@ -157,6 +177,12 @@ class MCPSessionQueryRequest:
             cursor=self.cursor,
         )
 
+    def response_arguments(self) -> dict[str, object]:
+        """Return MCP-callable arguments for a bounded replay descriptor."""
+        return {
+            field.name: getattr(self, field.name) for field in fields(self) if getattr(self, field.name) is not None
+        }
+
 
 def session_query_request_signature(
     *,
@@ -167,7 +193,8 @@ def session_query_request_signature(
 
     ``include_query`` controls whether the ``query`` parameter is surfaced —
     ``search`` exposes it as required, ``facets`` exposes it as optional, and
-    ``list_sessions`` omits it. The resulting signature drives MCP
+    ``list_sessions`` omits it. ``include_affordances`` is likewise search-only
+    because only the search envelope can carry the capability catalog. The resulting signature drives MCP
     ``inputSchema`` derivation so the JSON schema and the typed request model
     cannot drift.
     """
@@ -179,6 +206,10 @@ def session_query_request_signature(
     parameters: list[inspect.Parameter] = []
     for field in fields(MCPSessionQueryRequest):
         if field.name == "query" and not include_query:
+            continue
+        if field.name == "include_affordances" and not include_query:
+            # ``list_sessions`` returns a paginated session envelope, not a
+            # search envelope, so accepting this would advertise a no-op.
             continue
         annotation = type_hints.get(field.name, Any)
         # ``search`` exposes ``query`` as a required parameter to preserve the
@@ -222,6 +253,7 @@ __all__ = [
     "session_query_request_signature",
     "MCPToolLimit",
     "MCPToolOffset",
+    "MCPCharacterLimit",
     "MCPSessionQueryRequest",
     "normalize_query_params",
 ]

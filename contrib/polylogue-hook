@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # polylogue-hook — AI coding agent hook handler for Polylogue
 #
-# Invoked by Claude Code or Codex hook systems on session lifecycle events.
-# Receives the event type as the first argument and the event payload on stdin
-# as JSON. Writes enriched hook event records to the Polylogue sidecar directory
-# where the daemon watcher picks them up for ingestion.
+# Invoked by Claude Code, Codex, or Hermes hook systems on session lifecycle
+# events. Receives the event type as the first argument and the event
+# payload on stdin as JSON. Atomically writes one envelope to the Polylogue
+# pending spool where the daemon persists and acknowledges it.
 #
 # Usage:
-#   polylogue-hook <event-type> [--provider claude-code|codex]
+#   polylogue-hook <event-type> [--provider claude-code|codex|hermes]
 #
 # Environment variables:
 #   POLYLOGUE_HOOK_SIDECAR_DIR  Override default sidecar directory
-#   POLYLOGUE_HOOK_PROVIDER      Force provider (claude-code | codex)
+#   POLYLOGUE_HOOK_PROVIDER      Force provider (claude-code | codex | hermes)
 #
 # Supported events:
 #   Claude Code (16): SessionStart, Setup, UserPromptSubmit, PreToolUse,
@@ -20,6 +20,22 @@
 #     WorktreeCreate, SubagentStart, Stop
 #   Codex (6): SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
 #     PermissionRequest, Stop
+#   Hermes (17, fs1.7 -- see polylogue/sources/parsers/hermes_lifecycle.py,
+#     the single source of truth this list is kept in sync with):
+#     model_attempt, model_failure, model_retry, model_fallback, tool_start,
+#     tool_finish, tool_failure, tool_denial, approval_request,
+#     approval_response, subagent_start, subagent_finish, compaction,
+#     rewind, on_session_end, on_session_finalize, context_injected.
+#     NOTE: this is Polylogue's PROTOTYPE consumer, wired against a
+#     documented, testable event shape -- it is not confirmed to match a real
+#     Hermes hook's actual invocation contract (no local checkout of the
+#     Hermes hook source was available when this was written). Treat it as
+#     the "working local Hermes prototype" handoff artifact for
+#     docs/design/hermes-archival-export-contract.md, not a verified
+#     integration. If the daemon or this script cannot keep up, the daemon's
+#     file-watch fallback (LiveWatcher over the same pending/ directory,
+#     see tests/unit/sources/test_hook_spool.py) still drains anything
+#     already written here.
 #
 # Exit codes:
 #   0 - event recorded successfully
@@ -39,9 +55,9 @@ PROVIDER_ARG=""
 if [ "${1:-}" = "--provider" ]; then
     PROVIDER_ARG="${2:-}"
     case "$PROVIDER_ARG" in
-        claude-code|codex) ;;
+        claude-code|codex|hermes) ;;
         *)
-            echo "polylogue-hook: --provider must be claude-code or codex" >&2
+            echo "polylogue-hook: --provider must be claude-code, codex, or hermes" >&2
             exit 2
             ;;
     esac
@@ -81,9 +97,23 @@ CODEX_EVENTS = frozenset({
     "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact",
     "SubagentStart", "SubagentStop", "Stop",
 })
-ALL_EVENTS = CC_EVENTS | CODEX_EVENTS
+# Kept in sync with polylogue.sources.parsers.hermes_lifecycle.HERMES_LIFECYCLE_EVENT_TYPES.
+HERMES_EVENTS = frozenset({
+    "model_attempt", "model_failure", "model_retry", "model_fallback",
+    "tool_start", "tool_finish", "tool_failure", "tool_denial",
+    "approval_request", "approval_response", "subagent_start", "subagent_finish",
+    "compaction", "rewind", "on_session_end", "on_session_finalize", "context_injected",
+})
+ALL_EVENTS = CC_EVENTS | CODEX_EVENTS | HERMES_EVENTS
 
-allowed_events = CC_EVENTS if provider_arg == "claude-code" else CODEX_EVENTS if provider_arg == "codex" else ALL_EVENTS
+if provider_arg == "claude-code":
+    allowed_events = CC_EVENTS
+elif provider_arg == "codex":
+    allowed_events = CODEX_EVENTS
+elif provider_arg == "hermes":
+    allowed_events = HERMES_EVENTS
+else:
+    allowed_events = ALL_EVENTS
 if event_type not in allowed_events:
     print(f"polylogue-hook: unsupported event type: {event_type}", file=sys.stderr)
     sys.exit(2)
@@ -115,7 +145,9 @@ if not session_id:
 # Detect provider
 provider = provider_arg or os.environ.get("POLYLOGUE_HOOK_PROVIDER")
 if not provider:
-    if "turn_id" in payload:
+    if event_type in HERMES_EVENTS and event_type not in (CC_EVENTS | CODEX_EVENTS):
+        provider = "hermes"
+    elif "turn_id" in payload:
         provider = "codex"
     elif "permission_mode" in payload or "model" in payload:
         provider = "claude-code"
@@ -124,13 +156,25 @@ if not provider:
     else:
         provider = "unknown"
 
-if provider not in ("claude-code", "codex"):
+if provider not in ("claude-code", "codex", "hermes"):
     print(
         "polylogue-hook: could not detect provider; "
-        "pass --provider claude-code|codex",
+        "pass --provider claude-code|codex|hermes",
         file=sys.stderr,
     )
     sys.exit(1)
+
+# Event bodies are evidence (ids/hashes/timings/outcomes), never a second
+# copy of message text -- mirrors polylogue.sources.hooks._reject_duplicated_transcript.
+for _key in ("text", "content", "transcript", "messages", "message_body", "reasoning"):
+    _value = payload.get(_key)
+    if isinstance(_value, str) and len(_value) > 2000:
+        print(
+            f"polylogue-hook: payload field {_key!r} looks like a duplicated transcript "
+            f"({len(_value)} chars) -- refusing to spool it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 # Build enriched event record
 record = {
@@ -141,9 +185,32 @@ record = {
     "payload": payload,
 }
 
-# Write to sidecar file (one JSONL file per provider+session)
-os.makedirs(sidecar_dir, exist_ok=True)
-outfile = os.path.join(sidecar_dir, f"{provider}-{session_id}.jsonl")
-with open(outfile, "a") as f:
-    f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+# Atomically publish one durable pending envelope. The daemon moves it to
+# acknowledged/ only after the source-tier receipt commits.
+import tempfile
+import uuid
+
+record["event_id"] = uuid.uuid4().hex
+pending_dir = os.path.join(sidecar_dir, "pending")
+os.makedirs(pending_dir, exist_ok=True)
+outfile = os.path.join(pending_dir, f"{record['event_id']}.json")
+descriptor, temporary = tempfile.mkstemp(prefix=f".{record['event_id']}.", dir=pending_dir)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, outfile)
+    directory = os.open(pending_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
 PYEOF

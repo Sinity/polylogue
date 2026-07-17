@@ -1,0 +1,10 @@
+## ruff
+All checks passed!
+## format
+8 files already formatted
+## mypy
+Success: no issues found in 8 source files
+## tests
+pytest: basetemp → /realm/tmp/polylogue-pytest/pytest-polylogue-08d3d3a0-28705-a5bc0fa8 (scratch)
+.........................................                                [100%]
+41 passed in 17.34s

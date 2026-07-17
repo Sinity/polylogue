@@ -14,6 +14,7 @@ from urllib.parse import quote
 import yaml
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, execute_query_request
@@ -21,8 +22,9 @@ from polylogue.cli.read_views.streaming_markdown import stream_exact_session_mar
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.projection_spec import ProjectionSpec
 from polylogue.surfaces.temporal_evidence import (
@@ -33,7 +35,6 @@ from polylogue.surfaces.temporal_evidence import (
     message_row_to_temporal_event,
     summary_to_temporal_event,
 )
-from polylogue.types import SessionId
 
 TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
 
@@ -232,7 +233,7 @@ def _dialogue_payload(session: Session, *, projection: ProjectionSpec | None = N
 def _archive_summary_to_domain(summary: Any) -> SessionSummary:
     return SessionSummary(
         id=SessionId(str(summary.session_id)),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
@@ -253,18 +254,24 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
     spec = request.query_spec()
     if spec.session_id is None:
         return None
+    session_id = spec.session_id
 
     from polylogue.paths import archive_file_set_root_for_paths
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     archive_root = archive_file_set_root_for_paths(
         archive_root_path=config.archive_root,
         db_anchor=config.db_path,
     )
     try:
-        with ArchiveStore.open_existing(archive_root) as archive:
-            session_id = archive.resolve_session_id(spec.session_id)
-            return [_archive_summary_to_domain(archive.read_summary(session_id))]
+        return run_archive_read_sync(
+            archive_root,
+            operation="cli.read.exact_summary",
+            arguments={"session_id": session_id},
+            work=lambda archive: [
+                _archive_summary_to_domain(archive.read_summary(archive.resolve_session_id(session_id)))
+            ],
+            projection="session-summary",
+        )
     except KeyError:
         return []
 
@@ -276,7 +283,6 @@ def _message_temporal_events_for_summaries(
     per_session_limit: int = 8,
 ) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
     from polylogue.paths import archive_file_set_root_for_paths
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     if not summaries:
         return [], ()
@@ -287,12 +293,19 @@ def _message_temporal_events_for_summaries(
     events: list[TemporalEvidenceEvent] = []
     caveats: list[str] = []
     total_limit = max(per_session_limit * len(summaries), 0)
-    with ArchiveStore.open_existing(archive_root) as archive:
-        rows = archive.query_session_messages(
+    rows = run_archive_read_sync(
+        archive_root,
+        operation="cli.read.temporal_messages",
+        arguments={"session_ids": [str(summary.id) for summary in summaries], "limit": total_limit},
+        work=lambda archive: archive.query_session_messages(
             [str(summary.id) for summary in summaries],
             limit=total_limit,
             sort_direction="asc",
-        )
+        ),
+        page_size=total_limit,
+        projection="temporal-messages",
+        stable_order="time,message_id",
+    )
     if len(rows) >= total_limit and sum(summary.message_count or 0 for summary in summaries) > total_limit:
         caveats.append("message_events_capped")
     events.extend(event for row in rows if (event := message_row_to_temporal_event(row)) is not None)
@@ -306,7 +319,6 @@ def _action_temporal_events_for_summaries(
     per_session_limit: int = 4,
 ) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
     from polylogue.paths import archive_file_set_root_for_paths
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     if not summaries:
         return [], ()
@@ -318,8 +330,17 @@ def _action_temporal_events_for_summaries(
     caveats: list[str] = []
     total_limit = max(per_session_limit * len(summaries), 0)
     session_ids = [str(summary.id) for summary in summaries]
-    with ArchiveStore.open_existing(archive_root) as archive:
-        rows = archive.query_session_action_occurrences(session_ids, limit=total_limit, sort_direction="asc")
+    rows = run_archive_read_sync(
+        archive_root,
+        operation="cli.read.temporal_actions",
+        arguments={"session_ids": session_ids, "limit": total_limit},
+        work=lambda archive: archive.query_session_action_occurrences(
+            session_ids, limit=total_limit, sort_direction="asc"
+        ),
+        page_size=total_limit,
+        projection="temporal-actions",
+        stable_order="time,action_id",
+    )
     if len(rows) >= total_limit:
         caveats.append("action_events_capped")
     events.extend(event for row in rows if (event := action_row_to_temporal_event(row)) is not None)

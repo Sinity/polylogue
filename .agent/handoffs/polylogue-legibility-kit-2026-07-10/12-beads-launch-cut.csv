@@ -1,0 +1,29 @@
+wave,repo,bead_id,snapshot_status,priority,disposition,launch_slice,primary_scope
+0,polylogue,polylogue-0hqs,open,P0,must-fix,Bound web requests and return truthful timeout/degraded results,daemon HTTP/query files
+0,polylogue,polylogue-bby.1,open,P3,must-fix-if-web,Render slow/missing route states honestly,web workbench UX
+1,polylogue,polylogue-3tl.12,open,P4,launch,Shorten README and remove meta-persuasion,README.md
+1,polylogue,polylogue-3tl.15,open,P4,launch,Ship anti-grep proof card,docs/findings/demo
+1,polylogue,polylogue-3tl.16,open,P4,launch,Public claims ledger,docs/claims
+1,polylogue,polylogue-3tl.8,open,P4,launch,Align repository landing surface,README/site/package metadata
+2,polylogue,polylogue-ap7,open,P1,launch-slice,Semantic shell/edit/lineage cards shared by CLI and web,renderer registry/backends
+2,polylogue,polylogue-212.2,open,P4,flagship,Build The Receipts deterministic incident demo,demo/scenarios/tests
+2,polylogue,polylogue-212.8,closed,P4,reuse,Use honesty anti-demo as companion negative proof,existing packet + public page
+3,polylogue,polylogue-3tl.4,open,P4,launch,Publish bounded findings shelf,docs site/findings
+3,polylogue,polylogue-212.4,closed,P4,reclassify,"Keep D4 as technical proof, not hero",existing packet/catalog
+4,polylogue,polylogue-3tl.7,open,P4,release,Clean install matrix and first supported release path,packaging/Nix/CI proof
+4,polylogue,polylogue-3tl.5,closed,P2,regenerate,"Record new slow, comprehensible media",visual tapes/media
+4,polylogue,polylogue-3tl.9,open,P4,release,Docs/media ownership and drift gate,devtools/CI
+4,polylogue,polylogue-3tl.10,open,P4,release,Assemble launch packet,release artifacts
+1,sinex,sinex-o6w,open,P3,launch,Public vocabulary and operator journey,README/docs
+1,sinex,sinex-83g,open,P4,release,Secret scrub and public corpus decision,release audit
+2,sinex,sinex-cem.11,open,P3,gate,Demo corpus construct audit,demo substrate
+2,sinex,sinex-cem.8,open,P2,flagship,Reconstruct Tuesday with honest gaps,moment demo
+2,sinex,sinex-cem.3,open,P2,flagship,Historical parser-fix replay story,replay demo
+2,sinex,sinex-cem.14,open,P3,merge-story,Interpretation revision end-to-end,replay/interval demo
+2,sinex,sinex-cem.2,open,P1,flagship,Self-diagnosing capture outage,coverage/fault demo
+3,sinex,sinex-cem.13,open,P2,proof,Import-twice occurrence receipt,dedup proof
+3,sinex,sinex-cem.15,open,P3,torture,Crash-no-loss receipt barrier proof,durability proof
+3,sinex,sinex-cem.1,open,P1,rescope,Separate disclosure control from forgetting,privacy demo
+4,joint,sinex-4j2,open,P2,architecture,Maximal Sinex-backed Polylogue authority,cross-project
+4,joint,sinex-a4w.3.9,open,P3,flagship-later,Agent Work Packet,cross-source derivation
+4,joint,sinex-cem.7,open,P3,experiment-later,Blinded resumption duel,experiment harness

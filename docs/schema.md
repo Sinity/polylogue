@@ -21,10 +21,10 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 7` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 32` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 1` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 5` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -49,7 +49,10 @@ carrying `origin`, `native_id`, `blob_hash`, and parse/validation state),
 (content-addressed blob references, in-flight publication protection, and the
 GC bookkeeping described in
 [Internals § Blob Store Model](internals.md#blob-store-model)),
-`raw_hook_events`, and `history_sidecars`.
+`raw_hook_events`, `history_sidecars`, and `sinex_publication_obligations` (the
+durable Sinex-backed-mode publication-obligation ledger — see
+[Architecture § Sinex Publication](architecture.md#sinex-publication) and
+[docs/sinex-interop.md](sinex-interop.md)).
 
 ### `index.db` — parsed tree, search, and insights (rebuildable)
 
@@ -86,14 +89,28 @@ durable claims and are not returned by candidate-review reads. `index.db.session
 remains a rebuildable auto-tag/read-model projection; human-owned tag and
 metadata writes do not have separate user-tier tables. `user_settings` stores
 durable local settings, while `context_deliveries` records exact context-image
-delivery receipts without overloading epistemic assertions.
+delivery receipts without overloading epistemic assertions. Immutable,
+versioned annotation construct definitions live in `annotation_schemas`;
+independent labeling-run provenance and counts live in `annotation_batches`.
+The resulting annotation rows stay in `assertions` and link to their batch via
+an `annotation-batch:<id>` `scope_ref`.
 
 ### `ops.db` — disposable daemon telemetry
 
 Ingest cursors (`ingest_cursor`), ingest attempts (`ingest_attempts`),
 convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
-logs, embedding catch-up runs, and OTLP spans/telemetry. Safe to discard; the
-daemon repopulates it.
+logs, embedding catch-up runs, OTLP spans/telemetry, and the MCP call log
+(`mcp_call_log`, #7s57 — tool name, session id when known, timing, and
+success/failure per MCP tool invocation). `mcp_call_session_refs` normalizes
+plural invocations so one call remains queryable through every member session.
+Completed calls first enter an atomic,
+archive-namespaced outbox under the Polylogue XDG state directory; MCP startup
+retries pending files through the daemon's authenticated, idempotent writer
+route. The outbox is deleted only after a matching acknowledgement; conflicting
+IDs are quarantined rather than blocking later calls. MCP `readiness_check`
+reports pending/quarantined counts and bytes, oldest debt, queue pressure, and
+delivery failures. `ops.db` remains safe to discard and rebuild from later
+telemetry.
 
 ## Schema/data-model ownership matrix (#2246)
 
@@ -122,6 +139,14 @@ contract is visible in canonical DDL instead of hand-written per table.
 
 Recent index-tier versions:
 
+- version 34 (polylogue-rgbj) adds `idx_web_constructs_message` on
+  `web_content_constructs(message_id)` — the only `messages(message_id)` FK
+  child table that lacked a leading index on its foreign-key column. Without
+  it, SQLite's `ON DELETE CASCADE` enforcement fell back to a full table scan
+  of `web_content_constructs` per deleted message, making
+  `_replace_full_session_messages_and_blocks`'s session-scoped
+  `DELETE FROM messages` cost O(deleted_messages x web_content_constructs_rows)
+  — the dominant cost in a production 10+ minute full-session replacement;
 - version 9 adds typed `sessions.session_kind` for standard vs temporary
   sessions, so temporary chats are archive schema rather than only parser tags;
 - version 8 adds `web_content_constructs` for provider-native web/export

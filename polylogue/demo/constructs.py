@@ -6,7 +6,15 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.storage.embeddings.materialization import archive_embeddable_message_where
+from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
+
+# Canonical message prose SQL for embedding candidate selection (used in verification constructs).
+_MESSAGE_PROSE_EMBEDDING = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,31 +263,31 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         construct_id="run_projection_rows",
         label="Run projection rows",
         description="Run-projection read models are populated for temporal demos.",
-        sql="SELECT COUNT(*) FROM session_runs",
+        sql=f"{run_relation_sql()}\nSELECT COUNT(*) FROM runs",
     ),
     DemoConstruct(
         construct_id="observed_event_rows",
         label="Observed-event rows",
         description="Observed events are populated for temporal/action analysis.",
-        sql="SELECT COUNT(*) FROM session_observed_events",
+        sql=f"{observed_event_relation_sql(source_where='1')}\nSELECT COUNT(*) FROM observed_events",
     ),
     DemoConstruct(
         construct_id="context_snapshot_rows",
         label="Context snapshot rows",
         description="Session context snapshots are populated for resume/context demos.",
-        sql="SELECT COUNT(*) FROM session_context_snapshots",
+        sql=f"{context_snapshot_relation_sql()}\nSELECT COUNT(*) FROM context_snapshots",
     ),
     DemoConstruct(
         construct_id="subagent_context_snapshots",
         label="Subagent context snapshots",
         description="Context snapshots expose the subagent-start boundary.",
-        sql="SELECT COUNT(*) FROM session_context_snapshots WHERE boundary = 'subagent_start'",
+        sql=f"{context_snapshot_relation_sql()}\nSELECT COUNT(*) FROM context_snapshots WHERE boundary = 'subagent_start'",
     ),
     DemoConstruct(
         construct_id="subagent_run_rows",
         label="Subagent run rows",
         description="Parent-side subagent executions are preserved as distinct runs from child main runs.",
-        sql="SELECT COUNT(*) FROM session_runs WHERE role = 'subagent'",
+        sql=f"{run_relation_sql()}\nSELECT COUNT(*) FROM runs WHERE role = 'subagent'",
     ),
     DemoConstruct(
         construct_id="unfinished_terminal_state_rows",
@@ -358,7 +366,7 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
         sql=f"""
             SELECT COUNT(*)
             FROM (
-                SELECT m.message_id, GROUP_CONCAT(b.text, char(10) || char(10)) AS text
+                SELECT m.message_id, {_MESSAGE_PROSE_EMBEDDING} AS text
                 FROM messages AS m
                 JOIN blocks AS b
                   ON b.session_id = m.session_id

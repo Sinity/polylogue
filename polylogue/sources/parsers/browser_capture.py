@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 from collections.abc import Mapping
 from typing import TypeGuard
 
 from polylogue.archive.ingest_flags import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -19,6 +21,7 @@ from polylogue.browser_capture.models import (
     looks_like_browser_capture,
 )
 from polylogue.core.enums import Provider, SessionKind
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
     ParsedMessage,
@@ -37,7 +40,18 @@ def looks_like(payload: object) -> bool:
 
 
 def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
-    return isinstance(payload, dict) and isinstance(payload.get("mapping"), dict)
+    return (
+        isinstance(payload, dict)
+        and payload.get("polylogue_bridge_projection") != "chatgpt-native-compact-v1"
+        and isinstance(payload.get("mapping"), dict)
+    )
+
+
+def _is_compact_native_capture(envelope: BrowserCaptureEnvelope) -> bool:
+    return (
+        envelope.provider_meta.get("capture_fidelity") == "native_compact"
+        or envelope.session.provider_meta.get("capture_fidelity") == "native_compact"
+    )
 
 
 def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
@@ -175,17 +189,177 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
             merged[candidate.provider_attachment_id] = candidate
-        elif candidate.inline_bytes is not None:
-            merged[candidate.provider_attachment_id] = candidate.model_copy(
-                update={
-                    "name": candidate.name or existing.name,
-                    "mime_type": candidate.mime_type or existing.mime_type,
-                    "message_provider_id": candidate.message_provider_id or existing.message_provider_id,
-                    "source_url": candidate.source_url or existing.source_url,
-                    "attachment_kind": existing.attachment_kind,
-                }
-            )
+            continue
+        # The native row remains authoritative for provider identity and file
+        # metadata. The browser projection contributes acquired bytes and can
+        # fill omissions, but must not replace native size/origin/file IDs.
+        merged[candidate.provider_attachment_id] = existing.model_copy(
+            update={
+                "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
+                "name": existing.name or candidate.name,
+                "mime_type": existing.mime_type or candidate.mime_type,
+                "size_bytes": existing.size_bytes if existing.size_bytes is not None else candidate.size_bytes,
+                "provider_file_id": existing.provider_file_id or candidate.provider_file_id,
+                "provider_drive_id": existing.provider_drive_id or candidate.provider_drive_id,
+                "upload_origin": existing.upload_origin or candidate.upload_origin,
+                "attachment_kind": existing.attachment_kind or candidate.attachment_kind,
+                "source_url": existing.source_url or candidate.source_url,
+                "caption": existing.caption or candidate.caption,
+                "inline_bytes": candidate.inline_bytes or existing.inline_bytes,
+            }
+        )
     return parsed.model_copy(update={"attachments": list(merged.values())})
+
+
+def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
+    """Use browser-envelope fields only when the native payload omitted them.
+
+    The envelope fields are projections of the same provider response/page and
+    must never create a second conversation identity or replace richer native
+    values. They are useful for current Claude responses that omit optional
+    title/model/timestamp fields from the embedded payload.
+    """
+
+    updates: dict[str, object] = {}
+    fallback_titles = {None, "", parsed.provider_session_id, envelope.session.provider_session_id}
+    if parsed.title in fallback_titles and envelope.session.title:
+        updates["title"] = envelope.session.title
+    if parsed.created_at is None and envelope.session.created_at is not None:
+        updates["created_at"] = envelope.session.created_at
+    if parsed.updated_at is None and envelope.session.updated_at is not None:
+        updates["updated_at"] = envelope.session.updated_at
+
+    envelope_model = envelope.session.model
+    if envelope_model:
+        messages = [
+            message if message.model_name is not None else message.model_copy(update={"model_name": envelope_model})
+            for message in parsed.messages
+        ]
+        if messages != parsed.messages:
+            updates["messages"] = messages
+        models_used = list(parsed.models_used)
+        if envelope_model not in models_used:
+            models_used.append(envelope_model)
+            updates["models_used"] = models_used
+        if not any(
+            event.event_type == "model_configuration" and event.source_message_provider_id is None
+            for event in parsed.session_events
+        ):
+            updates["session_events"] = [
+                *parsed.session_events,
+                ParsedSessionEvent(
+                    event_type="model_configuration",
+                    timestamp=envelope.session.updated_at or envelope.session.created_at,
+                    payload={"model": envelope_model},
+                ),
+            ]
+    return parsed.model_copy(update=updates) if updates else parsed
+
+
+def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
+    from polylogue.browser_capture.models import BrowserCaptureTurn
+
+    assert isinstance(turn, BrowserCaptureTurn)
+    raw: dict[str, object] = dict(turn.provider_meta)
+    # Typed envelope identity wins over any provider_meta echo.
+    raw.update(
+        {
+            "uuid": turn.provider_turn_id,
+            "sender": turn.role.value,
+            "text": turn.text,
+            "created_at": turn.timestamp,
+            "parent_message_uuid": turn.parent_turn_id,
+            "ordinal": turn.ordinal,
+        }
+    )
+    if turn.attachments:
+        raw["attachments"] = [
+            {
+                "id": attachment.provider_attachment_id,
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+                "size_bytes": attachment.size_bytes,
+            }
+            for attachment in turn.attachments
+        ]
+    return raw
+
+
+def _parse_claude_fallback_envelope(
+    envelope: BrowserCaptureEnvelope,
+    provider_session_id: str,
+) -> ParsedSession:
+    from polylogue.sources.parsers.claude.common import (
+        _first_identity_field,
+        _message_model_effort,
+        _thinking_configuration,
+        normalize_chat_messages,
+        normalize_timestamp,
+    )
+
+    created_at = normalize_timestamp(envelope.session.created_at) if envelope.session.created_at else None
+    updated_at = normalize_timestamp(envelope.session.updated_at) if envelope.session.updated_at else None
+    active_leaf_message_provider_id = _first_identity_field(
+        envelope.session.provider_meta,
+        "current_leaf_message_uuid",
+        "current_leaf_message_id",
+        "active_leaf_message_uuid",
+        "active_leaf_message_id",
+        "current_message_uuid",
+        "current_message_id",
+        "current_node",
+    )
+    normalized = normalize_chat_messages(
+        [_claude_fallback_turn_payload(turn) for turn in envelope.session.turns],
+        session_model=envelope.session.model,
+        session_effort=_message_model_effort(envelope.session.provider_meta),
+        session_thinking_configuration=_thinking_configuration(envelope.session.provider_meta),
+        session_created_at=created_at,
+        session_updated_at=updated_at,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+    )
+
+    attachments = [
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
+        )
+        for turn in envelope.session.turns
+        for attachment in turn.attachments
+    ]
+    attachments.extend(
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id,
+        )
+        for attachment in envelope.session.attachments
+    )
+    fidelity_flag = (
+        COMPACT_BROWSER_CAPTURE_INGEST_FLAG if _is_compact_native_capture(envelope) else DOM_FALLBACK_INGEST_FLAG
+    )
+    return ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id=provider_session_id,
+        title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=normalized.messages,
+        active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
+        attachments=attachments,
+        session_events=[*normalized.session_events, *_capture_session_events(envelope)],
+        reported_duration_ms=normalized.reported_duration_ms,
+        models_used=normalized.models_used,
+        ingest_flags=list(
+            dict.fromkeys(
+                [
+                    *normalized.ingest_flags,
+                    *_ingest_flags_for_browser_capture(envelope, provider_session_id),
+                    fidelity_flag,
+                ]
+            )
+        ),
+    )
 
 
 def _capture_interruption_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
@@ -219,8 +393,113 @@ def _capture_interruption_session_events(envelope: BrowserCaptureEnvelope) -> li
     ]
 
 
+def _non_negative_milliseconds(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    return round(numeric)
+
+
+def _bounded_string(value: object, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_length:
+        return None
+    return normalized
+
+
+def _capture_generation_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
+    """Project typed, bounded live lifecycle observations from the extension.
+
+    These observations describe what the browser actually exposed while a
+    generation was running. They intentionally remain distinct from the
+    provider-native terminal event emitted by the ChatGPT parser: DOM wall
+    time and the provider's reported reasoning duration are different
+    measurements, and retaining both makes their provenance queryable.
+    """
+
+    raw_observations: list[object] = []
+    for provider_meta in (envelope.provider_meta, envelope.session.provider_meta):
+        candidate = provider_meta.get("generation_observations")
+        if isinstance(candidate, list):
+            raw_observations.extend(candidate)
+
+    events: list[ParsedSessionEvent] = []
+    seen_observation_ids: set[str] = set()
+    for raw_observation in raw_observations:
+        if not isinstance(raw_observation, Mapping):
+            continue
+        observation_id = _bounded_string(raw_observation.get("observation_id"), max_length=512)
+        state = _bounded_string(raw_observation.get("state"), max_length=32)
+        observed_at = _bounded_string(raw_observation.get("observed_at"), max_length=80)
+        evidence_source = _bounded_string(raw_observation.get("evidence_source"), max_length=80)
+        fidelity = _bounded_string(raw_observation.get("fidelity"), max_length=32)
+        duration_semantics = _bounded_string(raw_observation.get("duration_semantics"), max_length=80)
+        if (
+            observation_id is None
+            or observation_id in seen_observation_ids
+            or state not in {"started", "in_progress", "completed"}
+            or observed_at is None
+            or parse_timestamp(observed_at) is None
+            or evidence_source is None
+            or fidelity not in {"observed", "inferred"}
+            or duration_semantics is None
+        ):
+            continue
+
+        payload: dict[str, object] = {
+            "observation_id": observation_id,
+            "state": state,
+            "evidence_source": evidence_source,
+            "fidelity": fidelity,
+            "duration_semantics": duration_semantics,
+        }
+        malformed_duration = False
+        for key in ("displayed_elapsed_ms", "wall_elapsed_ms"):
+            raw_duration = raw_observation.get(key)
+            if raw_duration is None:
+                continue
+            duration = _non_negative_milliseconds(raw_duration)
+            if duration is None:
+                malformed_duration = True
+                break
+            payload[key] = duration
+        if malformed_duration:
+            continue
+        for key, max_length in (("raw_label", 512), ("trigger", 80)):
+            raw_value = raw_observation.get(key)
+            if raw_value is None:
+                continue
+            value = _bounded_string(raw_value, max_length=max_length)
+            if value is None:
+                continue
+            payload[key] = value
+
+        turn_provider_id = _bounded_string(raw_observation.get("turn_provider_id"), max_length=256)
+        events.append(
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp=observed_at,
+                source_message_provider_id=turn_provider_id,
+                payload=payload,
+            )
+        )
+        seen_observation_ids.add(observation_id)
+    return events
+
+
+def _capture_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
+    return [
+        *_capture_interruption_session_events(envelope),
+        *_capture_generation_session_events(envelope),
+    ]
+
+
 def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
-    events = _capture_interruption_session_events(envelope)
+    events = _capture_session_events(envelope)
     if not events:
         return parsed
     return parsed.model_copy(update={"session_events": [*parsed.session_events, *events]})
@@ -249,13 +528,22 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
-                _merge_envelope_attachments(parse_claude_ai(raw_provider_payload, provider_session_id), envelope),
+                _merge_envelope_attachments(
+                    _merge_envelope_native_metadata(
+                        parse_claude_ai(raw_provider_payload, provider_session_id),
+                        envelope,
+                    ),
+                    envelope,
+                ),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
             ),
             envelope,
         )
+
+    if envelope.session.provider is Provider.CLAUDE_AI:
+        return _parse_claude_fallback_envelope(envelope, provider_session_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
@@ -310,16 +598,18 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=envelope.session.created_at,
-        updated_at=envelope.session.updated_at or envelope.provenance.captured_at,
+        updated_at=envelope.session.updated_at,
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=_capture_interruption_session_events(envelope),
+        session_events=_capture_session_events(envelope),
         ingest_flags=[
             *dict.fromkeys(
                 [
                     *_ingest_flags_for_browser_capture(envelope, provider_session_id),
-                    DOM_FALLBACK_INGEST_FLAG,
+                    COMPACT_BROWSER_CAPTURE_INGEST_FLAG
+                    if _is_compact_native_capture(envelope)
+                    else DOM_FALLBACK_INGEST_FLAG,
                 ]
             )
         ],
@@ -327,6 +617,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
 
 __all__ = [
+    "COMPACT_BROWSER_CAPTURE_INGEST_FLAG",
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",
     "TEMPORARY_CHAT_INGEST_FLAG",

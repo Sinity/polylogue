@@ -13,6 +13,7 @@ from typing import IO, BinaryIO
 from uuid import uuid4
 
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,16 +244,6 @@ def consume_blob_publication_receipt(
     )
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _is_referenced(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
@@ -279,9 +270,15 @@ def inspect_blob_publication_receipts(
     index_db_path: Path | None = None,
 ) -> tuple[BlobPublicationInspection, ...]:
     """Return every receipt with its current path/reference evidence."""
+    from polylogue.paths import sibling_index_db
+
     source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
     source_conn.row_factory = sqlite3.Row
-    resolved_index = index_db_path or source_db_path.with_name("index.db")
+    if index_db_path is not None:
+        resolved_index: Path = index_db_path
+    else:
+        sibling = sibling_index_db(source_db_path, require_exists=False)
+        resolved_index = sibling if sibling is not None else source_db_path.with_name("index.db")
     index_conn = sqlite3.connect(f"file:{resolved_index}?mode=ro", uri=True) if resolved_index.exists() else None
     store = BlobStore(blob_root)
     try:

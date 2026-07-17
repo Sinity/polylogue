@@ -1,0 +1,17 @@
+{
+  "schema_version":1,
+  "campaign_id":"gpt-pro-wave-2026-07-16",
+  "workload_id":"analysis",
+  "prompt_profile":"polylogue-chatgpt-pro-analysis-v3",
+  "prompt_contract":"../../contracts/chatgpt-pro-analysis.md",
+  "jobs":[
+    {"id":"analysis-01","slug":"bead-overlap-contradictions","title":"Bead overlap and contradiction audit","brief":"briefs/01-bead-overlap-contradictions.md","prompt":"prompts/01-bead-overlap-contradictions.md","result_prefix":"analysis-01-bead-overlap-contradictions","depends_on":[]},
+    {"id":"analysis-02","slug":"campaign-effectiveness","title":"External-agent campaign effectiveness postmortem","brief":"briefs/02-campaign-effectiveness.md","prompt":"prompts/02-campaign-effectiveness.md","result_prefix":"analysis-02-campaign-effectiveness","depends_on":[]},
+    {"id":"analysis-03","slug":"active-diff-ac-review","title":"Adversarial AC review of active large diffs","brief":"briefs/03-active-diff-ac-review.md","prompt":"prompts/03-active-diff-ac-review.md","result_prefix":"analysis-03-active-diff-ac-review","depends_on":[]},
+    {"id":"analysis-04","slug":"surface-semantic-matrix","title":"Cross-surface semantic parity matrix","brief":"briefs/04-surface-semantic-matrix.md","prompt":"prompts/04-surface-semantic-matrix.md","result_prefix":"analysis-04-surface-semantic-matrix","depends_on":[]},
+    {"id":"analysis-05","slug":"duplicate-authority-census","title":"Definition-to-production duplicate-authority census","brief":"briefs/05-duplicate-authority-census.md","prompt":"prompts/05-duplicate-authority-census.md","result_prefix":"analysis-05-duplicate-authority-census","depends_on":[]},
+    {"id":"analysis-06","slug":"fixture-portfolio","title":"Compact synthetic fixture portfolio design","brief":"briefs/06-fixture-portfolio.md","prompt":"prompts/06-fixture-portfolio.md","result_prefix":"analysis-06-fixture-portfolio","depends_on":[]},
+    {"id":"analysis-07","slug":"cold-start-review","title":"Cold-start agent usability review","brief":"briefs/07-cold-start-review.md","prompt":"prompts/07-cold-start-review.md","result_prefix":"analysis-07-cold-start-review","depends_on":[]},
+    {"id":"analysis-08","slug":"capture-timing-completeness","title":"Browser-capture timing and completion evidence audit","brief":"briefs/08-capture-timing-completeness.md","prompt":"prompts/08-capture-timing-completeness.md","result_prefix":"analysis-08-capture-timing-completeness","depends_on":[]}
+  ]
+}

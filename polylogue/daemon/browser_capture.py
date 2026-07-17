@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 from pathlib import Path
 from typing import get_args
 
 import click
 from pydantic import ValidationError
 
-from polylogue.browser_capture.models import BrowserPostCommandRequest, BrowserPostProvider, BrowserPostTarget
+from polylogue.browser_capture.actions import (
+    ACTION_ATTACHMENT_MAX_BYTES,
+    ACTION_TOTAL_ATTACHMENT_MAX_BYTES,
+    BrowserActionConflictError,
+    BrowserActionQuotaError,
+    enqueue_action,
+)
+from polylogue.browser_capture.models import (
+    BrowserActionAttachmentInput,
+    BrowserActionPresentation,
+    BrowserActionProvider,
+    BrowserActionRequest,
+    BrowserActionTarget,
+)
 from polylogue.browser_capture.receiver import (
     BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
-    BROWSER_POST_ENABLED_ENV,
-    BrowserPostDisabledError,
-    browser_post_enabled,
-    enqueue_post_command,
+    BrowserCaptureReceiverConfig,
     load_or_mint_receiver_token,
+    receiver_identity,
     resolve_receiver_auth_token,
 )
 from polylogue.browser_capture.server import make_server
@@ -103,8 +116,14 @@ def token_show(rotate: bool, output_format: str | None) -> None:
     click.echo(token)
 
 
-@browser_capture_command.command("post")
-@click.option("--provider", type=click.Choice(list(get_args(BrowserPostProvider))), required=True)
+@browser_capture_command.command("action")
+@click.option("--provider", type=click.Choice(list(get_args(BrowserActionProvider))), required=True)
+@click.option(
+    "--operation",
+    type=click.Choice(["conversation.create", "conversation.reply"]),
+    default=None,
+    help='Defaults to create for conversation-id "new", otherwise reply.',
+)
 @click.option(
     "--conversation-id",
     "conversation_id",
@@ -113,57 +132,126 @@ def token_show(rotate: bool, output_format: str | None) -> None:
     help='Provider-native conversation id, or "new" to request a fresh thread.',
 )
 @click.option("--project-ref", "project_ref", default=None, help="Optional provider project/workspace ref.")
-@click.option("--text", required=True, help="Prompt text to post into the conversation.")
-@click.option("--command-id", "command_id", default=None, help="Optional explicit command id.")
+@click.option("--conversation-url", default=None, help="Exact first-party target URL, required for routed projects.")
+@click.option("--text", default=None, help="Message text. Mutually exclusive with --prompt-file.")
 @click.option(
-    "--submit/--no-submit",
+    "--prompt-file",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    default=None,
+    help="Read message text from this file.",
+)
+@click.option(
+    "--attachment",
+    "attachment_paths",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    multiple=True,
+    help="Hash-pinned input file copied into receiver storage; repeatable.",
+)
+@click.option("--model-slug", required=True, help="Exact provider model slug advertised by capabilities.")
+@click.option("--model-label", required=True, help="Exact provider model label visible at submit.")
+@click.option("--effort-label", required=True, help="Exact provider effort label visible at submit.")
+@click.option("--action-id", default=None, help="Optional stable action identity.")
+@click.option("--idempotency-key", default=None, help="Stable caller retry identity.")
+@click.option(
+    "--submit/--stage-only",
     "submit",
     default=False,
     show_default=True,
-    help="Request the extension to actually click send. Default is a dry-run that fills the composer only.",
+    help="Submit once or only stage a verified provider draft.",
 )
 @click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
+@click.option("--auth-token", "auth_token", default=None, help="Bearer token used by the active receiver.")
+@click.option(
+    "--allow-no-auth",
+    is_flag=True,
+    default=False,
+    envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
+    help="Target a receiver explicitly running without bearer authentication.",
+)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def post_command(
+def action_command(
     provider: str,
+    operation: str | None,
     conversation_id: str,
     project_ref: str | None,
-    text: str,
-    command_id: str | None,
+    conversation_url: str | None,
+    text: str | None,
+    prompt_file: Path | None,
+    attachment_paths: tuple[Path, ...],
+    model_slug: str,
+    model_label: str,
+    effort_label: str,
+    action_id: str | None,
+    idempotency_key: str | None,
     submit: bool,
     spool_path: Path | None,
+    auth_token: str | None,
+    allow_no_auth: bool,
     output_format: str | None,
 ) -> None:
-    """Enqueue an outbound post command for the extension to deliver.
-
-    Safety: refused unless POLYLOGUE_BROWSER_POST_ENABLED=1 is set. The command
-    is only queued here; the running receiver serves it to the extension via
-    GET /v1/post-commands.
-    """
+    """Enqueue one provider-neutral action for a replaceable extension."""
     try:
-        request = BrowserPostCommandRequest(
+        if (text is None) == (prompt_file is None):
+            raise ValueError("provide exactly one of --text or --prompt-file")
+        resolved_text = text if text is not None else (prompt_file or Path()).read_text(encoding="utf-8")
+        resolved_operation = operation or ("conversation.create" if conversation_id == "new" else "conversation.reply")
+        attachments: list[BrowserActionAttachmentInput] = []
+        total = 0
+        for path in attachment_paths:
+            size = path.stat().st_size
+            if size > ACTION_ATTACHMENT_MAX_BYTES:
+                raise BrowserActionQuotaError(
+                    f"browser action attachment exceeds {ACTION_ATTACHMENT_MAX_BYTES} bytes: {path.name}"
+                )
+            total += size
+            if total > ACTION_TOTAL_ATTACHMENT_MAX_BYTES:
+                raise BrowserActionQuotaError(
+                    f"browser action attachments exceed {ACTION_TOTAL_ATTACHMENT_MAX_BYTES} total bytes"
+                )
+            attachments.append(
+                BrowserActionAttachmentInput(
+                    name=path.name,
+                    mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                    content_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
+                )
+            )
+        request = BrowserActionRequest(
+            action_id=action_id,
+            idempotency_key=idempotency_key,
             provider=provider,  # type: ignore[arg-type]
-            target=BrowserPostTarget(conversation_id=conversation_id, project_ref=project_ref),
-            text=text,
-            command_id=command_id,
-            submit=submit,
+            operation=resolved_operation,  # type: ignore[arg-type]
+            target=BrowserActionTarget(
+                conversation_id=conversation_id,
+                conversation_url=conversation_url,
+                project_ref=project_ref,
+            ),
+            text=resolved_text,
+            attachments=attachments,
+            presentation=BrowserActionPresentation(
+                model_slug=model_slug,
+                model_label=model_label,
+                effort_label=effort_label,
+            ),
+            submit_policy="submit_once" if submit else "stage_only",
         )
-        command = enqueue_post_command(request, spool_path=spool_path)
-    except ValidationError as exc:
+        receiver_config = BrowserCaptureReceiverConfig(
+            spool_path=spool_path or BrowserCaptureReceiverConfig.default().spool_path,
+            auth_token=resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth),
+        )
+        action = enqueue_action(
+            request,
+            receiver_id=receiver_identity(receiver_config),
+            spool_path=spool_path,
+        )
+    except (OSError, ValueError, ValidationError, BrowserActionConflictError, BrowserActionQuotaError) as exc:
         raise click.ClickException(str(exc)) from None
-    except BrowserPostDisabledError:
-        raise click.ClickException(
-            f"Outbound posting is disabled. Set {BROWSER_POST_ENABLED_ENV}=1 to enable (default OFF safety guard)."
-        ) from None
-    payload = command.model_dump(mode="json", exclude_none=True)
+    payload = action.model_dump(mode="json", exclude_none=True)
     if output_format == "json":
         click.echo(dumps(payload))
         return
-    click.echo(f"Queued post command {command.command_id}")
-    click.echo(f"Provider: {command.provider}  target: {command.target.conversation_id}")
-    click.echo(f"Submit (click send): {command.submit}")
-    if not browser_post_enabled():  # pragma: no cover - defensive; enqueue would have raised
-        click.echo(f"WARNING: {BROWSER_POST_ENABLED_ENV} is not set")
+    click.echo(f"Queued browser action {action.action_id}")
+    click.echo(f"Provider: {action.provider}  operation: {action.operation}")
+    click.echo(f"Target: {action.target.conversation_id}  policy: {action.submit_policy}")
 
 
-__all__ = ["browser_capture_command", "post_command", "serve_command", "status_command"]
+__all__ = ["action_command", "browser_capture_command", "serve_command", "status_command"]

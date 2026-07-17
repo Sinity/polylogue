@@ -2,6 +2,13 @@
   if (window.__polylogueClaudeCaptureInstalled) return;
   window.__polylogueClaudeCaptureInstalled = true;
 
+  // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
+  // next to each detected message. Reused across every capture trigger below
+  // (badge click, popup, background auto-capture) so the dots always reflect
+  // the most recent capture outcome for the whole session.
+  const MESSAGE_CONTAINER_SELECTOR = '[data-testid*="message"], [data-message-author-role], article';
+  let messageLayer = null;
+
   const domAdapterName = "claude-ai-dom-v1";
   const nativeAdapterName = "claude-ai-native-v1";
   const nativeCaptureMessage = "polylogue.claude.nativeCapture";
@@ -212,7 +219,7 @@
     });
   }
 
-  async function capture() {
+  async function capture(reason = null) {
     const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
     const envelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
     const fallbackEnvelope = () => {
@@ -230,42 +237,37 @@
     };
     const finalEnvelope = envelope || fallbackEnvelope();
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
-    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope);
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
+    if (!captureResult?.ok) {
+      messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });
+      return {
+        ok: false,
+        envelope: finalEnvelope,
+        captureResult,
+        error: captureResult?.error || "capture_rejected",
+        timelineRecorded: true,
+      };
+    }
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "claude-ai",
       finalEnvelope.session.provider_session_id
     );
+    messageLayer?.reportOutcome({ ok: true, turnCount: finalEnvelope.session.turns.length });
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
   window.polylogueCapture.capturePage = capture;
+  if (window.polylogueMessageLayer) {
+    messageLayer = window.polylogueMessageLayer.mount({
+      containerSelector: MESSAGE_CONTAINER_SELECTOR,
+      onSave: () => {
+        capture("message_layer_save").catch(() => undefined);
+      },
+    });
+  }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
-    return true;
-  });
-  // Outbound posting (reverse channel). Selectors target the Claude.ai composer
-  // as of 2026-06 and need live re-verification when the UI changes: composer is
-  // the ProseMirror contenteditable div, send is the aria-labelled send button.
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "polylogue.postReply") return false;
-    window.polylogueCapture
-      .postReplyToComposer({
-        command: message.command,
-        composerSelectors: [
-          'div.ProseMirror[contenteditable="true"]',
-          'div[contenteditable="true"].ProseMirror',
-          'fieldset div[contenteditable="true"]'
-        ],
-        sendSelectors: [
-          'button[aria-label="Send message"]',
-          'button[aria-label*="Send" i]'
-        ]
-      })
-      .then(sendResponse)
-      .catch((error) =>
-        sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
-      );
+    capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
 })();

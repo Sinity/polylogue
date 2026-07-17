@@ -45,6 +45,8 @@ files:
     reason: "Verification-report timestamps use real now to assert ordering across artifacts."
   - path: tests/unit/devtools/test_verify_manifests.py
     reason: "Manifest-suppression expiry checks intentionally read the host date to validate the live policy decision."
+  - path: tests/unit/devtools/test_pytest_supervisor.py
+    reason: "Process-containment regressions poll real PIDs and cgroups across SIGKILL delivery; a frozen clock cannot advance kernel process state."
 
   # --- Pipeline / storage acquired_at timestamps (no production now() comparison) ---
   - path: tests/unit/pipeline/test_async_index.py
@@ -69,7 +71,15 @@ files:
     reason: "Raw-ingest test uses now() as opaque acquired_at metadata."
   - path: tests/unit/daemon/test_metrics_endpoint.py
     reason: "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
+  - path: tests/unit/daemon/test_daemon_lifecycle.py
+    reason: "Lifecycle signal-forensics test holds a real SQLite write lock and measures that the terminating handler respects its bounded busy timeout."
   - path: tests/integration/test_daemon_resilience.py
     reason: "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). frozen_clock cannot substitute for real time when waiting on OS process state."
   - path: tests/integration/test_ingest_pipeline_correctness.py
     reason: "Ingest pipeline correctness tests (#1736) use time.monotonic for real process wait/retry timing that cannot be satisfied by a frozen clock."
+  - path: tests/benchmarks/test_daemon_uds.py
+    reason: "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
+  - path: tests/unit/cli/test_daemon_golden_parity.py
+    reason: "polylogue-20d.1 golden-parity test starts a real UDS daemon server in a background thread and polls its readiness with a bounded wall-clock deadline before comparing direct vs daemon-proxied CLI output; frozen_clock cannot substitute for waiting on real socket/thread startup."
+  - path: tests/unit/archive/query/test_execution_control.py
+    reason: "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."

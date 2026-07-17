@@ -32,6 +32,17 @@ def fingerprint_hash(fingerprint: object) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
+def bundle_scope_identity(scope: str) -> str:
+    """Return the public opaque identity for a locally observed bundle scope.
+
+    The scope remains in the private observation journal; generated catalogs
+    retain equality/routing capability without serializing its readable local
+    path or session identifier.
+    """
+    payload = b"polylogue.schema.bundle-scope.v1\0" + scope.encode("utf-8")
+    return "scope:" + hashlib.sha256(payload).hexdigest()
+
+
 def schema_cluster_id(cluster_payload: SchemaClusterPayload, artifact_kind: str) -> str:
     """Compute a stable cluster identifier for a schema unit."""
     from polylogue.schemas.shape_fingerprint import _structure_fingerprint

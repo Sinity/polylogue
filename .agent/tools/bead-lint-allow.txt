@@ -1,0 +1,12 @@
+# Backlog-hygiene allowlist for devtools.verify_backlog_hygiene.
+# Format: CHECK<TAB>BEAD_ID  (one finding per line; keep the reason as a comment above it)
+#
+# D1 dangling-dep false positives: bd export emits an orphaned raw dependency
+# row (depends_on_id without the "polylogue-" prefix) alongside the correct,
+# re-added edge. bd's own query tools (bd show, bd dep list) already report
+# only the single correct edge -- this is an export-layer artifact, not a
+# real dangling reference. bd dep remove does not clear the underlying row
+# (Dolt-backed store), so hand-editing the JSONL gets clobbered by the next
+# pre-commit bd export. Revisit if bd's export/remove behavior changes.
+D1	polylogue-jtwu
+D1	polylogue-fko9

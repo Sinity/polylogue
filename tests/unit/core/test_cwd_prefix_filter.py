@@ -56,7 +56,7 @@ def test_cwd_prefix_absent_emits_no_clause() -> None:
 def test_cwd_prefix_combines_with_other_filters() -> None:
     where, params = _build_session_filters(
         cwd_prefix="/repo",
-        provider="claude-code",
+        origin="claude-code-session",
         title_contains="bug",
     )
     assert "origin = ?" in where

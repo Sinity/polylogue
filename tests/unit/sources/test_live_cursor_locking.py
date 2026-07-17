@@ -132,7 +132,8 @@ def test_failed_persistence_preserves_last_committed_cursor_offset(tmp_path: Pat
 
     record = store.get_record(source)
     assert record is not None
-    assert record.byte_size == len(committed + appended)
+    # Failed persistence cannot adopt the unaccepted observation's size.
+    assert record.byte_size == len(committed)
     assert record.byte_offset == len(committed)
     assert record.last_complete_newline == len(committed)
     assert record.failure_count == 1

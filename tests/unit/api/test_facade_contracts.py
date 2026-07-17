@@ -24,21 +24,27 @@ pin the public contract directly:
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import pytest
 
 from polylogue import Polylogue
+from polylogue.annotations.importer import AnnotationBatchImportRequest
+from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, MaterialOrigin, Origin, Provider
-from polylogue.errors import DatabaseError, PolylogueError
+from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.errors import DatabaseError, PolylogueError
+from polylogue.core.json import JSONDocument
+from polylogue.core.refs import delegation_edge_object_id
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -191,6 +197,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "list_sessions_for_spec",
         "search_session_hits",
         "diagnose_query_miss",
+        "import_annotation_batch",
         "storage_stats",
         "bulk_tag_sessions",
         "list_session_profile_insights",
@@ -237,8 +244,14 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "explain_import",
         "archive_debt",
         "list_assertion_claim_payloads",
+        "get_context_delivery",
+        "correlate_hermes_context_deliveries",
+        "reconcile_hermes_session_lifecycle",
         "list_assertion_candidate_reviews",
         "judge_assertion_candidate",
+        "judge_assertion_candidates",
+        "capture_assertion_candidate",
+        "join_typed_annotations",
         "neighbor_candidate_payloads",
         "resolve_ref",
         "export_otel",
@@ -710,7 +723,6 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         session_id="claude-ai-export:conv-alpha",
         native_id="conv-alpha",
         origin="claude-ai-export",
-        provider=Provider.CLAUDE_AI,
         title="Alpha",
         created_at=None,
         updated_at=None,
@@ -727,7 +739,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
 
     assert result.total_sessions == 1
     assert result.total_messages == 2
-    assert result.providers == {"claude-ai-export": 1}
+    assert result.origins == {"claude-ai-export": 1}
     assert result.tags == {"work": 1}
 
 
@@ -999,6 +1011,259 @@ async def test_explain_import_exposes_shared_import_payload(tmp_path: Path) -> N
         assert payload.entries[0].detected_origin == "codex-session"
         assert payload.entries[0].parser_mode == "grouped_records"
         assert payload.entries[0].produced.session_refs
+    finally:
+        await archive.close()
+
+
+def test_get_context_delivery_return_annotation_resolves_at_runtime() -> None:
+    """Receipt readers can inspect the public facade's concrete return type."""
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+
+    hints = get_type_hints(Polylogue.get_context_delivery)
+
+    assert hints["return"] == ArchiveContextDeliveryEnvelope | None
+
+
+async def test_get_context_delivery_scopes_exact_receipt_to_recipient(tmp_path: Path) -> None:
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:source",), read_views=()),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:codex-session:source:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="codex-session:source", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="codex-session:source", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="explicit-recall")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-main",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    try:
+        receipt = await archive.get_context_delivery(record.snapshot_ref, recipient_ref="agent:hermes-main")
+        wrong_recipient = await archive.get_context_delivery(record.snapshot_ref, recipient_ref="agent:other")
+
+        assert receipt is not None
+        assert receipt.context_image == image
+        assert receipt.context_image_sha256 == record.metadata["context_image_sha256"]
+        assert receipt.evidence_refs == ("codex-session:source::m1",)
+        assert wrong_recipient is None
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.11 x fs1.7: the facade method reaches the real spool + delivery ledger."""
+
+    from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec, context_snapshot_record_from_image
+    from polylogue.core.refs import EvidenceRef
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import CONTEXT_INJECTED
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("hermes-session:hermes-conv-1@profile-abc",), read_views=(), max_tokens=2000),
+        segments=(
+            ContextSegment(
+                segment_id="read-view:hermes-conv-1:messages",
+                kind="read_view",
+                title="Exact delivery",
+                markdown="quoted archival evidence",
+                evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+                token_estimate=3,
+            ),
+        ),
+        evidence_refs=(EvidenceRef(session_id="hermes-session:hermes-conv-1@profile-abc", message_id="m1"),),
+        token_estimate=3,
+    )
+    record = context_snapshot_record_from_image(image, boundary="hermes-turn-start")
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        written = write_context_delivery(
+            conn,
+            image=image,
+            record=record,
+            recipient_ref="agent:hermes-conv-1",
+            delivered_by_ref="user:local",
+            delivered_at_ms=123,
+        )
+        conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="ctx-inject-facade-1",
+        provider="hermes",
+        event_type=CONTEXT_INJECTED,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"snapshot_ref": written.snapshot_ref},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 1
+
+    try:
+        correlations = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+
+        assert len(correlations) == 1
+        assert correlations[0].available is True
+        assert correlations[0].receipt is not None
+        assert correlations[0].receipt.context_image == image
+        assert correlations[0].rendered_bytes_sha256 == written.context_image_sha256
+        assert correlations[0].token_budget == "2000"
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_path: Path) -> None:
+    """fs1.7: the facade method reaches the real spool + ingested snapshot.
+
+    Reproduces the review finding directly: ``reconcile_lifecycle_events``
+    was unit-tested but unreachable from any production surface. This drains
+    real events through the durable ``sources.hooks`` spool and seeds a real
+    ingested Hermes session snapshot (index.db ``sessions``/``messages``,
+    same direct-insert pattern ``_seed_import_explain_archive`` uses above),
+    then asserts the facade method surfaces both known gap kinds: an
+    unpaired ``tool_start`` and an event referencing a message id absent
+    from the snapshot.
+    """
+    from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+    from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, TOOL_START
+
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, message_count) VALUES (?, ?, ?, ?, ?)",
+            ("hermes-conv-1@profile-abc", "hermes-session", "Hermes recon test", _HASH, 1),
+        )
+        index_conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("hermes-session:hermes-conv-1@profile-abc", "m1", 0, "assistant", "message", _HASH),
+        )
+        index_conn.commit()
+
+    spool_root = tmp_path / "hooks"
+    enqueue_hook_event(
+        event_id="lifecycle-facade-1",
+        provider="hermes",
+        event_type=TOOL_START,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "message_id": "m1"},
+        root=spool_root,
+    )
+    enqueue_hook_event(
+        event_id="lifecycle-facade-2",
+        provider="hermes",
+        event_type=DURABLE_FINALIZE,
+        session_id="hermes-conv-1",
+        timestamp="2026-07-12T10:00:05Z",
+        payload={"message_id": "message-not-in-snapshot"},
+        root=spool_root,
+    )
+    assert drain_hook_event_spool(tmp_path, root=spool_root).acknowledged == 2
+
+    try:
+        report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+
+        assert report is not None
+        assert report.total_events == 2
+        assert report.finalized is True
+        # tool_start never observed its tool_finish counterpart.
+        assert report.unpaired_event_ids == ("hook:lifecycle-facade-1",)
+        # the finalize event references a message id the snapshot never ingested.
+        assert report.events_referencing_unknown_messages == ("hook:lifecycle-facade-2",)
+        assert not report.complete
+        assert any("paired counterpart" in caveat for caveat in report.caveats)
+        assert any("absent from the retained snapshot" in caveat for caveat in report.caveats)
+
+        # No events drained yet for a different session: a well-formed empty
+        # report, not None -- "not available" and "zero events" are distinct.
+        empty_report = await archive.reconcile_hermes_session_lifecycle("hermes-conv-unrelated")
+        assert empty_report is not None
+        assert empty_report.total_events == 0
+        assert empty_report.complete
+    finally:
+        await archive.close()
+
+
+async def test_correlate_hermes_context_deliveries_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review fix: 'archive not initialized' and 'archive present but corrupt' both
+    return an empty tuple (unchanged, backward-compatible contract) but must not be
+    silently indistinguishable -- only the corruption case logs a warning."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            # Not-yet-initialized case: no user.db at all for a *different* fresh root.
+            never_initialized = Polylogue(archive_root=tmp_path / "never-initialized", db_path=tmp_path / "unused.db")
+            try:
+                absent = await never_initialized.correlate_hermes_context_deliveries("hermes-conv-1")
+                assert absent == ()
+            finally:
+                await never_initialized.close()
+        assert "hermes_context_deliveries read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the correlation's first read touches source.db unconditionally, before
+        # it ever reaches user.db, so this is the tier whose corruption reproduces
+        # the finding).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.correlate_hermes_context_deliveries("hermes-conv-1")
+        assert corrupted == ()
+        assert "hermes_context_deliveries read failed" in caplog.text
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_absence(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Same review fix as the context-delivery correlation, for the lifecycle reconciliation seam."""
+
+    archive = _archive(tmp_path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            never_initialized = Polylogue(
+                archive_root=tmp_path / "never-initialized-2", db_path=tmp_path / "unused2.db"
+            )
+            try:
+                absent = await never_initialized.reconcile_hermes_session_lifecycle("hermes-conv-1")
+                assert absent is None
+            finally:
+                await never_initialized.close()
+        assert "hermes_session_lifecycle reconciliation read failed" not in caplog.text
+        caplog.clear()
+
+        # Present-but-corrupt case: source.db exists but is not a valid sqlite file
+        # (the reconciliation's first read touches source.db unconditionally).
+        (tmp_path / "source.db").write_bytes(b"not a sqlite file")
+        with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
+            corrupted = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
+        assert corrupted is None
+        assert "hermes_session_lifecycle reconciliation read failed" in caplog.text
     finally:
         await archive.close()
 
@@ -1541,7 +1806,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
     assert messages[0].text == "Alpha\n\nOmega"
 
 
-async def test_message_hydration_preserves_origin_provider_and_structural_tool_outcome(tmp_path: Path) -> None:
+async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tmp_path: Path) -> None:
     """Semantic readers receive the evidence fields required by shared cards."""
 
     archive = _archive(tmp_path)
@@ -1581,7 +1846,7 @@ async def test_message_hydration_preserves_origin_provider_and_structural_tool_o
         await archive.close()
 
     assert total == 1
-    assert messages[0].provider is Provider.CODEX
+    assert messages[0].origin is Origin.CODEX_SESSION
     assert len(messages[0].blocks) == 2
     result = messages[0].blocks[1]
     assert result["id"]
@@ -2250,6 +2515,318 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         await archive.close()
 
 
+@pytest.mark.parametrize(
+    ("kind", "object_id"),
+    [
+        ("query", "sha256:deadbeef"),
+        ("query-run", "sha256:deadbeef:run-1"),
+        ("result-set", "sha256:deadbeef:run-1:result-1"),
+        ("cohort", "cohort-1"),
+        ("analysis", "analysis-1"),
+    ],
+)
+async def test_resolve_ref_returns_typed_pending_payload_for_analysis_provenance_kinds(
+    tmp_path: Path, kind: str, object_id: str
+) -> None:
+    """polylogue-rxdo.1: refs land ahead of storage; resolution stubs cleanly.
+
+    ``query``/``query-run``/``result-set``/``cohort``/``analysis``
+    are registered ObjectRefKind values with no backing table yet
+    (polylogue-rxdo.2/.3/.8). ``finding`` graduated out of this pending set
+    in polylogue-rxdo.4 -- see
+    ``test_resolve_ref_returns_finding_provenance_payload`` below.
+    resolve_ref must not raise and must not silently pretend to resolve
+    these remaining kinds — it returns a typed pending payload carrying
+    reason=substrate-pending so a client can distinguish "not implemented
+    yet" from "does not exist".
+    """
+    archive = _archive(tmp_path)
+    try:
+        ref = f"{kind}:{object_id}"
+        payload = await archive.resolve_ref(ref)
+
+        assert payload.resolved is False
+        assert payload.kind == kind
+        assert payload.normalized_ref == ref
+        assert payload.payload_kind == "pending"
+        assert payload.payload is not None
+        assert payload.payload["reason"] == "substrate-pending"
+        assert payload.payload["kind"] == kind
+        assert payload.payload["unit"] == "pending"
+        assert any("substrate-pending" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(tmp_path: Path) -> None:
+    """Annotation-batch refs resolve through the real user-tier repository."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    archive = _archive(tmp_path)
+    batch = AnnotationBatch(
+        batch_id="batch-ref-resolution",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref="delegation:dispatch-ref-resolution",
+        source_result_ref="result-set:ref-resolution",
+        actor_ref="agent:labeler",
+        model_ref="agent:model",
+        prompt_ref="block:prompt-ref-resolution:0",
+        total_count=0,
+        valid_count=0,
+        invalid_count=0,
+        abstained_count=0,
+        metadata={"campaign": "facade-contract"},
+        created_at_ms=123,
+    )
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+
+        payload = await archive.resolve_ref(batch.batch_ref)
+        assert payload.resolved is True
+        assert payload.kind == "annotation-batch"
+        assert payload.payload_kind == "annotation-batch"
+        assert payload.payload is not None
+        assert payload.payload["unit"] == "annotation-batch"
+        assert payload.payload["batch_id"]["text_prefix"] == batch.batch_id
+        assert payload.payload["batch_id"]["truncated"] is False
+        assert payload.payload["qualified_schema_id"]["text_prefix"] == batch.qualified_schema_id
+        assert json.loads(payload.payload["metadata"]["json_prefix"]) == {"campaign": "facade-contract"}
+        assert payload.payload["metadata"]["truncated"] is False
+        assert payload.payload["assertion_refs_total_count"] == 0
+        assert payload.payload["assertion_refs_omitted_count"] == 0
+        assert payload.payload["assertion_refs_truncated"] is False
+        assert payload.payload["validation_failures_total_count"] == 0
+        assert payload.payload["validation_failures_omitted_count"] == 0
+        assert payload.payload["validation_failures_truncated"] is False
+        assert payload.caveats == ()
+        assert payload.object_refs == (
+            batch.batch_ref,
+            batch.target_ref,
+            batch.source_result_ref,
+            batch.actor_ref,
+            batch.model_ref,
+            batch.prompt_ref,
+        )
+
+        missing = await archive.resolve_ref("annotation-batch:missing")
+        assert missing.resolved is False
+        assert missing.kind == "annotation-batch"
+        assert missing.normalized_ref == "annotation-batch:missing"
+        assert missing.payload is None
+        assert missing.caveats == ("annotation batch not found",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_byte_bounds_missing_and_malformed_giant_annotation_batch_refs(tmp_path: Path) -> None:
+    """The production facade never reflects a giant unresolved batch ref.
+
+    Anti-vacuity: both inputs pass through ``Polylogue.resolve_ref``. The first
+    parses as a real annotation-batch lookup and misses durable storage; the
+    second fails ObjectRef parsing. Removing either bounded failure branch
+    makes the serialized response scale with the two-megabyte input.
+    """
+
+    missing_ref = f"annotation-batch:missing-{'x' * (2 * 1024 * 1024)}"
+    malformed_ref = f"annotation-batch{'y' * (2 * 1024 * 1024)}:missing"
+    archive = _archive(tmp_path)
+    try:
+        for ref in (missing_ref, malformed_ref):
+            resolution = await archive.resolve_ref(ref)
+            encoded = ref.encode("utf-8")
+            digest = hashlib.sha256(encoded).hexdigest()
+
+            assert resolution.resolved is False
+            assert resolution.kind == "annotation-batch"
+            assert resolution.ref == f"annotation-batch:sha256-{digest}"
+            assert resolution.normalized_ref is None
+            assert resolution.payload_kind == "annotation-batch-ref-digest"
+            assert resolution.payload == {
+                "unit": "annotation-batch-ref-digest",
+                "original_ref_sha256": digest,
+                "original_ref_utf8_bytes_total": len(encoded),
+                "truncated": True,
+            }
+            assert resolution.caveats == ("oversized annotation batch reference omitted from the public response",)
+            rendered = resolution.model_dump_json()
+            assert ref not in rendered
+            assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_fail_closes_giant_annotation_batch_ref_with_lone_surrogate(tmp_path: Path) -> None:
+    """Invalid Unicode is bounded before ObjectRef parsing or SQLite binding.
+
+    Anti-vacuity: this invokes the production facade with a value that
+    ``str.encode('utf-8')`` rejects. Without the pre-parse guard, the valid
+    annotation-batch kind reaches the durable lookup and raises instead of
+    returning a serializable response.
+    """
+
+    ref = f"annotation-batch:{'x' * 300}\ud800"
+    digest = hashlib.sha256(ref.encode("utf-8", errors="surrogatepass")).hexdigest()
+    archive = _archive(tmp_path)
+    try:
+        resolution = await archive.resolve_ref(ref)
+
+        assert resolution.resolved is False
+        assert resolution.kind == "annotation-batch"
+        assert resolution.ref == f"annotation-batch:invalid-unicode:sha256-{digest}"
+        assert resolution.normalized_ref is None
+        assert resolution.payload_kind == "invalid-unicode-ref-digest"
+        assert resolution.payload == {
+            "unit": "invalid-unicode-ref-digest",
+            "reason": "invalid-unicode",
+            "original_ref_surrogatepass_sha256": digest,
+            "original_ref_codepoints_total": len(ref),
+            "truncated": True,
+        }
+        assert resolution.caveats == ("invalid Unicode public reference omitted from the response",)
+        rendered = resolution.model_dump_json()
+        assert ref not in rendered
+        assert len(rendered.encode("utf-8")) < 1_024
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: Path) -> None:
+    """The real durable-read -> facade route stays finite for oversized batches.
+
+    Anti-vacuity: this persists the complete batch, proves the repository still
+    returns every row, and then calls production ``Polylogue.resolve_ref``.
+    Removing the resolver's count or JSON-byte caps breaks the sample, caveat,
+    top-level ref, and serialized-size assertions below.
+    """
+    from polylogue.annotations.batch import AnnotationBatch
+
+    assertion_refs = tuple(f"assertion:oversized-{index:03d}-{'a' * 160}" for index in range(64))
+    validation_failures: tuple[JSONDocument, ...] = tuple(
+        {"row": index, "errors": ["invalid label"], "details": "f" * 4096} for index in range(64)
+    )
+    batch = AnnotationBatch(
+        batch_id="batch-ref-resolution-oversized",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref="delegation:dispatch-ref-resolution-oversized",
+        source_result_ref="result-set:ref-resolution-oversized",
+        actor_ref="agent:labeler",
+        model_ref="agent:model",
+        prompt_ref="block:prompt-ref-resolution-oversized:0",
+        total_count=128,
+        valid_count=64,
+        invalid_count=64,
+        abstained_count=0,
+        assertion_refs=assertion_refs,
+        validation_failures=validation_failures,
+        metadata={"campaign": "oversized", "details": "m" * 16_384},
+        created_at_ms=456,
+    )
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+            persisted = store.get_annotation_batch(batch.batch_id)
+            assert persisted is not None
+            assert persisted.assertion_refs == assertion_refs
+            assert persisted.validation_failures == validation_failures
+            assert persisted.metadata == batch.metadata
+
+        resolution = await archive.resolve_ref(batch.batch_ref)
+
+        assert resolution.resolved is True
+        assert resolution.payload is not None
+        document = resolution.payload
+        assert [item["text_sha256"] for item in document["assertion_refs"]] == [
+            hashlib.sha256(ref.encode("utf-8")).hexdigest() for ref in assertion_refs[:20]
+        ]
+        assert all(item["truncated"] is True for item in document["assertion_refs"])
+        assert document["assertion_ref_values_truncated_count"] == 20
+        assert document["assertion_refs_total_count"] == 64
+        assert document["assertion_refs_omitted_count"] == 44
+        assert document["assertion_refs_truncated"] is True
+        assert len(document["validation_failures"]) == 5
+        assert document["validation_failures_total_count"] == 64
+        assert document["validation_failures_omitted_count"] == 59
+        assert document["validation_failures_truncated"] is True
+        assert all(item["truncated"] is True for item in document["validation_failures"])
+        assert all(len(item["json_prefix"].encode("utf-8")) <= 1024 for item in document["validation_failures"])
+        assert document["metadata"]["truncated"] is True
+        assert document["metadata"]["json_bytes_total"] > 1024
+        assert len(document["metadata"]["json_prefix"].encode("utf-8")) <= 1024
+        assert resolution.object_refs == (
+            batch.batch_ref,
+            batch.target_ref,
+            batch.source_result_ref,
+            batch.actor_ref,
+            batch.model_ref,
+            batch.prompt_ref,
+        )
+        assert not any(ref.startswith("assertion:") for ref in resolution.object_refs)
+        assert resolution.caveats == (
+            "annotation_batch_assertion_refs_capped: returned=20 total=64 omitted=44",
+            "annotation_batch_assertion_ref_values_capped: clipped=20 json_byte_cap=96",
+            "annotation_batch_validation_failures_capped: returned=5 total=64 omitted=59",
+            "annotation_batch_validation_failure_json_capped: clipped=5 byte_cap=256",
+            f"annotation_batch_metadata_json_capped: total_bytes={document['metadata']['json_bytes_total']} "
+            "byte_cap=256",
+        )
+        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_path: Path) -> None:
+    """Count-bounded opaque refs cannot expand a public response without limit."""
+    from polylogue.annotations.batch import AnnotationBatch
+
+    huge_id = "x" * (128 * 1024)
+    assertion_refs = tuple(f"assertion:{index:02d}-{huge_id}" for index in range(20))
+    batch = AnnotationBatch(
+        batch_id=f"batch-{huge_id}",
+        schema_id="delegation.discourse",
+        schema_version=1,
+        target_ref=f"delegation:{huge_id}",
+        source_result_ref=f"result-set:{huge_id}",
+        actor_ref=f"agent:{huge_id}",
+        model_ref=f"agent:model-{huge_id}",
+        prompt_ref=f"block:{huge_id}:0",
+        total_count=20,
+        valid_count=20,
+        invalid_count=0,
+        abstained_count=0,
+        assertion_refs=assertion_refs,
+        created_at_ms=789,
+    )
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            store.save_annotation_batch(batch)
+            persisted = store.get_annotation_batch(batch.batch_id)
+            assert persisted is not None
+            assert persisted.assertion_refs == assertion_refs
+            assert persisted.target_ref == batch.target_ref
+
+        resolution = await archive.resolve_ref(batch.batch_ref)
+
+        assert resolution.resolved is True
+        assert resolution.normalized_ref is None
+        assert resolution.ref.startswith("annotation-batch:sha256-")
+        assert resolution.payload is not None
+        assert resolution.payload["assertion_ref_values_truncated_count"] == 20
+        assert all(item["truncated"] is True for item in resolution.payload["assertion_refs"])
+        assert resolution.payload["target_ref"]["truncated"] is True
+        assert resolution.object_refs == ()
+        assert resolution.actions == ()
+        assert any("assertion_ref_values_capped" in caveat for caveat in resolution.caveats)
+        assert any("scalar_values_capped" in caveat for caveat in resolution.caveats)
+        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
+    finally:
+        await archive.close()
+
+
 async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
     """Assertion refs resolve through the shared assertion claim DTO."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -2277,6 +2854,333 @@ async def test_resolve_ref_returns_assertion_payload(tmp_path: Path) -> None:
         assert payload.payload is not None
         assert payload.payload["assertion_id"] == "assertion-ref-resolution"
         assert payload.evidence_refs == ("codex-session:ref-resolution-v1",)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_finding_provenance_payload(tmp_path: Path) -> None:
+    """polylogue-rxdo.4: ``finding:`` refs resolve to a queryable provenance projection.
+
+    Evidence refs (the finding's own declared ``query_ref``/``result_set_ref``
+    plus generic ``evidence_refs``) are re-resolved live, so the payload
+    reports an honest current/stale/unknown staleness verdict rather than
+    prose.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
+    from polylogue.storage.sqlite.query_objects import put_query, put_result_set
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            query = put_query(
+                conn,
+                {"field": "origin", "value": "codex-session"},
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+                created_at_ms=1,
+            )
+            result_set = put_result_set(
+                conn,
+                result_set_id="finding-ref-resolution-rs",
+                query_hash=query.query_hash,
+                grain="session",
+                corpus_epoch="index:g1",
+                member_refs=("session:codex-session:ref-resolution-finding",),
+                exactness="exact",
+                persistence_class="finding",
+                created_at_ms=1,
+            )
+            envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="ref-resolution-claim",
+                        target_ref=f"query:{query.query_hash}",
+                        body_text="One session matched.",
+                        finding_kind="measure",
+                        statistic={"op": "count", "value": 1, "unit": "members"},
+                        n=1,
+                        query_ref=f"query:{query.query_hash}",
+                        result_set_ref=f"result-set:{result_set.result_set_id}",
+                        detector_ref="agent:ref-resolution-detector",
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        assertion_id = envelopes[0].assertion_id
+
+        payload = await archive.resolve_ref(f"finding:{assertion_id}")
+
+        assert payload.resolved is True
+        assert payload.kind == "finding"
+        assert payload.payload_kind == "finding-provenance"
+        assert payload.payload is not None
+        assert payload.payload["assertion_id"] == assertion_id
+        assert payload.payload["finding_kind"] == "measure"
+        assert payload.payload["query_ref"] == f"query:{query.query_hash}"
+        assert payload.payload["result_set_ref"] == f"result-set:{result_set.result_set_id}"
+        assert payload.payload["staleness_verdict"] == "current"
+        evidence_states = {item["ref"]: item["resolvable"] for item in payload.payload["evidence"]}
+        assert evidence_states[f"query:{query.query_hash}"] is True
+        assert evidence_states[f"result-set:{result_set.result_set_id}"] is True
+        assert payload.caveats == ()
+
+        missing = await archive.resolve_ref("finding:does-not-exist")
+        assert missing.resolved is False
+        assert missing.kind == "finding"
+        assert missing.payload is None
+    finally:
+        await archive.close()
+
+
+def _delegation_parent_session(*, provider_session_id: str, with_dispatch: bool) -> ParsedSession:
+    """Ingest-shaped parent fixture: writes real session/message/block rows
+    through the live archive writer (``ArchiveStore.write_parsed`` ->
+    ``write_parsed_session_to_archive``), the same seam the daemon uses --
+    not a hand-inserted SQL row. A Task ``tool_use``/``tool_result`` pair
+    gets classified ``semantic_type='subagent'`` at write time
+    (``polylogue/storage/sqlite/archive_tiers/write.py:_semantic_type``),
+    which is what the polylogue-y964 `delegations` view spines on."""
+
+    messages = [
+        ParsedMessage(
+            provider_message_id="turn-0",
+            role=Role.USER,
+            text="please look into this",
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="please look into this")],
+        )
+    ]
+    if with_dispatch:
+        messages.append(
+            ParsedMessage(
+                provider_message_id="dispatch",
+                role=Role.ASSISTANT,
+                model_name="claude-opus-4-8",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Task",
+                        tool_id="task-1",
+                        tool_input={"prompt": "audit the thing", "subagent_type": "general-purpose"},
+                    )
+                ],
+            )
+        )
+        messages.append(
+            ParsedMessage(
+                provider_message_id="dispatch-result",
+                role=Role.USER,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="task-1",
+                        text="3 gaps found",
+                        is_error=False,
+                        exit_code=0,
+                    )
+                ],
+            )
+        )
+    return ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id=provider_session_id,
+        title="Delegation parent fixture",
+        messages=messages,
+    )
+
+
+async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path: Path) -> None:
+    """polylogue-lph4: action-observed delegation identity is
+    (parent_session_id, instruction_tool_use_block_id) -- the ref carries
+    only the block id since it already embeds the parent session id
+    structurally (block_id = message_id:position, message_id =
+    session_id:native_id)."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-parent-v1", with_dispatch=True)
+            )
+            child_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-child-v1",
+                    title="Delegation child fixture",
+                    messages=[
+                        ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it"),
+                    ],
+                    parent_session_provider_id="delegation-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
+
+        assert payload.resolved is True
+        assert payload.kind == "delegation"
+        assert payload.payload_kind == "delegation-card"
+        assert payload.payload is not None
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "resolved"
+        assert attempt["parent_session_id"] == parent_session_id
+        assert attempt["child_session_id"] == child_session_id
+        assert attempt["instruction_tool_use_block_id"] == instruction_block_id
+        assert attempt["dispatch_turn_model"] == "claude-opus-4-8"
+        assert payload.payload["instruction"] == "audit the thing"
+        assert payload.payload["instruction_truncated"] is False
+        assert payload.object_refs == (
+            f"session:{parent_session_id}",
+            f"session:{child_session_id}",
+            f"run:{child_session_id}",
+        )
+        assert f"block:{instruction_block_id}" in payload.evidence_refs
+        assert payload.caveats == ()
+    finally:
+        await archive.close()
+
+
+async def test_query_units_returns_bounded_delegation_rows(tmp_path: Path) -> None:
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-query-api-v1", with_dispatch=True)
+            )
+
+        envelope = await archive.query_units(
+            "delegations where mapping_state:unresolved AND instruction:audit",
+            limit=10,
+        )
+        assert envelope.unit == "delegation"
+        [item] = envelope.items
+        payload = item.model_dump(mode="json")
+        assert payload["parent_session_id"] == parent_session_id
+        assert payload["mapping_state"] == "unresolved"
+        assert payload["instruction_preview"] == "audit the thing"
+        assert payload["instruction_truncated"] is False
+        assert "instruction_payload" not in payload
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path: Path) -> None:
+    """A resolved child with no parent-side dispatch action (e.g. a Codex
+    async subagent) resolves through the deterministic edge identity and is
+    typed edge_only -- never given a fabricated instruction."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-edge-parent-v1", with_dispatch=False)
+            )
+            child_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-edge-child-v1",
+                    title="Delegation edge-only child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-edge-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        edge_ref = f"delegation:{delegation_edge_object_id(parent_session_id, child_session_id)}"
+        payload = await archive.resolve_ref(edge_ref)
+
+        assert payload.resolved is True
+        assert payload.payload_kind == "delegation-card"
+        assert payload.payload is not None
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "edge_only"
+        assert attempt["parent_session_id"] == parent_session_id
+        assert attempt["child_session_id"] == child_session_id
+        assert attempt["instruction_tool_use_block_id"] is None
+        assert payload.payload["instruction"] is None
+        assert any("edge_only" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path: Path) -> None:
+    """Two dispatch actions but only one resolved child: rank-pairing would
+    have to guess, so both dispatch rows surface as ambiguous with a real
+    instruction but no fabricated child (polylogue-y964)."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-ambiguous-parent-v1",
+                    title="Delegation ambiguous fixture",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="dispatch-a",
+                            role=Role.ASSISTANT,
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-a", tool_input={}
+                                )
+                            ],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="dispatch-b",
+                            role=Role.ASSISTANT,
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE, tool_name="Task", tool_id="task-b", tool_input={}
+                                )
+                            ],
+                        ),
+                    ],
+                )
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-ambiguous-child-v1",
+                    title="Delegation ambiguous child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-ambiguous-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        instruction_block_id = f"{parent_session_id}:dispatch-a:0"
+        payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
+
+        assert payload.resolved is True
+        assert payload.payload is not None
+        attempt = payload.payload["attempt"]
+        assert attempt["mapping_state"] == "ambiguous"
+        assert attempt["child_session_id"] is None
+        assert attempt["instruction_tool_use_block_id"] == instruction_block_id
+        assert any("ambiguous" in caveat for caveat in payload.caveats)
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_missing_payload_for_unknown_delegation_identity(tmp_path: Path) -> None:
+    archive = _archive(tmp_path)
+    try:
+        block_missing = await archive.resolve_ref("delegation:claude-code-session:no-such-parent:dispatch:0")
+        assert block_missing.resolved is False
+        assert block_missing.kind == "delegation"
+        assert block_missing.payload_kind == "missing"
+        assert block_missing.payload is None
+
+        edge_missing = await archive.resolve_ref(
+            f"delegation:{delegation_edge_object_id('claude-code-session:no-parent', 'claude-code-session:no-child')}"
+        )
+        assert edge_missing.resolved is False
+        assert edge_missing.payload_kind == "missing"
     finally:
         await archive.close()
 
@@ -2321,22 +3225,33 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "facade-run-child")
+            .provider("codex")
+            .parent_session("ext-facade-run-v1")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .git_branch("feature/query-runs")
+            .title("Facade run query subagent")
+            .add_message("m-child", role="assistant", text="Mapped the facade run query wiring.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
         envelope = await archive.query_units(
-            "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:Explore"
+            "runs where session.repo:polylogue AND role:subagent AND status:completed AND agent:subagent"
         )
 
         assert envelope.unit == "run"
         [item] = envelope.items
         assert isinstance(item, RunQueryRowPayload)
-        assert item.session_id == "codex-session:ext-facade-run-v1"
+        assert item.session_id == "codex-session:ext-facade-run-child"
         assert item.role == "subagent"
         assert item.status == "completed"
-        assert item.agent_ref == "agent:codex/Explore"
+        assert item.agent_ref == "agent:codex/subagent"
         assert item.parent_run_ref == "run:codex-session:ext-facade-run-v1"
-        assert item.run_ref == "run:codex-session:ext-facade-run-v1:subagent:0:tool-run"
+        assert item.run_ref == "run:codex-session:ext-facade-run-child"
     finally:
         await archive.close()
 
@@ -2381,12 +3296,23 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "facade-otel-child")
+            .provider("codex")
+            .parent_session("ext-facade-otel-v1")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .git_branch("feature/otel")
+            .title("Facade OTel projection subagent")
+            .add_message("m-child", role="assistant", text="Mapped the OTel projection wiring.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
         payload = await archive.export_otel(
             source_ref="session:codex-session:ext-facade-otel-v1",
-            expressions=("runs where session.repo:polylogue AND role:subagent AND agent:Explore",),
+            expressions=("runs where session.repo:polylogue AND role:subagent AND agent:subagent",),
         )
 
         assert isinstance(payload, OtelProjectionPayload)
@@ -2394,12 +3320,10 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
         assert payload.trace_count == 1
         assert payload.span_count == 1
         assert "session:codex-session:ext-facade-otel-v1" in payload.refs
-        assert "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run" in payload.refs
-        assert any(ref.startswith("codex-session:ext-facade-otel-v1::") for ref in payload.refs)
-        assert "context-snapshot:codex-session:ext-facade-otel-v1:subagent:0:tool-run:subagent_start" in payload.refs
+        assert "run:codex-session:ext-facade-otel-child" in payload.refs
+        assert "context-snapshot:codex-session:ext-facade-otel-child:subagent_start" in payload.refs
         [span] = payload.spans
-        assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-v1:subagent:0:tool-run"
-        assert span.attributes["polylogue.run.cwd.redacted"] is True
+        assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-child"
     finally:
         await archive.close()
 
@@ -2566,7 +3490,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         unit_envelope = await archive.query_units("messages where text:needle", limit=5)
         normal_neighbors = await archive.neighbor_candidates(
             query="needle",
-            provider=Provider.CODEX.value,
+            origin="codex-session",
             limit=3,
         )
         paged_messages, total_messages = await archive.get_messages_paginated(
@@ -2907,7 +3831,7 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
             )
 
         rollups = await archive.list_session_tag_rollup_insights(
-            SessionTagRollupQuery(provider=Provider.CODEX.value, query="foc", limit=10)
+            SessionTagRollupQuery(origin=Origin.CODEX_SESSION.value, query="foc", limit=10)
         )
 
         assert len(rollups) == 1
@@ -2918,7 +3842,6 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
         assert rollup.explicit_count == 1
         assert rollup.auto_count == 1
         assert rollup.origin_breakdown == {Origin.CODEX_SESSION.value: 2}
-        assert rollup.provider_breakdown == {Origin.CODEX_SESSION.value: 2}
         assert rollup.repo_breakdown == {"https://example.test/polylogue.git": 2}
         assert rollup.provenance.source_updated_at == "2026-02-02T02:41:00Z"
     finally:
@@ -3005,18 +3928,18 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             conn.commit()
 
         provider_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="provider", provider=Provider.CODEX.value)
+            ArchiveCoverageInsightQuery(group_by="origin", origin="codex-session")
         )
         day_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="day", provider=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="day", origin=Origin.CODEX_SESSION.value, limit=10)
         )
         week_rows = await archive.list_archive_coverage_insights(
-            ArchiveCoverageInsightQuery(group_by="week", provider=Provider.CODEX.value, limit=10)
+            ArchiveCoverageInsightQuery(group_by="week", origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert len(provider_rows) == 1
         provider = provider_rows[0]
-        assert provider.source_name == Provider.CODEX.value
+        assert provider.origin == Origin.CODEX_SESSION.value
         assert provider.session_count == 1
         assert provider.message_count == 2
         assert provider.user_message_count == 1
@@ -3040,7 +3963,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert day.work_event_breakdown == {"implementation": 1}
         assert day.repos_active == ("polylogue",)
         assert day.origin_breakdown == {Origin.CODEX_SESSION.value: 1}
-        assert day.provider_breakdown == {Origin.CODEX_SESSION.value: 1}
         assert day.provenance is not None
         assert day.provenance.source_updated_at == "2026-02-02T02:40:00Z"
 
@@ -3048,7 +3970,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert week_rows[0].group_by == "week"
         assert week_rows[0].session_count == 1
         assert week_rows[0].origin_breakdown == {Origin.CODEX_SESSION.value: 1}
-        assert week_rows[0].provider_breakdown == {Origin.CODEX_SESSION.value: 1}
     finally:
         await archive.close()
 
@@ -3105,17 +4026,17 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
             archive_db.write_parsed(chatgpt)
 
         [insight] = await archive.list_tool_usage_insights(
-            ToolUsageInsightQuery(provider=Provider.CODEX.value, tool="read")
+            ToolUsageInsightQuery(origin=Origin.CODEX_SESSION.value, tool="read")
         )
 
         assert insight.total_call_count == 1
         assert insight.total_distinct_tools == 1
-        assert insight.providers_with_data == 1
-        assert insight.providers_without_data == 1
+        assert insight.origins_with_data == 1
+        assert insight.origins_without_data == 1
         assert insight.has_coverage_gaps is True
         assert len(insight.entries) == 1
         entry = insight.entries[0]
-        assert entry.source_name == Provider.CODEX.value
+        assert entry.origin == Origin.CODEX_SESSION.value
         assert entry.normalized_tool_name == "read"
         assert entry.action_kind == "file_read"
         assert entry.call_count == 1
@@ -3124,11 +4045,11 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
         assert entry.distinct_tool_ids == 1
         assert entry.affected_path_calls == 1
         assert entry.output_text_calls == 1
-        coverage = {item.source_name: item for item in insight.provider_coverage}
-        assert coverage[Provider.CODEX.value].data_available is True
-        assert coverage[Provider.CODEX.value].action_count == 1
-        assert coverage[Provider.CHATGPT.value].data_available is False
-        assert coverage[Provider.CHATGPT.value].session_count == 1
+        coverage = {item.origin: item for item in insight.origin_coverage}
+        assert coverage[Origin.CODEX_SESSION.value].data_available is True
+        assert coverage[Origin.CODEX_SESSION.value].action_count == 1
+        assert coverage[Origin.CHATGPT_EXPORT.value].data_available is False
+        assert coverage[Origin.CHATGPT_EXPORT.value].session_count == 1
     finally:
         await archive.close()
 
@@ -3191,8 +4112,8 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
     archive = _archive(tmp_path)
     payload = b'{"session":"raw-artifact-v1"}'
     session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="api-raw-artifact-v1",
+        source_name=Provider.DRIVE,
+        provider_session_id="api-raw-artifact-drive-v1",
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
@@ -3206,7 +4127,7 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
             raw_id, session_id = archive_db.write_raw_and_parsed(
                 session,
                 payload=payload,
-                source_path="/tmp/raw-artifact-v1.jsonl",
+                source_path="/tmp/raw-artifact-drive-v1.json",
                 acquired_at_ms=1_770_000_000_000,
             )
 
@@ -3214,17 +4135,13 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path) 
         missing_artifacts, missing_total = await archive.get_raw_artifacts_for_session("missing-session")
 
         assert total == 1
-        assert artifacts == [
-            {
-                "raw_id": raw_id,
-                "source_name": Provider.CODEX.value,
-                "source_path": "/tmp/raw-artifact-v1.jsonl",
-                "blob_size": len(payload),
-                "acquired_at": "2026-02-02T02:40:00Z",
-                "parsed_at": None,
-                "validation_status": None,
-            }
-        ]
+        assert len(artifacts) == 1
+        assert artifacts[0]["raw_id"] == raw_id
+        assert artifacts[0]["origin"] == Origin.AISTUDIO_DRIVE.value
+        assert artifacts[0]["source_path"] == "/tmp/raw-artifact-drive-v1.json"
+        assert artifacts[0]["blob_size"] == len(payload)
+        assert artifacts[0]["acquired_at"] == "2026-02-02T02:40:00Z"
+        assert artifacts[0]["validation_status"] is None
         assert missing_artifacts == []
         assert missing_total == 0
     finally:
@@ -3314,7 +4231,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         events = await archive.get_session_work_event_insights(session_id)
         filtered_events = await archive.list_session_work_event_insights(
             SessionWorkEventInsightQuery(
-                provider=Provider.CODEX.value,
+                origin="codex-session",
                 heuristic_label="implementation",
                 since="2026-02-02T02:40:30Z",
                 limit=10,
@@ -3322,20 +4239,20 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         )
         phases = await archive.get_session_phase_insights(session_id)
         filtered_phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionPhaseInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert len(events) == 1
         assert events == filtered_events
         assert events[0].session_id == session_id
-        assert events[0].source_name == Provider.CODEX.value
+        assert events[0].origin == Origin.CODEX_SESSION.value
         assert events[0].provenance.materializer_version == 7
         assert events[0].inference.heuristic_label == "implementation"
         assert events[0].evidence.file_paths == ("polylogue/api/insights.py",)
         assert len(phases) == 1
         assert phases == filtered_phases
         assert phases[0].session_id == session_id
-        assert phases[0].source_name == Provider.CODEX.value
+        assert phases[0].origin == Origin.CODEX_SESSION.value
         assert phases[0].provenance.materializer_version == 8
         assert phases[0].evidence.tool_counts == {"apply_patch": 1}
         assert phases[0].semantic_tier == "evidence"
@@ -3535,7 +4452,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert thread.thread.branch_count == 1
         assert thread.thread.total_messages == 3
         assert thread.thread.origin_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
-        assert thread.thread.provider_breakdown == {Origin.CLAUDE_CODE_SESSION.value: 2}
         assert thread.thread.member_evidence[1].parent_id == parent_id
         assert thread.thread.member_evidence[1].role == "parent_continuation"
         assert "parent_session_id" in thread.thread.member_evidence[1].support_signals
@@ -3612,19 +4528,19 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             )
 
         costs = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(provider=Provider.CODEX.value, status="priced", limit=10)
+            SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="priced", limit=10)
         )
         unavailable = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(provider=Provider.CHATGPT.value, status="unavailable", limit=10)
+            SessionCostInsightQuery(origin=Origin.CHATGPT_EXPORT.value, status="unavailable", limit=10)
         )
         model_filtered = await archive.list_session_cost_insights(SessionCostInsightQuery(model="claude-sonnet-4-5"))
-        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(provider=Provider.CODEX.value))
+        rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(origin=Origin.CODEX_SESSION.value))
         all_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(limit=10))
         model_rollups = await archive.list_cost_rollup_insights(CostRollupInsightQuery(model="claude-sonnet-4-5"))
 
         assert len(costs) == 1
         assert costs[0].session_id == priced_id
-        assert costs[0].source_name == Provider.CODEX.value
+        assert costs[0].origin == Origin.CODEX_SESSION.value
         assert costs[0].title == "Priced archive cost"
         assert costs[0].estimate.status == "priced"
         assert costs[0].estimate.total_usd == 1.25
@@ -3640,7 +4556,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert unavailable[0].estimate.missing_reasons == ("missing_token_usage",)
         assert model_filtered == []
         assert len(rollups) == 1
-        assert rollups[0].source_name == Provider.CODEX.value
+        assert rollups[0].origin == Origin.CODEX_SESSION.value
         assert rollups[0].session_count == 1
         assert rollups[0].priced_session_count == 1
         assert rollups[0].unavailable_session_count == 0
@@ -3648,8 +4564,11 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert rollups[0].total_usd == 1.25
         assert rollups[0].basis.catalog_priced_usd == 1.25
         assert rollups[0].confidence == 0.9
-        assert {rollup.source_name for rollup in all_rollups} == {Provider.CODEX.value, Provider.CHATGPT.value}
-        unavailable_rollup = next(rollup for rollup in all_rollups if rollup.source_name == Provider.CHATGPT.value)
+        assert {rollup.origin for rollup in all_rollups} == {
+            Origin.CODEX_SESSION.value,
+            Origin.CHATGPT_EXPORT.value,
+        }
+        unavailable_rollup = next(rollup for rollup in all_rollups if rollup.origin == Origin.CHATGPT_EXPORT.value)
         assert unavailable_rollup.unavailable_session_count == 1
         assert unavailable_rollup.unavailable_reason_counts == {"no_tokens": 1}
         assert model_rollups == []
@@ -3725,13 +4644,13 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
 
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
         only_stuck = await archive.list_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, only_stuck=True, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, only_stuck=True, limit=10)
         )
         stuck = await archive.find_stuck_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(provider=Provider.CODEX.value, limit=10)
+            SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
         )
 
         assert profile is not None
@@ -3739,7 +4658,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert only_stuck == []
         assert stuck == []
         assert profile.session_id == session_id
-        assert profile.source_name == Provider.CODEX.value
+        assert profile.origin == Origin.CODEX_SESSION.value
         assert profile.title == "Latency v1"
         assert profile.provenance.materializer_version == 12
         assert profile.latency.median_agent_response_ms == 90000
@@ -3889,7 +4808,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         inference_only = await archive.get_session_profile_insight(session_id, tier="inference")
         listed = await archive.list_session_profile_insights(
             SessionProfileInsightQuery(
-                provider=Provider.CODEX.value,
+                origin="codex-session",
                 workflow_shape="implementation",
                 terminal_state="completed",
                 tier="merged",
@@ -3901,7 +4820,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged is not None
         assert listed == [merged]
         assert merged.session_id == session_id
-        assert merged.source_name == Provider.CODEX.value
+        assert merged.origin == Origin.CODEX_SESSION.value
         assert merged.title == "Native profile"
         assert merged.provenance.materializer_version == 10
         assert merged.evidence is not None
@@ -4229,6 +5148,153 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
         await archive.close()
 
 
+async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_path: Path) -> None:
+    """The facade reaches the bounded CLI/MCP annotation import operation.
+
+    Anti-vacuity: removing facade delegation, schema validation, live
+    reference resolution, or the user-tier write makes this test fail.
+    """
+    configured_root = tmp_path / "configured"
+    active_root = tmp_path / "active"
+    configured_root.mkdir()
+    active_root.mkdir()
+    archive = Polylogue(archive_root=configured_root, db_path=active_root / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="annotation-facade-v1",
+            title="Annotation facade target",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+        )
+        with ArchiveStore(active_root) as archive_db:
+            session_id = archive_db.write_parsed(session)
+
+        registry = AnnotationSchemaRegistry()
+        registry.register(
+            AnnotationSchema(
+                schema_id="test.facade-import",
+                version=1,
+                title="Facade import fixture",
+                fields=(AnnotationField(name="label", value_type="enum", enum_values=("yes", "no")),),
+                target_ref_kinds=("session",),
+                evidence_policy="required",
+                status="active",
+            )
+        )
+        request = AnnotationBatchImportRequest(
+            jsonl="\n".join(
+                (
+                    json.dumps(
+                        {
+                            "row_key": "row-1",
+                            "value": {"label": "yes"},
+                            "evidence_refs": [str(session_id)],
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "row_key": "invalid-row",
+                            "value": {"label": "maybe"},
+                            "evidence_refs": ["missing-evidence"],
+                        }
+                    ),
+                )
+            ),
+            batch_id="facade-import",
+            schema_id="test.facade-import",
+            schema_version=1,
+            target_ref=f"session:{session_id}",
+            source_result_ref="result-set:facade-import",
+            actor_ref="agent:facade-test",
+            model_ref="agent:model",
+            prompt_ref="block:prompt:0",
+            created_at_ms=1_000,
+        )
+
+        result = await archive.import_annotation_batch(request, registry=registry)
+
+        assert result.status == "partial"
+        assert result.qualified_schema_id == "test.facade-import@v1"
+        assert result.valid_count == 1
+        assert result.invalid_count == 1
+        assert result.rows[0].assertion_ref is not None
+        assert result.rows[1].status == "invalid"
+        assert result.rows[1].errors == (
+            "field 'label' must be one of ['no', 'yes'], got 'maybe'",
+            "evidence_ref 'missing-evidence' does not resolve in the live archive",
+        )
+        assert not (configured_root / "user.db").exists()
+        with sqlite3.connect(active_root / "user.db") as conn:
+            persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()
+        assert persisted == ("candidate", "annotation-batch:facade-import")
+    finally:
+        await archive.close()
+
+
+async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Path) -> None:
+    """Omitting ``registry`` uses the registered production schema path.
+
+    Anti-vacuity: forwarding ``None`` to the importer instead of taking its
+    default registry causes this production-schema import to fail.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="annotation-default-parent", with_dispatch=True)
+            )
+            archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="annotation-default-child",
+                    title="Default annotation registry child",
+                    messages=[ParsedMessage(provider_message_id="child-1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="annotation-default-parent",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+        delegation_ref = f"delegation:{parent_session_id}:dispatch:0"
+        request = AnnotationBatchImportRequest(
+            jsonl=json.dumps(
+                {
+                    "row_key": "production-schema-row",
+                    "value": {
+                        "directive_mode": "imperative",
+                        "prohibitions": "none",
+                        "autonomy": "bounded",
+                        "output_contract": "structured",
+                        "scope_control": "bounded",
+                        "verification_demand": "focused_tests",
+                        "checkpoint_escalation": "checkpoint",
+                        "relational_frame": "directive",
+                        "rationale_visibility": "explicit",
+                        "applicable": True,
+                        "confidence": 0.9,
+                    },
+                    "evidence_refs": [delegation_ref],
+                }
+            ),
+            batch_id="facade-default-registry",
+            schema_id="delegation.discourse",
+            schema_version=1,
+            target_ref=delegation_ref,
+            source_result_ref="result-set:facade-default-registry",
+            actor_ref="agent:facade-test",
+            model_ref="agent:model",
+            prompt_ref="block:prompt:0",
+            created_at_ms=2_000,
+        )
+
+        result = await archive.import_annotation_batch(request)
+
+        assert result.status == "ok"
+        assert result.qualified_schema_id == "delegation.discourse@v1"
+        assert result.valid_count == 1
+        assert result.rows[0].status == "imported"
+    finally:
+        await archive.close()
+
+
 async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> None:
     """Learning corrections use ``user.db``."""
     import sqlite3
@@ -4350,7 +5416,6 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
     conn = sqlite3.connect(user_db)
     conn.row_factory = sqlite3.Row
     try:
-        initialize_archive_tier(conn, ArchiveTier.USER)
         upsert_assertion(
             conn,
             assertion_id="candidate-api-1",

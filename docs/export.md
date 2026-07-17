@@ -12,15 +12,14 @@ Read one session by ID with a root filter that narrows the archive to a single
 match:
 
 ```bash
-polylogue --id claude-ai:abc123 read
+polylogue --id claude-ai-export:abc123 read
 ```
 
 Specify format:
 
 ```bash
-polylogue --id claude-ai:abc123 read --format json
-polylogue --id claude-ai:abc123 read --format html
-polylogue --id claude-ai:abc123 read --format obsidian
+polylogue --id claude-ai-export:abc123 read --format json
+polylogue --id claude-ai-export:abc123 read --format yaml
 ```
 
 ## Query-Set Reads
@@ -28,9 +27,9 @@ polylogue --id claude-ai:abc123 read --format obsidian
 Read every session matching a filter chain with `read --all`:
 
 ```bash
-polylogue --origin claude-code-session --since 2026-01 read --all
-polylogue --tag important read --all --format markdown
-polylogue "refactor" --has-tool-use read --all --format ndjson
+polylogue --origin claude-code-session --since 2026-01 find 'origin:claude-code-session' then read --all
+polylogue --tag important find 'tag:important' then read --all --format markdown
+polylogue --has-tool-use find "refactor" then read --all --format ndjson
 ```
 
 ### Piping
@@ -39,29 +38,31 @@ polylogue "refactor" --has-tool-use read --all --format ndjson
 piping:
 
 ```bash
-polylogue -p claude-code read --all --format ndjson | jq '.title'
-polylogue --since "last month" read --all --format ndjson | wc -l
+polylogue --origin claude-code-session find 'origin:claude-code-session' then read --all --format ndjson | jq '.title'
+polylogue --since "last month" find 'since:"last month"' then read --all --format ndjson | wc -l
 ```
 
 ## Export Formats
 
 | Format | Description |
 |--------|-------------|
-| `text` | Plain text -- message content only, no formatting |
-| `markdown` | Default -- formatted markdown with message roles, timestamps, and code blocks |
-| `json` | Full session as structured JSON |
-| `ndjson` | One JSON object per line (query-set default) |
-| `yaml` | YAML representation |
-| `html` | HTML with Pygments syntax highlighting on code blocks |
-| `obsidian` | YAML frontmatter + markdown body, compatible with Obsidian vaults |
-| `org` | Org-mode format for Emacs users |
-| `csv` | Comma-separated rows |
+| `markdown` | Human-readable query-set output |
+| `json` | Query-set envelope as structured JSON |
+| `ndjson` | One JSON object per line |
+| `yaml` | Query-set envelope as YAML |
+| `plaintext` | Unformatted query-set rows |
+| `csv` | Comma-separated query-set rows |
+
+These are the formats supported by the standard query-set export path. Default
+output varies by view and cardinality, so specify a format in automation. Other
+views have their own contracts; use `polylogue read --views --format json` to
+inspect the current view-specific formats before relying on one.
 
 Set format with `--format` / `-f`:
 
 ```bash
 polylogue --id <id> read --format json
-polylogue --since yesterday read --all --format html
+polylogue --since yesterday find 'since:yesterday' then read --all --format yaml
 ```
 
 ## Content Blocks

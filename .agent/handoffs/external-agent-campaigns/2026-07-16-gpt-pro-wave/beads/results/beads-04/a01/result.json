@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-04",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "subsumed_foundation_retained",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "86edd43f3b66a917949a0d69bf1ca0a42165ced4cec61db607adb036c292feb7",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "beads-04-mcp-context-migration-r01.zip",
+      "sha256": "fe1c8a99a89372da83db8068ec97fa2bec671302248696bd99e6d907de13d8a9",
+      "size_bytes": 40602,
+      "custody_path": "beads/results/beads-04/a01/raw/beads-04-mcp-context-migration-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "current-master reconciliation found the MCP declaration/registration foundation landed independently as PR #3004; the package's provisional kernel now conflicts with that implementation",
+  "beads": [
+    "polylogue-t46.8.3",
+    "polylogue-t46.9"
+  ],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [
+    "ed44be18f"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
+  "verification_receipts": [
+    "fresh origin/master at 66cee5e: beads-04 apply check conflicts on existing declaration, adapter, server registration, and generated-surface paths"
+  ],
+  "notes": "Retained as a positive design/proof input for polylogue-t46.8.3: it inventories 41 context/assertion/personal-state/correction/judgment/maintenance tools; distinguishes candidate material from operator judgment; preserves immutable annotation provenance; and supplies negative role/injection and real user-tier lifecycle tests. Its boolean confirmation proposal remains only an interim compatibility idea; preview-bound authorization and receipts belong to polylogue-t46.9."
+}

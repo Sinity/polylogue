@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "producer": "hermes/0.9.0",
+  "profile_id": "a1b2c3d4e5f6",
+  "session_id": "hermes-session-example-001",
+  "session_revision_hash": "sha256:9f2c1a7e4b6d0f3a5c8e1b4d7a0f3c6e9b2d5a8f1c4e7b0a3d6f9c2e5b8a1d4f",
+  "created_at": "2026-07-10T09:00:00Z",
+  "ended_at": "2026-07-10T09:42:11Z",
+  "finalized": true,
+  "end_reason": "user_stop",
+  "messages": [
+    {
+      "message_id": "hermes-session-example-001:msg-0",
+      "role": "system",
+      "state": "active",
+      "timestamp": "2026-07-10T09:00:00Z",
+      "text": "You are a helpful coding agent.",
+      "reasoning": null,
+      "tool_calls": [],
+      "tool_results": [],
+      "token_count": 12
+    },
+    {
+      "message_id": "hermes-session-example-001:msg-1",
+      "role": "user",
+      "state": "active",
+      "timestamp": "2026-07-10T09:00:05Z",
+      "text": "Fix the failing test in parser.py",
+      "reasoning": null,
+      "tool_calls": [],
+      "tool_results": [],
+      "token_count": 8
+    },
+    {
+      "message_id": "hermes-session-example-001:msg-2",
+      "role": "assistant",
+      "state": "compacted",
+      "timestamp": "2026-07-10T09:00:20Z",
+      "text": "I'll look at the failing test first.",
+      "reasoning": "The user wants a targeted fix; start by reading the failing test to scope the change.",
+      "tool_calls": [
+        {
+          "action_id": "call-1",
+          "tool_name": "read_file",
+          "arguments_json": "{\"path\": \"tests/test_parser.py\"}"
+        }
+      ],
+      "tool_results": [],
+      "token_count": 41
+    },
+    {
+      "message_id": "hermes-session-example-001:msg-3",
+      "role": "tool",
+      "state": "compacted",
+      "timestamp": "2026-07-10T09:00:21Z",
+      "text": null,
+      "reasoning": null,
+      "tool_calls": [],
+      "tool_results": [
+        {
+          "action_id": "call-1",
+          "is_error": false,
+          "exit_code": 0,
+          "output_preview": "def test_parse_empty(): ..."
+        }
+      ],
+      "token_count": 0
+    },
+    {
+      "message_id": "hermes-session-example-001:msg-4",
+      "role": "assistant",
+      "state": "rewound",
+      "timestamp": "2026-07-10T09:05:00Z",
+      "text": "Applying an incorrect fix attempt (later rewound).",
+      "reasoning": null,
+      "tool_calls": [],
+      "tool_results": [],
+      "token_count": 15
+    },
+    {
+      "message_id": "hermes-session-example-001:msg-5",
+      "role": "assistant",
+      "state": "observed",
+      "timestamp": "2026-07-10T09:41:00Z",
+      "text": "Applied the correct fix and reran the test suite; it passes.",
+      "reasoning": null,
+      "tool_calls": [],
+      "tool_results": [],
+      "token_count": 22
+    }
+  ],
+  "usage": {
+    "input_tokens": 3120,
+    "output_tokens": 640,
+    "cache_read_tokens": 2100,
+    "cache_write_tokens": 300,
+    "reasoning_tokens": 96,
+    "api_call_count": 9
+  },
+  "cost": {
+    "billing_provider": "anthropic",
+    "billing_mode": "subscription",
+    "estimated_cost_usd": 0.0,
+    "actual_cost_usd": null,
+    "cost_status": "subscription_credit_no_dollar_cost",
+    "cost_source": "hermes_billing_ledger",
+    "pricing_version": "2026-07-01"
+  },
+  "archive_state": "handoff-complete",
+  "parent_session_id": "hermes-session-example-000",
+  "parent_relationship": "resume",
+  "handoff_platform": "polylogue-mcp",
+  "repository_cwd": "/realm/project/example-repo",
+  "git_branch": "feature/fix-parser",
+  "git_repo_root": "https://example.invalid/example-repo",
+  "source_user_scope": "single-user-local"
+}

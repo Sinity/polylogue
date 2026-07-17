@@ -27,6 +27,7 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 
@@ -225,7 +226,7 @@ class CodexRecord(BaseModel):
             id=self.id,
             timestamp=self.parsed_timestamp,
             role=role_normalized,
-            provider=Provider.CODEX,
+            origin=origin_from_provider(Provider.CODEX),
         )
 
     def extract_content_blocks(self) -> list[ContentBlock]:

@@ -6,15 +6,16 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
-from polylogue.core.enums import ArtifactSupportStatus, Origin, ValidationMode, ValidationStatus
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 7
+SOURCE_SCHEMA_VERSION = 13
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
     raw_id                  TEXT PRIMARY KEY,
     origin                  TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    capture_mode            TEXT CHECK ({nullable_check("capture_mode", Provider)}),
     native_id               TEXT,
     source_path             TEXT NOT NULL,
     source_index            INTEGER NOT NULL DEFAULT 0,
@@ -99,6 +100,120 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
     censused_at_ms     INTEGER NOT NULL CHECK(censused_at_ms >= 0),
     detail             TEXT NOT NULL DEFAULT ''
 ) STRICT;
+
+-- Durable authority reconciliation ledger.  The source tier owns this
+-- evidence because index.db and ops.db are rebuildable/disposable: neither
+-- can be the authority for whether an accepted replay plan was conserved.
+CREATE TABLE IF NOT EXISTS raw_authority_parser_census (
+    raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    parser_fingerprint      TEXT NOT NULL,
+    status                  TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
+    logical_keys_json       TEXT NOT NULL CHECK(json_valid(logical_keys_json)),
+    detail                  TEXT NOT NULL DEFAULT '',
+    censused_at_ms          INTEGER NOT NULL CHECK(censused_at_ms >= 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_authority_censuses (
+    census_id               TEXT PRIMARY KEY,
+    sequence_no             INTEGER NOT NULL UNIQUE CHECK(sequence_no > 0),
+    scope_json              TEXT NOT NULL CHECK(json_valid(scope_json)),
+    residual_json           TEXT NOT NULL CHECK(json_valid(residual_json)),
+    parser_fingerprint      TEXT NOT NULL,
+    mode                    TEXT NOT NULL CHECK(mode IN ('census', 'dry_run', 'apply')),
+    lifecycle_status        TEXT NOT NULL CHECK(lifecycle_status IN ('planned', 'completed', 'interrupted')),
+    quiescent               INTEGER NOT NULL CHECK(quiescent IN (0, 1)),
+    inventory_digest        TEXT NOT NULL CHECK(length(inventory_digest) = 64),
+    residual_digest         TEXT NOT NULL CHECK(length(residual_digest) = 64),
+    plan_count              INTEGER NOT NULL CHECK(plan_count >= 0),
+    post_inventory_digest   TEXT CHECK(post_inventory_digest IS NULL OR length(post_inventory_digest) = 64),
+    post_residual_json      TEXT CHECK(post_residual_json IS NULL OR json_valid(post_residual_json)),
+    post_residual_digest    TEXT CHECK(post_residual_digest IS NULL OR length(post_residual_digest) = 64),
+    post_plan_count         INTEGER CHECK(post_plan_count IS NULL OR post_plan_count >= 0),
+    postflight_at_ms        INTEGER CHECK(postflight_at_ms IS NULL OR postflight_at_ms >= created_at_ms),
+    executable_plan_count   INTEGER NOT NULL CHECK(executable_plan_count >= 0),
+    residual_plan_count     INTEGER NOT NULL CHECK(residual_plan_count >= 0),
+    predecessor_census_id   TEXT REFERENCES raw_authority_censuses(census_id),
+    fixed_point             INTEGER NOT NULL DEFAULT 0 CHECK(fixed_point IN (0, 1)),
+    created_at_ms           INTEGER NOT NULL CHECK(created_at_ms >= 0),
+    completed_at_ms         INTEGER CHECK(completed_at_ms IS NULL OR completed_at_ms >= created_at_ms),
+    CHECK(plan_count >= executable_plan_count),
+    CHECK(plan_count >= residual_plan_count),
+    CHECK(plan_count = executable_plan_count + residual_plan_count),
+    CHECK(
+        (lifecycle_status = 'planned' AND completed_at_ms IS NULL)
+        OR (lifecycle_status IN ('completed', 'interrupted') AND completed_at_ms IS NOT NULL)
+    ),
+    CHECK(
+        (lifecycle_status = 'planned' AND post_inventory_digest IS NULL
+            AND post_residual_json IS NULL AND post_residual_digest IS NULL
+            AND post_plan_count IS NULL AND postflight_at_ms IS NULL)
+        OR (lifecycle_status IN ('completed', 'interrupted')
+            AND post_inventory_digest IS NOT NULL AND post_residual_json IS NOT NULL
+            AND post_residual_digest IS NOT NULL AND post_plan_count IS NOT NULL
+            AND postflight_at_ms IS NOT NULL)
+    )
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_authority_plans (
+    plan_id                  TEXT PRIMARY KEY,
+    input_digest             TEXT NOT NULL CHECK(length(input_digest) = 64),
+    input_raw_ids_json       TEXT NOT NULL CHECK(json_valid(input_raw_ids_json)),
+    logical_keys_json        TEXT NOT NULL CHECK(json_valid(logical_keys_json)),
+    authority_witness_json   TEXT NOT NULL CHECK(json_valid(authority_witness_json)),
+    source_preconditions_json TEXT NOT NULL CHECK(json_valid(source_preconditions_json)),
+    index_preconditions_json TEXT NOT NULL CHECK(json_valid(index_preconditions_json)),
+    created_at_ms            INTEGER NOT NULL CHECK(created_at_ms >= 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_authority_census_plans (
+    census_id          TEXT NOT NULL REFERENCES raw_authority_censuses(census_id) ON DELETE CASCADE,
+    plan_id            TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
+    ordinal            INTEGER NOT NULL CHECK(ordinal >= 0),
+    selected           INTEGER NOT NULL CHECK(selected IN (0, 1)),
+    outcome_status     TEXT NOT NULL CHECK(outcome_status IN (
+                           'executed', 'retryable', 'deferred', 'terminal',
+                           'rejected_stale', 'carried_forward'
+                       )),
+    reason             TEXT NOT NULL,
+    next_action        TEXT NOT NULL,
+    application_receipt_json TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(application_receipt_json)),
+    outcome_recorded   INTEGER NOT NULL DEFAULT 0 CHECK(outcome_recorded IN (0, 1)),
+    recorded_at_ms     INTEGER NOT NULL CHECK(recorded_at_ms >= 0),
+    PRIMARY KEY(census_id, plan_id),
+    UNIQUE(census_id, ordinal)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_authority_census_plans_status
+ON raw_authority_census_plans(census_id, outcome_status, ordinal);
+
+CREATE INDEX IF NOT EXISTS idx_raw_authority_census_plans_attempts
+ON raw_authority_census_plans(plan_id, recorded_at_ms DESC)
+WHERE selected = 1;
+
+CREATE TABLE IF NOT EXISTS raw_authority_census_post_plans (
+    census_id          TEXT NOT NULL REFERENCES raw_authority_censuses(census_id) ON DELETE CASCADE,
+    plan_id            TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
+    ordinal            INTEGER NOT NULL CHECK(ordinal >= 0),
+    PRIMARY KEY(census_id, plan_id),
+    UNIQUE(census_id, ordinal)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_authority_blockers (
+    blocker_id          TEXT PRIMARY KEY,
+    plan_id             TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
+    census_id           TEXT NOT NULL REFERENCES raw_authority_censuses(census_id),
+    reason              TEXT NOT NULL,
+    expected_json       TEXT NOT NULL CHECK(json_valid(expected_json)),
+    observed_json       TEXT NOT NULL CHECK(json_valid(observed_json)),
+    created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
+    resolved_at_ms      INTEGER CHECK(resolved_at_ms IS NULL OR resolved_at_ms >= created_at_ms),
+    resolution          TEXT,
+    CHECK((resolved_at_ms IS NULL) = (resolution IS NULL))
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_authority_blockers_open_plan
+ON raw_authority_blockers(plan_id)
+WHERE resolved_at_ms IS NULL;
 
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
@@ -205,6 +320,117 @@ CREATE TABLE IF NOT EXISTS history_sidecars (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_history_sidecars_path_hash
 ON history_sidecars(origin, source_path, content_hash);
+
+CREATE TABLE IF NOT EXISTS sinex_publication_obligations (
+    object_id           TEXT NOT NULL,
+    protocol_version     TEXT NOT NULL CHECK(protocol_version != ''),
+    revision_id          TEXT NOT NULL,
+    manifest_digest      TEXT NOT NULL,
+    mode                 TEXT NOT NULL CHECK(mode IN ('mirror', 'primary')),
+    status               TEXT NOT NULL DEFAULT 'pending'
+                             CHECK(status IN ('pending', 'publishing', 'confirmed', 'durable_debt', 'rejected')),
+    attempt_count        INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    last_attempt_at_ms   INTEGER,
+    last_receipt_state   TEXT,
+    last_error           TEXT,
+    created_at_ms        INTEGER NOT NULL,
+    updated_at_ms        INTEGER NOT NULL,
+    retired_at_ms        INTEGER,
+    next_attempt_at_ms   INTEGER,
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_pending
+ON sinex_publication_obligations(status, next_attempt_at_ms, created_at_ms)
+WHERE status IN ('pending', 'publishing', 'durable_debt');
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_obligations_object
+ON sinex_publication_obligations(object_id, created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS sinex_publication_payloads (
+    object_id            TEXT NOT NULL,
+    protocol_version     TEXT NOT NULL,
+    revision_id          TEXT NOT NULL,
+    manifest_digest      TEXT NOT NULL,
+    manifest_bytes       BLOB NOT NULL,
+    manifest_sha256      TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
+    manifest_size_bytes  INTEGER NOT NULL CHECK(manifest_size_bytes >= 0),
+    segment_count        INTEGER NOT NULL CHECK(segment_count >= 0),
+    total_size_bytes     INTEGER NOT NULL CHECK(total_size_bytes >= manifest_size_bytes),
+    staged_at_ms         INTEGER NOT NULL CHECK(staged_at_ms >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_obligations(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS sinex_publication_segments (
+    object_id          TEXT NOT NULL,
+    protocol_version   TEXT NOT NULL,
+    revision_id        TEXT NOT NULL,
+    manifest_digest    TEXT NOT NULL,
+    position           INTEGER NOT NULL CHECK(position >= 0),
+    segment_name       TEXT NOT NULL CHECK(segment_name != ''),
+    segment_bytes      BLOB NOT NULL,
+    segment_sha256     TEXT NOT NULL CHECK(length(segment_sha256) = 64),
+    size_bytes         INTEGER NOT NULL CHECK(size_bytes >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest, position),
+    UNIQUE(object_id, protocol_version, revision_id, manifest_digest, segment_name),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_payloads(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS sinex_publication_receipts (
+    object_id          TEXT NOT NULL,
+    protocol_version   TEXT NOT NULL,
+    revision_id        TEXT NOT NULL,
+    manifest_digest    TEXT NOT NULL,
+    attempt_number     INTEGER NOT NULL CHECK(attempt_number > 0),
+    request_id         TEXT NOT NULL,
+    receipt_state      TEXT CHECK(receipt_state IS NULL OR receipt_state IN (
+                            'raw_accepted', 'persisted_confirmed', 'durable_debt',
+                            'spool_accepted_lossless', 'rejected'
+                        )),
+    receipt_detail     TEXT NOT NULL DEFAULT '',
+    error_code         TEXT,
+    received_at_ms     INTEGER NOT NULL CHECK(received_at_ms >= 0),
+    PRIMARY KEY(object_id, protocol_version, revision_id, manifest_digest, attempt_number),
+    FOREIGN KEY(object_id, protocol_version, revision_id, manifest_digest)
+        REFERENCES sinex_publication_obligations(
+            object_id, protocol_version, revision_id, manifest_digest
+        ) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_sinex_publication_receipts_recent
+ON sinex_publication_receipts(received_at_ms DESC);
+
+-- Durable removed-content ledger (polylogue-27m). A row here is the
+-- authoritative "this content is forgotten on purpose" marker for
+-- standalone/off-mode excision: the acquire-time write chokepoint
+-- (``write_source_raw_session``/``write_source_raw_session_blob_ref``)
+-- refuses to re-store a raw payload whose ``blob_hash`` matches
+-- ``removed_hash``, so an ordinary re-ingest of unmodified source files
+-- cannot resurrect excised content even after an index.db rebuild.
+-- ``span_start``/``span_end`` are populated only for a sub-payload
+-- excision (e.g. a detected secret candidate span); both are NULL for a
+-- whole-raw-session excision. This table is never queried for its own
+-- sake by a reader -- it exists purely as a write-time gate plus forensic
+-- trail, so no secret span coordinates ever carry the removed literal,
+-- only byte offsets into the (now-deleted) payload.
+CREATE TABLE IF NOT EXISTS excised_content (
+    removed_hash    BLOB NOT NULL CHECK(length(removed_hash) = 32),
+    hash_kind       TEXT NOT NULL DEFAULT 'blob_hash' CHECK(hash_kind IN ('blob_hash')),
+    reason          TEXT NOT NULL,
+    actor           TEXT NOT NULL,
+    prior_revision  TEXT,
+    span_start      INTEGER CHECK(span_start IS NULL OR span_start >= 0),
+    span_end        INTEGER CHECK(span_end IS NULL OR span_end > span_start),
+    excised_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY(removed_hash, hash_kind)
+) STRICT;
 
 """
 

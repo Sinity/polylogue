@@ -8,24 +8,25 @@ comparison rather than relying on file size alone.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.core.sources import origin_from_provider
+from polylogue.core.enums import Origin
+from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.sources.live.convergence_debt_retry import (
     convergence_debt_retry_at,
     retry_is_future,
     same_pending_convergence_debt,
 )
 from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
-from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt as add_archive_convergence_debt,
@@ -44,6 +45,7 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 
 _INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
+_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
 # not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
@@ -72,6 +74,18 @@ class CursorRecord:
     failure_count: int = 0
     next_retry_at: str | None = None
     excluded: bool | int = False
+
+
+@dataclass(frozen=True, slots=True)
+class CursorObservationRebase:
+    """A proved-safe replacement for a cursor's filesystem observation."""
+
+    path: Path
+    expected: CursorRecord
+    st_dev: int
+    st_ino: int
+    mtime_ns: int
+    tail_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +238,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         parser_fingerprint=_optional_str(row[6]),
         content_fingerprint=_optional_str(row[7]),
         tail_hash=_optional_str(row[8]),
-        source_name=_provider_for_origin(origin).value if origin else None,
+        source_name=provider_from_origin(Origin.from_string(origin)).value if origin else None,
         st_dev=_optional_int(row[9]),
         st_ino=_optional_int(row[10]),
         mtime_ns=_optional_int(row[11]),
@@ -330,11 +344,11 @@ class CursorStore:
         with self._connect_ops() as conn:
             self._write_cursor_record_on_conn(conn, record)
 
-    def _sync_cursor_record_to_ops(self, record: CursorRecord) -> None:
+    def _sync_cursor_record_to_ops(self, record: CursorRecord) -> bool:
         def write() -> None:
             self._write_cursor_record_to_ops(record)
 
-        best_effort_cursor_write("archive ops cursor sync", write)
+        return best_effort_cursor_write("archive ops cursor sync", write)
 
     def _read_modify_write_cursor_record(
         self, path: Path, mutate: Callable[[CursorRecord | None], CursorRecord | None]
@@ -1011,7 +1025,7 @@ class CursorStore:
                 and existing.byte_offset > offset
             ):
                 return False
-        self._sync_cursor_record_to_ops(
+        return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
                 byte_size=byte_size,
@@ -1032,9 +1046,45 @@ class CursorStore:
                 excluded=bool(excluded),
             )
         )
-        return True
 
-    def mark_failed(self, path: Path) -> None:
+    def rebase_authoritative_observations(self, rebases: Iterable[CursorObservationRebase]) -> int:
+        """Persist a catch-up batch of already-proved observation rebases.
+
+        The catch-up planner can prove thousands of stable files after a
+        remount.  Use one ops-tier transaction so that retiring that legacy
+        device identity does not itself become a long-lived SQLite write storm.
+        """
+
+        unique = {rebase.path: rebase for rebase in rebases}
+        if not unique:
+            return 0
+        updated = 0
+
+        def write() -> None:
+            nonlocal updated
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for rebase in unique.values():
+                    current = self._get_record_on_conn(conn, rebase.path)
+                    if current != rebase.expected:
+                        continue
+                    self._write_cursor_record_on_conn(
+                        conn,
+                        replace(
+                            current,
+                            updated_at=datetime.now(UTC).isoformat(),
+                            tail_hash=rebase.tail_hash,
+                            st_dev=rebase.st_dev,
+                            st_ino=rebase.st_ino,
+                            mtime_ns=rebase.mtime_ns,
+                        ),
+                    )
+                    updated += 1
+
+        best_effort_cursor_write("archive ops cursor observation rebase", write)
+        return updated
+
+    def mark_failed(self, path: Path, *, failed_stat: os.stat_result | None = None) -> None:
         """Increment failure count and set exponential backoff.
 
         Read-modify-write against ``failure_count`` happens inside one
@@ -1072,9 +1122,19 @@ class CursorStore:
             failures = record.failure_count + 1
             now = datetime.now(UTC).isoformat()
             if failures >= _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE:
+                # Successful cursors intentionally retain the last accepted
+                # observation while an updated file is merely in backoff.  At
+                # quarantine, however, bind exclusion to the exact failed
+                # observation.  Otherwise the watcher mistakes the unchanged
+                # poison file for a replacement and immediately revives it.
+                observed = failed_stat
                 return replace(
                     record,
                     updated_at=now,
+                    byte_size=observed.st_size if observed is not None else record.byte_size,
+                    st_dev=observed.st_dev if observed is not None else record.st_dev,
+                    st_ino=observed.st_ino if observed is not None else record.st_ino,
+                    mtime_ns=observed.st_mtime_ns if observed is not None else record.mtime_ns,
                     failure_count=failures,
                     next_retry_at=None,
                     excluded=True,
@@ -1090,6 +1150,30 @@ class CursorStore:
 
         self._read_modify_write_cursor_record(path, mutate)
 
+    def defer_full_cursor_reconciliation(self, path: Path) -> None:
+        """Retry archive-backed full-cursor handoff without poisoning the source.
+
+        A raw full capture can be durable and parseable while its live JSONL
+        source is still appending too quickly to establish a stable handoff.
+        This is a scheduling condition, not a parse/persistence failure: it
+        must never consume the finite failure budget that quarantines malformed
+        files.
+        """
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None:
+                return None
+            now = datetime.now(UTC)
+            return replace(
+                current,
+                updated_at=now.isoformat(),
+                failure_count=0,
+                next_retry_at=(now + timedelta(seconds=_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S)).isoformat(),
+                excluded=False,
+            )
+
+        self._read_modify_write_cursor_record(path, mutate)
+
     def mark_excluded(self, path: Path) -> None:
         """Quarantine a source file (poison pill)."""
 
@@ -1097,6 +1181,42 @@ class CursorStore:
             if current is None:
                 return None
             return replace(current, updated_at=datetime.now(UTC).isoformat(), excluded=True)
+
+        self._read_modify_write_cursor_record(path, mutate)
+
+    def revive_replaced_exclusion(
+        self,
+        path: Path,
+        *,
+        byte_size: int,
+        st_dev: int,
+        st_ino: int,
+        mtime_ns: int,
+    ) -> None:
+        """Clear a path quarantine only after the observed file was replaced.
+
+        Exclusion belongs to the exact failed file observation, not forever to
+        its pathname.  Keep the prior cursor observation intact so the caller
+        still routes the replacement through full acquisition.
+        """
+
+        def mutate(current: CursorRecord | None) -> CursorRecord | None:
+            if current is None or not current.excluded:
+                return None
+            if (
+                current.byte_size,
+                current.st_dev,
+                current.st_ino,
+                current.mtime_ns,
+            ) == (byte_size, st_dev, st_ino, mtime_ns):
+                return None
+            return replace(
+                current,
+                updated_at=datetime.now(UTC).isoformat(),
+                failure_count=0,
+                next_retry_at=None,
+                excluded=False,
+            )
 
         self._read_modify_write_cursor_record(path, mutate)
 
@@ -1131,8 +1251,14 @@ class CursorStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
-    def list_failed_records(self) -> list[CursorRecord]:
-        """Return all failed, non-excluded cursor records."""
+    def list_retry_records(self) -> list[CursorRecord]:
+        """Return non-excluded cursor records with a scheduled retry.
+
+        Most records here represent ordinary failed ingestion.  A neutral
+        full-cursor handoff is also deliberately included: it has no failure
+        count because a source that is still appending is healthy, but it does
+        need a timed archive-reconciliation wakeup if filesystem events stop.
+        """
         with self._connect_ops() as conn:
             rows = conn.execute(
                 """
@@ -1155,7 +1281,11 @@ class CursorStore:
                         updated_at_ms,
                     excluded
                 FROM ingest_cursor
-                WHERE failure_count > 0 AND excluded = 0
+                WHERE excluded = 0
+                  AND (
+                      failure_count > 0
+                      OR (content_fingerprint IS NULL AND next_retry_at IS NOT NULL)
+                  )
                 ORDER BY next_retry_at IS NULL DESC, next_retry_at ASC, source_path ASC
                 """
             ).fetchall()
@@ -1246,6 +1376,7 @@ class CursorStore:
 
 
 __all__ = [
+    "CursorObservationRebase",
     "CursorRecord",
     "CursorStore",
     "LiveConvergenceDebt",

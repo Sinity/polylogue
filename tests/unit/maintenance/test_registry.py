@@ -233,7 +233,7 @@ class TestRegistryPreservesScope:
             status=BackfillStatus.RUNNING,
             scope=MaintenanceScope(
                 targets=("session_insights",),
-                filter=MaintenanceScopeFilter(provider="claude"),
+                filter=MaintenanceScopeFilter(origin="claude-code-session"),
             ),
         )
         payload = {
@@ -256,7 +256,7 @@ class TestRegistryPreservesScope:
         record = registry.get_operation("op-scope")
         assert record is not None
         assert record.operation.scope is not None
-        assert record.operation.scope.filter.provider == "claude"
+        assert record.operation.scope.filter.origin == "claude-code-session"
 
 
 class TestRegistryFailureSamplesPersist:

@@ -30,6 +30,7 @@ import socket
 import sqlite3
 import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import HTTPServer
 from pathlib import Path
@@ -721,6 +722,120 @@ class TestReaderSearchState:
         assert work_item["source"] in {"beads", "git", "inferred", "none"}
         assert "peers" in payload
         assert "resource_episodes" in payload
+
+    def test_agent_coordination_cache_is_ttl_bounded_and_fresh_bypassable(self, workspace_env: dict[str, Path]) -> None:
+        """The live HTTP route caches only a bounded fresh response.
+
+        The test uses the production ``DaemonAPIHandler`` and an actual
+        loopback server; the envelope producer is only counted so the cache
+        contract is observable.  Removing the cache read/write or the
+        ``fresh=1`` bypass causes the call-count and response-header
+        assertions to fail.
+        """
+        calls: list[tuple[str, int]] = []
+
+        class FakePayload:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
+                return {"view": "status", "build": len(calls)}
+
+        def fake_build(*, view: str, limit: int) -> FakePayload:
+            calls.append((view, limit))
+            return FakePayload()
+
+        def get_response(url: str) -> tuple[dict[str, object], str, str]:
+            with urlopen(url) as response:
+                body = cast(dict[str, object], json.loads(response.read()))
+                return (
+                    body,
+                    response.headers["X-Polylogue-Coordination-Cache"],
+                    response.headers["X-Polylogue-Coordination-Freshness"],
+                )
+
+        with patch("polylogue.coordination.build_coordination_envelope", side_effect=fake_build):
+            with _running_server(workspace_env) as (server, base_url):
+                first, first_state, first_freshness = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3"
+                )
+                second, second_state, second_freshness = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3"
+                )
+                bypassed, bypassed_state, _ = get_response(
+                    f"{base_url}/api/agents/coordination?view=status&limit=3&fresh=1"
+                )
+                daemon_server = cast(Any, server)
+                with daemon_server.coordination_cache_lock:
+                    cached = daemon_server.coordination_cache[("status", 3)]
+                    daemon_server.coordination_cache[("status", 3)] = type(cached)(
+                        payload=cached.payload,
+                        expires_at=0.0,
+                    )
+                expired, expired_state, _ = get_response(f"{base_url}/api/agents/coordination?view=status&limit=3")
+
+        assert first == second == {"view": "status", "build": 1}
+        assert bypassed == {"view": "status", "build": 2}
+        assert expired == {"view": "status", "build": 3}
+        assert calls == [("status", 3), ("status", 3), ("status", 3)]
+        assert (first_state, second_state, bypassed_state, expired_state) == ("miss", "hit", "bypass", "miss")
+        assert first_freshness == second_freshness == "ttl=2s; fresh=1 bypasses"
+
+    def test_agent_coordination_cache_coalesces_concurrent_builds(self, workspace_env: dict[str, Path]) -> None:
+        """Concurrent cold reads share one envelope build instead of stampeding it.
+
+        Two real loopback clients request the same missing cache key.  The
+        producer blocks long enough for the second request to enter the daemon;
+        removing the in-flight condition allows a second producer call and
+        fails the assertion below.
+        """
+        calls: list[tuple[str, int]] = []
+        first_build_started = threading.Event()
+        second_handler_entered = threading.Event()
+        second_build_started = threading.Event()
+        release_first_build = threading.Event()
+
+        class FakePayload:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
+                return {"view": "status", "build": len(calls)}
+
+        def fake_build(*, view: str, limit: int) -> FakePayload:
+            calls.append((view, limit))
+            if len(calls) == 1:
+                first_build_started.set()
+                assert release_first_build.wait(timeout=2.0)
+            else:
+                second_build_started.set()
+            return FakePayload()
+
+        def get_response(url: str) -> dict[str, object]:
+            with urlopen(url) as response:
+                return cast(dict[str, object], json.loads(response.read()))
+
+        from polylogue.daemon.http import DaemonAPIHandler
+
+        original_handler = DaemonAPIHandler._handle_agent_coordination
+        handler_calls = 0
+
+        def observe_handler(handler: object, params: dict[str, list[str]]) -> None:
+            nonlocal handler_calls
+            handler_calls += 1
+            if handler_calls == 2:
+                second_handler_entered.set()
+            original_handler(cast(Any, handler), params)
+
+        with patch("polylogue.coordination.build_coordination_envelope", side_effect=fake_build):
+            with patch.object(DaemonAPIHandler, "_handle_agent_coordination", observe_handler):
+                with _running_server(workspace_env) as (_, base_url):
+                    url = f"{base_url}/api/agents/coordination?view=status&limit=3"
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        first = executor.submit(get_response, url)
+                        assert first_build_started.wait(timeout=2.0)
+                        second = executor.submit(get_response, url)
+                        assert second_handler_entered.wait(timeout=2.0)
+                        assert not second_build_started.wait(timeout=0.2)
+                        release_first_build.set()
+                        assert first.result(timeout=2.0) == {"view": "status", "build": 1}
+                        assert second.result(timeout=2.0) == {"view": "status", "build": 1}
+
+        assert calls == [("status", 3)]
 
     def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
         """The shell must not fetch the broad /raw route when opening Raw.
@@ -1973,6 +2088,12 @@ class TestReaderQueryUnits:
         assert [item["session_id"] for item in items] == [C2]
 
     def test_query_units_endpoint_returns_run_rows(self, workspace_env: dict[str, Path]) -> None:
+        """polylogue-dab/itvd: a run's ``role:subagent`` is now derived from
+        ``sessions.branch_type = 'subagent'`` on the child's own session, not
+        synthesized from a Task-tool report parsed out of the parent's
+        transcript -- so the query needs a real ingested subagent session,
+        not just a Task tool_use/tool_result block pair in the parent.
+        """
         from tests.infra.storage_records import SessionBuilder
 
         index_db = workspace_env["archive_root"] / "index.db"
@@ -1985,7 +2106,7 @@ class TestReaderQueryUnits:
             .add_message(
                 "m-run",
                 role="assistant",
-                text="Subagent finished daemon run query wiring.",
+                text="Dispatched a subagent for daemon run query wiring.",
                 blocks=[
                     {
                         "type": "tool_use",
@@ -2007,6 +2128,17 @@ class TestReaderQueryUnits:
             )
             .save()
         )
+        (
+            SessionBuilder(index_db, "daemon-run-child")
+            .provider("codex")
+            .git_repository_url("polylogue")
+            .working_directories(["/realm/project/polylogue"])
+            .title("Map daemon run query wiring.")
+            .parent_session("ext-daemon-run")
+            .branch_type("subagent")
+            .add_message("m-child", role="assistant", text="Subagent done: daemon run query wired.")
+            .save()
+        )
 
         _materialize_run_projection(index_db)
 
@@ -2018,10 +2150,10 @@ class TestReaderQueryUnits:
         items = cast(list[dict[str, object]], payload["items"])
         assert len(items) == 1
         assert items[0]["unit"] == "run"
-        assert items[0]["session_id"] == "codex-session:ext-daemon-run"
+        assert items[0]["session_id"] == "codex-session:ext-daemon-run-child"
         assert items[0]["role"] == "subagent"
         assert items[0]["status"] == "completed"
-        assert items[0]["agent_ref"] == "agent:codex/Explore"
+        assert items[0]["agent_ref"] == "agent:codex/subagent"
 
     def test_query_units_endpoint_returns_observed_event_rows(self, workspace_env: dict[str, Path]) -> None:
         from tests.infra.storage_records import SessionBuilder
@@ -2080,7 +2212,25 @@ class TestReaderQueryUnits:
 
         assert status == 400
         assert payload["error"] == "invalid_query"
-        assert terminal_query_source_list() in str(payload["message"])
+        assert terminal_query_source_list() in str(payload["detail"])
+
+    def test_query_units_malformed_expression_returns_canonical_error(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.surfaces.payloads import QueryErrorPayload
+
+        expression = quote("messages where (")
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/query-units?expression={expression}")
+
+        assert status == 400
+        error = QueryErrorPayload.model_validate(payload)
+        assert error.ok is False
+        assert error.error == "invalid_query"
+        assert error.detail
+        assert error.field is None
+        assert set(payload) == {"ok", "error", "detail", "field"}
 
 
 class TestReaderViewProfiles:
@@ -2237,6 +2387,38 @@ class TestReaderAssertionEndpoint:
         rows = cast(list[dict[str, object]], payload["rows"])
         assert any(row["kind"] == "archive-tier" and row["subject_ref"] == "archive-tier:index" for row in rows)
 
+    def test_operational_web_payloads_redact_configured_archive_paths(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The HTTP projection must not inherit CLI path diagnostics."""
+        archive_root = workspace_env["archive_root"]
+        symlink_root = archive_root.parent / "web-visible-archive"
+        symlink_root.symlink_to(archive_root, target_is_directory=True)
+        monkeypatch.setattr("polylogue.paths.archive_root", lambda: symlink_root)
+        monkeypatch.setattr(
+            "polylogue.daemon.http.get_status_snapshot_payload",
+            lambda: {
+                "component_readiness": {},
+                "status_snapshot": {
+                    "state": "stale",
+                    "captured_at": None,
+                    "age_s": 91,
+                    "refresh_error": f"could not refresh {symlink_root} (resolved {archive_root})",
+                },
+            },
+        )
+        with _running_server(workspace_env, seeded=True) as (_, base_url):
+            overview = _get_json(base_url, "/api/overview")
+            (archive_root / "index.db").unlink()
+            provider = _get_json(base_url, "/api/provider-usage")
+            debt = _get_json(base_url, "/api/archive-debt?kind=archive-tier")
+
+        text = json.dumps({"provider": provider, "debt": debt, "overview": overview})
+        assert "archive_root" not in text
+        assert str(symlink_root) not in text
+        assert str(archive_root) not in text
+        assert "[archive]" in text
+
     def test_assertions_endpoint_reads_shared_assertion_claims(self, workspace_env: dict[str, Path]) -> None:
         _seed_assertion_claims(workspace_env)
         target_ref = quote(f"session:{C1}", safe="")
@@ -2333,6 +2515,7 @@ class TestReaderPrivacy:
     @pytest.mark.parametrize(
         "path",
         [
+            "/api/overview",
             "/api/sessions",
             "/api/sessions/claude-code-session:c1",
             "/api/sessions/claude-code-session:c1/messages",
@@ -2351,6 +2534,156 @@ class TestReaderPrivacy:
         text = json.dumps(payload)
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
             assert prefix not in text, f"{path} leaked absolute local path with prefix {prefix!r}"
+
+
+class TestCockpitAggregateRoutes:
+    def test_overview_is_bounded_and_reuses_archive_summary_projection(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, "/api/overview"))
+
+        assert payload["mode"] == "cockpit-overview"
+        assert cast(dict[str, object], payload["totals"])["sessions"] == 3
+        assert len(cast(list[object], payload["recent"])) <= 6
+        assert cast(dict[str, object], payload["readiness"])
+
+    @pytest.mark.parametrize(
+        ("is_error", "exit_code", "expected_outcomes"),
+        [
+            (0, 2, {"ok": 0, "failed": 1, "unknown": 0}),
+            (1, 0, {"ok": 1, "failed": 0, "unknown": 0}),
+        ],
+    )
+    def test_evidence_summary_matches_structural_tool_relations(
+        self,
+        workspace_env: dict[str, Path],
+        is_error: int,
+        exit_code: int,
+        expected_outcomes: dict[str, int],
+    ) -> None:
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-summary",
+                    title="Structural evidence",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m-evidence",
+                            role=Role.ASSISTANT,
+                            text="ran test",
+                            blocks=[
+                                ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-evidence"),
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_RESULT,
+                                    text="failed",
+                                    tool_id="tool-evidence",
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            )
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = ?, tool_result_exit_code = ? WHERE session_id = ? AND block_type = 'tool_result'",
+                (is_error, exit_code, "codex-session:evidence-summary"),
+            )
+            conn.commit()
+
+        session_id = "codex-session:evidence-summary"
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(dict[str, object], _get_json(base_url, f"/api/sessions/{session_id}/evidence-summary"))
+
+        assert payload["tool_calls"] == 1
+        outcomes = cast(dict[str, object], payload["outcomes"])
+        assert outcomes == expected_outcomes
+        assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
+
+    def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
+        """The evidence strip and transcript must describe the same composed
+        prefix-sharing session, including inherited tool outcomes."""
+        from polylogue.archive.message.roles import Role
+        from polylogue.core.enums import BlockType, BranchType, Provider
+        from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        replayed_tool_blocks = [
+            ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-parent"),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text="ok",
+                tool_id="tool-parent",
+            ),
+        ]
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            parent_id = archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-parent",
+                    title="Parent evidence",
+                    messages=[
+                        ParsedMessage(provider_message_id="p0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="p1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                    ],
+                )
+            )
+            archive.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="evidence-child",
+                    title="Child evidence",
+                    parent_session_provider_id="evidence-parent",
+                    branch_type=BranchType.FORK,
+                    messages=[
+                        ParsedMessage(provider_message_id="c0", role=Role.USER, text="start"),
+                        ParsedMessage(
+                            provider_message_id="c1",
+                            role=Role.ASSISTANT,
+                            text="ran pytest",
+                            blocks=replayed_tool_blocks,
+                        ),
+                        ParsedMessage(provider_message_id="c2", role=Role.USER, text="child tail"),
+                    ],
+                )
+            )
+
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            conn.execute(
+                "UPDATE blocks SET tool_result_is_error = 0, tool_result_exit_code = 0 "
+                "WHERE session_id = ? AND block_type = 'tool_result'",
+                (parent_id,),
+            )
+            conn.commit()
+
+        with _running_server(workspace_env, seeded=False) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, "/api/sessions/codex-session:evidence-child/evidence-summary")
+            )
+
+        assert payload["tool_calls"] == 1
+        assert payload["outcomes"] == {"ok": 1, "failed": 0, "unknown": 0}
+
+    def test_message_endpoint_clamps_oversized_pages(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.archive.query.spec import MAX_QUERY_LIMIT
+
+        with _running_server(workspace_env) as (_, base_url):
+            payload = cast(
+                dict[str, object], _get_json(base_url, f"/api/sessions/{C1}/messages?limit=999999&offset=-10")
+            )
+
+        assert payload["limit"] == MAX_QUERY_LIMIT
+        assert payload["offset"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2841,7 +3174,14 @@ class TestReaderInformability:
         assert "Session detail unavailable" in body
         assert "Loading session detail" in body
         assert "loadSessionFromError" in body
+        assert "split('?')[0]" in body
+        assert "function loadMoreSessionMessages()" in body
+        assert "Load more messages" in body
         assert "/api/sessions/" in body
+        assert "Overview readiness is" in body
+        assert "data-overview-snapshot-state" in body
+        assert "Evidence summary unavailable" in body
+        assert "function retryEvidenceSummary(id)" in body
 
     def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
         """``renderFtsChip`` must still distinguish ok / partial /

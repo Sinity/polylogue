@@ -22,23 +22,31 @@ from typing import Any, TypeAlias, cast
 
 import click
 
-from polylogue.core.enums import Origin, Provider
-from polylogue.core.sources import origin_from_provider
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
 from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
+    ArchiveDebtInsight,
     ArchiveDebtInsightQuery,
     ArchiveInsightModel,
+    CostRollupInsight,
     CostRollupInsightQuery,
+    SessionCostInsight,
     SessionCostInsightQuery,
+    SessionPhaseInsight,
     SessionPhaseInsightQuery,
+    SessionProfileInsight,
     SessionProfileInsightQuery,
+    SessionTagRollupInsight,
     SessionTagRollupQuery,
+    SessionWorkEventInsight,
     SessionWorkEventInsightQuery,
+    ThreadInsight,
     ThreadInsightQuery,
+    UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.tool_usage import ToolUsageInsightQuery
+from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
@@ -74,6 +82,7 @@ class InsightType:
     display_name: str
     json_key: str
     fields: tuple[InsightField, ...] = ()
+    item_model: type[ArchiveInsightModel] | None = None
     empty_message: str = "No items matched."
     query_model: type[ArchiveInsightModel] | None = None
     operations_method_name: str = ""
@@ -93,54 +102,7 @@ class InsightType:
 def _model_payload(item: ArchiveInsightModel) -> dict[str, object]:
     """Convert an insight item to a JSON-serializable payload."""
 
-    return cast(dict[str, object], project_origin_payload(item.model_dump(mode="json")))
-
-
-_CANONICAL_ORIGIN_VALUES = frozenset(origin.value for origin in Origin)
-
-
-def _source_name_origin(source_name: object) -> str:
-    value = str(source_name or "")
-    if not value:
-        return "unknown"
-    if value in _CANONICAL_ORIGIN_VALUES:
-        return value
-    try:
-        return origin_from_provider(Provider.from_string(value)).value
-    except ValueError:
-        return "unknown"
-
-
-def project_origin_payload(value: object) -> object:
-    """Project source-origin fields to public origin vocabulary."""
-
-    if isinstance(value, list):
-        return [project_origin_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return [project_origin_payload(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-
-    group_by_provider = value.get("group_by") == "provider"
-    projected: dict[str, object] = {}
-    for key, item in value.items():
-        if key in {"source_name", "provider"}:
-            projected["origin"] = _source_name_origin(item)
-        elif key == "provider_coverage":
-            projected["origin_coverage"] = project_origin_payload(item)
-        elif key == "provider_breakdown" and isinstance(item, dict):
-            projected["origin_breakdown"] = {_source_name_origin(origin): count for origin, count in item.items()}
-        elif key == "providers_with_data":
-            projected["origins_with_data"] = item
-        elif key == "providers_without_data":
-            projected["origins_without_data"] = item
-        elif key == "group_by" and item == "provider":
-            projected[key] = "origin"
-        else:
-            projected[key] = project_origin_payload(item)
-    if group_by_provider and "bucket" in projected:
-        projected["bucket"] = _source_name_origin(projected["bucket"])
-    return projected
+    return cast(dict[str, object], item.model_dump(mode="json"))
 
 
 def insight_items_payload(
@@ -245,7 +207,7 @@ def _id_with_origin(identifier_attr: str) -> InsightAccessor:
 
     def accessor(item: ArchiveInsightModel) -> str:
         identifier = _stringify(getattr(item, identifier_attr, None))
-        origin = _source_name_origin(getattr(item, "source_name", None))
+        origin = _stringify(getattr(item, "origin", None))
         return f"{identifier} [{origin}]"
 
     return accessor
@@ -367,6 +329,7 @@ register(
         name="session_profiles",
         display_name="Session Profiles",
         json_key="session_profiles",
+        item_model=SessionProfileInsight,
         empty_message="No session profiles matched.",
         query_model=SessionProfileInsightQuery,
         operations_method_name="list_session_profile_insights",
@@ -405,6 +368,7 @@ register(
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
             InsightField("prov", _nested("evidence", "timing_provenance", "-"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -414,6 +378,7 @@ register(
         name="session_work_events",
         display_name="Work Events",
         json_key="session_work_events",
+        item_model=SessionWorkEventInsight,
         empty_message="No work events matched.",
         query_model=SessionWorkEventInsightQuery,
         operations_method_name="list_session_work_event_insights",
@@ -445,6 +410,7 @@ register(
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("end", _nested("evidence", "end_time"), group=1),
             InsightField("duration_ms", _nested("evidence", "duration_ms", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -454,6 +420,7 @@ register(
         name="session_phases",
         display_name="Session Phases",
         json_key="session_phases",
+        item_model=SessionPhaseInsight,
         empty_message="No session phases matched.",
         query_model=SessionPhaseInsightQuery,
         operations_method_name="list_session_phase_insights",
@@ -466,6 +433,7 @@ register(
             InsightField("conv", _attr("session_id"), group=0),
             InsightField("start", _nested("evidence", "start_time"), group=1),
             InsightField("words", _nested("evidence", "word_count", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -475,6 +443,7 @@ register(
         name="threads",
         display_name="Work Threads",
         json_key="threads",
+        item_model=ThreadInsight,
         empty_message="No work threads matched.",
         query_model=ThreadInsightQuery,
         operations_method_name="list_thread_insights",
@@ -487,6 +456,7 @@ register(
             InsightField("sessions", _nested("thread", "session_count", "0"), group=0),
             InsightField("messages", _nested("thread", "total_messages", "0"), group=1),
             InsightField("depth", _nested("thread", "depth", "0"), group=1),
+            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )
 )
@@ -496,6 +466,7 @@ register(
         name="session_tag_rollups",
         display_name="Session Tag Rollups",
         json_key="session_tag_rollups",
+        item_model=SessionTagRollupInsight,
         empty_message="No session tag rollups matched.",
         query_model=SessionTagRollupQuery,
         operations_method_name="list_session_tag_rollup_insights",
@@ -517,6 +488,7 @@ register(
         name="archive_coverage",
         display_name="Archive Coverage",
         json_key="archive_coverage",
+        item_model=ArchiveCoverageInsight,
         empty_message="No archive coverage buckets matched.",
         query_model=ArchiveCoverageInsightQuery,
         operations_method_name="list_archive_coverage_insights",
@@ -532,14 +504,14 @@ register(
                 show_default=True,
                 help="Bucket coverage by origin, day, or ISO week",
             ),
-            CliOption("provider", ("--origin", "-o"), help="Only this origin"),
+            CliOption("origin", ("--origin", "-o"), help="Only this origin"),
             CliOption("since", ("--since",), help="Only buckets at/after this timestamp or date"),
             CliOption("until", ("--until",), help="Only buckets at/before this timestamp or date"),
         ),
         fields=(
             InsightField("", _attr("bucket"), group=0),
             InsightField("group", _attr("group_by"), group=0),
-            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("origin", _attr("origin"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("messages", _attr("message_count", "0"), group=1),
             InsightField("words", _attr("total_words", "0"), group=1),
@@ -557,6 +529,7 @@ register(
         name="tool_usage",
         display_name="Tool Usage",
         json_key="tool_usage",
+        item_model=ToolUsageInsight,
         empty_message="No tool usage data available.",
         query_model=ToolUsageInsightQuery,
         operations_method_name="list_tool_usage_insights",
@@ -574,8 +547,8 @@ register(
         ),
         mcp_default_limit=200,
         fields=(
-            InsightField("origins_with_data", _attr("providers_with_data", "0"), group=0),
-            InsightField("origins_without_data", _attr("providers_without_data", "0"), group=0),
+            InsightField("origins_with_data", _attr("origins_with_data", "0"), group=0),
+            InsightField("origins_without_data", _attr("origins_without_data", "0"), group=0),
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
@@ -588,6 +561,7 @@ register(
         name="session_costs",
         display_name="Session Costs",
         json_key="session_costs",
+        item_model=SessionCostInsight,
         empty_message="No session cost estimates matched.",
         query_model=SessionCostInsightQuery,
         operations_method_name="list_session_cost_insights",
@@ -614,6 +588,7 @@ register(
         name="cost_rollups",
         display_name="Cost Rollups",
         json_key="cost_rollups",
+        item_model=CostRollupInsight,
         empty_message="No cost rollups matched.",
         query_model=CostRollupInsightQuery,
         operations_method_name="list_cost_rollup_insights",
@@ -622,7 +597,7 @@ register(
         readiness_exempt=True,
         cli_options=(CliOption("model", ("--model",), help="Only this model or normalized model"),),
         fields=(
-            InsightField("", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("", _attr("origin"), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=0),
             InsightField("priced", _attr("priced_session_count", "0"), group=1),
@@ -632,7 +607,7 @@ register(
             InsightField("api_usd", _nested("basis", "api_equivalent_usd", "0"), group=1),
             InsightField("sub_usd", _nested("basis", "subscription_equivalent_usd", "0"), group=1),
             InsightField("catalog_usd", _nested("basis", "catalog_priced_usd", "0"), group=1),
-            InsightField("confidence", _attr("confidence", "0"), group=1),
+            InsightField("confidence", _attr("confidence", "uncovered"), group=1),
         ),
     )
 )
@@ -642,6 +617,7 @@ register(
         name="usage_timeline",
         display_name="Usage Timeline",
         json_key="usage_timeline",
+        item_model=UsageTimelineInsight,
         empty_message="No usage timeline rows matched.",
         query_model=UsageTimelineInsightQuery,
         operations_method_name="list_usage_timeline_insights",
@@ -661,7 +637,7 @@ register(
         ),
         fields=(
             InsightField("", _attr("bucket"), group=0),
-            InsightField("origin", lambda item: _source_name_origin(getattr(item, "source_name", None)), group=0),
+            InsightField("origin", _attr("origin"), group=0),
             InsightField("model", _attr("normalized_model"), group=0),
             InsightField("sessions", _attr("session_count", "0"), group=1),
             InsightField("events", _attr("event_count", "0"), group=1),
@@ -679,6 +655,7 @@ register(
         name="archive_debt",
         display_name="Archive Debt",
         json_key="archive_debt",
+        item_model=ArchiveDebtInsight,
         empty_message="No archive debt entries matched.",
         query_model=ArchiveDebtInsightQuery,
         operations_method_name="list_archive_debt_insights",
@@ -771,7 +748,6 @@ __all__ = [
     "get_insight_type",
     "list_insight_types",
     "insight_items_payload",
-    "project_origin_payload",
     "register",
     "render_insight_items",
 ]

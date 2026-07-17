@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-02",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "integrated_merged",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "ae5bd7ab7a5c151e3aa873264446cd21b42a2bc5d6527a00b36dc5b6cde6b0a3",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "testdiet-02-convergence-liveness-r01.zip",
+      "sha256": "57d52025be0554c45d482073e776b82f77d368127bc6000ef872a894d26fbcb6",
+      "size_bytes": 22637,
+      "custody_path": "testdiet/results/testdiet-02/a01/raw/testdiet-02-convergence-liveness-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "reconciled after the required foundation landed; the restart/debt recovery production slice was admitted",
+  "beads": ["polylogue-5vbs"],
+  "worktree": "feature/daemon/convergence-recovery",
+  "agent_handle": null,
+  "commits": ["76ad3e1379bde4829650392e459cd4804abb721d"],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3014",
+  "verification_receipts": ["focused convergence tests: 54 passed"],
+  "notes": "Admitted as the real restart/debt recovery slice. The remaining missing live FTS-debt feeder is intentionally not claimed complete."
+}

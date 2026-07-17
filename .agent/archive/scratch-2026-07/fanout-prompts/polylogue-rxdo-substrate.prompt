@@ -1,0 +1,124 @@
+You are one lane of a parallel fanout on the Polylogue repo.
+Worktree /realm/worktrees/polylogue-rxdo-substrate is your root; NEVER cd to
+/realm/project/polylogue. Branch: feature/fanout/rxdo-substrate.
+
+════════════════════════════════════════════════════════════════════════
+MISSION — rxdo substrate: queries and runs become addressable objects
+════════════════════════════════════════════════════════════════════════
+You own the FOUNDATION of the analysis-provenance program (epic
+polylogue-rxdo — "THE convergent frontier"): two beads, in order:
+  1. polylogue-rxdo.2 — content-addressed query identity + durable user.db
+     tables (queries / query_names / result_sets / result_set_members /
+     query_edges)
+  2. polylogue-rxdo.3 — query-run + result-relation telemetry in ops.db;
+     refs on every query envelope
+
+Two sibling lanes build on your contracts CONCURRENTLY (rxdo-lifecycle:
+AssertionKind.FINDING; rxdo-language: DSL ref operands + standing queries).
+YOU OWN THE SHARED CONTRACTS — publish them early:
+  - Your FIRST commit must add the ref-format + canonicalization contract
+    (module + doc constants): query:<hash>, query-run:qr_<id>,
+    result-set:<id>, and the ObjectRef kind registrations for them
+    (scope_ref/author_ref values must use registered ObjectRef kinds — a
+    prior lane was bitten by unregistered kinds; find the ObjectRef
+    registry, register there, nowhere else). Push it immediately so the
+    sibling lanes can pin against it.
+
+READ FIRST: bd show polylogue-rxdo --json (epic: tier-placement rationale),
+bd show polylogue-rxdo.2 --json and polylogue-rxdo.3 --json (the design
+fields are full specs — canonicalization pipeline, ops.db DDL v1 with exact
+columns/CHECKs, envelope fields, @last resolution, expiry semantics).
+Also read: docs/internals.md (schema regimes), CLAUDE.md "Schema regimes"
+section, polylogue/storage/sqlite/migrations/user/ (the additive numbered
+regime you must follow).
+
+KEY DESIGN POINTS (from the beads — the beads win on any conflict):
+- Query hash: canonical planned AST AFTER macro expansion; expand macros →
+  typed AST → NFC → sort commutative AND/OR children → preserve
+  non-commutative pipeline/seq/except/sort/limit order → canonical field
+  aliases → include grain+lane+rank policy → relative-time queries hash the
+  DYNAMIC ast (runs store resolved absolute bounds) → sha256 over
+  sorted-key compact JSON.
+- Two hashes on result sets: membership merkle root AND ordered_rank_hash
+  (set equality ≠ rank equality).
+- result_sets rows are MANIFESTS (grain, corpus_epoch, member_count,
+  merkle root, rank hash, exactness, persistence class); exact members
+  durable ONLY for watch/pinned/finding/cohort persistence classes.
+- query_edges (operand-of/refines/supersedes/derived-from/same-as) emitted
+  from planner/EXPLAIN nodes, never string parsing; acyclicity check on
+  insert for supersedes/derived-from.
+- Migrate existing SAVED_QUERY assertions: compile+hash each into queries,
+  repoint the assertion at query:<hash> (parity test: zero assertions lost).
+- ops.db query_runs: exact DDL is in rxdo.3's design field (columns,
+  CHECKs, indexes) — implement it as written. RESULT RELATION IS VIRTUAL:
+  ops.db NEVER stores full member lists; promotion (pin) materializes a
+  member manifest into user.db result_sets. Expired run refs resolve to a
+  typed expired-operational-ref carrying (query_hash, archive_epoch) —
+  never a silent miss.
+- Envelope: SearchEnvelope gains ADDITIVE fields query_run_ref, query_hash,
+  result_fingerprint, exactness — every surface returns them. Wire the
+  recording hook at the shared execution chokepoint (archive_query + MCP
+  safe_call + daemon list/search handlers if no single chokepoint exists
+  yet), fire-and-forget queue to the ops writer: NEVER blocks a read,
+  drop-on-backpressure with a counter.
+- Previews/keystrokes NEVER persisted. @last resolves per
+  (workspace, surface=cli) to the newest query_runs row.
+
+SCHEMA REGIME DISCIPLINE (this is the riskiest part — get it right):
+- user.db is DURABLE: numbered additive migration under
+  storage/sqlite/migrations/user/NNN_*.sql, one PRAGMA user_version step,
+  behind a verified backup manifest. Run
+  `devtools lab policy schema-versioning` — it must pass. The rxdo.2 bead
+  says the v4→v5 bump "MUST batch with other pending user-v5 candidates" —
+  search open beads for other user-v5 candidates (bd search "user.db v5" /
+  "user tier migration"); if others exist, your PR body must list them and
+  state whether they are included or explicitly deferred (coordinator
+  decides at merge; write the migration so additions compose).
+- ops.db is DISPOSABLE: bootstrap ALTER regime, no migration ceremony.
+- index.db: only a rebuildable member cache if you need one — no schema
+  bump unless unavoidable; if you bump it, declare the delta class in the
+  PR (fast-forward machinery from #2804/#2805 consumes that).
+- NO COMPAT SHIMS ANYWHERE (operator rule 2026-07-13: zero external users;
+  hard renames/clean additions only; no aliases, no dual paths).
+
+FOOTPRINT
+OWN: polylogue/storage/sqlite/migrations/user/, storage/sqlite (user/ops
+  tier modules), core ref/canonicalization module (new), ObjectRef registry
+  additions, the envelope model file, the execution-chokepoint hook,
+  tests/unit/storage/, tests/unit/core/ (additive).
+AVOID:
+  - archive/query/expression.py + daemon/convergence_stages.py — the
+    rxdo-language lane owns them.
+  - polylogue/storage/user_write.py assertion-kind machinery — the
+    rxdo-lifecycle lane owns AssertionKind.FINDING; you only provide refs.
+  - storage/sqlite/queries/** keyword signatures + protocols.py + api/*.py —
+    the provider-origin lane is doing an atomic provider→origin keyword
+    sweep there RIGHT NOW (one big PR). Your envelope/chokepoint changes
+    are additive fields, not signature renames; expect to rebase over their
+    merge; use ORIGIN vocabulary in all new code (never provider=).
+  - Generated surfaces: regenerate topology projection for every new module
+    (devtools render topology-projection && devtools render topology-status)
+    and openapi/cli-output schemas if the envelope is in them; commit regen
+    separately.
+
+VERIFICATION (worker-owned): focused devtools test per chunk (NEVER blanket
+directories); canonicalization property tests (reordered AND operands →
+same hash; macro repoint → past run hashes unchanged); migration parity
+test (all SAVED_QUERY assertions survive); envelope parity test (CLI --json
+and MCP carry the same three refs for the same committed query); backpressure
+test (ops writer drop counter). devtools verify --quick before every push.
+Anti-vacuity: name the production dependency each test enters and the
+mutation that would fail it.
+
+KNOWN HAZARDS: GitHub Actions fails ALL jobs at init (account billing) —
+ignore. devtools test basetemp may escape to host /tmp from worktrees
+(polylogue-ra3w) — pass explicit tmp overrides under /realm/tmp. bd prints
+auto-import noise per invocation (polylogue-gxjh) — sequence bd calls.
+Pre-commit = ruff + bd export; on rejection fix + NEW commit, never
+--amend, never --no-verify.
+
+PROCESS: commit+push every logical chunk (first commit = the ref-format
+contract, ASAP). One PR when coherent (Ref polylogue-rxdo.2 polylogue-rxdo.3).
+Do not merge; do not close beads. Per-AC status in PR body. Finish with one
+adversarial self-review iteration over your full diff, then a final AC
+matrix comment.

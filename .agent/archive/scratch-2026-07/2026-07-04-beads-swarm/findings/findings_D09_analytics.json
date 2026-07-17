@@ -1,0 +1,61 @@
+{
+  "domain": "D09_analytics",
+  "summary": "The 9l5 tower is coherently designed and the keystone 9l5.7 (stats substrate + measure registry) is genuinely well-specified, but the construct-validity spine is under-wired: only 9l5.11 declares the depends_on-9l5.7 edge, while .8/.9/.10/.12 all mandate 9l5.7 in their design text yet carry no dep edge. Ready-frontier P2 children .1/.2/.6 lack acceptance criteria (.6 lacks design too), and 9l5.2 mislabels the keystone-outcome dep (cites 'fs1.1 keystone outcome extraction' — fs1.1 is actually the Hermes importer; the keystone is the closed sru.1).",
+  "underspecified": [
+    {
+      "id": "polylogue-9l5.6",
+      "missing": ["design", "acceptance"],
+      "proposed_design": "New derived read model `tool_episodes` (rebuildable, registry pattern). Each episode = a tool_use block joined to its paired tool_result via the existing `actions` view, carrying the keystone outcome fields (tool_result_is_error / tool_result_exit_code, index schema v16), a bounded surrounding-context window (prev/next K messages), followup_class (from closed sru.1), and per-episode caveats (unknown-outcome NULL vs structural). Materialize under polylogue/storage/insights/session/ and register in insights/registry.py so CLI+MCP inherit it. Surface as (a) an `analyze` drill-down projection, (b) a DSL `tool-episodes` unit that is the natural drill-down under affordance-usage / analyze-tools aggregates, and (c) an MCP tool. Aggregates OVER episodes register as MeasureSpecs via 9l5.7; the projection itself is a unit, not a measure. Pitfall: a tool_use with no paired result (interrupted/streamed) must still yield an episode with outcome=unknown, not be dropped.",
+      "proposed_acceptance": "On the seeded corpus, `tool-episodes` is queryable and each row carries call + paired result + structural outcome (is_error/exit_code) + context window + next-action. A drill-down from an affordance-usage aggregate returns exactly the underlying episodes for that cell. Property test: every tool_use block resolves to exactly one episode (paired or unknown-outcome), zero dropped. Verify: `polylogue analyze tools --drill <cell>` and a DSL `... | tool-episodes` query render on the demo archive.",
+      "why": "P2 ready-frontier bead with BOTH design and acceptance null; only a two-sentence description. Not execution-grade per the ready-bead contract."
+    },
+    {
+      "id": "polylogue-9l5.2",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "On the seeded corpus a cross-origin same-task comparison (turns/task, $/session, tool-failure rate, subagent usage) renders WITH a per-origin coverage-tier footnote on every row (sourced from storage/usage.py coverage matrix). A comparison where one origin lacks priced provenance is REFUSED as a bare number at composition and returns an actionable error (the 9l5.7 composition guard). When local-model (Hermes/Ollama) sessions are present, the $0-lane column appears showing actual $0 vs the api_equivalent counterfactual. Verify: one DSL `... | compare origin:claude-code-session vs codex-session` query + a snapshot test asserting the coverage footnote and the refusal path.",
+      "why": "P2 bead with a rich design but acceptance=null. The design already implies checkable done-states (coverage footnote mandatory, $0-lane column) that belong in acceptance."
+    },
+    {
+      "id": "polylogue-9l5.1",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "One shared relation groups cost/duration/retry-depth/tool-mix by structural outcome (terminal tool_result_is_error/exit_code), reachable identically through the analyze projection, a DSL aggregate, and an MCP insight tool. Per-origin coverage caveat rendered on every grouped row. The predicate 'sessions where >30% of tool calls errored' resolves on the seeded corpus. Verify: `polylogue analyze <outcome-view>`, the equivalent DSL aggregate, and the MCP call each return the same numbers on the demo archive; snapshot the coverage caveat.",
+      "why": "P2 ready-frontier bead, design present but acceptance=null. Design explicitly names three surfaces over one relation and the >30%-errored predicate — all checkable, so acceptance can be written concretely now."
+    }
+  ],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-9l5.2",
+      "kind": "stale-ref",
+      "evidence": "Design: 'Requires fs1.1 keystone outcome extraction so local-agent sessions are outcome-comparable'. But `bd show polylogue-fs1.1` = 'Importer: Hermes state.db as authoritative session source' (the Hermes importer, open), NOT outcome extraction. The keystone outcome-extraction bead is polylogue-sru.1 ('Expose action-unit outcome fields + followup_class as product capability', CLOSED) — which is exactly what 9l5.1 correctly depends on.",
+      "fix": "Split the reference: fs1.1 (Hermes importer) is the legitimate prerequisite for the $0-lane column (local sessions must be ingested first) — make it an explicit dep. The 'keystone outcome extraction' phrase should point at sru.1 (already closed, so that clause is satisfied). Reword design to stop conflating the two."
+    },
+    {
+      "id": "polylogue-9l5",
+      "kind": "other",
+      "evidence": "Epic tower map names 'LAYER 5 causal (experiment hosting bead): declared arms, prereg, paired analysis' and prediction/calibration as tower layers, but these are polylogue-stc (Experiment hosting) and polylogue-h10 (Prediction and calibration tracking) — both OPEN, both depend_on 9l5.7, and NEITHER is a child of 9l5. The epic's 'tower' is thus not navigable from its own child set.",
+      "fix": "Either reparent stc + h10 under 9l5 (they are described as tower layers and already couple to the keystone), or add explicit by-id references in the epic description so the layer-5/6 beads are discoverable. Preferred: keep as-is if they belong to another epic, but cite their ids in the tower map."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-9l5.8",
+      "issue": "missing-dep",
+      "detail": "Temporal analytics (rolling baselines with MAD bands, changepoint candidates) is LAYER 3 explicitly built on the LAYER 2 keystone; its design leans on registered measures + the honesty rail. Yet it has NO dep edge — only parent-child to 9l5. Contrast 9l5.11, which correctly shows [BLOCKED] behind 9l5.7.",
+      "proposed": "Add depends_on(type=blocks) polylogue-9l5.8 -> polylogue-9l5.7. Series builder emits measures ('measure X window week'); those measures must register through 9l5.7, and anomaly flags need the stats primitives (median/MAD, CI). This is the highest-concern missing edge because 9l5.8 is P2 ready-frontier."
+    },
+    {
+      "id": "polylogue-9l5.9",
+      "issue": "missing-dep",
+      "detail": "Survival: design says 'Registered as measures (9l5.7)' and uses Kaplan-Meier + Greenwood CIs + log-rank test — all stats-substrate primitives. No dep edge on 9l5.7. Same for 9l5.10 (design: 'permutation test for significance via 9l5.7', 'registered as measures') and 9l5.12 (design: 'registered via 9l5.7 with explicit construct notes').",
+      "proposed": "Add depends_on(type=blocks) edges 9l5.9 -> 9l5.7, 9l5.10 -> 9l5.7, 9l5.12 -> 9l5.7. All three name 9l5.7 in their own design text as the CI/test/registration mechanism; only 9l5.11 currently declares the edge. 9l5.7 dependent_count would move from 3 (stc, h10, 9l5.11) toward the full statistical consumer set."
+    },
+    {
+      "id": "polylogue-9l5.3",
+      "issue": "epic-ac-gap",
+      "detail": "Epic COMPOSITION RULE: 'every layer lands as registered measures... construct validity is enforced by the registry (evidence tier + sample frame + confounds declared per measure, tier footnotes rendered in every output).' But 9l5.3 (pathology rates 'over time, by model, by repo') and 9l5.4 ('cache amplification 216x is itself a finding-grade number') promise 'so what' rate/finding claims with no registry backing and acceptance=null — a construct-validity gap the operator cares about: rates and a headline multiplier presented as point estimates without uncertainty or coverage tiers.",
+      "proposed": "Soft-dep both onto 9l5.7 (or record in acceptance) so rates carry Wilson intervals + n and the 216x figure carries its coverage tier + census-vs-sample label. These are P3 layer-1 descriptive so may ship bespoke first, but their acceptance must state the registry-convergence requirement rather than emitting bare numbers."
+    }
+  ],
+  "reorg": []
+}

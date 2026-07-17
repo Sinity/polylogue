@@ -51,7 +51,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         heuristic_label: str | None = None,
@@ -62,7 +62,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
         return await self._list_session_work_events_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 heuristic_label=heuristic_label,
@@ -76,7 +76,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
         self,
         *,
         session_id: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         kind: str | None = None,
@@ -86,7 +86,7 @@ class SQLiteQueryStoreInsightTimelinesMixin:
         return await self._list_session_phases_query(
             SessionTimelineListQuery(
                 session_id=session_id,
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 kind=kind,

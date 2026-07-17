@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from polylogue.core.types import SessionId
 from polylogue.insights.topology import (
     SessionTopology,
     TopologyEdge,
@@ -25,7 +26,6 @@ from polylogue.insights.topology import (
 )
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import SessionRecord
-from polylogue.types import SessionId
 
 
 class _SessionQuerySource(Protocol):
@@ -45,7 +45,7 @@ def _edge_kind(record: SessionRecord) -> TopologyEdgeKind:
 def _node_from_record(record: SessionRecord, *, depth: int, is_root: bool) -> TopologyNode:
     return TopologyNode(
         session_id=SessionId(str(record.session_id)),
-        source_name=record.origin.value,
+        origin=record.origin.value,
         title=record.title,
         depth=depth,
         is_root=is_root,

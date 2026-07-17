@@ -14,6 +14,10 @@ from hypothesis import strategies as st
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.schemas.generation.dynamic_keys import (
+    merge_observed_structure_schemas,
+    observed_structure_schema,
+)
 from polylogue.schemas.operator.schema_inference import (
     _remove_nested_required,
     _structure_fingerprint,
@@ -139,6 +143,67 @@ def test_collapse_dynamic_keys_preserves_static_fields_and_rehomes_dynamic_maps(
     assert schema_node(collapsed).get("x-polylogue-dynamic-keys") is True
     assert "additionalProperties" in schema_node(collapsed)
     assert set(_required_fields(collapsed)) == set(static_keys)
+
+
+def test_collapse_dynamic_keys_rehomes_content_shaped_property_names() -> None:
+    schema = {
+        "type": "object",
+        "required": ["title", "What should happen next?", "<source>\n/path</source>"],
+        "properties": {
+            "title": {"type": "string"},
+            "What should happen next?": {"type": "string"},
+            "<source>\n/path</source>": {"type": "object"},
+        },
+    }
+
+    collapsed = collapse_dynamic_keys(json_document(schema))
+
+    assert schema_properties(collapsed) == {"title": {"type": "string"}}
+    assert _required_fields(collapsed) == ["title"]
+    assert schema_node(collapsed).get("x-polylogue-dynamic-keys") is True
+    assert "additionalProperties" in schema_node(collapsed)
+
+
+def test_observed_structure_collapses_dynamic_keys_before_genson() -> None:
+    payload = {
+        "title": "session",
+        "mapping": {
+            "What should happen next?": {"kind": "question", "value": "text"},
+            "<source>\n/private/path</source>": {"kind": "source", "value": 42},
+        },
+    }
+
+    schema = observed_structure_schema(payload)
+    mapping_schema = schema_node(schema_properties(schema)["mapping"])
+
+    assert schema_properties(mapping_schema) == {}
+    assert mapping_schema.get("x-polylogue-dynamic-keys") is True
+    additional = schema_node(mapping_schema["additionalProperties"])
+    assert set(schema_properties(additional)) == {"kind", "value"}
+    assert "What should happen next?" not in str(schema)
+    assert "/private/path" not in str(schema)
+
+
+def test_observed_structure_collapses_wide_maps_without_retaining_keys() -> None:
+    payload = {f"ordinary-key-{index}": {"value": index} for index in range(256)}
+
+    schema = observed_structure_schema(payload)
+
+    assert schema_properties(schema) == {}
+    assert schema_node(schema).get("x-polylogue-high-cardinality-keys") is True
+    assert "ordinary-key-255" not in str(schema)
+
+
+def test_observed_structure_collapses_cross_sample_key_cardinality() -> None:
+    samples = [{f"ordinary-key-{index}": {"value": index}} for index in range(512)]
+
+    forward = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in samples)
+    reverse = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in reversed(samples))
+
+    assert forward == reverse
+    assert schema_properties(forward) == {}
+    assert schema_node(forward).get("x-polylogue-high-cardinality-keys") is True
+    assert "ordinary-key-" not in str(forward)
 
 
 @settings(max_examples=30)
@@ -283,11 +348,16 @@ def test_load_samples_from_sessions_preserves_record_families_when_capped(
 def test_generate_schema_from_samples_exposes_union_of_observed_top_level_fields(
     samples: list[dict[str, object]],
 ) -> None:
-    """Schema generation should include every observed top-level field from the corpus."""
+    """Schema generation should expose structural fields and rehome dynamic ones."""
     pytest.importorskip("genson")
     schema = generate_schema_from_samples(samples)
     observed_keys = {key for sample in samples for key in sample}
+    structural_keys = {key for key in observed_keys if not is_dynamic_key(key)}
+    dynamic_keys = observed_keys - structural_keys
 
-    assert observed_keys.issubset(schema_properties(schema).keys())
+    assert structural_keys.issubset(schema_properties(schema).keys())
+    if dynamic_keys:
+        assert schema_node(schema).get("x-polylogue-dynamic-keys") is True
+        assert "additionalProperties" in schema_node(schema)
     assert _schema_string(schema, "type") == "object"
     assert _schema_string(schema, "$schema") == "https://json-schema.org/draft/2020-12/schema"

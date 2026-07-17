@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal, cast
 
 from polylogue.archive.semantic.pricing import (
     CATALOG_EFFECTIVE_DATE,
@@ -22,9 +23,105 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
     estimate_cost,
 )
+from polylogue.archive.semantic.subscription_pricing import (
+    SUBSCRIPTION_CATALOG_EFFECTIVE_DATE,
+    SUBSCRIPTION_CATALOG_PROVENANCE,
+    compute_credit_cost,
+    credits_to_usd,
+)
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.evidence_value import (
+    CoverageExclusion,
+    EvidenceValue,
+    FactFamilySpec,
+    FrameCoverage,
+    FreshnessProvenance,
+    TemporalProvenance,
+    sum_evidence_values,
+)
+from polylogue.core.refs import ObjectRef
+from polylogue.storage.table_existence import table_exists as _table_exists
 
 UsageReportDetail = Literal["headline", "full"]
+
+# Match the whitespace contract of Python ``str.strip()``, which the provider
+# usage writer uses when resolving model names. SQLite ``TRIM`` removes only
+# U+0020 by default, so SQL predicates must receive this explicit character set.
+_MODEL_NAME_STRIP_CHARS = (
+    "\t\n\v\f\r"
+    "\x1c\x1d\x1e\x1f"
+    " \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
+_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-exact-total-tokens:v1",
+)
+USAGE_LANE_EXACT_TOKENS_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_exact_total_tokens",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].exact_total_tokens_evidence",
+    renderer_label="exact total tokens",
+    value_schema="integer",
+    unit="tokens",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "model-derived", "structural"}),
+    authority_precedence=("provider-reported", "structural", "model-derived"),
+)
+
+_USAGE_LANE_CATALOG_COST_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-catalog-api-equivalent-cost:v1",
+)
+USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_catalog_api_equivalent_cost",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].catalog_api_equivalent_evidence",
+    renderer_label="catalog API-equivalent cost",
+    value_schema="number",
+    unit="USD",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_CATALOG_COST_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"catalog-derived"}),
+    authority_precedence=("catalog-derived",),
+)
+
+
+def _normalize_model_name(value: object) -> str:
+    return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +401,13 @@ class OriginUsageReport:
 
 @dataclass(frozen=True, slots=True)
 class PricingLaneReport:
-    """Fast repricing headline for one ``session_model_usage`` provenance lane."""
+    """Repricing evidence for one ``session_model_usage`` provenance lane.
+
+    Exact tokens and catalog cost are deliberately independent. Missing model
+    prices keep the exact token total known while the complete catalog cost is
+    ``None``/``unknown``; ``catalog_priced_subtotal_usd`` preserves the priced
+    subset rather than silently treating unmatched rows as zero-cost.
+    """
 
     provenance: str
     row_count: int = 0
@@ -313,8 +416,18 @@ class PricingLaneReport:
     unmatched_model_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
-    catalog_api_equivalent_usd: float = 0.0
+    catalog_api_equivalent_usd: float | None = None
+    catalog_priced_subtotal_usd: float = 0.0
+    subscription_credit_usd: float = 0.0
+    grain: str = "physical_session"
+    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     caveats: tuple[str, ...] = ()
+    exact_total_tokens_evidence: EvidenceValue[int] = field(init=False, repr=False)
+    catalog_api_equivalent_evidence: EvidenceValue[float] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "exact_total_tokens_evidence", _pricing_lane_token_evidence(self))
+        object.__setattr__(self, "catalog_api_equivalent_evidence", _pricing_lane_cost_evidence(self))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -325,7 +438,13 @@ class PricingLaneReport:
             "unmatched_model_row_count": self.unmatched_model_row_count,
             "usage": self.usage.to_dict(),
             "stored_cost_usd": round(self.stored_cost_usd, 6),
-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
+            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
+            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
+            "subscription_credit_usd": round(self.subscription_credit_usd, 6),
+            "grain": self.grain,
+            "observed_at": self.observed_at,
+            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
+            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
             "caveats": list(self.caveats),
         }
 
@@ -339,6 +458,7 @@ class _PricingLaneAccumulator:
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
+    subscription_credit_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,10 +479,67 @@ class ProviderUsageReport:
     logical_pricing_lanes: tuple[PricingLaneReport, ...] = ()
     logical_pricing_grain: str = "logical_session_model_high_water"
     stored_provider_priced_usd: float = 0.0
-    catalog_api_equivalent_usd: float = 0.0
-    logical_catalog_api_equivalent_usd: float = 0.0
+    catalog_api_equivalent_usd: float | None = None
+    catalog_priced_subtotal_usd: float = 0.0
+    logical_catalog_api_equivalent_usd: float | None = None
+    logical_catalog_priced_subtotal_usd: float = 0.0
+    subscription_credit_catalog_provenance: str = SUBSCRIPTION_CATALOG_PROVENANCE
+    subscription_credit_catalog_effective_date: str = SUBSCRIPTION_CATALOG_EFFECTIVE_DATE
+    subscription_credit_usd: float = 0.0
+    logical_subscription_credit_usd: float = 0.0
+    observed_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     caveats: tuple[str, ...] = ()
     coverage_matrix: tuple[ProviderUsageCoverage, ...] = _PROVIDER_USAGE_COVERAGE
+    exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    logical_exact_total_tokens_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+    logical_catalog_api_equivalent_evidence: EvidenceValue[int | float] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "exact_total_tokens_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.pricing_lanes,
+                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
+                metric="exact-total-tokens",
+                observed_at=self.observed_at,
+                logical=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "catalog_api_equivalent_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.pricing_lanes,
+                spec=USAGE_LANE_CATALOG_COST_FAMILY,
+                metric="catalog-api-equivalent-cost",
+                observed_at=self.observed_at,
+                logical=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "logical_exact_total_tokens_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.logical_pricing_lanes,
+                spec=USAGE_LANE_EXACT_TOKENS_FAMILY,
+                metric="exact-total-tokens",
+                observed_at=self.observed_at,
+                logical=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "logical_catalog_api_equivalent_evidence",
+            _aggregate_pricing_lane_evidence(
+                self.logical_pricing_lanes,
+                spec=USAGE_LANE_CATALOG_COST_FAMILY,
+                metric="catalog-api-equivalent-cost",
+                observed_at=self.observed_at,
+                logical=True,
+            ),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -380,11 +557,178 @@ class ProviderUsageReport:
             "logical_pricing_lanes": [lane.to_dict() for lane in self.logical_pricing_lanes],
             "logical_pricing_grain": self.logical_pricing_grain,
             "stored_provider_priced_usd": round(self.stored_provider_priced_usd, 6),
-            "catalog_api_equivalent_usd": round(self.catalog_api_equivalent_usd, 6),
-            "logical_catalog_api_equivalent_usd": round(self.logical_catalog_api_equivalent_usd, 6),
+            "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
+            "catalog_priced_subtotal_usd": round(self.catalog_priced_subtotal_usd, 6),
+            "logical_catalog_api_equivalent_usd": _round_optional(self.logical_catalog_api_equivalent_usd),
+            "logical_catalog_priced_subtotal_usd": round(self.logical_catalog_priced_subtotal_usd, 6),
+            "subscription_credit_catalog_provenance": self.subscription_credit_catalog_provenance,
+            "subscription_credit_catalog_effective_date": self.subscription_credit_catalog_effective_date,
+            "subscription_credit_usd": round(self.subscription_credit_usd, 6),
+            "logical_subscription_credit_usd": round(self.logical_subscription_credit_usd, 6),
+            "observed_at": self.observed_at,
+            "exact_total_tokens_evidence": self.exact_total_tokens_evidence.to_dict(),
+            "catalog_api_equivalent_evidence": self.catalog_api_equivalent_evidence.to_dict(),
+            "logical_exact_total_tokens_evidence": self.logical_exact_total_tokens_evidence.to_dict(),
+            "logical_catalog_api_equivalent_evidence": self.logical_catalog_api_equivalent_evidence.to_dict(),
             "origins": [origin.to_dict() for origin in self.origins],
             "caveats": list(self.caveats),
         }
+
+
+def _pricing_lane_storage_ref(lane: PricingLaneReport) -> ObjectRef:
+    return ObjectRef(
+        kind="insight",
+        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}",
+    )
+
+
+def _pricing_lane_fact_ref(lane: PricingLaneReport, metric: str) -> ObjectRef:
+    return ObjectRef(
+        kind="insight",
+        object_id=f"session-model-usage:{lane.grain}:{lane.provenance}:{metric}",
+    )
+
+
+def _usage_lane_authority(provenance: str) -> Literal["provider-reported", "model-derived", "structural"]:
+    if provenance == "estimated":
+        return "model-derived"
+    if provenance in {"priced", "origin_reported"}:
+        return "provider-reported"
+    return "structural"
+
+
+def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
+    storage_ref = _pricing_lane_storage_ref(lane)
+    fact_ref = _pricing_lane_fact_ref(lane, "exact-total-tokens")
+    known = lane.row_count > 0
+    evidence = EvidenceValue(
+        family=USAGE_LANE_EXACT_TOKENS_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=lane.usage.total_tokens if known else None,
+        measurement_authority=(_usage_lane_authority(lane.provenance),),
+        weakest_measurement_authority=_usage_lane_authority(lane.provenance),
+        evidence_refs=(storage_ref,),
+        definition_ref=USAGE_LANE_EXACT_TOKENS_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=lane.observed_at,
+            time_source="materialization_ts",
+        ),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
+            grain=USAGE_LANE_EXACT_TOKENS_FAMILY.grain,
+            denominator=USAGE_LANE_EXACT_TOKENS_FAMILY.denominator,
+            intended_count=lane.row_count,
+            observed_count=lane.row_count,
+            supported_count=lane.row_count if known else 0,
+            complete=known,
+        ),
+        freshness=FreshnessProvenance(
+            state="fresh",
+            evaluated_at=lane.observed_at,
+        ),
+    )
+    USAGE_LANE_EXACT_TOKENS_FAMILY.require(cast(EvidenceValue[object], evidence))
+    return evidence
+
+
+def _pricing_lane_cost_evidence(lane: PricingLaneReport) -> EvidenceValue[float]:
+    storage_ref = _pricing_lane_storage_ref(lane)
+    catalog_ref = ObjectRef(
+        kind="insight",
+        object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}",
+    )
+    fact_ref = _pricing_lane_fact_ref(lane, "catalog-api-equivalent-cost")
+    known = lane.row_count > 0 and lane.unmatched_model_row_count == 0 and lane.catalog_api_equivalent_usd is not None
+    exclusions: tuple[CoverageExclusion, ...] = ()
+    if lane.unmatched_model_row_count > 0:
+        exclusions = (
+            CoverageExclusion(
+                subject_ref=storage_ref,
+                reason=f"unpriced-model-rows:{lane.unmatched_model_row_count}",
+            ),
+        )
+    elif lane.row_count > 0 and lane.catalog_api_equivalent_usd is None:
+        exclusions = (
+            CoverageExclusion(
+                subject_ref=storage_ref,
+                reason="catalog-cost-not-materialized",
+            ),
+        )
+    evidence = EvidenceValue(
+        family=USAGE_LANE_CATALOG_COST_FAMILY.family,
+        fact_ref=fact_ref,
+        value_state="known" if known else "unknown",
+        value=lane.catalog_api_equivalent_usd if known else None,
+        measurement_authority=("catalog-derived",),
+        weakest_measurement_authority="catalog-derived",
+        evidence_refs=(storage_ref, catalog_ref),
+        definition_ref=USAGE_LANE_CATALOG_COST_FAMILY.definition_ref,
+        temporal=TemporalProvenance.from_source(
+            observed_at=lane.observed_at,
+            time_source="materialization_ts",
+        ),
+        enumeration="census",
+        coverage=FrameCoverage(
+            intended_frame=f"{lane.grain} session_model_usage rows for {lane.provenance!r}",
+            grain=USAGE_LANE_CATALOG_COST_FAMILY.grain,
+            denominator=USAGE_LANE_CATALOG_COST_FAMILY.denominator,
+            intended_count=lane.row_count,
+            observed_count=lane.row_count,
+            supported_count=lane.matched_model_row_count,
+            complete=known,
+            exclusions=exclusions,
+        ),
+        freshness=FreshnessProvenance(
+            state="fresh",
+            evaluated_at=lane.observed_at,
+        ),
+    )
+    USAGE_LANE_CATALOG_COST_FAMILY.require(cast(EvidenceValue[object], evidence))
+    return evidence
+
+
+def _aggregate_pricing_lane_evidence(
+    lanes: tuple[PricingLaneReport, ...],
+    *,
+    spec: FactFamilySpec,
+    metric: str,
+    observed_at: str,
+    logical: bool,
+) -> EvidenceValue[int | float]:
+    values: tuple[EvidenceValue[int | float], ...]
+    if spec is USAGE_LANE_EXACT_TOKENS_FAMILY:
+        values = cast(
+            tuple[EvidenceValue[int | float], ...],
+            tuple(lane.exact_total_tokens_evidence for lane in lanes),
+        )
+    elif spec is USAGE_LANE_CATALOG_COST_FAMILY:
+        values = cast(
+            tuple[EvidenceValue[int | float], ...],
+            tuple(lane.catalog_api_equivalent_evidence for lane in lanes),
+        )
+    else:
+        raise ValueError(f"unsupported usage evidence family: {spec.family}")
+    prefix = "logical-" if logical else "physical-"
+    return sum_evidence_values(
+        values,
+        spec=spec,
+        fact_ref=ObjectRef(kind="insight", object_id=f"provider-usage:{prefix}{metric}:total"),
+        observed_at=observed_at,
+        intended_frame=f"{prefix.rstrip('-')} provider usage pricing lanes",
+        expected_fact_refs=tuple(value.fact_ref for value in values),
+    )
+
+
+def _complete_catalog_total(lanes: tuple[PricingLaneReport, ...]) -> float | None:
+    if not lanes or any(lane.catalog_api_equivalent_usd is None for lane in lanes):
+        return None
+    return round(sum(cast(float, lane.catalog_api_equivalent_usd) for lane in lanes), 6)
+
+
+def _round_optional(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
 
 
 def provider_usage_report_for_archive_root(
@@ -421,10 +765,12 @@ def provider_usage_report_from_connection(
     origin: str | None = None,
     limit: int | None = 25,
     detail: UsageReportDetail = "full",
+    observed_at: str | None = None,
 ) -> ProviderUsageReport:
     """Return a provider usage report for an already-open index connection."""
 
     conn.row_factory = sqlite3.Row
+    report_observed_at = observed_at or datetime.now(UTC).isoformat()
     caveats: list[str] = [
         "provider usage events, transcript text volume, and model rollups are separate evidence streams",
         "this report does not query provider billing and is not a precise cost report",
@@ -438,6 +784,7 @@ def provider_usage_report_from_connection(
             archive_root=str(archive_root),
             origins=(),
             detail_level=detail,
+            observed_at=report_observed_at,
             caveats=tuple(caveats + ["sessions table is missing"]),
         )
 
@@ -448,8 +795,10 @@ def provider_usage_report_from_connection(
     logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
-    pricing_lanes = _pricing_lane_reports(conn, origin) if model_table_present else ()
-    logical_pricing_lanes = _pricing_lane_reports(conn, origin, logical=True) if model_table_present else ()
+    pricing_lanes = _pricing_lane_reports(conn, origin, observed_at=report_observed_at) if model_table_present else ()
+    logical_pricing_lanes = (
+        _pricing_lane_reports(conn, origin, logical=True, observed_at=report_observed_at) if model_table_present else ()
+    )
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
         conn, archive_root=Path(archive_root), origin=origin, limit=limit
     )
@@ -577,6 +926,17 @@ def provider_usage_report_from_connection(
     if origin is not None and not reports:
         caveats.append(f"no sessions found for origin {origin!r}")
         caveats.append(f"no raw rows found for origin {origin!r}")
+    if pricing_lanes and any(lane.subscription_credit_usd > 0 for lane in pricing_lanes):
+        caveats.append(
+            "subscription_credit_usd assumes the Claude Code Pro tier's credit rate "
+            "(cache reads free, output at 5x input) and is 0.0 for models without a "
+            "declared credit rate; it is not vendor-authoritative billing"
+        )
+    if any(lane.catalog_api_equivalent_usd is None for lane in pricing_lanes):
+        caveats.append(
+            "catalog_api_equivalent_usd is unknown because at least one model row has no catalog price; "
+            "catalog_priced_subtotal_usd preserves the known priced subset"
+        )
     return ProviderUsageReport(
         archive_root=str(archive_root),
         origins=tuple(reports),
@@ -586,8 +946,19 @@ def provider_usage_report_from_connection(
         pricing_lanes=pricing_lanes,
         logical_pricing_lanes=logical_pricing_lanes,
         stored_provider_priced_usd=sum(lane.stored_cost_usd for lane in pricing_lanes if lane.provenance == "priced"),
-        catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in pricing_lanes),
-        logical_catalog_api_equivalent_usd=sum(lane.catalog_api_equivalent_usd for lane in logical_pricing_lanes),
+        catalog_api_equivalent_usd=_complete_catalog_total(pricing_lanes),
+        catalog_priced_subtotal_usd=round(
+            sum(lane.catalog_priced_subtotal_usd for lane in pricing_lanes),
+            6,
+        ),
+        logical_catalog_api_equivalent_usd=_complete_catalog_total(logical_pricing_lanes),
+        logical_catalog_priced_subtotal_usd=round(
+            sum(lane.catalog_priced_subtotal_usd for lane in logical_pricing_lanes),
+            6,
+        ),
+        subscription_credit_usd=sum(lane.subscription_credit_usd for lane in pricing_lanes),
+        logical_subscription_credit_usd=sum(lane.subscription_credit_usd for lane in logical_pricing_lanes),
+        observed_at=report_observed_at,
         caveats=tuple(caveats),
     )
 
@@ -733,9 +1104,11 @@ def _acquired_not_materialized_raw_rows(
                r.raw_id AS raw_id,
                r.source_path AS source_path,
                r.blob_hash AS blob_hash,
-               r.parsed_at_ms AS parsed_at_ms
+               r.parsed_at_ms AS parsed_at_ms,
+               c.status AS membership_census_status
         FROM {alias_sql}.raw_sessions AS r
         LEFT JOIN sessions AS s ON s.raw_id = r.raw_id
+        LEFT JOIN {alias_sql}.raw_membership_census AS c ON c.raw_id = r.raw_id
         {_where_origin(origin, table_alias="r")}
           {"AND" if origin is not None else "WHERE"} (r.parse_error IS NULL OR TRIM(r.parse_error) = '')
           AND s.session_id IS NULL
@@ -763,6 +1136,11 @@ def _raw_row_is_known_non_session_artifact(archive_root: Path, row: sqlite3.Row)
     if str(row["origin"]) != Origin.CODEX_SESSION.value:
         return False
     if row["parsed_at_ms"] is None:
+        return False
+    census_status = str(row["membership_census_status"] or "")
+    if census_status == "non_session":
+        return True
+    if census_status in {"complete", "failed"}:
         return False
     return _raw_jsonl_type_set(_raw_blob_path(archive_root, row), limit=8) == {"session_meta"}
 
@@ -799,169 +1177,173 @@ def _stale_provider_rollup_stats(
     origin: str | None,
     limit: int | None,
 ) -> tuple[dict[str, int], dict[str, tuple[str, ...]]]:
-    expected = _expected_provider_model_rollups(conn, origin)
-    if not expected:
-        return {}, {}
-    actual = _actual_model_rollups(conn, origin)
-    origin_by_session = _origin_by_session(conn, origin)
-    stale_by_origin: dict[str, set[str]] = defaultdict(set)
-    for session_id, expected_by_model in expected.items():
-        for model_name, expected_tokens in expected_by_model.items():
-            if actual.get((session_id, model_name)) != expected_tokens:
-                origin_name = origin_by_session.get(session_id)
-                if origin_name:
-                    stale_by_origin[origin_name].add(session_id)
-    counts = {origin_name: len(session_ids) for origin_name, session_ids in stale_by_origin.items()}
-    samples = {
-        origin_name: tuple(sorted(session_ids)[:limit]) if limit is not None else tuple(sorted(session_ids))
-        for origin_name, session_ids in stale_by_origin.items()
-    }
-    return counts, samples
+    """Return stale counts and bounded samples from indexed session seeks.
 
+    Cumulative Codex totals are session-global, so one reverse index seek per
+    session finds the only candidate the materializer can have applied.  The
+    uncommon sessions without a cumulative row stream their request-scoped
+    events through Python's arbitrary-precision integers.  This keeps memory
+    bounded by session/model cardinality, preserves accepted large counters,
+    and avoids sorting or materializing the provider-event table.
+    """
 
-def _expected_provider_model_rollups(
-    conn: sqlite3.Connection,
-    origin: str | None,
-) -> dict[str, dict[str, tuple[int, int, int, int]]]:
-    models_by_session = _models_by_session(conn, origin)
-    if not models_by_session:
-        return {}
-    rows = conn.execute(
-        f"""
-        SELECT s.origin AS origin, e.session_id AS session_id, e.model_name AS model_name, e.position AS position,
-               e.last_input_tokens AS last_input_tokens,
-               e.last_output_tokens AS last_output_tokens,
-               e.last_cached_input_tokens AS last_cached_input_tokens,
-               e.last_cache_write_tokens AS last_cache_write_tokens,
-               e.last_reasoning_output_tokens AS last_reasoning_output_tokens,
-               e.last_total_tokens AS last_total_tokens,
-               e.total_input_tokens AS total_input_tokens,
-               e.total_output_tokens AS total_output_tokens,
-               e.total_cached_input_tokens AS total_cached_input_tokens,
-               e.total_cache_write_tokens AS total_cache_write_tokens,
-               e.total_reasoning_output_tokens AS total_reasoning_output_tokens,
-               e.total_tokens AS total_tokens
-        FROM session_provider_usage_events AS e
-        JOIN sessions AS s ON s.session_id = e.session_id
-        {_where_origin(origin, table_alias="s")}
-          {"AND" if origin is not None else "WHERE"} e.provider_event_type = 'token_count'
-        ORDER BY e.session_id, e.position
+    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+
+    latest_rows = conn.execute(
+        """
+        /* provider_usage_stale_latest */
+        WITH session_models AS MATERIALIZED (
+            SELECT s.origin,
+                   s.session_id,
+                   COUNT(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS model_count,
+                   MIN(NULLIF(TRIM(u.model_name, :model_strip_chars), '')) AS sole_model
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE (:origin IS NULL OR s.origin = :origin)
+            GROUP BY s.origin, s.session_id
+        ),
+        latest_positions AS MATERIALIZED (
+            SELECT sm.*,
+                   (
+                       SELECT e.position
+                       FROM session_provider_usage_events AS e
+                       WHERE e.session_id = sm.session_id
+                         AND e.provider_event_type = 'token_count'
+                         AND (
+                             e.total_input_tokens != 0
+                             OR e.total_output_tokens != 0
+                             OR e.total_cached_input_tokens != 0
+                             OR e.total_cache_write_tokens != 0
+                         )
+                         AND COALESCE(
+                             NULLIF(TRIM(e.model_name, :model_strip_chars), ''),
+                             CASE WHEN sm.model_count = 1 THEN sm.sole_model END
+                         ) IS NOT NULL
+                       ORDER BY e.position DESC
+                       LIMIT 1
+                   ) AS latest_position
+            FROM session_models AS sm
+        )
+        SELECT lp.origin,
+               lp.session_id,
+               lp.model_count,
+               lp.sole_model,
+               lp.latest_position,
+               e.model_name,
+               e.total_input_tokens,
+               e.total_output_tokens,
+               e.total_cached_input_tokens,
+               e.total_cache_write_tokens
+        FROM latest_positions AS lp
+        LEFT JOIN session_provider_usage_events AS e
+         ON e.session_id = lp.session_id
+         AND e.position = lp.latest_position
         """,
-        _origin_args(origin),
+        {"model_strip_chars": _MODEL_NAME_STRIP_CHARS, "origin": origin},
     ).fetchall()
-    latest_total_by_session: dict[str, tuple[str, tuple[int, int, int, int, int]]] = {}
-    summed_last_by_model: dict[tuple[str, str], list[int]] = {}
-    for row in rows:
+
+    # Preserve the established payload contract: without any model rollup rows,
+    # the report has no comparison basis and does not classify the origin stale.
+    if not any(_int(row["model_count"]) for row in latest_rows):
+        return {}, {}
+
+    origin_by_session: dict[str, str] = {}
+    sole_model_by_session: dict[str, str | None] = {}
+    expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
+    fallback_session_ids: list[str] = []
+    for row in latest_rows:
         session_id = str(row["session_id"])
-        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
-        existing_models = models_by_session.get(session_id, ())
-        if not model_name and len(existing_models) == 1:
-            model_name = existing_models[0]
+        origin_by_session[session_id] = str(row["origin"])
+        sole_model = _normalize_model_name(row["sole_model"]) if _int(row["model_count"]) == 1 else None
+        sole_model_by_session[session_id] = sole_model
+        if row["latest_position"] is None:
+            fallback_session_ids.append(session_id)
+            continue
+        model_name = _normalize_model_name(row["model_name"]) or sole_model or ""
         if not model_name:
             continue
-        last_values = (
-            _int(row["last_input_tokens"]),
-            _int(row["last_output_tokens"]),
-            _int(row["last_cached_input_tokens"]),
-            _int(row["last_cache_write_tokens"]),
-            _int(row["last_reasoning_output_tokens"]),
-            _int(row["last_total_tokens"]),
-        )
-        total_values = (
+        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
             _int(row["total_input_tokens"]),
             _int(row["total_output_tokens"]),
             _int(row["total_cached_input_tokens"]),
             _int(row["total_cache_write_tokens"]),
-            _int(row["total_reasoning_output_tokens"]),
-            _int(row["total_tokens"]),
         )
-        if any(total_values[:4]):
-            latest_total_by_session[session_id] = (model_name, total_values[:5])
-            continue
-        key = (session_id, model_name)
-        if any(last_values):
-            bucket = summed_last_by_model.setdefault(key, [0, 0, 0, 0, 0])
-            bucket[0] += last_values[0]
-            bucket[1] += last_values[1]
-            bucket[2] += last_values[2]
-            bucket[3] += last_values[3]
-            bucket[4] += last_values[4]
-    expected: dict[str, dict[str, tuple[int, int, int, int]]] = defaultdict(dict)
-    # Same disjoint-lane mapping the materializer applies, so this audit's
-    # "expected" rollup matches the corrected session_model_usage rows instead
-    # of flagging false drift (cached is subtracted out of input; reasoning is
-    # already inside output). See _provider_usage_disjoint_lanes for the
-    # corpus-verified Codex token semantics.
-    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
 
-    for session_id, (model_name, total_tuple) in latest_total_by_session.items():
-        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
-            total_tuple[0], total_tuple[1], total_tuple[2], total_tuple[3]
-        )
-    for (session_id, model_name), last_totals in summed_last_by_model.items():
-        if session_id in latest_total_by_session:
-            continue
-        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
-            last_totals[0], last_totals[1], last_totals[2], last_totals[3]
-        )
-    return {session_id: dict(rows) for session_id, rows in expected.items()}
+    for session_id in fallback_session_ids:
+        summed_by_model: dict[str, list[int]] = {}
+        for row in conn.execute(
+            """
+            /* provider_usage_stale_fallback */
+            SELECT model_name,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   last_reasoning_output_tokens,
+                   last_total_tokens
+            FROM session_provider_usage_events
+            WHERE session_id = ?
+              AND provider_event_type = 'token_count'
+            ORDER BY position
+            """,
+            (session_id,),
+        ):
+            model_name = _normalize_model_name(row["model_name"]) or sole_model_by_session[session_id] or ""
+            if not model_name:
+                continue
+            last_values = (
+                _int(row["last_input_tokens"]),
+                _int(row["last_output_tokens"]),
+                _int(row["last_cached_input_tokens"]),
+                _int(row["last_cache_write_tokens"]),
+                _int(row["last_reasoning_output_tokens"]),
+                _int(row["last_total_tokens"]),
+            )
+            if not any(last_values):
+                continue
+            bucket = summed_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
+            for index, value in enumerate(last_values[:5]):
+                bucket[index] += value
+        for model_name, totals in summed_by_model.items():
+            expected[session_id][model_name] = _provider_usage_disjoint_lanes(
+                totals[0], totals[1], totals[2], totals[3]
+            )
 
-
-def _actual_model_rollups(
-    conn: sqlite3.Connection,
-    origin: str | None,
-) -> dict[tuple[str, str], tuple[int, int, int, int]]:
-    rows = conn.execute(
-        f"""
-        SELECT u.session_id AS session_id, u.model_name AS model_name,
-               u.input_tokens AS input_tokens, u.output_tokens AS output_tokens,
-               u.cache_read_tokens AS cache_read_tokens, u.cache_write_tokens AS cache_write_tokens
+    actual_rows = conn.execute(
+        """
+        SELECT u.session_id,
+               u.model_name,
+               u.input_tokens,
+               u.output_tokens,
+               u.cache_read_tokens,
+               u.cache_write_tokens
         FROM session_model_usage AS u
         JOIN sessions AS s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
+        WHERE (? IS NULL OR s.origin = ?)
         """,
-        _origin_args(origin),
+        (origin, origin),
     ).fetchall()
-    return {
+    actual = {
         (str(row["session_id"]), str(row["model_name"])): (
             _int(row["input_tokens"]),
             _int(row["output_tokens"]),
             _int(row["cache_read_tokens"]),
             _int(row["cache_write_tokens"]),
         )
-        for row in rows
+        for row in actual_rows
     }
+    stale_by_origin: dict[str, set[str]] = defaultdict(set)
+    for session_id, expected_by_model in expected.items():
+        for model_name, expected_tokens in expected_by_model.items():
+            if actual.get((session_id, model_name)) != expected_tokens:
+                stale_by_origin[origin_by_session[session_id]].add(session_id)
 
-
-def _models_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, tuple[str, ...]]:
-    rows = conn.execute(
-        f"""
-        SELECT u.session_id AS session_id, u.model_name AS model_name
-        FROM session_model_usage AS u
-        JOIN sessions AS s ON s.session_id = u.session_id
-        {_where_origin(origin, table_alias="s")}
-        ORDER BY u.session_id, u.model_name
-        """,
-        _origin_args(origin),
-    ).fetchall()
-    result: dict[str, list[str]] = defaultdict(list)
-    for row in rows:
-        model_name = str(row["model_name"]).strip() if row["model_name"] else ""
-        if model_name:
-            result[str(row["session_id"])].append(model_name)
-    return {session_id: tuple(models) for session_id, models in result.items()}
-
-
-def _origin_by_session(conn: sqlite3.Connection, origin: str | None) -> dict[str, str]:
-    rows = conn.execute(
-        f"""
-        SELECT session_id, origin
-        FROM sessions
-        {_where_origin(origin)}
-        """,
-        _origin_args(origin),
-    ).fetchall()
-    return {str(row["session_id"]): str(row["origin"]) for row in rows}
+    counts = {origin_name: len(session_ids) for origin_name, session_ids in stale_by_origin.items()}
+    samples = {
+        origin_name: tuple(sorted(session_ids)[:limit]) if limit is not None else tuple(sorted(session_ids))
+        for origin_name, session_ids in stale_by_origin.items()
+    }
+    return counts, samples
 
 
 def _source_schema_alias(conn: sqlite3.Connection) -> str | None:
@@ -1164,6 +1546,7 @@ def _pricing_lane_reports(
     origin: str | None,
     *,
     logical: bool = False,
+    observed_at: str,
 ) -> tuple[PricingLaneReport, ...]:
     if logical:
         session_count_rows = conn.execute(
@@ -1298,6 +1681,23 @@ def _pricing_lane_reports(
         if usage.cached_input_tokens and catalog_cost == 0.0 and provenance != "priced":
             caveats_by_provenance[provenance].add("unpriced_cache_read_or_missing_price")
         bucket.catalog_api_equivalent_usd += catalog_cost
+        # Dual cost view (polylogue-f2qv.3 / polylogue-5hf): compute the
+        # subscription-credit basis alongside the API-equivalent one, from the
+        # same row usage, independent of whether catalog_cost above reused the
+        # stored cost_usd. compute_credit_cost returns 0 for models without a
+        # declared credit rate (e.g. non-Claude models), so subscription_credit
+        # naturally stays 0.0 there rather than fabricating a number.
+        if model_name:
+            normalized_for_credit = _normalize_model(model_name)
+            credit_cost = compute_credit_cost(
+                normalized_for_credit,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_tokens,
+            )
+            if credit_cost > 0:
+                bucket.subscription_credit_usd += credits_to_usd(credit_cost)
 
     result: list[PricingLaneReport] = []
     for provenance, bucket in sorted(
@@ -1313,7 +1713,13 @@ def _pricing_lane_reports(
                 unmatched_model_row_count=bucket.unmatched_model_row_count,
                 usage=bucket.usage,
                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
-                catalog_api_equivalent_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                catalog_api_equivalent_usd=(
+                    None if bucket.unmatched_model_row_count > 0 else round(bucket.catalog_api_equivalent_usd, 6)
+                ),
+                catalog_priced_subtotal_usd=round(bucket.catalog_api_equivalent_usd, 6),
+                subscription_credit_usd=round(bucket.subscription_credit_usd, 6),
+                grain=("logical_session_model_high_water" if logical else "physical_session"),
+                observed_at=observed_at,
                 caveats=tuple(sorted(caveats_by_provenance.get(provenance, ()))),
             )
         )
@@ -1325,14 +1731,15 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
     join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
     where_clause = _event_origin_where(origin)
-    args = _event_origin_args(origin)
+    event_args = _event_origin_args(origin)
+    args = (*event_args[:1], _MODEL_NAME_STRIP_CHARS, *event_args[1:])
     select_parts = [
         origin_select,
         "COUNT(*) AS provider_event_count",
         "COUNT(DISTINCT e.session_id) AS provider_event_session_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'token_count' THEN 1 ELSE 0 END), 0) AS token_count_event_count",
         "COALESCE(SUM(CASE WHEN e.provider_event_type = 'message_usage' THEN 1 ELSE 0 END), 0) AS message_usage_event_count",
-        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
+        "COALESCE(SUM(CASE WHEN e.model_name IS NULL OR TRIM(e.model_name, ?) = '' THEN 1 ELSE 0 END), 0) AS missing_model_event_count",
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
@@ -1340,8 +1747,9 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     select_parts.append(f"COALESCE(SUM(CASE WHEN {zero_predicate} THEN 1 ELSE 0 END), 0) AS zero_token_event_count")
     for public_name, expr in last_cols.items():
         select_parts.append(f"COALESCE(SUM({expr}), 0) AS {public_name}")
-    rows = conn.execute(
-        f"""
+    try:
+        rows = conn.execute(
+            f"""
         SELECT {", ".join(select_parts)}
         FROM session_provider_usage_events e
         {join_sessions}
@@ -1349,8 +1757,12 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
         GROUP BY origin
         ORDER BY origin
         """,
-        args,
-    ).fetchall()
+            args,
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "integer overflow" not in str(exc).lower():
+            raise
+        return _provider_event_stats_streaming(conn, origin)
     result: dict[str, dict[str, object]] = {}
     for row in rows:
         result[str(row["origin"])] = {
@@ -1373,42 +1785,128 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     return result
 
 
-def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
-    columns = _table_columns(conn, "session_provider_usage_events")
-    total_cols = _counter_columns(columns, prefix="total")
-    total_predicate = " OR ".join([f"COALESCE({expr}, 0) > 0" for expr in total_cols.values()])
-    origin_select = "? AS origin" if origin is not None else "s.origin AS origin"
-    join_sessions = "" if origin is not None else "JOIN sessions s ON s.session_id = e.session_id"
-    origin_filter = _event_origin_predicate(origin)
-    where_parts = [part for part in (origin_filter, f"({total_predicate})") if part]
-    where_clause = "WHERE " + " AND ".join(where_parts)
+def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, object]]:
+    """Exact fallback for legal counters whose aggregate exceeds SQLite INTEGER."""
+
     rows = conn.execute(
-        f"""
-        SELECT {origin_select},
-               e.session_id AS session_id,
-               COALESCE(NULLIF(TRIM(e.model_name), ''), '__unknown_model__') AS model_key,
-               e.position AS position,
-               {total_cols["input_tokens"]} AS input_tokens,
-               {total_cols["output_tokens"]} AS output_tokens,
-               {total_cols["cached_input_tokens"]} AS cached_input_tokens,
-               {total_cols["cache_write_tokens"]} AS cache_write_tokens,
-               {total_cols["reasoning_output_tokens"]} AS reasoning_output_tokens,
-               {total_cols["total_tokens"]} AS total_tokens
-        FROM session_provider_usage_events e
-        {join_sessions}
-        {where_clause}
-        ORDER BY origin, e.session_id, e.position
+        """
+        SELECT s.origin,
+               e.session_id,
+               e.provider_event_type,
+               e.model_name,
+               e.last_input_tokens,
+               e.last_output_tokens,
+               e.last_cached_input_tokens,
+               e.last_cache_write_tokens,
+               e.last_reasoning_output_tokens,
+               e.last_total_tokens,
+               e.total_input_tokens,
+               e.total_output_tokens,
+               e.total_cached_input_tokens,
+               e.total_cache_write_tokens,
+               e.total_reasoning_output_tokens,
+               e.total_tokens
+        FROM sessions AS s
+        JOIN session_provider_usage_events AS e ON e.session_id = s.session_id
+        WHERE (? IS NULL OR s.origin = ?)
         """,
-        (*_event_origin_args(origin),),
-    ).fetchall()
-    # The cumulative total_* is session-global, so dedupe to one latest
-    # cumulative per (origin, session) — the highest-position event — rather
-    # than per model. Partitioning by model and summing double-counts because
-    # each model's latest cumulative already includes prior models' tokens
-    # (#2472). ORDER BY ... e.position makes the last write per session win.
-    latest: dict[tuple[str, str], UsageCounters] = {}
+        (origin, origin),
+    )
+    counts_by_origin: dict[str, Counter[str]] = defaultdict(Counter)
+    sessions_by_origin: dict[str, set[str]] = defaultdict(set)
+    last_totals_by_origin: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0, 0])
     for row in rows:
-        latest[(str(row["origin"]), str(row["session_id"]))] = UsageCounters.from_row(
+        origin_name = str(row["origin"])
+        counts = counts_by_origin[origin_name]
+        counts["provider_event_count"] += 1
+        sessions_by_origin[origin_name].add(str(row["session_id"]))
+        counts[f"{row['provider_event_type']}_event_count"] += 1
+        if not _normalize_model_name(row["model_name"]):
+            counts["missing_model_event_count"] += 1
+        last_values = (
+            _int(row["last_input_tokens"]),
+            _int(row["last_output_tokens"]),
+            _int(row["last_cached_input_tokens"]),
+            _int(row["last_cache_write_tokens"]),
+            _int(row["last_reasoning_output_tokens"]),
+            _int(row["last_total_tokens"]),
+        )
+        total_values = (
+            _int(row["total_input_tokens"]),
+            _int(row["total_output_tokens"]),
+            _int(row["total_cached_input_tokens"]),
+            _int(row["total_cache_write_tokens"]),
+            _int(row["total_reasoning_output_tokens"]),
+            _int(row["total_tokens"]),
+        )
+        if not any((*last_values, *total_values)):
+            counts["zero_token_event_count"] += 1
+        last_totals = last_totals_by_origin[origin_name]
+        for index, value in enumerate(last_values):
+            last_totals[index] += value
+
+    result: dict[str, dict[str, object]] = {}
+    for origin_name, counts in counts_by_origin.items():
+        result[origin_name] = {
+            "provider_event_count": counts["provider_event_count"],
+            "provider_event_session_count": len(sessions_by_origin[origin_name]),
+            "token_count_event_count": counts["token_count_event_count"],
+            "message_usage_event_count": counts["message_usage_event_count"],
+            "missing_model_event_count": counts["missing_model_event_count"],
+            "zero_token_event_count": counts["zero_token_event_count"],
+            "provider_request_usage": UsageCounters(*last_totals_by_origin[origin_name]),
+        }
+    return result
+
+
+def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
+    """Return cumulative usage from at most one indexed event per session."""
+
+    rows = conn.execute(
+        """
+        /* provider_usage_latest_cumulative */
+        WITH latest_positions AS MATERIALIZED (
+            SELECT s.origin,
+                   s.session_id,
+                   (
+                       SELECT e.position
+                       FROM session_provider_usage_events AS e
+                       WHERE e.session_id = s.session_id
+                         AND (
+                             e.total_input_tokens > 0
+                             OR e.total_output_tokens > 0
+                             OR e.total_cached_input_tokens > 0
+                             OR e.total_cache_write_tokens > 0
+                             OR e.total_reasoning_output_tokens > 0
+                             OR e.total_tokens > 0
+                         )
+                       ORDER BY e.position DESC
+                       LIMIT 1
+                   ) AS latest_position
+            FROM sessions AS s
+            WHERE (? IS NULL OR s.origin = ?)
+        )
+        SELECT lp.origin,
+               lp.session_id,
+               e.total_input_tokens AS input_tokens,
+               e.total_output_tokens AS output_tokens,
+               e.total_cached_input_tokens AS cached_input_tokens,
+               e.total_cache_write_tokens AS cache_write_tokens,
+               e.total_reasoning_output_tokens AS reasoning_output_tokens,
+               e.total_tokens AS total_tokens
+        FROM latest_positions AS lp
+        JOIN session_provider_usage_events AS e
+          ON e.session_id = lp.session_id
+         AND e.position = lp.latest_position
+        """,
+        (origin, origin),
+    ).fetchall()
+    # The query emits at most one row per session; Python retains exact integer
+    # addition even when an all-origin total exceeds SQLite's signed 64-bit SUM.
+    by_origin: dict[str, UsageCounters] = defaultdict(UsageCounters)
+    for row in rows:
+        origin_name = str(row["origin"])
+        counters = UsageCounters.from_row(
             row,
             input_key="input_tokens",
             output_key="output_tokens",
@@ -1417,8 +1915,6 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
             reasoning_output_key="reasoning_output_tokens",
             total_key="total_tokens",
         )
-    by_origin: dict[str, UsageCounters] = defaultdict(UsageCounters)
-    for (origin_name, _session_id), counters in latest.items():
         by_origin[origin_name] = by_origin[origin_name].plus(counters)
     return dict(by_origin)
 
@@ -1558,11 +2054,6 @@ def _event_origin_args(origin: str | None) -> tuple[str, ...]:
         return ()
     prefix = f"{origin}:"
     return (origin, prefix, f"{origin};")
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
-    return row is not None
 
 
 def _table_columns(conn: sqlite3.Connection, name: str) -> set[str]:

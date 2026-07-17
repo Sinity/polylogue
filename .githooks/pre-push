@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Pre-push gate: quick verification baseline (format + lint only).
-# Full verification (mypy, render all, pytest) is expected to have already
-# run via `devtools verify` before the push (see CONTRIBUTING.md).
-# CI runs the complete baseline.
+# Pre-push gate: full quick verification for product/code changes; Beads graph
+# integrity only when every pushed path is under .beads/. Full testmon
+# verification is expected before product pushes (see CONTRIBUTING.md).
 #
 # When `devtools verify` completed successfully at the current HEAD, the
 # stamp file at .cache/last-verify-head matches and this hook is a no-op.
 
 set -euo pipefail
+
+UPDATES_FILE=$(mktemp)
+trap 'rm -f "$UPDATES_FILE"' EXIT
+cat >"$UPDATES_FILE"
 
 # Pre-flight: ensure checkout-local devtools is importable before attempting verification.
 if ! python -m devtools --help >/dev/null 2>&1; then
@@ -15,17 +18,4 @@ if ! python -m devtools --help >/dev/null 2>&1; then
     exit 2
 fi
 
-STAMP_FILE=".cache/last-verify-head"
-
-if [[ -f "$STAMP_FILE" ]]; then
-    STAMPED=$(head -n1 "$STAMP_FILE")
-    CURRENT=$(git rev-parse HEAD)
-    if [[ "$STAMPED" == "$CURRENT" ]]; then
-        echo "pre-push: HEAD already verified (${STAMPED:0:8}); skipping." >&2
-        exit 0
-    fi
-    echo "pre-push: HEAD changed since last verify; running gate." >&2
-fi
-
-echo "pre-push: running quick verification baseline" >&2
-python -m devtools verify --quick
+python -m devtools.pre_push_gate "$UPDATES_FILE"

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-10",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "artifact": {"filename": "testdiet-10-claude-web-normalization-r01.zip", "sha256": "b73e7d46d640dcfbf9a3feec7842ee4ed029e19ef7fe36b49413ef98bffdb91f", "size_bytes": 32845, "custody_path": "testdiet/results/testdiet-10/a01/raw/testdiet-10-claude-web-normalization-r01.zip"},
+  "local_adjudication": "Direct exports, native browser envelopes, and degraded DOM fallback now share Claude evidence normalization while retaining native identity and fidelity.",
+  "beads": ["polylogue-2qx", "polylogue-2qx.1"],
+  "merge_commit": "1d3145afa5f07a8f90ffceefc33ba425c877a8ad",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3044",
+  "verification": "Focused new-law set and devtools verify --quick passed.",
+  "scope": "Claude web normalization slice; live authenticated capture remains unverified."
+}

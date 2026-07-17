@@ -21,9 +21,9 @@ async def list_session_tag_rollup_rows(
 ) -> list[SessionTagRollupRecord]:
     params: list[object] = []
     where: list[str] = []
-    if query.provider:
+    if query.origin:
         where.append("source_name = ?")
-        params.append(query.provider)
+        params.append(query.origin)
     if query.since:
         where.append("bucket_day >= date(?)")
         params.append(query.since)

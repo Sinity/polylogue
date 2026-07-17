@@ -6,6 +6,11 @@ import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
+from polylogue.logging import get_logger
+from polylogue.storage.table_existence import table_exists as _table_exists
+
+logger = get_logger(__name__)
+
 
 def session_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
     return session_ids_for_source_paths(conn, [path]).get(path, [])
@@ -50,7 +55,11 @@ def _schema_archive_session_ids_for_source_paths(
             """,
             tuple(paths_by_text),
         ).fetchall()
-    except Exception:
+    except Exception as exc:
+        # session_ids_for_source_paths() falls through to an all-empty
+        # dict when this returns None, identical to "no sessions reference
+        # these paths" — log so a query failure isn't mistaken for that.
+        logger.warning("source-sessions lookup failed: %s", exc, exc_info=True)
         return None
     for row in rows:
         path = paths_by_text.get(str(row[0]))
@@ -76,11 +85,3 @@ def _sibling_source_db(conn: sqlite3.Connection) -> Path | None:
             return None
         return Path(path_text).with_name("source.db")
     return None
-
-
-def _table_exists(conn: sqlite3.Connection, table: str, *, schema: str = "main") -> bool:
-    row = conn.execute(
-        f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None

@@ -1,0 +1,99 @@
+{
+  "domain": "cross-cutting-priority-frame-and-hygiene",
+  "summary": "Priority frame is broadly sound: the live top-of-frame (cfk uplift re-run, 3tl legibility) and the new P1 substrate epics (s7ae coordination, 4smp variants) are correctly elevated, and no tier-4 polish blocks any tier-1 work (the three P4 bugs incl. s8q are intentionally parked, not displacing). The single in_progress bead s7ae.1 is genuinely active (its coordination envelope/CLI code is uncommitted in the working tree, matching its design exactly). Two real hygiene defects: the P1 scale-hardening epic 1xc has confirmed-live severe bugs but zero child beads (work anchored only in a GH checklist), and all four genuine `decision` beads have already-resolved decisions still sitting open (one, f94, is now pure execution work mistyped as a decision).",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Chunk full insight rebuild into bounded per-batch transactions with progress rows",
+      "type": "bug",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc's OWN design names this as a tier-1 CONFIRMED-LIVE bug: 'full insight rebuild runs as ONE transaction -> 6GB WAL + minutes-long write lock on the live archive'. The epic has zero child beads, so its highest-severity item is not actionable in the tracker (only in gh#2465), violating the beads-is-tracker doctrine.",
+      "design": "In the storage/insights rebuild path, replace the single wrapping transaction with bounded per-batch transactions (fixed session/message batch size), emitting progress rows so a crash resumes mid-rebuild. Cap WAL growth; verify against the live 16K-session / 5M-message archive shape.",
+      "acceptance": "Insight rebuild on a large-archive copy holds WAL under a bounded cap (e.g. the journal_size_limit) and never holds a minutes-long write lock; progress is observable; a scale-tier test on the synthetic corpus generator would have caught the one-transaction regression.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Audit global PKs derived from non-unique local coordinates (run_ref collision class siblings)",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-1xc",
+      "why": "1xc's design: 'the run_ref global-PK collision class was fixed (#2464) -- audit for siblings (any global PK derived from non-unique local coordinates)'. No child bead carries this audit.",
+      "design": "Enumerate every global primary/unique key constructed from local coordinates (session-local index, per-artifact ordinal, etc.); prove uniqueness at real scale (duplicate native ids, hash collisions, 16K+ sessions); fix any collision-prone key like #2464.",
+      "acceptance": "A written audit lists every global-PK-from-local-coordinate site with a uniqueness verdict at scale; each collision-prone site has a fix or a follow-up bead.",
+      "deps": []
+    },
+    {
+      "proposed_title": "Scale-regression lane: seeded large-archive tier / live-copy probe wired into optional lanes",
+      "type": "task",
+      "priority": 2,
+      "parent": "polylogue-1xc",
+      "why": "This is 1xc's explicit epic-terminal AC ('a scale-regression lane exists that would have caught each shipped bug class, wired into the optional lanes'). Nothing currently carries it, so the epic can never reach its own terminal state.",
+      "design": "Extend the synthetic corpus generator to a large-archive tier (or a sanitized live-copy probe) and register a devtools optional lane that exercises rebuild/WAL/PK invariants at that scale.",
+      "acceptance": "`devtools lab lanes` lists a scale-regression lane; running it reproduces the WAL/lock and PK-collision bug classes on the seeded tier; wired as an optional (not per-PR) lane.",
+      "deps": ["polylogue-1xc"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-f94",
+      "kind": "wrong-type",
+      "evidence": "Typed `decision` but description reads 'DECIDED (operator, 2026-07-03): KILL' with a concrete Execution block (delete ui/tui, its command/inventory registrations, tests, the Textual dependency, then regenerate topology projection + render all --check). No decision remains open; this is deletion execution work.",
+      "fix": "Retype to `task` (P3). The decision is recorded; the remaining scope is a mechanical removal PR with the execution steps already enumerated."
+    },
+    {
+      "id": "polylogue-jgp",
+      "kind": "other",
+      "evidence": "Typed `decision`, but description ends 'Status: adopted; apply when prioritizing/designing context-loop, web, and CLI surfaces.' The decision is made, not pending.",
+      "fix": "Resolved-decision-still-open: close as a recorded doctrine (or move the doctrine text into docs and close). It should not sit in the open/ready decision queue as if undecided."
+    },
+    {
+      "id": "polylogue-6mv",
+      "kind": "other",
+      "evidence": "Typed `decision`; 'Status: adopt as working doctrine; the Sinex-side emitter is future work gated on the substrate write-leg and Sinex production restore.' The decision is adopted; only downstream implementation (a separate feature) remains.",
+      "fix": "Resolved-decision-still-open: close the decision; track the Sinex-emitter implementation as a separate feature gated on the rii write-leg rather than keeping the decision bead open."
+    },
+    {
+      "id": "polylogue-lnd",
+      "kind": "other",
+      "evidence": "Typed `decision`; 'Status: working doctrine; revisit when beads ingestion lands.' The beads-vs-assertions boundary is decided (working doctrine), not an open question.",
+      "fix": "Resolved-decision-still-open: close as recorded doctrine with a note to revisit at beads-ingestion; do not carry an adopted boundary as open decision work."
+    },
+    {
+      "id": "polylogue-1xc",
+      "kind": "other",
+      "evidence": "P1 epic scope defers its actual worklist to an external GH checklist: 'Work the checklist on the issue; tier-1 items were observed live' and design says 'gh#2465 checklist is authoritative; work it there'. Per doctrine 'GH issues are external-refs, NOT mirrors', authoritative work should live in beads children, not only in the GH thread.",
+      "fix": "Materialize the tier-1 checklist items as child beads (see gaps: rebuild chunking, global-PK sibling audit, scale-regression lane). Keep gh-2465 as an external ref, not the authority."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-1xc",
+      "issue": "epic-ac-gap",
+      "detail": "P1 epic 'Scale-hardening: bugs that only bite on real-scale archives' has 0 child beads yet its AC requires 'every child closed and a scale-regression lane exists', and its design names three concrete tier-1/CONFIRMED-LIVE items (one-transaction insight rebuild -> 6GB WAL + minutes-long lock; run_ref-class global-PK collision sibling audit; scale-regression lane). The epic cannot reach its own terminal state with no children, and the actual work is anchored only in gh#2465. This is the highest-severity correctness epic in the frame yet is unactionable in the tracker.",
+      "proposed": "Create the three child beads listed under gaps (2 at P1 correctness, 1 at P2 lane) parented to 1xc; treat gh-2465 as an external ref only."
+    },
+    {
+      "id": "polylogue-1ty",
+      "issue": "priority-violation",
+      "detail": "P3 bug 'fts_freshness_state declared twice: reconcile with schema policy' is a schema-policy self-violation risk (DDL appears in tier DDL AND the lifecycle ensure-path; shapes could diverge). Under the frame (correctness > surface hygiene) a live schema-consistency defect on a storage/FTS-readiness column outranks P3 surface work sitting at P2. It is confirmed as a duplication, only the divergence-severity is 're-verify on current source'.",
+      "proposed": "Raise to P2 (or park explicitly if verified benign). If it survives re-verification as a real divergence risk, it belongs with the storage-correctness tier, not deep P3 backlog. Optionally relate to the 9e5 audit epic (column-honesty / schema-inference audits)."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-f94",
+      "change": "reprioritize",
+      "from": "decision P3",
+      "to": "task P3",
+      "rationale": "Decision is DECIDED (KILL the TUI); remaining scope is a mechanical deletion PR. Retyping from `decision` to `task` makes it a claimable execution item instead of a phantom open decision. (Type change, priority unchanged.)"
+    },
+    {
+      "id": "polylogue-s8q",
+      "change": "reprioritize",
+      "from": "bug P4",
+      "to": "bug P4 (verified-intentional; no change)",
+      "rationale": "Flagged and cleared: 'Make deployed Polylogue state trustworthy' reads as a correctness bug that P4 would seem to under-rank, but the description shows it is DELIBERATELY parked ('Parked while prod polylogued.service is deliberately inactive during the devloop; re-triage at next deploy'). This is intentional deferral gated on a deploy, not tier-4 polish displacing tier-1 work. Leave at P4; re-triage at next deploy as the bead itself states."
+    }
+  ]
+}

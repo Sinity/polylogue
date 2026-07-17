@@ -50,7 +50,10 @@ def handle_healthz_live(responder: ProbeResponder) -> None:
     and restart the pod — which is precisely the failure mode liveness
     is supposed to detect, but only when the *process* itself is wedged.
     """
+    from polylogue.daemon.lifecycle import process_heartbeat_age_seconds
+
     uptime_s = uptime_seconds()
+    heartbeat_age_s = process_heartbeat_age_seconds()
     responder._send_json(
         HTTPStatus.OK,
         {
@@ -58,6 +61,7 @@ def handle_healthz_live(responder: ProbeResponder) -> None:
             "pid": os.getpid(),
             "started_at": started_at_wall(),
             "uptime_s": round(uptime_s, 3),
+            "heartbeat_age_s": None if heartbeat_age_s is None else round(heartbeat_age_s, 3),
         },
     )
 

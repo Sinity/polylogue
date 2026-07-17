@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
-from pydantic import RootModel
+from pydantic import Field, RootModel
 from typing_extensions import TypedDict
 
 from polylogue.context.compiler import ContextImage
 from polylogue.core.json import JSONDocument
+from polylogue.core.sources import source_name_to_origin
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     AssertionClaimPayload,
@@ -23,7 +25,7 @@ from polylogue.surfaces.payloads import (
     SurfacePayloadModel,
     build_search_envelope,
     model_json_document,
-    normalize_role,
+    role_label,
 )
 from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload as MCPReaderActionAvailabilityPayload,
@@ -100,6 +102,7 @@ class MCPErrorPayload(SurfacePayloadModel):
     # enum value is exposed so clients can render the same actionable
     # operator message ``polylogue ops embed status`` does.
     readiness_status: str | None = None
+    valid_values: tuple[str, ...] = ()
     is_error: Literal[True] = True
 
 
@@ -123,6 +126,46 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+
+
+class MCPContextDeliveryPayload(SurfacePayloadModel):
+    """One immutable context-delivery receipt returned to its recipient."""
+
+    snapshot_ref: str
+    recipient_ref: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str
+    context_image_sha256: str
+    context_image: ContextImage
+    segment_refs: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    assertion_refs: tuple[str, ...]
+    omissions: tuple[dict[str, object], ...]
+    caveats: tuple[str, ...]
+    metadata: dict[str, str]
+    delivered_by_ref: str
+    delivered_at_ms: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveContextDeliveryEnvelope) -> MCPContextDeliveryPayload:
+        return cls(
+            snapshot_ref=envelope.snapshot_ref,
+            recipient_ref=envelope.recipient_ref,
+            run_ref=envelope.run_ref,
+            boundary=envelope.boundary,
+            inheritance_mode=envelope.inheritance_mode,
+            context_image_sha256=envelope.context_image_sha256,
+            context_image=envelope.context_image,
+            segment_refs=envelope.segment_refs,
+            evidence_refs=envelope.evidence_refs,
+            assertion_refs=envelope.assertion_refs,
+            omissions=envelope.omissions,
+            caveats=envelope.caveats,
+            metadata=envelope.metadata,
+            delivered_by_ref=envelope.delivered_by_ref,
+            delivered_at_ms=envelope.delivered_at_ms,
+        )
 
 
 class MCPFencedCodeBlock(TypedDict):
@@ -188,11 +231,21 @@ class MCPSessionSearchNoResultsPayload(SurfacePayloadModel):
     diagnostics: MCPQueryMissDiagnosticsPayload
 
 
+class MCPMatchedSessionSummaryPayload(MCPSessionSummaryPayload):
+    """Session-list row carrying its observed raw-match cardinality."""
+
+    match_count: int = Field(default=1, ge=1)
+    match_count_is_exact: bool = True
+
+
 class MCPPaginatedQueryResultPayload(SurfacePayloadModel):
     """Paginated query result envelope for list_sessions."""
 
-    items: tuple[MCPSessionSummaryPayload, ...]
-    total: int
+    items: tuple[MCPMatchedSessionSummaryPayload, ...]
+    # Semantic/vector retrieval does not expose an exact archive cardinality;
+    # ``None`` is honest and keeps lower-bound page probes from masquerading as
+    # totals.
+    total: int | None
     limit: int
     offset: int
     next_offset: int | None = None
@@ -216,7 +269,7 @@ class MCPSessionRefPayload(SurfacePayloadModel):
     """One session reference inside a topology payload (#1261)."""
 
     session_id: str
-    source_name: str = ""
+    origin: str = ""
     title: str | None = None
     depth: int = 0
 
@@ -440,7 +493,12 @@ def session_query_result_payload(
 ) -> MCPPaginatedQueryResultPayload:
     next_offset = offset + len(sessions) if len(sessions) == limit and offset + limit < total else None
     return MCPPaginatedQueryResultPayload(
-        items=tuple(MCPSessionSummaryPayload.from_session(conv) for conv in sessions),
+        items=tuple(
+            MCPMatchedSessionSummaryPayload(
+                **MCPSessionSummaryPayload.from_session(conv).model_dump(mode="python"),
+            )
+            for conv in sessions
+        ),
         total=total,
         limit=limit,
         offset=offset,
@@ -486,7 +544,7 @@ def _ref_payload(ref: object) -> MCPSessionRefPayload:
     assert isinstance(ref, SessionRef)
     return MCPSessionRefPayload(
         session_id=str(ref.session_id),
-        source_name=ref.source_name,
+        origin=ref.origin,
         title=ref.title,
         depth=ref.depth,
     )
@@ -713,6 +771,9 @@ class MCPUserMarkPayload(SurfacePayloadModel):
 class MCPUserMarkListPayload(SurfacePayloadModel):
     items: tuple[MCPUserMarkPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPUserAnnotationPayload(SurfacePayloadModel):
@@ -729,6 +790,9 @@ class MCPUserAnnotationPayload(SurfacePayloadModel):
 class MCPUserAnnotationListPayload(SurfacePayloadModel):
     items: tuple[MCPUserAnnotationPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPSavedViewPayload(SurfacePayloadModel):
@@ -741,6 +805,9 @@ class MCPSavedViewPayload(SurfacePayloadModel):
 class MCPSavedViewListPayload(SurfacePayloadModel):
     items: tuple[MCPSavedViewPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPRecallPackPayload(SurfacePayloadModel):
@@ -754,6 +821,9 @@ class MCPRecallPackPayload(SurfacePayloadModel):
 class MCPRecallPackListPayload(SurfacePayloadModel):
     items: tuple[MCPRecallPackPayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPReaderWorkspacePayload(SurfacePayloadModel):
@@ -770,6 +840,9 @@ class MCPReaderWorkspacePayload(SurfacePayloadModel):
 class MCPReaderWorkspaceListPayload(SurfacePayloadModel):
     items: tuple[MCPReaderWorkspacePayload, ...]
     total: int
+    limit: int
+    offset: int
+    next_offset: int | None = None
 
 
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
@@ -800,7 +873,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     """One raw archive artifact for the raw_artifacts tool."""
 
     raw_id: str
-    source_name: str | None = None
+    origin: str | None = None
     source_path: str
     blob_size: int
     acquired_at: str
@@ -814,7 +887,7 @@ class MCPRawArtifactPayload(SurfacePayloadModel):
     def from_record(cls, record: RawSessionRecord) -> MCPRawArtifactPayload:
         return cls(
             raw_id=record.raw_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             source_path=record.source_path,
             blob_size=record.blob_size,
             acquired_at=record.acquired_at,
@@ -871,6 +944,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
     source: str | None = None
     archive_convergence: dict[str, Any] | None = None
     component_readiness: dict[str, Any] | None = None
+    mcp_call_delivery: dict[str, Any] | None = None
 
     @classmethod
     def from_report(
@@ -881,6 +955,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
         include_detail: bool,
         include_cached: bool,
         include_component_readiness: bool = True,
+        mcp_call_delivery: dict[str, Any] | None = None,
     ) -> MCPReadinessReportPayload:
         archive_convergence = _extract_archive_convergence(report)
         return cls(
@@ -898,6 +973,7 @@ class MCPReadinessReportPayload(SurfacePayloadModel):
             component_readiness=_readiness_components(report, archive_convergence)
             if include_component_readiness
             else None,
+            mcp_call_delivery=mcp_call_delivery,
         )
 
 
@@ -924,6 +1000,7 @@ def _readiness_components(
 
 __all__ = [
     "MCPArchiveStatsPayload",
+    "MCPContextDeliveryPayload",
     "MCPContextImagePayload",
     "MCPSessionDetailPayload",
     "MCPSessionNeighborCandidateListPayload",
@@ -982,7 +1059,7 @@ __all__ = [
     "model_json_document",
     "neighbor_candidates_payload",
     "logical_session_payload",
-    "normalize_role",
+    "role_label",
     "session_tree_payload",
     "session_topology_payload",
 ]

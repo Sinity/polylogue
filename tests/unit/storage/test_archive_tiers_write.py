@@ -2797,6 +2797,89 @@ def test_refresh_thread_appends_suffix_without_rebuilding_membership(tmp_path: P
     assert parent_thread_deletes == []
 
 
+def test_refresh_thread_reorder_only_touches_changed_span(tmp_path: Path) -> None:
+    """A same-membership reorder (a member's sort key moves past siblings,
+    e.g. a late append to an older session) must delete+reinsert only the
+    span that actually differs, not the whole thread (polylogue-6wnh).
+    """
+    conn = _connect(tmp_path / "index.db")
+    origin = "codex-session"
+    root_native_id = "root"
+    root_session_id = f"{origin}:{root_native_id}"
+    conn.execute(
+        "INSERT INTO sessions (origin, native_id, title, content_hash, root_session_id, "
+        "created_at_ms, updated_at_ms) VALUES (?, ?, 't', ?, ?, 0, 0)",
+        (origin, root_native_id, b"r" * 32, root_session_id),
+    )
+    child_ids = []
+    for i in range(1, 6):
+        native_id = f"child{i}"
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash, root_session_id, "
+            "created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+            (origin, native_id, bytes([i]) * 32, root_session_id, i * 1000, i * 1000),
+        )
+        child_ids.append(f"{origin}:{native_id}")
+    conn.commit()
+    archive_tier_write._refresh_thread(conn, root_session_id)
+    conn.commit()
+
+    before = [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT session_id, position FROM thread_sessions WHERE thread_id = ? ORDER BY position",
+            (root_session_id,),
+        ).fetchall()
+    ]
+    assert before == [(root_session_id, 0)] + [(cid, i) for i, cid in enumerate(child_ids, start=1)]
+
+    # child2 (originally position 2) gets appended to and its updated_at_ms
+    # jumps past child3/child4/child5 -- it should now sort last, and only
+    # positions 2..5 (child2's old slot through the new tail) should move.
+    conn.execute(
+        "UPDATE sessions SET updated_at_ms = 9999 WHERE origin = ? AND native_id = 'child2'",
+        (origin,),
+    )
+    conn.commit()
+
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    archive_tier_write._refresh_thread(conn, root_session_id)
+    conn.set_trace_callback(None)
+    conn.commit()
+
+    after = [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT session_id, position FROM thread_sessions WHERE thread_id = ? ORDER BY position",
+            (root_session_id,),
+        ).fetchall()
+    ]
+    assert after == [
+        (root_session_id, 0),
+        (child_ids[0], 1),  # child1 unchanged
+        (child_ids[2], 2),  # child3 shifted down
+        (child_ids[3], 3),  # child4 shifted down
+        (child_ids[4], 4),  # child5 shifted down
+        (child_ids[1], 5),  # child2 moved to the end
+    ]
+    thread_row = conn.execute(
+        "SELECT session_count, depth FROM threads WHERE thread_id = ?", (root_session_id,)
+    ).fetchone()
+    assert dict(thread_row) == {"session_count": 6, "depth": 5}
+
+    deletes = [stmt for stmt in statements if "DELETE FROM thread_sessions" in stmt]
+    # The unchanged leading run (root, child1) must not be touched by any
+    # delete -- a full unconditional rebuild would issue a bare
+    # "DELETE FROM thread_sessions WHERE thread_id = ?" here instead.
+    assert len(deletes) == 1
+    assert "position >=" in deletes[0] and "position <" in deletes[0]
+    inserts = [stmt for stmt in statements if "INSERT INTO thread_sessions" in stmt]
+    # Only the 4 rows in the affected span (child2's old slot through the
+    # new tail) get reinserted, not all 6 members.
+    assert len(inserts) == 4
+
+
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     child = ParsedSession(
@@ -2934,12 +3017,12 @@ def test_own_db_signatures_uses_session_scoped_block_lookup(tmp_path: Path) -> N
     plan_rows = conn.execute(
         """
         EXPLAIN QUERY PLAN
-        SELECT m.message_id, m.position, m.role,
+        SELECT m.message_id, m.position, m.variant_index, m.role,
                b.block_type, b.text, b.tool_name, b.tool_input
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
-        WHERE m.session_id = ? AND m.variant_index = 0
-        ORDER BY m.position, b.position
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
         """,
         ("session:planner",),
     ).fetchall()

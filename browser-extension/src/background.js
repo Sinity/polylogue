@@ -1,17 +1,342 @@
+import { BackfillCoordinator } from "./backfill/coordinator.js";
+import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "./backfill/models.js";
+import { providerAdapters } from "./backfill/providers.js";
+import { executeProviderPageRequest } from "./backfill/page_transport.js";
+import { IndexedDbBackfillStore } from "./backfill/storage.js";
+import { CaptureJobClient } from "./backfill/capture_jobs.js";
+import {
+  classifyBrowserActionFailure,
+  executeChatGptBrowserActionInPage,
+} from "./actions/chatgpt.js";
+import {
+  chatGptCaptureNeedsFollowUp,
+  claimDueFreshness,
+  completeFreshnessClaim,
+  failureRetryDelayMs,
+  normalizeFreshnessQueue,
+  runningPollDelayMs,
+  scheduleFreshnessHint,
+} from "./capture/freshness.js";
+
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
+const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
+const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
+const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
+const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
+const RECEIVER_TRUST_CACHE_MS = 10000;
+const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
-const POST_POLL_INTERVAL_MS = 5000;
-const CAPTURE_MESSAGE_TIMEOUT_MS = 15000;
+const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
+const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
+const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
+const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
+const BROWSER_ACTION_ALARM = "polylogueBrowserActionWake";
+const CAPTURE_FRESHNESS_ALARM = "polylogueCaptureFreshnessWake";
+const CAPTURE_FRESHNESS_SWEEP_ALARM = "polylogueCaptureFreshnessSweep";
+const CAPTURE_FRESHNESS_QUEUE_KEY = "polylogueCaptureFreshnessQueue";
+const CAPTURE_FRESHNESS_LEASE_MS = 2 * 60 * 1000;
+const CAPTURE_FRESHNESS_SWEEP_MINUTES = 15;
+const CAPTURE_FRESHNESS_SWEEP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
+const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
+const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
+const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
+const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
+const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
+const PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX = "polylogueProviderTransportOperatorTaken";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
-// command_id -> true once dispatched to a content script this SW lifetime, so a
-// fast poll cannot deliver the same command twice before its ack lands.
-const inFlightPostCommands = new Set();
-const pendingPostCommandAcks = new Map();
-let postPollTimer = 0;
+let backfillCoordinatorPromise = null;
+let extensionInstanceIdPromise = null;
+let browserActionExecutorIdPromise = null;
+const providerTransportPromises = new Map();
+const providerTransportOperations = new Map();
+let browserActionPollPromise = null;
+let captureFreshnessPollPromise = null;
+let storageMutationQueue = Promise.resolve();
+let captureQueueMutationQueue = Promise.resolve();
+let trustedReceiverHealthCache = null;
+
+function serializeStorageMutation(mutation) {
+  const result = storageMutationQueue.then(mutation, mutation);
+  storageMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function serializeCaptureQueueMutation(mutation) {
+  const result = captureQueueMutationQueue.then(mutation, mutation);
+  captureQueueMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function extensionInstanceId() {
+  if (!extensionInstanceIdPromise) {
+    const key = "polylogueExtensionInstanceId";
+    const candidate = (async () => {
+      const stored = await chrome.storage.local.get({ [key]: "" });
+      if (stored[key]) return stored[key];
+      const created = globalThis.crypto?.randomUUID?.() || `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await chrome.storage.local.set({ [key]: created });
+      return created;
+    })();
+    extensionInstanceIdPromise = candidate;
+    void candidate.catch(() => {
+      if (extensionInstanceIdPromise === candidate) extensionInstanceIdPromise = null;
+    });
+  }
+  return extensionInstanceIdPromise;
+}
+
+function browserActionExecutorId() {
+  if (!browserActionExecutorIdPromise) {
+    const key = "polylogueBrowserActionExecutorId";
+    const candidate = (async () => {
+      const session = chrome.storage.session;
+      if (!session?.get || !session?.set) return `browser-action-${BACKFILL_WORKER_EPOCH}`;
+      const stored = await session.get({ [key]: "" });
+      if (stored[key]) return stored[key];
+      const created = `browser-action-${globalThis.crypto?.randomUUID?.() || BACKFILL_WORKER_EPOCH}`;
+      await session.set({ [key]: created });
+      return created;
+    })();
+    browserActionExecutorIdPromise = candidate;
+    void candidate.catch(() => {
+      if (browserActionExecutorIdPromise === candidate) browserActionExecutorIdPromise = null;
+    });
+  }
+  return browserActionExecutorIdPromise;
+}
+
+async function withExtensionInstanceAttribution(envelope) {
+  const instanceId = await extensionInstanceId();
+  return {
+    ...envelope,
+    provenance: {
+      ...(envelope?.provenance || {}),
+      // The service worker owns this persistent identity. Do not trust an
+      // independently reloadable content script to choose the attribution.
+      extension_instance_id: instanceId,
+    },
+  };
+}
+
+// Legacy per-instance mirror retained only as migration evidence. CaptureJobs
+// below are the durability authority for new writes.
+function mirrorBackfillCheckpointToReceiver(instanceId, checkpoint) {
+  postJson(
+    "/v1/backfill-checkpoint",
+    { extension_instance_id: instanceId, checkpoint },
+    null,
+    PROVIDER_REQUEST_TIMEOUT_MS,
+  ).catch(() => undefined);
+}
+
+async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
+  const settings = await receiverSettings();
+  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
+  if (!Array.isArray(checkpoint?.jobs)) throw new Error("capture_job_checkpoint_invalid");
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
+  const handles = new Map();
+  const accountHandle = (provider) => {
+    if (!handles.has(provider)) handles.set(provider, providerAccountHandle(provider));
+    return handles.get(provider);
+  };
+  const results = await Promise.all(checkpoint.jobs.map(async (job) => {
+    try {
+      // Exact authenticated provider identity is mandatory. Guessing from the
+      // receiver pairing or extension profile can adopt another account's job.
+      const handle = await accountHandle(job.provider);
+      if (!handle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
+      const payload = {
+        version: checkpoint.version,
+        jobs: [job],
+        queue: checkpoint.queue?.filter((item) => item.job_id === job.id) || [],
+        revisions: checkpoint.revisions?.filter((revision) => revision.provider === job.provider) || [],
+      };
+      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle, locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff }, intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
+      adopted = await client.update(adopted, captureJobRetryState(job));
+      await client.checkpoint(adopted, payload);
+      return null;
+    } catch (error) {
+      return { job_id: job.id, error: String(error?.message || error) };
+    }
+  }));
+  return { failures: results.filter(Boolean) };
+}
+
+function captureJobRetryState(job) {
+  const attempt = Number.isSafeInteger(job.transport_failures) && job.transport_failures >= 0
+    ? job.transport_failures
+    : 0;
+  const nextEligible = Number.isFinite(job.cooldown_until_ms)
+    ? new Date(job.cooldown_until_ms).toISOString()
+    : null;
+  let state = "ready";
+  if (job.status === "complete") state = "completed";
+  else if (job.status === "cancelled") state = "abandoned";
+  else if (job.status === "paused") state = "held";
+  else if (nextEligible) state = "retry_wait";
+  return {
+    state,
+    attempt,
+    reason: job.cooldown_reason || job.last_error || null,
+    next_eligible_at: state === "retry_wait" ? nextEligible : null,
+  };
+}
+
+async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
+  try {
+    const remote = await getJson(
+      `/v1/backfill-checkpoint?extension_instance_id=${encodeURIComponent(instanceId)}`,
+      PROVIDER_REQUEST_TIMEOUT_MS,
+    );
+    if (remote?.checkpoint) return store.restoreRecoveryCheckpoint(remote.checkpoint);
+  } catch {
+    // No receiver-mirrored checkpoint reachable or available -- fall through
+    // to whatever local state already exists (typically none, the same
+    // empty-ledger outcome as before this fallback existed).
+  }
+  return { restored: 0, reason: "checkpoint_unavailable" };
+}
+
+async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
+  const settings = await receiverSettings();
+  if (!settings.authToken) return { checkpoint: null, successfulProviders: [] };
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: chrome.storage.local });
+  const recovered = [];
+  const successfulProviders = [];
+  for (const provider of providers) {
+    try {
+      const accountHandle = await providerAccountHandle(provider);
+      const adopted = await client.discoverRecovery(provider, accountHandle, instanceId);
+      recovered.push(...adopted.map((entry) => ({
+        ...entry.job,
+        recovery_checkpoint_updated_at: entry.recovery_updated_at,
+      })));
+      if (adopted.length) successfulProviders.push(provider);
+    } catch (error) {
+      await appendDebugLog({
+        stage: "capture_job_recovery_unavailable",
+        provider,
+        error: String(error.message || error),
+      });
+    }
+  }
+  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders };
+}
+
+function mergeCaptureJobRecoveryCheckpoints(jobs) {
+  const checkpoints = jobs
+    .filter((job) => job.checkpoint?.payload?.version === 1 && Array.isArray(job.checkpoint.payload.jobs))
+    .map((job) => {
+      const updatedAtMs = Date.parse(job.recovery_checkpoint_updated_at);
+      if (!Number.isFinite(updatedAtMs)) throw new Error(`capture_job_recovery_timestamp_invalid:${job.job_id}`);
+      return { jobId: job.job_id, updatedAtMs, payload: job.checkpoint.payload };
+    });
+  if (!checkpoints.length) return null;
+  const reconcile = (field) => {
+    const winners = new Map();
+    for (const checkpoint of checkpoints) {
+      for (const item of checkpoint.payload[field] || []) {
+        if (!item?.id) continue;
+        const current = winners.get(item.id);
+        if (!current) {
+          winners.set(item.id, { item, ...checkpoint });
+          continue;
+        }
+        if (JSON.stringify(current.item) === JSON.stringify(item)) continue;
+        if (checkpoint.updatedAtMs === current.updatedAtMs) {
+          throw new Error(`capture_job_recovery_conflict:${field}:${item.id}`);
+        }
+        if (checkpoint.updatedAtMs > current.updatedAtMs) winners.set(item.id, { item, ...checkpoint });
+      }
+    }
+    return [...winners.values()].map((winner) => winner.item);
+  };
+  return {
+    version: 1,
+    jobs: reconcile("jobs"),
+    queue: reconcile("queue"),
+    revisions: reconcile("revisions"),
+  };
+}
+
+async function backfillCoordinator() {
+  if (!backfillCoordinatorPromise) {
+    const candidate = (async () => {
+      const store = new IndexedDbBackfillStore();
+      const instanceId = await extensionInstanceId();
+      const stored = await chrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
+      await store.restoreRecoveryCheckpoint(stored[BACKFILL_RECOVERY_CHECKPOINT_KEY]);
+      const localCheckpoint = await store.exportRecoveryCheckpoint();
+      const localProviders = [...new Set(localCheckpoint.jobs.map((job) => job.provider))];
+      const providers = [...new Set(["chatgpt", "claude-ai", ...localProviders])];
+      const recovery = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
+      if (recovery.successfulProviders.length) {
+        await store.reconcileRecoveryCheckpoint(
+          recovery.checkpoint || { version: 1, jobs: [], queue: [], revisions: [] },
+          recovery.successfulProviders,
+        );
+      }
+      const reconciledCheckpoint = await store.exportRecoveryCheckpoint();
+      if (!reconciledCheckpoint.jobs.length) {
+        // The per-instance route is legacy migration input only. It is tried
+        // after the receiver-authoritative registry and never overwrites a
+        // CaptureJob checkpoint.
+        await restoreBackfillCheckpointFromReceiver(store, instanceId);
+      }
+      return new BackfillCoordinator({
+        store,
+        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        receiver: (envelope, serialized) => postJson(
+          "/v1/browser-captures",
+          envelope,
+          serialized,
+          PROVIDER_REQUEST_TIMEOUT_MS,
+          true,
+        ),
+        receiverPreflight: backfillReceiverPreflight,
+        checkpoint: async (checkpoint) => {
+          const result = await commitCaptureJobsToReceiver(instanceId, checkpoint);
+          if (result.failures.length) return result;
+          try {
+            await chrome.storage.local.set({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: checkpoint });
+          } catch (error) {
+            await appendDebugLog({
+              stage: "capture_job_local_cache_write_failed",
+              error: String(error?.message || error),
+            });
+          }
+          mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
+          return result;
+        },
+        captureOverride: async ({ provider, nativeId, response }) => {
+          if (provider !== "chatgpt") return null;
+          const nativePayload = await response.json();
+          const captured = await captureProviderConversation(
+            provider,
+            nativeId,
+            "backfill_exact_capture",
+            { deferReceiver: true, nativePayload },
+          );
+          return captured.envelope;
+        },
+        alarms: chrome.alarms,
+        instanceId,
+        receiverContractEpoch: BACKFILL_WORKER_EPOCH,
+      });
+    })();
+    backfillCoordinatorPromise = candidate;
+    void candidate.catch(() => {
+      if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
+    });
+  }
+  return backfillCoordinatorPromise;
+}
 
 // ---- Capture retry queue --------------------------------------------------
 //
@@ -55,13 +380,29 @@ function injectionPlanForUrl(url) {
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) {
       return [
         { files: ["src/content/chatgpt_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/chatgpt.js"] },
+        {
+          files: [
+            "src/common.js",
+            "src/operator_status.js",
+            "src/content/message_layer.js",
+            "src/content/ambient_surface.js",
+            "src/content/chatgpt.js",
+          ],
+        },
       ];
     }
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) {
       return [
         { files: ["src/content/claude_bridge.js"], world: "MAIN" },
-        { files: ["src/common.js", "src/content/claude.js"] },
+        {
+          files: [
+            "src/common.js",
+            "src/operator_status.js",
+            "src/content/message_layer.js",
+            "src/content/ambient_surface.js",
+            "src/content/claude.js",
+          ],
+        },
       ];
     }
     if (
@@ -92,11 +433,157 @@ async function receiverSettings() {
 }
 
 async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
+  trustedReceiverHealthCache = null;
   await chrome.storage.local.set({
     receiverAuthToken: String(receiverAuthToken || ""),
     receiverBaseUrl: String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER,
   });
   return receiverSettings();
+}
+
+async function storedReceiverPairing() {
+  const stored = await chrome.storage.local.get({ [RECEIVER_PAIRING_KEY]: null });
+  const pairing = stored[RECEIVER_PAIRING_KEY];
+  return pairing && typeof pairing === "object" ? pairing : null;
+}
+
+async function persistReceiverPairing(pairing) {
+  await chrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: pairing });
+  return pairing;
+}
+
+async function markReceiverPairingUnavailable(detail) {
+  trustedReceiverHealthCache = null;
+  const pairing = await storedReceiverPairing();
+  if (!pairing) return null;
+  return persistReceiverPairing({
+    ...pairing,
+    state: "offline",
+    last_error: String(detail || "receiver_unavailable"),
+    checked_at: new Date().toISOString(),
+  });
+}
+
+async function observeReceiverIdentity(status, endpoint) {
+  const now = new Date().toISOString();
+  const prior = await storedReceiverPairing();
+  const receiverId = typeof status?.receiver_id === "string" ? status.receiver_id : null;
+  const apiSchema = typeof status?.api_schema === "string" ? status.api_schema : null;
+
+  if (!receiverId || !apiSchema) {
+    if (prior?.receiver_id) {
+      trustedReceiverHealthCache = null;
+      return persistReceiverPairing({
+        ...prior,
+        state: "mismatch",
+        observed_endpoint: endpoint,
+        observed_receiver_id: receiverId,
+        observed_api_schema: apiSchema || "legacy",
+        checked_at: now,
+        last_error: "receiver_pairing_metadata_missing",
+      });
+    }
+    return persistReceiverPairing({
+      state: "legacy",
+      endpoint,
+      last_seen_at: now,
+      checked_at: now,
+      last_error: null,
+    });
+  }
+
+  if (apiSchema !== RECEIVER_API_SCHEMA) {
+    trustedReceiverHealthCache = null;
+    return persistReceiverPairing({
+      ...(prior || {}),
+      state: "mismatch",
+      endpoint: prior?.endpoint || endpoint,
+      observed_endpoint: endpoint,
+      observed_receiver_id: receiverId,
+      observed_api_schema: apiSchema,
+      checked_at: now,
+      last_error: "receiver_api_schema_mismatch",
+    });
+  }
+
+  if (prior?.receiver_id && prior.receiver_id !== receiverId) {
+    trustedReceiverHealthCache = null;
+    return persistReceiverPairing({
+      ...prior,
+      state: "mismatch",
+      observed_endpoint: endpoint,
+      observed_receiver_id: receiverId,
+      observed_api_schema: apiSchema,
+      checked_at: now,
+      last_error: "receiver_identity_mismatch",
+    });
+  }
+
+  return persistReceiverPairing({
+    receiver_id: receiverId,
+    api_schema: apiSchema,
+    endpoint,
+    paired_at: prior?.paired_at || now,
+    last_seen_at: now,
+    checked_at: now,
+    state: "online",
+    last_error: null,
+  });
+}
+
+async function clearReceiverPairing() {
+  trustedReceiverHealthCache = null;
+  await chrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
+  // Test doubles and older browser shims may not expose remove(). Setting null
+  // is equivalent for all readers and keeps reset bounded to this one key.
+  if (!chrome.storage.local.remove) await chrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
+}
+
+function hostnameForUrl(url) {
+  try {
+    return new URL(url || "").hostname;
+  } catch {
+    return "";
+  }
+}
+
+async function ambientSettings(hostname = "") {
+  const stored = await chrome.storage.local.get({
+    [AMBIENT_SETTINGS_KEY]: { enabled: true, automatic_capture_enabled: true, disabled_sites: {} },
+  });
+  const raw = stored[AMBIENT_SETTINGS_KEY] && typeof stored[AMBIENT_SETTINGS_KEY] === "object"
+    ? stored[AMBIENT_SETTINGS_KEY]
+    : {};
+  const disabledSites = raw.disabled_sites && typeof raw.disabled_sites === "object" ? raw.disabled_sites : {};
+  return {
+    enabled: raw.enabled !== false,
+    automatic_capture_enabled: raw.automatic_capture_enabled !== false,
+    disabled_sites: disabledSites,
+    site: hostname || null,
+    site_enabled: hostname ? disabledSites[hostname] !== true : true,
+  };
+}
+
+async function saveAmbientSettings({ enabled = null, automaticCaptureEnabled = null, hostname = "", siteEnabled = null } = {}) {
+  const current = await ambientSettings(hostname);
+  const disabledSites = { ...current.disabled_sites };
+  if (hostname && siteEnabled !== null) {
+    if (siteEnabled) delete disabledSites[hostname];
+    else disabledSites[hostname] = true;
+  }
+  const next = {
+    enabled: enabled === null ? current.enabled : Boolean(enabled),
+    automatic_capture_enabled: automaticCaptureEnabled === null
+      ? current.automatic_capture_enabled
+      : Boolean(automaticCaptureEnabled),
+    disabled_sites: disabledSites,
+  };
+  await chrome.storage.local.set({ [AMBIENT_SETTINGS_KEY]: next });
+  return ambientSettings(hostname);
+}
+
+async function automaticCaptureEnabled() {
+  return (await ambientSettings()).automatic_capture_enabled;
 }
 
 function sessionKey(provider, providerSessionId) {
@@ -168,11 +655,14 @@ function isRetryableCaptureError(error) {
   return true;
 }
 
-async function enqueueCaptureForRetry({ envelope, reason, error }) {
+async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
+  return serializeCaptureQueueMutation(async () => {
   const entry = {
     id: buildReceiverRequestId(),
     envelope,
     reason: reason || "content_script_capture",
+    tab_id: tab?.id || null,
+    tab_url: tab?.url || tab?.pendingUrl || null,
     enqueued_at: new Date().toISOString(),
     attempts: 0,
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
@@ -189,12 +679,14 @@ async function enqueueCaptureForRetry({ envelope, reason, error }) {
       reason: "capture_queue_entry_over_budget",
       error: entry.last_error,
     });
-    return getCaptureQueue();
+    return { queue: await getCaptureQueue(), accepted: false, evicted: [entry] };
   }
   const queue = await getCaptureQueue();
   let entries = [...queue.entries, entry];
   let droppedCount = queue.dropped_count || 0;
+  const evicted = [];
   while (entries.length > CAPTURE_QUEUE_MAX_ENTRIES || byteLength(entries) > CAPTURE_QUEUE_MAX_BYTES) {
+    evicted.push(entries[0]);
     entries = entries.slice(1);
     droppedCount += 1;
   }
@@ -208,10 +700,12 @@ async function enqueueCaptureForRetry({ envelope, reason, error }) {
     error: entry.last_error,
     queue_length: entries.length,
   });
-  return nextQueue;
+  return { queue: nextQueue, accepted: true, evicted };
+  });
 }
 
 async function drainCaptureQueue(trigger = "alarm") {
+  return serializeCaptureQueueMutation(async () => {
   const queue = await getCaptureQueue();
   if (!queue.entries.length) {
     await clearRetryAlarm();
@@ -226,10 +720,12 @@ async function drainCaptureQueue(trigger = "alarm") {
       remaining.push(entry);
       continue;
     }
-    const summary = envelopeSessionSummary(entry.envelope);
+    const envelope = await withExtensionInstanceAttribution(entry.envelope);
+    const summary = envelopeSessionSummary(envelope);
     try {
-      const result = await postJson("/v1/browser-captures", entry.envelope);
+      const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -240,6 +736,9 @@ async function drainCaptureQueue(trigger = "alarm") {
           attachment_count: summary.attachmentCount,
           receiver_request_id: result.receiver_request_id || null,
           artifact_ref: result.artifact_ref || null,
+          extension_instance_id: result.capture_instance_id || null,
+          deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -254,19 +753,52 @@ async function drainCaptureQueue(trigger = "alarm") {
         queued_id: entry.id,
         attempts: entry.attempts,
       });
-      await setState({
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: "capture_retry_drained",
+        detail: archiveState.state,
+      });
+      if (entry.tab_id) await setStateForTab(entry.tab_id, {
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,
         asset_acquisition: summary.assetAcquisition,
         turn_count: summary.turnCount,
         attachment_count: summary.attachmentCount,
+        extension_instance_id: result.capture_instance_id || null,
+        deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null,
-      });
+      }, entry.tab_url);
     } catch (error) {
+      if (!isRetryableCaptureError(error)) {
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendCaptureLog({
+          ok: false,
+          reason: "capture_retry_rejected",
+          queued_id: entry.id,
+          attempts: entry.attempts,
+          error: String(error.message || error),
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: "capture_retry_drained",
+          detail: "capture_rejected",
+          tabId: entry.tab_id || null,
+        });
+        continue;
+      }
       const attempts = entry.attempts + 1;
       remaining.push({
         ...entry,
@@ -291,6 +823,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     await appendDebugLog({ stage: "capture_retry_drain", drained, remaining: remaining.length });
   }
   return { drained, remaining: remaining.length };
+  });
 }
 
 async function loadCaptureQueueIntoCache() {
@@ -300,29 +833,178 @@ async function loadCaptureQueueIntoCache() {
   return queue;
 }
 
-async function checkReceiverHealth() {
-  const settings = await receiverSettings();
+async function probeReceiverStatus(baseUrl, authToken = "") {
   const requestId = buildReceiverRequestId();
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort("receiver_health_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
+  await appendDebugLog({ stage: "receiver_request", method: "GET", path: "/v1/status", endpoint: baseUrl, request_id: requestId });
   try {
-    const response = await fetch(`${settings.baseUrl}/api/health`, {
-      headers: await requestHeaders({ requestId }),
-    });
+    const headers = { "X-Request-ID": requestId };
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    const response = await fetch(`${baseUrl}/v1/status`, { headers, signal: controller.signal });
     const body = await response.json().catch(() => null);
-    if (!body || typeof body !== "object") {
-      return { ok: false, status: "unreachable", detail: "non_json_response" };
-    }
-    if (body.error === "unauthorized") {
-      return { ok: true, status: "unauthorized", detail: body.error };
-    }
-    if (body.ok === true) {
-      return { ok: true, status: "ok", detail: null };
-    }
-    // Any other well-formed JSON body still proves the receiver answered —
-    // report it as reachable with whatever error detail it supplied.
-    return { ok: true, status: "error", detail: body.error || `http_${response.status}` };
+    const receiverRequestId = response.headers?.get?.("X-Request-ID") || requestId;
+    await appendDebugLog({
+      stage: "receiver_response",
+      method: "GET",
+      path: "/v1/status",
+      endpoint: baseUrl,
+      request_id: requestId,
+      receiver_request_id: receiverRequestId,
+      ok: response.ok,
+      status: response.status,
+      receiver_id: body?.receiver_id || null,
+      api_schema: body?.api_schema || null,
+    });
+    return { response, body, receiverRequestId };
   } catch (error) {
-    return { ok: false, status: "unreachable", detail: String(error.message || error) };
+    await appendDebugLog({
+      stage: "receiver_error",
+      method: "GET",
+      path: "/v1/status",
+      endpoint: baseUrl,
+      request_id: requestId,
+      error: String(error.message || error),
+    });
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
+}
+
+async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
+  const settings = await receiverSettings();
+  const pairingBefore = await storedReceiverPairing();
+
+  // A fresh extension profile has no authority to probe an authenticated
+  // receiver. Keep that unpaired state local: repeatedly sending an empty
+  // request only creates receiver-side auth noise and cannot establish trust.
+  if (!settings.authToken) {
+    return {
+      ok: true,
+      status: "unauthorized",
+      detail: "receiver_auth_missing",
+      endpoint: settings.baseUrl,
+      pairing: pairingBefore,
+    };
+  }
+
+  async function classifyProbe(endpoint, probe, recoveredFrom = null) {
+    const body = probe.body;
+    if (!body || typeof body !== "object") {
+      return {
+        ok: false,
+        status: "unreachable",
+        detail: "non_json_response",
+        endpoint,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing: pairingBefore,
+      };
+    }
+    if (body.error === "unauthorized" || probe.response?.status === 401) {
+      const pairing = pairingBefore
+        ? await persistReceiverPairing({
+          ...pairingBefore,
+          state: "unauthorized",
+          checked_at: new Date().toISOString(),
+          last_error: "unauthorized",
+        })
+        : null;
+      return {
+        ok: true,
+        status: "unauthorized",
+        detail: "unauthorized",
+        endpoint,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing,
+      };
+    }
+    if (body.ok === true && probe.response?.ok !== false) {
+      const pairing = await observeReceiverIdentity(body, endpoint);
+      if (pairing?.state === "mismatch") {
+        return {
+          ok: true,
+          status: "pairing_mismatch",
+          detail: pairing.last_error || "receiver_pairing_mismatch",
+          endpoint,
+          receiver_status: body,
+          receiver_request_id: probe.receiverRequestId || null,
+          pairing,
+        };
+      }
+      const result = {
+        ok: true,
+        status: recoveredFrom ? "recovered" : "ok",
+        detail: null,
+        endpoint,
+        recovered_from: recoveredFrom,
+        receiver_status: body,
+        receiver_request_id: probe.receiverRequestId || null,
+        pairing,
+      };
+      if (pairing?.receiver_id && pairing.state === "online") {
+        trustedReceiverHealthCache = {
+          checkedAt: Date.now(),
+          endpoint,
+          receiverId: pairing.receiver_id,
+          apiSchema: pairing.api_schema,
+          health: result,
+        };
+      }
+      return result;
+    }
+    return {
+      ok: true,
+      status: "error",
+      detail: body.error || `http_${probe.response?.status || 0}`,
+      endpoint,
+      receiver_status: body,
+      receiver_request_id: probe.receiverRequestId || null,
+      pairing: pairingBefore,
+    };
+  }
+
+  let primaryFailure = null;
+  try {
+    const primary = await probeReceiverStatus(settings.baseUrl, settings.authToken);
+    const classified = await classifyProbe(settings.baseUrl, primary);
+    if (classified.status !== "unreachable") return classified;
+    primaryFailure = classified.detail || "receiver_unavailable";
+  } catch (error) {
+    primaryFailure = String(error.message || error);
+  }
+
+  if (
+    allowCanonicalRecovery
+    && settings.baseUrl !== DEFAULT_RECEIVER
+    && pairingBefore?.receiver_id
+  ) {
+    try {
+      const canonical = await probeReceiverStatus(DEFAULT_RECEIVER, settings.authToken);
+      const body = canonical.body;
+      if (
+        body?.ok === true
+        && canonical.response?.ok !== false
+        && body.receiver_id === pairingBefore.receiver_id
+        && body.api_schema === RECEIVER_API_SCHEMA
+      ) {
+        await chrome.storage.local.set({ receiverBaseUrl: DEFAULT_RECEIVER });
+        return classifyProbe(DEFAULT_RECEIVER, canonical, settings.baseUrl);
+      }
+    } catch {
+      // Recovery is intentionally bounded to one canonical endpoint. The
+      // original failure remains the operator-facing result.
+    }
+  }
+
+  const pairing = await markReceiverPairingUnavailable(primaryFailure);
+  return {
+    ok: false,
+    status: "unreachable",
+    detail: primaryFailure,
+    endpoint: settings.baseUrl,
+    pairing,
+  };
 }
 
 async function appendCaptureLog(entry) {
@@ -373,21 +1055,67 @@ async function appendDebugLog(entry) {
 
 async function updateSessionLedger({ provider, providerSessionId, patch }) {
   if (!provider || !providerSessionId) return null;
-  const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
-  const ledger =
-    stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
-      ? stored.polylogueSessionLedger
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ polylogueSessionLedger: {} });
+    const ledger =
+      stored.polylogueSessionLedger && typeof stored.polylogueSessionLedger === "object"
+        ? stored.polylogueSessionLedger
+        : {};
+    const key = sessionKey(provider, providerSessionId);
+    const next = {
+      ...(ledger[key] || {}),
+      provider,
+      provider_session_id: providerSessionId,
+      updated_at: new Date().toISOString(),
+      ...patch,
+    };
+    await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
+    return next;
+  });
+}
+
+async function appendConversationTimeline({ provider, providerSessionId, event, reason = null, detail = null, tabId = null, onlyIfEmpty = false, dedupeWindowMs = 0 }) {
+  if (!provider || !providerSessionId) return null;
+  return serializeStorageMutation(async () => {
+    const stored = await chrome.storage.local.get({ [CONVERSATION_TIMELINE_KEY]: {} });
+    const timelines = stored[CONVERSATION_TIMELINE_KEY] && typeof stored[CONVERSATION_TIMELINE_KEY] === "object"
+      ? stored[CONVERSATION_TIMELINE_KEY]
       : {};
-  const key = sessionKey(provider, providerSessionId);
-  const next = {
-    ...(ledger[key] || {}),
-    provider,
-    provider_session_id: providerSessionId,
-    updated_at: new Date().toISOString(),
-    ...patch,
-  };
-  await chrome.storage.local.set({ polylogueSessionLedger: { ...ledger, [key]: next } });
-  return next;
+    const key = sessionKey(provider, providerSessionId);
+    const existing = Array.isArray(timelines[key]) ? timelines[key] : [];
+    if (onlyIfEmpty && existing.length) return null;
+    if (dedupeWindowMs > 0) {
+      const latest = existing[0];
+      const latestAt = Date.parse(latest?.at || "");
+      if (
+        latest?.event === event
+        && latest?.reason === reason
+        && latest?.detail === detail
+        && Number.isFinite(latestAt)
+        && Date.now() - latestAt < dedupeWindowMs
+      ) return null;
+    }
+    const entry = {
+      at: new Date().toISOString(),
+      event,
+      reason,
+      detail,
+      tab_id: tabId,
+    };
+    const next = {
+      ...timelines,
+      [key]: [entry, ...existing].slice(0, CONVERSATION_TIMELINE_EVENT_LIMIT),
+    };
+    const keys = Object.keys(next);
+    if (keys.length > CONVERSATION_TIMELINE_CONVERSATION_LIMIT) {
+      keys
+        .sort((left, right) => Date.parse(next[left]?.[0]?.at || "") - Date.parse(next[right]?.[0]?.at || ""))
+        .slice(0, keys.length - CONVERSATION_TIMELINE_CONVERSATION_LIMIT)
+        .forEach((oldKey) => delete next[oldKey]);
+    }
+    await chrome.storage.local.set({ [CONVERSATION_TIMELINE_KEY]: next });
+    return entry;
+  });
 }
 
 function badgeForState(state) {
@@ -396,9 +1124,10 @@ function badgeForState(state) {
   }
   if (!state.online) return { text: "off", color: "#9b2c2c" };
   const archiveState = state.archive_state?.state;
-  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (archiveState === "failed" || state.error) return { text: "err", color: "#ad2f2f" };
-  if (archiveState === "spooled_only" || archiveState === "ingest_pending") return { text: "…", color: "#9a5b00" };
+  if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) return { text: "…", color: "#9a5b00" };
+  if (archiveState === "missing") return { text: "on", color: "#325d8f" };
+  if (archiveState === "archived" || state.captured) return { text: "ok", color: "#14764e" };
   if (state.capture_mode === "dom_degraded") return { text: "dom", color: "#8a5a00" };
   return { text: "on", color: "#325d8f" };
 }
@@ -409,6 +1138,28 @@ async function setState(state) {
   const badge = badgeForState(nextState);
   await chrome.action.setBadgeText({ text: badge.text });
   await chrome.action.setBadgeBackgroundColor({ color: badge.color });
+}
+
+async function setStateForTab(tabId, state, expectedTabUrl = null) {
+  if (!tabId || !chrome.tabs?.query) return setState(state);
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab || activeTab.id !== tabId) return null;
+  const activeUrl = activeTab.url || activeTab.pendingUrl || "";
+  if (expectedTabUrl && activeUrl && activeUrl !== expectedTabUrl) return null;
+  const expectedProvider = state.provider || null;
+  const expectedSessionId = state.provider_session_id || null;
+  const activeProvider = archiveProviderForUrl(activeUrl);
+  const activeSessionId = conversationIdForUrl(activeUrl);
+  if (
+    expectedProvider
+    && expectedSessionId
+    && activeSessionId
+    && (
+      activeProvider !== expectedProvider
+      || activeSessionId !== expectedSessionId
+    )
+  ) return null;
+  return setState(state);
 }
 
 function buildReceiverRequestId() {
@@ -422,20 +1173,72 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   if (hasBody) headers["Content-Type"] = "application/json";
   if (settings.authToken) headers.Authorization = `Bearer ${settings.authToken}`;
   if (requestId) headers["X-Request-ID"] = requestId;
+  headers["X-Polylogue-Extension-Contract"] = EXTENSION_CONTRACT_EPOCH;
   return headers;
 }
 
-async function postJson(path, payload) {
+async function ensureTrustedReceiver() {
+  const pairing = await storedReceiverPairing();
+  if (!pairing?.receiver_id) return null;
+  const settings = await receiverSettings();
+  const cached = trustedReceiverHealthCache;
+  if (
+    cached
+    && Date.now() - cached.checkedAt < RECEIVER_TRUST_CACHE_MS
+    && cached.endpoint === settings.baseUrl
+    && cached.receiverId === pairing.receiver_id
+    && cached.apiSchema === pairing.api_schema
+  ) return cached.health;
+
+  const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
+  if (!["ok", "recovered"].includes(health.status)) {
+    const code = health.status === "pairing_mismatch"
+      ? "receiver_pairing_mismatch"
+      : health.status === "unauthorized"
+        ? "unauthorized"
+        : "receiver_unavailable";
+    const error = new Error(code === "receiver_unavailable" ? health.detail || code : code);
+    error.code = code;
+    error.status = code === "receiver_pairing_mismatch" ? 409 : code === "unauthorized" ? 401 : 503;
+    error.receiverRequestId = health.receiver_request_id || null;
+    error.receiverHealth = health;
+    throw error;
+  }
+  return health;
+}
+
+// A page capture reads authenticated provider data before its envelope can be
+// submitted to the receiver.  Do not begin that irreversible read merely to
+// discover later that this browser has never established a receiver identity.
+// `checkReceiverHealth` remains available for pairing diagnostics; this guard
+// is specifically the admission boundary for automatic provider-native work.
+async function requirePairedTrustedReceiver() {
+  const pairing = await storedReceiverPairing();
+  if (!pairing?.receiver_id || !pairing?.api_schema) {
+    const error = new Error("receiver_unpaired");
+    error.code = "receiver_unpaired";
+    error.status = 401;
+    throw error;
+  }
+  return ensureTrustedReceiver();
+}
+
+async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
+  await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
-      body: JSON.stringify(payload)
+      body: serializedBody || JSON.stringify(payload),
+      signal: controller?.signal,
     });
-    const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
+    const acknowledgedRequestId = response.headers.get("X-Request-ID");
+    const receiverRequestId = acknowledgedRequestId || requestId;
     const body = await response.json().catch(() => ({}));
     await appendDebugLog({
       stage: "receiver_response",
@@ -456,6 +1259,12 @@ async function postJson(path, payload) {
       error.status = response.status;
       throw error;
     }
+    if (requireReceiverRequestId && !acknowledgedRequestId) {
+      const error = new Error("receiver_contract_incompatible:missing_receiver_request_id");
+      error.receiverRequestId = null;
+      error.status = response.status;
+      throw error;
+    }
     return { ...body, receiver_request_id: receiverRequestId };
   } catch (error) {
     await appendDebugLog({
@@ -467,16 +1276,22 @@ async function postJson(path, payload) {
       error: String(error.message || error),
     });
     throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
   }
 }
 
-async function getJson(path) {
+async function getJson(path, timeoutMs = null) {
+  await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
     const response = await fetch(`${settings.baseUrl}${path}`, {
       headers: await requestHeaders({ requestId }),
+      signal: controller?.signal,
     });
     const receiverRequestId = response.headers.get("X-Request-ID") || requestId;
     const body = await response.json().catch(() => ({}));
@@ -495,6 +1310,7 @@ async function getJson(path) {
     if (!response.ok) {
       const error = new Error(body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
+      error.status = response.status;
       throw error;
     }
     return { ...body, receiver_request_id: receiverRequestId };
@@ -508,25 +1324,44 @@ async function getJson(path) {
       error: String(error.message || error),
     });
     throw error;
+  } finally {
+    if (timeout) globalThis.clearTimeout(timeout);
   }
 }
 
-async function refreshReceiverState() {
+async function backfillReceiverPreflight() {
+  let capability;
   try {
-    const status = await getJson("/v1/status");
-    await setState({
-      online: true,
-      captured: false,
-      status,
-      last_receiver_request_id: status.receiver_request_id || null,
-    });
+    capability = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
   } catch (error) {
-    await setState({
-      online: false,
-      captured: false,
-      error: String(error.message || error),
-    });
+    if (error?.status === 404) throw new Error("receiver_contract_incompatible:capability_endpoint_missing");
+    throw error;
   }
+  const fields = capability?.durable_ack_fields;
+  if (!Array.isArray(fields) || DURABLE_RECEIVER_ACK_FIELDS.some((field) => !fields.includes(field))) {
+    throw new Error("receiver_contract_incompatible:durable_ack_fields_missing");
+  }
+  return capability;
+}
+
+async function refreshReceiverState() {
+  const health = await checkReceiverHealth();
+  const online = ["ok", "recovered"].includes(health.status);
+  await setState({
+    online,
+    captured: false,
+    status: health.receiver_status || null,
+    receiver_pairing: health.pairing || null,
+    receiver_health: health,
+    error: health.status === "unauthorized"
+      ? "unauthorized"
+      : health.status === "pairing_mismatch"
+        ? "receiver_pairing_mismatch"
+        : online
+          ? null
+          : health.detail || "receiver_unavailable",
+    last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
+  });
 }
 
 async function ensureCaptureScripts(tab) {
@@ -540,21 +1375,340 @@ async function ensureCaptureScripts(tab) {
   return true;
 }
 
-async function captureTab(tab, reason = "background") {
-  if (!tab?.id || !injectionPlanForUrl(tab.url || tab.pendingUrl || "").length) return null;
+function providerForUrl(url) {
+  try {
+    const hostname = new URL(url || "").hostname;
+    if (hostname === "chatgpt.com") return "chatgpt";
+    if (hostname === "claude.ai") return "claude-ai";
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function providerRequestFromUrl(urlValue) {
+  const url = new URL(urlValue);
+  if (url.hostname === "chatgpt.com") {
+    if (url.pathname === "/backend-api/conversations") {
+      const archived = url.searchParams.get("is_archived");
+      const starred = url.searchParams.get("is_starred");
+      if (!["true", "false"].includes(archived) || !["true", "false"].includes(starred)) {
+        throw new Error("backfill_provider_inventory_flags_not_allowed");
+      }
+      return { provider: "chatgpt", operation: "inventory", params: {
+        offset: Number.parseInt(url.searchParams.get("offset") || "0", 10),
+        limit: Number.parseInt(url.searchParams.get("limit") || "28", 10),
+        archived: archived === "true",
+        starred: starred === "true",
+      } };
+    }
+    const conversation = url.pathname.match(/^\/backend-api\/conversation\/([A-Za-z0-9_-]+)$/);
+    if (conversation) return { provider: "chatgpt", operation: "conversation", params: { nativeId: decodeURIComponent(conversation[1]) } };
+  }
+  if (url.hostname === "claude.ai") {
+    if (url.pathname === "/api/organizations") return { provider: "claude-ai", operation: "organizations", params: {} };
+    const inventory = url.pathname.match(/^\/api\/organizations\/([0-9a-f-]{36})\/chat_conversations$/i);
+    if (inventory) return { provider: "claude-ai", operation: "inventory", params: {
+      organizationId: inventory[1],
+      offset: Number.parseInt(url.searchParams.get("offset") || "0", 10),
+      limit: Number.parseInt(url.searchParams.get("limit") || "100", 10),
+    } };
+    const conversation = url.pathname.match(/^\/api\/organizations\/([0-9a-f-]{36})\/chat_conversations\/([A-Za-z0-9_-]+)$/i);
+    if (conversation) return { provider: "claude-ai", operation: "conversation", params: {
+      organizationId: conversation[1],
+      nativeId: decodeURIComponent(conversation[2]),
+    } };
+  }
+  throw new Error("backfill_provider_url_not_allowed");
+}
+
+async function waitForProviderTab(tabId, provider) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const tab = await chrome.tabs.get(tabId);
+    if (providerForUrl(tab?.url || tab?.pendingUrl) === provider && tab?.status === "complete") return tab;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+  }
+  throw new Error("backfill_provider_tab_load_timeout");
+}
+
+function providerTransportSessionKey(provider) {
+  return `${PROVIDER_TRANSPORT_SESSION_PREFIX}:${provider}`;
+}
+
+function providerTransportOperatorTakenSessionKey(provider) {
+  return `${PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX}:${provider}`;
+}
+
+async function forgetProviderTransport(provider, tabId = null) {
+  const key = providerTransportSessionKey(provider);
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
+  if (tabId === null || stored[key] === tabId) {
+    await chrome.storage.session.remove([key, operatorTakenKey]);
+  }
+}
+
+async function markProviderTransportOperatorTaken(provider, tabId) {
+  const key = providerTransportSessionKey(provider);
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  await chrome.storage.session.set({ [key]: tabId, [operatorTakenKey]: tabId });
+}
+
+function operatorTakenProviderTransportError() {
+  const error = new Error("provider_transport_operator_taken");
+  error.code = "provider_transport_operator_taken";
+  return error;
+}
+
+function providerTransportNoSurfaceError() {
+  const error = new Error("provider_transport_no_surface");
+  error.code = "provider_transport_no_surface";
+  return error;
+}
+
+async function observedProviderTab(provider) {
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider) || null;
+}
+
+async function acquireProviderTab(provider, { allowCreate = false } = {}) {
+  // Passive capture and inventory use a normal provider page only when the
+  // operator already has one open. They must never materialize a root tab.
+  // Creating a background transport is reserved for an explicit queued
+  // browser action that needs to mutate the provider UI.
+  if (!allowCreate) {
+    const observed = await observedProviderTab(provider);
+    if (!observed) throw providerTransportNoSurfaceError();
+    return { tab: observed, owned: false, cleanupAlarm: null };
+  }
+
+  const key = providerTransportSessionKey(provider);
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
+  const storedTabId = stored[key];
+  if (Number.isInteger(storedTabId)) {
+    const existing = await chrome.tabs.get(storedTabId).catch(() => null);
+    if (!existing) {
+      await forgetProviderTransport(provider, storedTabId);
+    } else {
+      if (stored[operatorTakenKey] === storedTabId) throw operatorTakenProviderTransportError();
+      if (existing.active === true) {
+        // A previously background-owned tab has become an operator surface. It
+        // must never be repurposed, closed, or replaced behind their back.
+        await markProviderTransportOperatorTaken(provider, storedTabId);
+        throw operatorTakenProviderTransportError();
+      }
+      if (providerForUrl(existing.url || existing.pendingUrl) === provider) {
+        return {
+          tab: existing,
+          owned: true,
+          cleanupAlarm: `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${storedTabId}`,
+        };
+      }
+      await forgetProviderTransport(provider, storedTabId);
+    }
+  }
+  const url = provider === "chatgpt" ? "https://chatgpt.com/" : "https://claude.ai/";
+  const created = await chrome.tabs.create({ url, active: false });
+  if (!created?.id) throw new Error("backfill_provider_tab_create_failed");
+  await chrome.storage.session.set({ [key]: created.id });
+  const cleanupAlarm = `${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:${provider}:${created.id}`;
+  await chrome.alarms.create(cleanupAlarm, { when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS });
+  try {
+    const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
+    return { tab: ready, owned: true, cleanupAlarm };
+  } catch (error) {
+    await chrome.tabs.remove(created.id).catch(() => undefined);
+    await chrome.alarms.clear(cleanupAlarm);
+    await forgetProviderTransport(provider, created.id);
+    throw error;
+  }
+}
+
+function providerTab(provider, { allowCreate = false } = {}) {
+  const transportKey = `${provider}:${allowCreate ? "action" : "observe"}`;
+  const inFlight = providerTransportPromises.get(transportKey);
+  if (inFlight) return inFlight;
+  const candidate = acquireProviderTab(provider, { allowCreate });
+  const tracked = candidate.finally(() => {
+    if (providerTransportPromises.get(transportKey) === tracked) providerTransportPromises.delete(transportKey);
+  });
+  providerTransportPromises.set(transportKey, tracked);
+  return tracked;
+}
+
+function withProviderTransportOperation(provider, operation) {
+  const prior = providerTransportOperations.get(provider) || Promise.resolve();
+  const result = prior.catch(() => undefined).then(operation);
+  const tracked = result.finally(() => {
+    if (providerTransportOperations.get(provider) === tracked) providerTransportOperations.delete(provider);
+  });
+  providerTransportOperations.set(provider, tracked);
+  return tracked;
+}
+
+function pageContextResponse(response) {
+  const body = typeof response?.body === "string" ? response.body : "";
+  return {
+    ok: Boolean(response?.ok),
+    status: Number(response?.status || 0),
+    polyloguePageContext: true,
+    polylogueAuthReason: response?.authReason || null,
+    headers: { get: (name) => {
+      const normalized = name.toLowerCase();
+      if (normalized === "content-type") return response?.contentType || "";
+      if (normalized === "retry-after") return response?.retryAfter || null;
+      return null;
+    } },
+    async json() { return JSON.parse(body); },
+  };
+}
+
+function scriptingResultTooLarge(error) {
+  const message = String(error?.message || error).toLowerCase();
+  return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
+}
+
+async function providerPageFetch(url, options = {}) {
+  if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
+  const request = providerRequestFromUrl(url);
+  request.maxResponseBytes = 32 * 1024 * 1024;
+  return withProviderTransportOperation(request.provider, async () => {
+    const transport = await providerTab(request.provider);
+    let result;
+    try {
+      const executions = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeProviderPageRequest,
+          args: [request],
+        }),
+        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+        "backfill_page_request",
+      );
+      result = executions?.[0]?.result;
+    } catch (error) {
+      if (transport.owned) {
+        await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+        if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+        await forgetProviderTransport(request.provider, transport.tab.id);
+      }
+      if (scriptingResultTooLarge(error)) {
+        throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
+      }
+      throw error;
+    }
+    if (!result?.ok) {
+      const error = String(result?.error || "backfill_page_request_failed");
+      if (error.includes("auth_context") || error.includes("selected_organization")) {
+        return pageContextResponse({ ok: false, status: 401, contentType: "application/json", authReason: error, body: JSON.stringify({ error }) });
+      }
+      throw new Error(error);
+    }
+    return pageContextResponse(result.response);
+  });
+}
+
+async function providerAccountHandle(provider) {
+  return withProviderTransportOperation(provider, async () => {
+    const transport = await providerTab(provider);
+    let result;
+    try {
+      const executions = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeProviderPageRequest,
+          args: [{ provider, operation: "identity", params: {} }],
+        }),
+        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+        "backfill_provider_identity",
+      );
+      result = executions?.[0]?.result;
+      if (!result?.ok) throw new Error(String(result?.error || "backfill_provider_identity_unavailable"));
+      const accountHandle = result.response?.accountHandle;
+      if (typeof accountHandle !== "string" || !accountHandle.trim()) {
+        throw new Error("backfill_provider_identity_unavailable");
+      }
+      return accountHandle;
+    } catch (error) {
+      if (transport.owned) {
+        await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
+        if (transport.cleanupAlarm) await chrome.alarms.clear(transport.cleanupAlarm);
+        await forgetProviderTransport(provider, transport.tab.id);
+      }
+      throw error;
+    }
+  });
+}
+
+async function cleanupBackfillTransportTab(alarmName) {
+  const parts = alarmName.split(":");
+  const provider = parts[1];
+  const tabId = Number.parseInt(parts[2] || "", 10);
+  if (!provider || !Number.isInteger(tabId)) return;
+  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+  const stored = await chrome.storage.session.get({ [operatorTakenKey]: null });
+  if (stored[operatorTakenKey] === tabId) {
+    await chrome.alarms.clear(alarmName);
+    return;
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.active === true) {
+      await markProviderTransportOperatorTaken(provider, tabId);
+      await chrome.alarms.clear(alarmName);
+      return;
+    }
+    if (providerForUrl(tab?.url || tab?.pendingUrl) === provider) await chrome.tabs.remove(tabId);
+  } catch {
+    // The operator or browser already closed the inactive transport tab.
+  }
+  await chrome.alarms.clear(alarmName);
+  await forgetProviderTransport(provider, tabId);
+}
+
+async function captureTab(tab, reason = "background", expectedConversation = null) {
+  if (expectedConversation && tab?.id && chrome.tabs?.get) {
+    const currentTab = await chrome.tabs.get(tab.id);
+    const currentUrl = currentTab?.url || currentTab?.pendingUrl || "";
+    if (
+      !currentTab
+      || currentUrl !== expectedConversation.url
+      || archiveProviderForUrl(currentUrl) !== expectedConversation.provider
+      || conversationIdForUrl(currentUrl) !== expectedConversation.providerSessionId
+    ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
+    tab = currentTab;
+  }
+  const conversationUrl = tab?.url || tab?.pendingUrl || "";
+  if (
+    !tab?.id
+    || !archiveProviderForUrl(conversationUrl)
+    || !conversationIdForUrl(conversationUrl)
+    || !injectionPlanForUrl(conversationUrl).length
+  ) return null;
+  if (reason !== "popup_sync_open_tabs" && !(await automaticCaptureEnabled())) {
+    return { ok: false, skipped: true, reason: "automatic_capture_paused" };
+  }
+  if (reason !== "popup_sync_open_tabs") await requirePairedTrustedReceiver();
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
-  if (reason !== "extension_installed_or_updated" && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS) {
+  if (
+    reason !== "extension_installed_or_updated"
+    && now - lastCaptureAt < BACKGROUND_CAPTURE_MIN_INTERVAL_MS
+  ) {
     return { ok: false, skipped: true, reason: "background_capture_throttled" };
   }
   recentBackgroundCaptures.set(tab.id, now);
   await ensureCaptureScripts(tab);
   try {
+    const captureMessage = {
+      type: "polylogue.capturePage",
+      reason,
+    };
     const resultWithTimeout = await withTimeout(
-      chrome.tabs.sendMessage(tab.id, {
-        type: "polylogue.capturePage",
-        reason
-      }),
+      chrome.tabs.sendMessage(tab.id, captureMessage),
       CAPTURE_MESSAGE_TIMEOUT_MS,
       "capture_message",
     );
@@ -562,6 +1716,8 @@ async function captureTab(tab, reason = "background") {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
+      const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
+      const pageSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -582,25 +1738,28 @@ async function captureTab(tab, reason = "background") {
       await appendCaptureLog({
         ok: true,
         reason,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         tab_id: tab.id,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
       });
-      await setState({
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: true,
+        active_page_state: "conversation",
+        active_tab_id: tab.id,
+        passive_reason: reason,
         last_capture: resultWithTimeout.captureResult || resultWithTimeout,
         archive_state: resultWithTimeout.archiveState || null,
-        provider,
-        provider_session_id: providerSessionId,
+        provider: pageProvider,
+        provider_session_id: pageSessionId,
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         asset_acquisition: envelopeSession.provider_meta?.asset_acquisition || null,
         turn_count: Array.isArray(envelopeSession.turns) ? envelopeSession.turns.length : null,
         last_receiver_request_id:
           resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null
-      });
+      }, tab.url || tab.pendingUrl || null);
       await appendDebugLog({
         stage: "capture_result",
         ok: true,
@@ -610,6 +1769,17 @@ async function captureTab(tab, reason = "background") {
         capture_mode: envelopeSession.provider_meta?.capture_fidelity || null,
         archive_state: resultWithTimeout.archiveState?.state || null,
         receiver_request_id: resultWithTimeout.captureResult?.receiver_request_id || resultWithTimeout.archiveState?.receiver_request_id || null,
+      });
+    } else if (!resultWithTimeout?.timelineRecorded) {
+      const provider = archiveProviderForUrl(tab.url || tab.pendingUrl || "");
+      const providerSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "");
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "held_with_reason",
+        reason,
+        detail: "capture_not_confirmed",
+        tabId: tab.id,
       });
     }
     return resultWithTimeout;
@@ -628,42 +1798,550 @@ async function captureTab(tab, reason = "background") {
       tab_id: tab.id,
       error: String(error.message || error),
     });
+    await appendConversationTimeline({
+      provider: archiveProviderForUrl(tab.url || tab.pendingUrl || ""),
+      providerSessionId: conversationIdForUrl(tab.url || tab.pendingUrl || ""),
+      event: "held_with_reason",
+      reason,
+      detail: String(error.message || error),
+      tabId: tab.id,
+    });
     return { ok: false, error: String(error.message || error) };
   }
+}
+
+async function captureProviderConversation(
+  provider,
+  providerSessionId,
+  reason,
+  { deferReceiver = false, nativePayload = null, generationObservations = [] } = {},
+) {
+  if (provider !== "chatgpt") throw new Error(`exact_provider_capture_unsupported:${provider}`);
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
+    throw new Error("exact_provider_capture_invalid_session_id");
+  }
+  await requirePairedTrustedReceiver();
+  return withProviderTransportOperation(provider, async () => {
+    const transport = await providerTab(provider);
+    await ensureCaptureScripts(transport.tab);
+    const result = await withTimeout(
+      chrome.tabs.sendMessage(transport.tab.id, {
+        type: "polylogue.capturePage",
+        reason,
+        providerSessionId,
+        deferReceiver,
+        nativePayload,
+        generationObservations,
+      }),
+      CAPTURE_MESSAGE_TIMEOUT_MS,
+      "capture_message",
+    );
+    if (!result?.ok) throw new Error(result?.error || "exact_provider_capture_failed");
+    const acceptedId = result.envelope?.session?.provider_session_id;
+    if (acceptedId !== providerSessionId) throw new Error("exact_provider_capture_identity_mismatch");
+    return result;
+  });
+}
+
+async function storedCaptureFreshnessQueue() {
+  const stored = await chrome.storage.local.get({ [CAPTURE_FRESHNESS_QUEUE_KEY]: null });
+  return normalizeFreshnessQueue(stored[CAPTURE_FRESHNESS_QUEUE_KEY]);
+}
+
+async function persistCaptureFreshnessQueue(queue) {
+  await chrome.storage.local.set({ [CAPTURE_FRESHNESS_QUEUE_KEY]: queue });
+  return queue;
+}
+
+async function scheduleCaptureFreshness({
+  provider,
+  nativeId,
+  reason,
+  delayMs = 0,
+  providerUpdatedAt = null,
+  generationObservations = [],
+}) {
+  if (provider !== "chatgpt" || !/^[A-Za-z0-9_-]{1,256}$/.test(String(nativeId || ""))) {
+    return { scheduled: false, reason: "unsupported_or_invalid_identity" };
+  }
+  const queue = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    return persistCaptureFreshnessQueue(scheduleFreshnessHint(current, {
+      provider,
+      nativeId,
+      reason,
+      nowMs: Date.now(),
+      delayMs,
+      providerUpdatedAt,
+      generationObservations,
+    }));
+  });
+  const entry = queue.entries[`${provider}:${nativeId}`];
+  await scheduleNextCaptureFreshnessWake(queue);
+  return { scheduled: true, entry };
+}
+
+async function scheduleNextCaptureFreshnessWake(queueValue = null) {
+  const queue = queueValue || await storedCaptureFreshnessQueue();
+  const deadlines = Object.values(queue.entries).map((entry) => (
+    entry.lease_owner ? entry.lease_expires_at_ms : entry.next_attempt_at_ms
+  )).filter(Number.isFinite);
+  if (!deadlines.length) {
+    await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+    return;
+  }
+  await chrome.alarms?.create?.(CAPTURE_FRESHNESS_ALARM, {
+    when: Math.max(Date.now() + 1_000, Math.min(...deadlines)),
+  });
+}
+
+async function processCaptureFreshnessQueueOnce() {
+  if (!(await automaticCaptureEnabled())) {
+    await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+    return { processed: 0, paused: true };
+  }
+  const owner = await extensionInstanceId();
+  const now = Date.now();
+  const { queue, claim } = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    const claimed = claimDueFreshness(current, {
+      nowMs: now,
+      owner,
+      leaseMs: CAPTURE_FRESHNESS_LEASE_MS,
+    });
+    if (claimed.claim) await persistCaptureFreshnessQueue(claimed.queue);
+    return claimed;
+  });
+  if (!claim) {
+    await scheduleNextCaptureFreshnessWake(queue);
+    return { processed: 0, remaining: Object.keys(queue.entries).length };
+  }
+
+  let needsFollowUp = false;
+  let retryDelayMs = 0;
+  let failure = null;
+  try {
+    const result = await captureProviderConversation(
+      claim.provider,
+      claim.native_id,
+      "freshness_convergence",
+      { generationObservations: claim.generation_observations || [] },
+    );
+    needsFollowUp = chatGptCaptureNeedsFollowUp(result.envelope);
+    retryDelayMs = needsFollowUp ? runningPollDelayMs(claim.running_poll_count || 0) : 0;
+    const receipt = result.captureResult || {};
+    if (claim.provider_updated_at && receipt.content_hash) {
+      const coordinator = await backfillCoordinator();
+      await coordinator.store.putRevision({
+        id: `${claim.provider}:${claim.native_id}`,
+        provider: claim.provider,
+        native_id: claim.native_id,
+        provider_updated_at: claim.provider_updated_at,
+        receiver_content_hash: receipt.content_hash,
+        receiver_request_id: receipt.receiver_request_id || null,
+        completed_at: new Date().toISOString(),
+      });
+    }
+    await appendConversationTimeline({
+      provider: claim.provider,
+      providerSessionId: claim.native_id,
+      event: needsFollowUp ? "detected_new" : "captured",
+      reason: "freshness_convergence",
+      detail: needsFollowUp ? "provider_still_running" : "provider_head_current",
+    });
+  } catch (error) {
+    failure = String(error?.message || error);
+    const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    retryDelayMs = failureRetryDelayMs(
+      claim.attempt_count || 0,
+      classified.outcome,
+      classified.retry_after_seconds,
+    );
+    await appendConversationTimeline({
+      provider: claim.provider,
+      providerSessionId: claim.native_id,
+      event: "held_with_reason",
+      reason: "freshness_convergence",
+      detail: classified.outcome,
+    });
+  }
+
+  const next = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    return persistCaptureFreshnessQueue(completeFreshnessClaim(current, claim, {
+      nowMs: Date.now(),
+      needsFollowUp,
+      retryDelayMs,
+      error: failure,
+    }));
+  });
+  await scheduleNextCaptureFreshnessWake(next);
+  return { processed: 1, remaining: Object.keys(next.entries).length, needsFollowUp, error: failure };
+}
+
+function processCaptureFreshnessQueue() {
+  if (captureFreshnessPollPromise) return captureFreshnessPollPromise;
+  const tracked = processCaptureFreshnessQueueOnce().finally(() => {
+    if (captureFreshnessPollPromise === tracked) captureFreshnessPollPromise = null;
+  });
+  captureFreshnessPollPromise = tracked;
+  return tracked;
+}
+
+async function runCaptureFreshnessSweep() {
+  if (!(await automaticCaptureEnabled())) {
+    return { skipped: true, reason: "automatic_capture_paused" };
+  }
+  const now = Date.now();
+  let queue = await storedCaptureFreshnessQueue();
+  if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
+  const coordinator = await backfillCoordinator();
+  const activeJobs = await coordinator.store.listJobs();
+  if (activeJobs.some((job) => job.provider === "chatgpt" && job.status === "running")) {
+    return { skipped: true, reason: "explicit_backfill_running" };
+  }
+  const partition = queue.sweep_partition % 4;
+  try {
+    const cutoff = new Date(now - CAPTURE_FRESHNESS_SWEEP_WINDOW_MS).toISOString();
+    const adapter = coordinator.adapters.chatgpt;
+    const result = await adapter.enumerate(`${partition}:0`, cutoff);
+    if (result.classification !== "success") {
+      const error = new Error(`provider_${result.classification}_http_${result.response?.status || 0}`);
+      error.retryAfterSeconds = Number.parseInt(result.response?.headers?.get?.("Retry-After") || "", 10) || null;
+      throw error;
+    }
+    queue = await serializeStorageMutation(async () => {
+      const current = await storedCaptureFreshnessQueue();
+      return persistCaptureFreshnessQueue({
+        ...current,
+        sweep_partition: (partition + 1) % 4,
+        sweep_not_before_ms: 0,
+        last_sweep_at: new Date(now).toISOString(),
+        last_sweep_error: null,
+      });
+    });
+    let scheduled = 0;
+    for (const item of result.items) {
+      const revision = item.updated_at
+        ? await coordinator.store.getRevision("chatgpt", item.native_id)
+        : null;
+      if (item.updated_at && revision?.provider_updated_at === item.updated_at) continue;
+      const outcome = await scheduleCaptureFreshness({
+        provider: "chatgpt",
+        nativeId: item.native_id,
+        reason: "inventory_delta",
+        delayMs: scheduled * 15_000,
+        providerUpdatedAt: item.updated_at,
+      });
+      if (outcome.scheduled) scheduled += 1;
+    }
+    return { skipped: false, partition, observed: result.items.length, scheduled };
+  } catch (error) {
+    const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    const retryDelay = failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds);
+    await serializeStorageMutation(async () => {
+      const current = await storedCaptureFreshnessQueue();
+      await persistCaptureFreshnessQueue({
+        ...current,
+        sweep_not_before_ms: now + retryDelay,
+        last_sweep_at: new Date(now).toISOString(),
+        last_sweep_error: classified.outcome,
+      });
+    });
+    return { skipped: true, reason: classified.outcome, error: String(error?.message || error) };
+  }
+}
+
+async function ensureCaptureFreshnessAlarms() {
+  await chrome.alarms?.create?.(CAPTURE_FRESHNESS_SWEEP_ALARM, {
+    delayInMinutes: 1,
+    periodInMinutes: CAPTURE_FRESHNESS_SWEEP_MINUTES,
+  });
+  await scheduleNextCaptureFreshnessWake();
 }
 
 async function captureSupportedTabs(reason) {
   if (!chrome.tabs?.query) return;
   const tabs = await chrome.tabs.query({});
-  await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
-}
-
-// ---- Outbound posting (reverse channel) ---------------------------------
-//
-// Disabled by default. The local receiver only serves post commands when its
-// own POLYLOGUE_BROWSER_POST_ENABLED=1 guard is set; the extension adds a second
-// independent guard (`postingEnabled`, default false) so a misconfigured
-// receiver still cannot drive the page without an explicit opt-in here.
-
-async function postingSettings() {
-  const stored = await chrome.storage.local.get({ postingEnabled: false });
-  return { postingEnabled: Boolean(stored.postingEnabled) };
-}
-
-async function savePostingSettings(postingEnabled) {
-  await chrome.storage.local.set({ postingEnabled: Boolean(postingEnabled) });
-  return postingSettings();
-}
-
-function providerTokenForUrl(url) {
-  try {
-    const parsed = new URL(url || "");
-    if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
-    if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude";
-  } catch {
-    return null;
+  // Explicit operator sync may recapture an open conversation.  Automatic
+  // lifecycle events must reconcile with the receiver first: `spooled_only`
+  // means the receiver already accepted a capture and is converging it, not
+  // that the extension should re-fetch authenticated provider data.  This is
+  // deliberately durable across service-worker restarts, unlike the in-memory
+  // background-capture throttle.
+  if (reason === "popup_sync_open_tabs") {
+    await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
+    return;
   }
-  return null;
+  await Promise.allSettled(tabs.map((tab) => refreshActiveTabArchiveState(tab, reason)));
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// ---- Provider-neutral browser actions ----------------------------------
+
+async function updateBrowserAction(actionId, ownerInstanceId, patch) {
+  return postJson(`/v1/browser-actions/${encodeURIComponent(actionId)}/events`, {
+    owner_instance_id: ownerInstanceId,
+    ...patch,
+  });
+}
+
+async function browserActionAttachmentBytes(action) {
+  const settings = await receiverSettings();
+  const attachments = [];
+  let total = 0;
+  for (const item of action.attachments || []) {
+    total += Number(item.size_bytes || 0);
+    if (total > BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES) {
+      throw new Error(`protocol_attachment_transport_limit:${total}`);
+    }
+    const requestId = buildReceiverRequestId();
+    const response = await fetch(
+      `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+      { headers: await requestHeaders({ requestId }) },
+    );
+    if (!response.ok) {
+      const error = new Error(`browser_action_attachment_http_${response.status}`);
+      error.retryAfterSeconds = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
+      throw error;
+    }
+    const remaining = BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES - (total - Number(item.size_bytes || 0));
+    const declaredLength = Number.parseInt(response.headers.get("Content-Length") || "", 10);
+    if (Number.isFinite(declaredLength) && declaredLength > remaining) {
+      throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + declaredLength}`);
+    }
+    if (!response.body?.getReader) throw new Error("protocol_attachment_stream_unavailable");
+    const reader = response.body.getReader();
+    const chunks = [];
+    let downloaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      downloaded += value.byteLength;
+      if (downloaded > remaining) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + downloaded}`);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(downloaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    if (bytes.length !== item.size_bytes) throw new Error(`protocol_attachment_size_mismatch:${item.attachment_id}`);
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    if (digest !== item.sha256) throw new Error(`protocol_attachment_hash_mismatch:${item.attachment_id}`);
+    attachments.push({
+      attachment_id: item.attachment_id,
+      name: item.name,
+      mime_type: item.mime_type,
+      content_base64: bytesToBase64(bytes),
+    });
+  }
+  return attachments;
+}
+
+function browserActionTargetUrl(action) {
+  if (action.target?.conversation_url) return action.target.conversation_url;
+  if (action.operation === "conversation.reply") {
+    return `https://chatgpt.com/c/${encodeURIComponent(action.target.conversation_id)}`;
+  }
+  if (action.target?.project_ref) {
+    const project = String(action.target.project_ref).replace(/^https:\/\/chatgpt\.com\/g\//, "").replace(/^\/+|\/+$/g, "");
+    return `https://chatgpt.com/g/${project}/project?tab=chats`;
+  }
+  return "https://chatgpt.com/";
+}
+
+async function prepareBrowserActionTransport(action) {
+  if (action.provider !== "chatgpt") throw new Error(`unsupported_browser_action_provider:${action.provider}`);
+  const transport = await providerTab("chatgpt", { allowCreate: true });
+  const targetUrl = browserActionTargetUrl(action);
+  const currentUrl = transport.tab.url || transport.tab.pendingUrl || "";
+  if (currentUrl !== targetUrl) {
+    await chrome.tabs.update(transport.tab.id, { url: targetUrl, active: false });
+    await waitForProviderTab(transport.tab.id, "chatgpt");
+  }
+  return transport;
+}
+
+function startBrowserActionLeaseHeartbeat(action, ownerInstanceId, phase) {
+  let stopped = false;
+  let failure = null;
+  let inFlight = Promise.resolve();
+  const renew = () => {
+    inFlight = inFlight.then(async () => {
+      if (stopped) return;
+      await updateBrowserAction(action.action_id, ownerInstanceId, {
+        outcome: "progress",
+        phase,
+        detail: "renewed browser action lease during provider execution",
+      });
+    }).catch((error) => {
+      failure ||= error;
+    });
+    return inFlight;
+  };
+  const timer = globalThis.setInterval(() => {
+    void renew();
+  }, 60_000);
+  return async () => {
+    stopped = true;
+    globalThis.clearInterval(timer);
+    await inFlight;
+    if (failure) throw failure;
+  };
+}
+
+async function dispatchBrowserAction(action, ownerInstanceId) {
+  let submitIntentRecorded = false;
+  let pageExecutionStarted = false;
+  let actionTransport = null;
+  try {
+    const attachments = await browserActionAttachmentBytes(action);
+    const result = await withProviderTransportOperation(action.provider, async () => {
+      const transport = await prepareBrowserActionTransport(action);
+      actionTransport = transport;
+      await updateBrowserAction(action.action_id, ownerInstanceId, {
+        outcome: "progress",
+        phase: action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+        detail: action.submit_policy === "submit_once"
+          ? "durable submit intent recorded before the single provider submit boundary"
+          : "owned inactive provider target prepared for a staged draft",
+      });
+      submitIntentRecorded = action.submit_policy === "submit_once";
+      pageExecutionStarted = true;
+      const stopHeartbeat = startBrowserActionLeaseHeartbeat(
+        action,
+        ownerInstanceId,
+        action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+      );
+      try {
+        const [execution] = await chrome.scripting.executeScript({
+          target: { tabId: transport.tab.id },
+          world: "MAIN",
+          func: executeChatGptBrowserActionInPage,
+          args: [action, attachments],
+        });
+        return execution?.result;
+      } finally {
+        await stopHeartbeat();
+      }
+    });
+    if (!result?.ok) {
+      const error = new Error(result?.detail || "protocol_browser_action_result_missing");
+      error.submissionMayHaveOccurred = Boolean(result?.submission_may_have_occurred);
+      error.retryAfterSeconds = result?.retry_after_seconds || null;
+      throw error;
+    }
+    const receipt = {
+      action_id: action.action_id,
+      receiver_id: action.receiver_id,
+      extension_instance_id: ownerInstanceId,
+      provider_conversation_id: result.provider_conversation_id || null,
+      provider_conversation_url: result.provider_conversation_url || null,
+      provider_turn_id: result.provider_turn_id || null,
+      observed_surface: result.observed_surface || null,
+      observed_model: result.observed_model || null,
+      observed_effort: result.observed_effort || null,
+      observed_project_ref: result.observed_project_ref || null,
+      provider_evidence: result.provider_evidence || {},
+      observed_at: new Date().toISOString(),
+    };
+    await updateBrowserAction(action.action_id, ownerInstanceId, {
+      outcome: result.outcome,
+      phase: result.outcome,
+      detail: result.outcome === "submitted"
+        ? "provider returned an exact conversation and user-turn receipt"
+        : "provider composer was staged without submitting",
+      receipt,
+    });
+    if (result.outcome === "submitted" && result.provider_conversation_id) {
+      await scheduleCaptureFreshness({
+        provider: action.provider,
+        nativeId: result.provider_conversation_id,
+        reason: "provider_turn_submitted",
+        delayMs: 30_000,
+      });
+    }
+    if (result.outcome === "submitted" && actionTransport?.cleanupAlarm) {
+      await cleanupBackfillTransportTab(actionTransport.cleanupAlarm);
+    } else if (result.outcome === "drafted" && actionTransport?.tab?.id) {
+      // A staged draft is operator-visible provider state, not a reusable
+      // transport. Keep its inactive tab and TTL cleanup, but relinquish
+      // ownership so later captures/actions cannot inherit draft text or
+      // attachments from it.
+      await forgetProviderTransport(action.provider, actionTransport.tab.id);
+    }
+    await appendCaptureLog({
+      ok: true,
+      reason: `browser_action_${result.outcome}`,
+      action_id: action.action_id,
+      provider: action.provider,
+      provider_session_id: result.provider_conversation_id || null,
+      provider_turn_id: result.provider_turn_id || null,
+    });
+  } catch (error) {
+    const ambiguous = submitIntentRecorded
+      && (error?.submissionMayHaveOccurred === true || (pageExecutionStarted && error?.submissionMayHaveOccurred !== false));
+    const classified = ambiguous
+      ? {
+        outcome: "outcome_unknown",
+        retry_after_seconds: null,
+        detail: `submit execution ended without an exact provider receipt: ${String(error.message || error)}`,
+      }
+      : classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+    await updateBrowserAction(action.action_id, ownerInstanceId, {
+      ...classified,
+      phase: ambiguous ? "outcome_unknown" : "provider_action_failed",
+    }).catch(() => undefined);
+    await appendCaptureLog({
+      ok: false,
+      reason: "browser_action_failed",
+      action_id: action.action_id,
+      error: String(error.message || error),
+    });
+  }
+}
+
+async function pollBrowserActionsOnce() {
+  // Browser-action polling is autonomous work.  An unpaired profile has no
+  // trusted receiver identity, so it must remain entirely local instead of
+  // turning the wake alarm into recurring unauthenticated receiver traffic.
+  if (!(await storedReceiverPairing())?.receiver_id) {
+    return { actions: [], skipped: true, reason: "receiver_unpaired" };
+  }
+  const ownerInstanceId = await browserActionExecutorId();
+  const claimed = await getJson(`/v1/browser-actions?claim_by=${encodeURIComponent(ownerInstanceId)}`)
+    .catch(() => ({ actions: [] }));
+  const action = Array.isArray(claimed.actions) ? claimed.actions[0] : null;
+  if (action) await dispatchBrowserAction(action, ownerInstanceId);
+  return claimed;
+}
+
+function pollBrowserActions() {
+  if (browserActionPollPromise) return browserActionPollPromise;
+  const tracked = pollBrowserActionsOnce().finally(() => {
+    if (browserActionPollPromise === tracked) browserActionPollPromise = null;
+  });
+  browserActionPollPromise = tracked;
+  return browserActionPollPromise;
+}
+
+async function ensureBrowserActionAlarm() {
+  await chrome.alarms?.create?.(BROWSER_ACTION_ALARM, { delayInMinutes: 0.1, periodInMinutes: 1 });
 }
 
 function archiveProviderForUrl(url) {
@@ -687,6 +2365,16 @@ function archiveProviderForUrl(url) {
   return null;
 }
 
+// ChatGPT emits durable freshness hints and has a bounded sweep queue, so an
+// already-archived ChatGPT conversation can remain receiver-owned until that
+// path reports a change.  Claude and Grok have no equivalent convergence
+// signal yet: suppressing their ordinary lifecycle capture would leave later
+// turns permanently stale.  Keep that distinction explicit rather than
+// treating every provider's `archived` state as equally terminal.
+function hasReceiverFreshnessConvergence(provider) {
+  return provider === "chatgpt";
+}
+
 function conversationIdForUrl(url) {
   try {
     const parsed = new URL(url || "");
@@ -702,7 +2390,17 @@ function conversationIdForUrl(url) {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
     if (provider === "grok") {
-      return parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok") || null;
+      const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
+      if (pathId) return pathId;
+      const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
+      if (queryId) return queryId;
+      if (!(parts[0] === "i" && parts[1] === "grok")) return null;
+      let hash = 0x811c9dc5;
+      for (const char of `${parsed.origin}${parsed.pathname}${parsed.search}`) {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      return `dom:${(hash >>> 0).toString(16).padStart(8, "0")}`;
     }
   } catch {
     return null;
@@ -710,7 +2408,7 @@ function conversationIdForUrl(url) {
   return null;
 }
 
-async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
+async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowRecovery = true) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
   const providerSessionId = conversationIdForUrl(url);
@@ -724,9 +2422,20 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
     if (provider && providerSessionId) {
       const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
-      await setState({
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "first_seen",
+        reason,
+        detail: "archive_state_checked",
+        tabId: tab?.id || null,
+        onlyIfEmpty: true,
+      });
+      const pairing = await storedReceiverPairing();
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
+        receiver_pairing: pairing,
         archive_state: state,
         provider,
         provider_session_id: providerSessionId,
@@ -734,26 +2443,123 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
         active_tab_id: tab?.id || null,
         passive_reason: reason,
         last_receiver_request_id: state.receiver_request_id || null,
+      }, url);
+      await updateSessionLedger({
+        provider,
+        providerSessionId,
+        patch: {
+          archive_state: state,
+          tab_id: tab?.id || null,
+          tab_url: url || null,
+          last_error: null,
+        },
       });
-      return;
+      if (state.state === "missing") {
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "detected_new",
+          reason,
+          detail: "archive_state_missing",
+          tabId: tab?.id || null,
+        });
+        const captureResult = await captureTab(tab, "auto_capture_missing", {
+          provider,
+          providerSessionId,
+          url,
+        });
+        if (!captureResult || captureResult.skipped) {
+          await appendConversationTimeline({
+            provider,
+            providerSessionId,
+            event: "held_with_reason",
+            reason: "auto_capture_missing",
+            detail: captureResult?.reason || "capture_not_available",
+            tabId: tab?.id || null,
+          });
+        }
+      } else if (state.state === "archived" && !hasReceiverFreshnessConvergence(provider)) {
+        const captureResult = await captureTab(tab, "auto_capture_unconverged_provider", {
+          provider,
+          providerSessionId,
+          url,
+        });
+        if (!captureResult || captureResult.skipped) {
+          await appendConversationTimeline({
+            provider,
+            providerSessionId,
+            event: "held_with_reason",
+            reason: "auto_capture_unconverged_provider",
+            detail: captureResult?.reason || "capture_not_available",
+            tabId: tab?.id || null,
+          });
+        }
+      } else {
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "observed_no_action",
+          reason,
+          detail: state.state === "archived" ? "already_safe" : "receiver_already_processing",
+          tabId: tab?.id || null,
+          dedupeWindowMs: 5 * 60 * 1000,
+        });
+      }
+      return state.state || "unknown";
     }
 
-    const status = await getJson("/v1/status");
-    await setState({
-      online: true,
+    const health = await checkReceiverHealth();
+    const online = ["ok", "recovered"].includes(health.status);
+    await setStateForTab(tab?.id || null, {
+      online,
       captured: false,
-      status,
+      status: health.receiver_status || null,
+      receiver_pairing: health.pairing || null,
+      receiver_health: health,
+      error: health.status === "unauthorized"
+        ? "unauthorized"
+        : health.status === "pairing_mismatch"
+          ? "receiver_pairing_mismatch"
+          : online
+            ? null
+            : health.detail || "receiver_unavailable",
       provider,
       provider_session_id: null,
       active_page_state: provider ? "supported_no_session" : "unsupported",
       active_tab_id: tab?.id || null,
       passive_reason: reason,
-      last_receiver_request_id: status.receiver_request_id || null,
-    });
+      last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
+    }, url);
+    return "not_conversation";
   } catch (error) {
-    await setState({
+    if (allowRecovery) {
+      const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
+      if (health.status === "recovered") {
+        recentActiveTabStateChecks.delete(throttleKey);
+        await appendConversationTimeline({
+          provider,
+          providerSessionId,
+          event: "receiver_recovered",
+          reason,
+          detail: `${health.recovered_from} -> ${health.endpoint}`,
+          tabId: tab?.id || null,
+        });
+        return refreshActiveTabArchiveState(tab, `${reason}_receiver_recovered`, false);
+      }
+    }
+    const pairing = await storedReceiverPairing();
+    await appendConversationTimeline({
+      provider,
+      providerSessionId,
+      event: "held_with_reason",
+      reason,
+      detail: error.code || "archive_state_check_failed",
+      tabId: tab?.id || null,
+    });
+    await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
+      receiver_pairing: pairing,
       provider,
       provider_session_id: providerSessionId,
       active_page_state: provider ? "receiver_error" : "unsupported",
@@ -761,7 +2567,8 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state") {
       passive_reason: reason,
       error: String(error.message || error),
       last_receiver_request_id: error.receiverRequestId || null,
-    });
+    }, url);
+    return "receiver_error";
   }
 }
 
@@ -778,131 +2585,179 @@ async function refreshCurrentActiveTab(reason = "active_tab") {
   await refreshActiveTabArchiveState(tab, reason);
 }
 
-async function ackPostCommand(commandId, result) {
-  try {
-    await postJson(`/v1/post-commands/${encodeURIComponent(commandId)}/ack`, result);
-    pendingPostCommandAcks.delete(commandId);
-    inFlightPostCommands.delete(commandId);
-    return true;
-  } catch (error) {
-    await appendCaptureLog({ ok: false, reason: "post_ack", command_id: commandId, error: String(error.message || error) });
-    pendingPostCommandAcks.set(commandId, result);
-    return false;
+function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
+  const url = tab?.url || tab?.pendingUrl || "";
+  const provider = archiveProviderForUrl(url);
+  const providerSessionId = conversationIdForUrl(url);
+  const sameGlobalSession = globalState?.provider === provider
+    && globalState?.provider_session_id === providerSessionId;
+  const ledgerItem = provider && providerSessionId
+    ? ledger?.[sessionKey(provider, providerSessionId)] || {}
+    : {};
+  const receiverOnline = ["ok", "recovered"].includes(health?.status);
+  const receiverError = health?.status === "unauthorized"
+    ? "unauthorized"
+    : health?.status === "pairing_mismatch"
+      ? "receiver_pairing_mismatch"
+      : receiverOnline
+        ? null
+        : health?.detail || "receiver_unavailable";
+
+  if (sameGlobalSession) {
+    return {
+      ...globalState,
+      online: receiverOnline,
+      error: receiverError || (receiverOnline ? globalState?.error || null : receiverError),
+      receiver_pairing: pairing,
+      receiver_health: health,
+    };
   }
+
+  return {
+    online: receiverOnline,
+    error: receiverError,
+    captured: ledgerItem.archive_state?.state === "archived" || Boolean(ledgerItem.receiver_request_id),
+    provider,
+    provider_session_id: providerSessionId,
+    active_page_state: providerSessionId ? "conversation" : provider ? "supported_no_session" : "unsupported",
+    archive_state: ledgerItem.archive_state || null,
+    capture_mode: ledgerItem.capture_mode || null,
+    asset_acquisition: ledgerItem.asset_acquisition || null,
+    turn_count: ledgerItem.turn_count ?? null,
+    attachment_count: ledgerItem.attachment_count ?? null,
+    last_receiver_request_id: ledgerItem.receiver_request_id || null,
+    updated_at: ledgerItem.updated_at || null,
+    receiver_pairing: pairing,
+    receiver_health: health,
+  };
 }
 
-async function retryPendingPostCommandAcks() {
-  for (const [commandId, result] of [...pendingPostCommandAcks.entries()]) {
-    await ackPostCommand(commandId, result);
+async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
+  const resolvedTab = tab || (chrome.tabs?.query
+    ? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+    : null);
+  const tabUrl = resolvedTab?.url || resolvedTab?.pendingUrl || "";
+  const health = await checkReceiverHealth();
+  const receiverOnline = ["ok", "recovered"].includes(health.status);
+
+  // Do not touch archive or queue routes after a pairing mismatch,
+  // authorization failure, or offline result. This keeps the mission-control
+  // surface read-only and fail-closed until receiver identity is trustworthy.
+  if (refresh && resolvedTab && receiverOnline) {
+    await refreshActiveTabArchiveState(resolvedTab, "mission_control_snapshot").catch(() => undefined);
   }
+
+  const [coordinator, captureInstanceId] = await Promise.all([
+    backfillCoordinator().catch(() => null),
+    extensionInstanceId().catch(() => null),
+  ]);
+  const backfillStatusPromise = coordinator
+    ? coordinator.listStatus().catch(() => [])
+    : Promise.resolve([]);
+  const [stored, backfillJobs, ambient] = await Promise.all([
+    chrome.storage.local.get({
+      polylogueState: null,
+      polylogueSessionLedger: {},
+      [CONVERSATION_TIMELINE_KEY]: {},
+      [CAPTURE_QUEUE_KEY]: { entries: [], dropped_count: 0 },
+      [CAPTURE_FRESHNESS_QUEUE_KEY]: null,
+      [RECEIVER_PAIRING_KEY]: null,
+    }),
+    backfillStatusPromise,
+    ambientSettings(hostnameForUrl(tabUrl)),
+  ]);
+  const pairing = health.pairing || stored[RECEIVER_PAIRING_KEY] || null;
+  const baseState = stateSnapshotForTab(
+    resolvedTab,
+    stored.polylogueState,
+    stored.polylogueSessionLedger || {},
+    pairing,
+    health,
+  );
+  const freshnessQueue = normalizeFreshnessQueue(stored[CAPTURE_FRESHNESS_QUEUE_KEY]);
+  const freshnessEntry = baseState.provider && baseState.provider_session_id
+    ? freshnessQueue.entries[sessionKey(baseState.provider, baseState.provider_session_id)] || null
+    : null;
+  const state = { ...baseState, capture_freshness: freshnessEntry };
+  const timelineKey = sessionKey(state.provider, state.provider_session_id);
+  const timeline = state.provider && state.provider_session_id
+    ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
+    : [];
+  const settings = await receiverSettings();
+
+  return {
+    ok: true,
+    generated_at: new Date().toISOString(),
+    extension: {
+      contract_epoch: EXTENSION_CONTRACT_EPOCH,
+      manifest_version: chrome.runtime.getManifest?.().version || null,
+      extension_id: chrome.runtime.id || null,
+      instance_id: captureInstanceId,
+    },
+    tab: resolvedTab ? {
+      id: resolvedTab.id || null,
+      title: resolvedTab.title || null,
+      url: tabUrl || null,
+    } : null,
+    state,
+    timeline,
+    receiver: {
+      health,
+      pairing,
+      configured_url: settings.baseUrl,
+    },
+    work: {
+      capture_queue: stored[CAPTURE_QUEUE_KEY] || { entries: [], dropped_count: 0 },
+      freshness_queue: freshnessQueue,
+      backfill_jobs: backfillJobs || [],
+    },
+    ambient,
+    assertions: {
+      selection_candidate_supported: true,
+      persistence_supported: false,
+      reason: "receiver_assertion_route_not_advertised",
+    },
+  };
 }
 
-async function findTabForCommand(command) {
-  if (!chrome.tabs?.query) return null;
-  const tabs = await chrome.tabs.query({});
-  const provider = command.provider;
-  const target = command.target || {};
-  const wantNew = !target.conversation_id || target.conversation_id === "new";
-  let fallback = null;
-  for (const tab of tabs) {
-    const url = tab.url || tab.pendingUrl || "";
-    if (providerTokenForUrl(url) !== provider) continue;
-    if (wantNew) {
-      if (conversationIdForUrl(url)) continue;
-      if (tab.active) return tab;
-      fallback = fallback || tab;
-      continue;
-    }
-    if (conversationIdForUrl(url) === target.conversation_id) return tab;
-  }
-  return wantNew ? fallback : null;
-}
-
-async function dispatchPostCommand(command) {
-  if (!command || !command.command_id || inFlightPostCommands.has(command.command_id)) return;
-  inFlightPostCommands.add(command.command_id);
-  let terminalAckRecorded = false;
-  try {
-    const tab = await findTabForCommand(command);
-    if (!tab?.id) {
-      terminalAckRecorded = await ackPostCommand(command.command_id, { status: "failed", detail: "no_matching_tab" });
-      return;
-    }
-    await ensureCaptureScripts(tab);
-    let result;
-    try {
-      result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.postReply", command });
-    } catch (error) {
-      terminalAckRecorded = await ackPostCommand(command.command_id, {
-        status: "failed",
-        detail: String(error.message || error),
-        observed_url: tab.url || null,
-      });
-      return;
-    }
-    terminalAckRecorded = await ackPostCommand(command.command_id, {
-      status: result?.status === "submitted" ? "submitted" : "failed",
-      detail: result?.detail || null,
-      observed_url: result?.observed_url || tab.url || null,
-    });
-  } finally {
-    if (terminalAckRecorded) inFlightPostCommands.delete(command.command_id);
-  }
-}
-
-async function pollPostCommands() {
-  const { postingEnabled } = await postingSettings();
-  if (!postingEnabled) return;
-  await retryPendingPostCommandAcks();
-  for (const provider of ["chatgpt", "claude"]) {
-    let body;
-    try {
-      body = await getJson(`/v1/post-commands?provider=${provider}`);
-    } catch {
-      continue;
-    }
-    if (!body?.post_enabled || !Array.isArray(body.commands)) continue;
-    for (const command of body.commands) {
-      await dispatchPostCommand(command);
-    }
-  }
-}
-
-async function startPostPolling() {
-  const { postingEnabled } = await postingSettings();
-  if (!postingEnabled) {
-    stopPostPolling();
-    return;
-  }
-  if (postPollTimer) return;
-  postPollTimer = globalThis.setInterval(() => {
-    void pollPostCommands();
-  }, POST_POLL_INTERVAL_MS);
-  void pollPostCommands();
-}
-
-function stopPostPolling() {
-  if (postPollTimer) {
-    globalThis.clearInterval(postPollTimer);
-    postPollTimer = 0;
-  }
-}
-
-void startPostPolling();
 void loadCaptureQueueIntoCache();
+void ensureBrowserActionAlarm();
+void ensureCaptureFreshnessAlarms();
 
 chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name === BROWSER_ACTION_ALARM) {
+    void pollBrowserActions();
+    return;
+  }
+  if (alarm?.name === CAPTURE_FRESHNESS_ALARM) {
+    void processCaptureFreshnessQueue();
+    return;
+  }
+  if (alarm?.name === CAPTURE_FRESHNESS_SWEEP_ALARM) {
+    void runCaptureFreshnessSweep();
+    return;
+  }
+  if (alarm?.name?.startsWith(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:`)) {
+    void cleanupBackfillTransportTab(alarm.name);
+    return;
+  }
   if (alarm?.name === CAPTURE_RETRY_ALARM) {
     void drainCaptureQueue("alarm");
+  }
+  if (alarm?.name?.startsWith(`${BACKFILL_ALARM}:`)) {
+    const jobId = alarm.name.slice(BACKFILL_ALARM.length + 1);
+    void backfillCoordinator().then((coordinator) => coordinator.wake(jobId));
   }
 });
 
 chrome.runtime.onInstalled?.addListener(() => {
-  void refreshCurrentActiveTab("extension_installed");
+  void captureSupportedTabs("extension_installed_or_updated");
 });
 
 chrome.runtime.onStartup?.addListener(() => {
-  void refreshCurrentActiveTab("browser_startup");
+  void captureSupportedTabs("browser_startup");
+  void backfillCoordinator().then((coordinator) => coordinator.wake());
+  void ensureCaptureFreshnessAlarms();
 });
 
 chrome.tabs?.onActivated?.addListener((activeInfo) => {
@@ -915,43 +2770,144 @@ chrome.tabs?.onActivated?.addListener((activeInfo) => {
 chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
   void (async () => {
-    await refreshActiveTabArchiveState(tab?.id ? tab : await chrome.tabs.get(tabId), "tab_updated");
+    const resolvedTab = tab?.id ? tab : await chrome.tabs.get(tabId);
+    await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
   })();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  void Promise.all([
+    forgetProviderTransport("chatgpt", tabId),
+    forgetProviderTransport("claude-ai", tabId),
+  ]);
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === "polylogue.missionControl.status") {
+      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      return;
+    }
+    if (message.type === "polylogue.receiverPairing.status") {
+      const health = await checkReceiverHealth();
+      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+      return;
+    }
+    if (message.type === "polylogue.receiverPairing.reset") {
+      await clearReceiverPairing();
+      const health = await checkReceiverHealth({ allowCanonicalRecovery: false });
+      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+      return;
+    }
+    if (message.type === "polylogue.ambient.configure") {
+      const url = sender.tab?.url || sender.tab?.pendingUrl || message.url || "";
+      const settings = await saveAmbientSettings({
+        enabled: message.enabled ?? null,
+        automaticCaptureEnabled: message.automatic_capture_enabled ?? null,
+        hostname: message.hostname || hostnameForUrl(url),
+        siteEnabled: message.site_enabled ?? null,
+      });
+      if (settings.automatic_capture_enabled) await ensureCaptureFreshnessAlarms();
+      else await chrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
+      sendResponse({ ok: true, ambient: settings });
+      return;
+    }
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
       return;
     }
+    if (message.type === "polylogue.backfill.start") {
+      const coordinator = await backfillCoordinator();
+      const job = await coordinator.start({
+        provider: message.provider,
+        cutoff: message.cutoff,
+        policy: message.policy || {},
+        provider_options: message.provider_options || {},
+      });
+      void coordinator.wake(job.id);
+      sendResponse({ ok: true, job });
+      return;
+    }
+    if (message.type === "polylogue.backfill.control") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, job: await coordinator.control(message.job_id, message.action) });
+      return;
+    }
+    if (message.type === "polylogue.backfill.status") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, jobs: await coordinator.listStatus() });
+      return;
+    }
+    if (message.type === "polylogue.backfill.export") {
+      const coordinator = await backfillCoordinator();
+      sendResponse({ ok: true, ledger: await coordinator.exportLedger(message.job_id) });
+      return;
+    }
     if (message.type === "polylogue.capture") {
-      const summary = envelopeSessionSummary(message.envelope);
+      const envelope = await withExtensionInstanceAttribution(message.envelope);
+      const summary = envelopeSessionSummary(envelope);
       let result;
       try {
-        result = await postJson("/v1/browser-captures", message.envelope);
+        // Content scripts in an existing provider tab may outlive an extension
+        // reload. Do not let one of those stale producers turn an unpaired
+        // receiver into unauthenticated receiver traffic.
+        if (sender.tab) await requirePairedTrustedReceiver();
+        result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
-          await enqueueCaptureForRetry({ envelope: message.envelope, reason: message.reason, error });
-          await setState({
+          const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
+          for (const evicted of queued.accepted ? queued.evicted : []) {
+            const evictedSummary = envelopeSessionSummary(evicted.envelope);
+            await appendConversationTimeline({
+              provider: evictedSummary.provider,
+              providerSessionId: evictedSummary.providerSessionId,
+              event: "held_with_reason",
+              reason: evicted.reason,
+              detail: queued.accepted ? "capture_queue_evicted" : "capture_queue_entry_over_budget",
+              tabId: evicted.tab_id || null,
+            });
+          }
+          await appendConversationTimeline({
+            provider: summary.provider,
+            providerSessionId: summary.providerSessionId,
+            event: "held_with_reason",
+            reason: message.reason || "content_script_capture",
+            detail: queued.accepted ? "capture_queued_for_retry" : "capture_queue_entry_over_budget",
+            tabId: sender.tab?.id || null,
+          });
+          await setStateForTab(sender.tab?.id || null, {
             online: false,
             captured: false,
             provider: summary.provider,
             provider_session_id: summary.providerSessionId,
             error: String(error.message || error),
             last_receiver_request_id: error.receiverRequestId || null,
-          });
+          }, sender.tab?.url || sender.tab?.pendingUrl || null);
           sendResponse({
             ok: false,
-            queued: true,
+            queued: queued.accepted,
             error: String(error.message || error),
             receiver_request_id: error.receiverRequestId || null,
           });
           return;
         }
+        await updateSessionLedger({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          patch: { last_error: String(error.message || error) },
+        });
+        await appendConversationTimeline({
+          provider: summary.provider,
+          providerSessionId: summary.providerSessionId,
+          event: "held_with_reason",
+          reason: message.reason || "content_script_capture",
+          detail: error.code || "capture_rejected",
+          tabId: sender.tab?.id || null,
+        });
         throw error;
       }
+      const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
         providerSessionId: summary.providerSessionId || result.provider_session_id,
@@ -962,6 +2918,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           attachment_count: summary.attachmentCount,
           receiver_request_id: result.receiver_request_id || null,
           artifact_ref: result.artifact_ref || null,
+          extension_instance_id: result.capture_instance_id || null,
+          deduplicated: Boolean(result.deduplicated),
+          archive_state: archiveState,
           last_error: null,
         },
       });
@@ -974,22 +2933,60 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         receiver_request_id: result.receiver_request_id || null,
         artifact_ref: result.artifact_ref || null,
       });
-      await setState({
+      await appendConversationTimeline({
+        provider: summary.provider || result.provider,
+        providerSessionId: summary.providerSessionId || result.provider_session_id,
+        event: "captured",
+        reason: message.reason || "content_script_capture",
+        detail: archiveState.state,
+        tabId: sender.tab?.id || null,
+      });
+      await setStateForTab(sender.tab?.id || null, {
         online: true,
         captured: true,
         last_capture: result,
+        archive_state: archiveState,
         provider: summary.provider || result.provider,
         provider_session_id: summary.providerSessionId || result.provider_session_id,
         capture_mode: summary.captureMode,
         asset_acquisition: summary.assetAcquisition,
         turn_count: summary.turnCount,
         attachment_count: summary.attachmentCount,
+        extension_instance_id: result.capture_instance_id || null,
+        deduplicated: Boolean(result.deduplicated),
         last_receiver_request_id: result.receiver_request_id || null
-      });
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
       // Receiver just proved reachable — flush anything queued from earlier
       // outages before returning this capture's result.
       void drainCaptureQueue("post_success");
-      sendResponse(result);
+      sendResponse({ ok: true, ...result });
+      return;
+    }
+    if (message.type === "polylogue.captureFreshnessHint") {
+      const senderUrl = sender.tab?.url || sender.tab?.pendingUrl || "";
+      const senderProvider = archiveProviderForUrl(senderUrl);
+      const senderSessionId = conversationIdForUrl(senderUrl);
+      const provider = message.provider || senderProvider;
+      const nativeId = message.provider_session_id || senderSessionId;
+      if (sender.tab && (provider !== senderProvider || (senderSessionId && nativeId !== senderSessionId))) {
+        throw new Error("freshness_hint_sender_identity_mismatch");
+      }
+      sendResponse({
+        ok: true,
+        ...(await scheduleCaptureFreshness({
+          provider,
+          nativeId,
+          reason: message.reason || "provider_page_hint",
+          delayMs: Math.max(
+            0,
+            Math.min(5 * 60_000, Number.isFinite(Number(message.delay_ms)) ? Number(message.delay_ms) : 5_000),
+          ),
+          providerUpdatedAt: message.provider_updated_at || null,
+          generationObservations: Array.isArray(message.generation_observations)
+            ? message.generation_observations
+            : [],
+        })),
+      });
       return;
     }
     if (message.type === "polylogue.getCaptureQueue") {
@@ -1026,26 +3023,100 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         provider_session_id: message.provider_session_id
       });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
-      await setState({
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const previous = stored.polylogueState;
+      const sameSession = previous?.provider === message.provider
+        && previous?.provider_session_id === message.provider_session_id;
+      const preservedCaptureMetadata = sameSession ? {
+        last_capture: previous.last_capture,
+        capture_mode: previous.capture_mode,
+        asset_acquisition: previous.asset_acquisition,
+        turn_count: previous.turn_count,
+        attachment_count: previous.attachment_count,
+      } : {};
+      await setStateForTab(sender.tab?.id || null, {
+        ...preservedCaptureMetadata,
         online: true,
         captured: Boolean(state.captured),
         archive_state: state,
         provider: message.provider,
         provider_session_id: message.provider_session_id,
         last_receiver_request_id: state.receiver_request_id || null
+      }, sender.tab?.url || sender.tab?.pendingUrl || null);
+      await updateSessionLedger({
+        provider: message.provider,
+        providerSessionId: message.provider_session_id,
+        patch: {
+          archive_state: state,
+          tab_id: sender.tab?.id || null,
+          tab_url: sender.tab?.url || null,
+          last_error: null,
+        },
       });
       sendResponse(state);
       return;
     }
     if (message.type === "polylogue.status") {
-      const status = await getJson("/v1/status");
-      await setState({
+      const health = await checkReceiverHealth();
+      if (["ok", "recovered"].includes(health.status)) {
+        await refreshCurrentActiveTab(message.reason || "status");
+      } else {
+        const storedBefore = await chrome.storage.local.get({ polylogueState: null });
+        const previous = storedBefore.polylogueState || {};
+        await setState({
+          ...previous,
+          online: false,
+          receiver_pairing: health.pairing || previous.receiver_pairing || null,
+          receiver_health: health,
+          last_receiver_request_id: health.receiver_request_id || previous.last_receiver_request_id || null,
+          error: health.status === "unauthorized"
+            ? "unauthorized"
+            : health.status === "pairing_mismatch"
+              ? "receiver_pairing_mismatch"
+              : health.detail || "receiver_unavailable",
+        });
+      }
+      const stored = await chrome.storage.local.get({ polylogueState: null });
+      const state = stored.polylogueState || {};
+      if (!state.online) {
+        sendResponse({
+          ok: false,
+          error: state.error || "receiver_unavailable",
+          receiver_request_id: state.last_receiver_request_id || null,
+          receiver_pairing: state.receiver_pairing || null,
+        });
+        return;
+      }
+      const statusPayload = state.archive_state || state.status || state;
+      sendResponse({
+        ...statusPayload,
+        receiver_request_id:
+          statusPayload.receiver_request_id || state.last_receiver_request_id || health.receiver_request_id || null,
+      });
+      return;
+    }
+    if (message.type === "polylogue.capturePageFailed") {
+      const tab = sender.tab || (message.tab_url ? { id: message.tab_id || null, url: message.tab_url } : null);
+      const url = tab?.url || tab?.pendingUrl || "";
+      const provider = archiveProviderForUrl(url);
+      const providerSessionId = conversationIdForUrl(url);
+      await appendConversationTimeline({
+        provider,
+        providerSessionId,
+        event: "held_with_reason",
+        reason: "popup_capture",
+        detail: "content_capture_failed",
+        tabId: tab?.id || null,
+      });
+      await setStateForTab(tab?.id || null, {
         online: true,
         captured: false,
-        status,
-        last_receiver_request_id: status.receiver_request_id || null
-      });
-      sendResponse(status);
+        provider,
+        provider_session_id: providerSessionId,
+        active_page_state: providerSessionId ? "conversation" : "supported_no_session",
+        error: message.error || "capture_page_failed",
+      }, url || null);
+      sendResponse({ ok: false });
       return;
     }
     if (message.type === "polylogue.captureSupportedTabs") {
@@ -1053,15 +3124,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
-    if (message.type === "polylogue.configurePosting") {
-      const settings = await savePostingSettings(message.postingEnabled);
-      await startPostPolling();
-      sendResponse({ ok: true, postingEnabled: settings.postingEnabled });
+    if (message.type === "polylogue.browserActions.status") {
+      const [status, ownerInstanceId] = await Promise.all([
+        getJson("/v1/browser-actions"),
+        browserActionExecutorId(),
+      ]);
+      sendResponse({ ok: true, ownerInstanceId, actions: status.actions || [] });
       return;
     }
-    if (message.type === "polylogue.pollPostCommands") {
-      await pollPostCommands();
-      sendResponse({ ok: true });
+    if (message.type === "polylogue.browserActions.poll") {
+      sendResponse({ ok: true, ...(await pollBrowserActions()) });
       return;
     }
   })().catch(async (error) => {
@@ -1077,12 +3149,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       receiver_request_id: error.receiverRequestId || null,
       error: String(error.message || error),
     });
-    await setState({
+    const captureSummary = message.type === "polylogue.capture"
+      ? envelopeSessionSummary(message.envelope)
+      : null;
+    await setStateForTab(sender.tab?.id || null, {
       online: false,
       captured: false,
       error: String(error.message || error),
-      last_receiver_request_id: error.receiverRequestId || null
-    });
+      provider: captureSummary?.provider || null,
+      provider_session_id: captureSummary?.providerSessionId || null,
+      last_receiver_request_id: error.receiverRequestId || null,
+    }, sender.tab?.url || sender.tab?.pendingUrl || null);
     sendResponse({
       ok: false,
       error: String(error.message || error),

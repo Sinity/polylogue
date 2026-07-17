@@ -8,8 +8,9 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
+from polylogue.archive.actions.parsing import tool_result_block_outcome
 from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_session_semantic_facts
 from polylogue.archive.semantic.timing import compute_session_timing, compute_tool_active_duration_ms
@@ -25,11 +26,15 @@ if TYPE_CHECKING:
 
 
 def _primary_model(cost_summary: SessionCostSummary) -> tuple[str | None, str | None]:
-    """Return (primary_model_name, primary_model_family): the dominant model
-    by assistant output-token share, and its canonical family. 1vpm.1: the
-    enabling primitive for the `delegations` view's orchestrator/subagent
-    model identity. Reuses the per-model tally cost_compute already builds --
-    no separate pass over messages."""
+    """Return (primary_model_name, primary_model_family): the SESSION-WIDE
+    dominant model by assistant output-token share, and its canonical
+    family. This is a session-level aggregate, not a per-turn claim --
+    polylogue-4c27 explicitly excludes it from dispatch-turn/requested/
+    child-observed model identity in the `delegations` view; it remains the
+    named fallback (`parent_session_dominant_model`/
+    `child_session_dominant_model`) for when no finer-grained attribution is
+    available. Reuses the per-model tally cost_compute already builds -- no
+    separate pass over messages."""
     from polylogue.archive.semantic.pricing import canonical_model_family
 
     dominant: SessionCostBreakdown | None = None
@@ -196,7 +201,6 @@ def _workflow_shape(
 
 _TOOL_START_TYPES = {"function_call", "custom_tool_call", "web_search_call", "tool_search_call"}
 _TOOL_OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output", "web_search_output", "tool_search_output"}
-_ERROR_MARKERS = ("error", "failed", "failure", "traceback", "exception", "panic")
 
 
 def _tool_block_id(block: object) -> str | None:
@@ -236,21 +240,90 @@ def _pending_tool_blocks(session: Session) -> int:
     return pending_identified + pending_unidentified
 
 
+class _ToolResultSummary(NamedTuple):
+    outcome: str
+    text: str | None
+
+
+def _session_tool_results(session: Session) -> dict[str, _ToolResultSummary]:
+    """Session-wide ``tool_id -> (structural outcome, result text)`` map.
+
+    Mirrors ``_pending_tool_blocks``'s session-wide (not per-message)
+    ``tool_use``/``tool_result`` pairing and
+    ``insights/transforms.py::_extract_events``'s identical pairing strategy:
+    Claude/Codex-style transcripts near-always place a ``tool_use`` in one
+    message and its paired ``tool_result`` in a *later* message, which
+    :func:`polylogue.archive.actions.parsing.build_tool_calls_from_content_blocks`
+    (and therefore ``Action.output_text``, per-message only) cannot see.
+    Reading blocks directly session-wide here is what makes both the
+    structural error signal and its tagged text fallback in
+    :func:`_terminal_state` actually fire for the common shape, not just the
+    rare same-message case.
+    """
+    results: dict[str, _ToolResultSummary] = {}
+    for message in session.messages:
+        for block in message.blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "tool_result":
+                continue
+            tool_id = _tool_block_id(block)
+            if tool_id is None:
+                continue
+            text = block.get("text")
+            results[tool_id] = _ToolResultSummary(
+                outcome=tool_result_block_outcome(block),
+                text=text if isinstance(text, str) and text else None,
+            )
+    return results
+
+
 def _terminal_state(
     session: Session, analysis: SessionAnalysis
 ) -> tuple[str, float, dict[str, int | float | str | None]]:
+    """Classify how a session's tool/turn activity ended.
+
+    The error signal is purely structural: the session-wide
+    ``tool_id -> outcome`` map from :func:`_session_tool_results` (sourced
+    from the keystone ``blocks.tool_result_is_error``/``tool_result_exit_code``
+    columns, index schema v16) plus typed session events. The former
+    prose-keyword fallback and its ``clean_finish`` complement were deleted
+    per the polylogue-ve9z ladder decision (polylogue-9e5.9 measured them at
+    50.5% agreement with structural truth): where structural evidence is
+    absent the state is ``unknown``, never a keyword guess. Returned
+    ``evidence_class`` entries are therefore ``"raw_evidence"`` throughout.
+    """
     pending_block_count = _pending_tool_blocks(session)
     if pending_block_count:
-        return "tool_left", 0.9, {"pending_tool_count": pending_block_count}
+        return (
+            "tool_left",
+            0.9,
+            {"pending_tool_count": pending_block_count, "evidence_class": "raw_evidence"},
+        )
+    tool_results = _session_tool_results(session)
     latest_error_action_id: str | None = None
+    latest_error_action_evidence_class: str | None = None
+    final_action_outcome_is_error = False
     for action in analysis.facts.actions:
-        output_text = (action.output_text or "").lower()
-        if any(marker in output_text for marker in _ERROR_MARKERS):
+        result = tool_results.get(action.tool_id) if action.tool_id else None
+        outcome = result.outcome if result is not None else None
+        if outcome == "failed":
             latest_error_action_id = action.action_id
+            latest_error_action_evidence_class = "raw_evidence"
+            final_action_outcome_is_error = True
+        elif outcome == "ok":
+            # A later structural success clears the terminal-failure flag:
+            # recovery is demonstrated by a successful action, never by prose.
+            final_action_outcome_is_error = False
+        # outcome in (None, "unknown") stays unknown and leaves the flag: the
+        # prose _ERROR_MARKERS fallback was deleted per the polylogue-ve9z
+        # ladder decision (its sibling scored 50.5% against structural truth).
+        # No structural evidence means no claim in either direction.
 
     pending: set[str] = set()
     pending_without_id = 0
     latest_error_event_id: str | None = None
+    final_event_is_error = False
     for event in sorted(session.session_events, key=lambda item: item.event_index):
         event_type = str(event.event_type).strip().lower()
         call_id_value = event.payload.get("call_id")
@@ -265,11 +338,23 @@ def _terminal_state(
                 pending_without_id -= 1
             elif call_id is not None:
                 pending.discard(call_id)
+            # Structural: a typed status key on the provider's own tool-call
+            # protocol event payload (e.g. Codex function_call_output), not
+            # a prose scan -- see sources/parsers/codex.py:_compact_response_payload.
             status = str(event.payload.get("status") or "").lower()
             if status in {"error", "failed", "failure"}:
                 latest_error_event_id = str(event.id)
+                final_event_is_error = True
+            else:
+                final_event_is_error = False
+        else:
+            final_event_is_error = False
     if pending or pending_without_id:
-        return "tool_left", 0.9, {"pending_tool_count": len(pending) + pending_without_id}
+        return (
+            "tool_left",
+            0.9,
+            {"pending_tool_count": len(pending) + pending_without_id, "evidence_class": "raw_evidence"},
+        )
 
     meaningful = [
         message for message in analysis.facts.message_facts if message.text.strip() and not message.is_protocol_artifact
@@ -277,21 +362,39 @@ def _terminal_state(
     last = meaningful[-1] if meaningful else None
     if last is None:
         if latest_error_action_id is not None:
-            return "error_left", 0.78, {"action_id": latest_error_action_id}
+            return (
+                "error_left",
+                0.78,
+                {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
+            )
         if latest_error_event_id is not None:
-            return "error_left", 0.78, {"event_id": latest_error_event_id}
+            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
         return "unknown", 0.1, {}
-    text_lower = last.text.lower()
     if last.is_candidate_human_authored:
-        return "question_left", 0.72, {"message_id": last.message_id}
-    if last.is_assistant and any(marker in text_lower for marker in _ERROR_MARKERS):
-        if latest_error_action_id is not None:
-            return "error_left", 0.78, {"action_id": latest_error_action_id}
-        if latest_error_event_id is not None:
-            return "error_left", 0.78, {"event_id": latest_error_event_id}
-        return "error_left", 0.7, {"message_id": last.message_id}
+        return "question_left", 0.72, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
     if last.is_assistant:
-        return "clean_finish", 0.68, {"message_id": last.message_id}
+        if final_event_is_error and latest_error_event_id is not None:
+            # The runtime's own event stream ENDED on a typed error output:
+            # structurally terminal, regardless of what the assistant said.
+            return "error_left", 0.78, {"event_id": latest_error_event_id, "evidence_class": "raw_evidence"}
+        if final_action_outcome_is_error and latest_error_action_id is not None:
+            # The session's final tool outcome (e.g. a Codex nonzero
+            # exit_code lowered into tool_result_is_error) is a structural
+            # failure with no later structural success: terminal, regardless
+            # of trailing assistant prose claiming recovery.
+            return (
+                "error_left",
+                0.78,
+                {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
+            )
+        # The prose _ERROR_MARKERS scan and its clean_finish complement were
+        # deleted per the polylogue-ve9z ladder decision (measured at 50.5%
+        # agreement with structural truth, a coin flip). A structural error
+        # earlier in the session does not decide how it ENDED (it may have
+        # been recovered), and without a structural terminal signal the
+        # honest state is unknown -- never clean_finish, never a keyword
+        # guess.
+        return "unknown", 0.2, {"message_id": last.message_id, "evidence_class": "raw_evidence"}
     return "unknown", 0.2, {"message_id": last.message_id}
 
 

@@ -25,6 +25,7 @@ class RevisionCandidate:
     acquisition_generation: int
     authority: RawRevisionAuthority
     blob_size: int
+    predecessor_source_revision: str | None = None
     predecessor_raw_id: str | None = None
     baseline_raw_id: str | None = None
     append_start_offset: int | None = None

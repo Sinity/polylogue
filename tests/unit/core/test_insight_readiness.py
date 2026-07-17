@@ -68,9 +68,10 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report = await archive.insight_readiness_report()
 
-    # The sparse seed now materializes a complete deterministic insight set;
-    # missing rich workflow events do not make the rebuilt read model degraded.
-    assert report.aggregate_verdict == "ready"
+    # The sparse seed deliberately lacks the evidence needed for a fully
+    # grounded profile. Rebuild is complete, but readiness must surface its
+    # fallback rather than falsely claiming a ready insight.
+    assert report.aggregate_verdict == "degraded"
     assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
         "session_work_events",
@@ -80,11 +81,11 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
         "archive_coverage",
     }
     profile = _entry_by_name(report, "session_profiles")
-    assert profile.verdict == "ready"
-    assert profile.degraded_count == 0
-    assert profile.fallback_reason_counts == {}
+    assert profile.verdict == "degraded"
+    assert profile.degraded_count == 1
+    assert profile.fallback_reason_counts
     assert profile.row_count == 1
-    assert profile.provider_coverage[0].source_name == "codex"
+    assert profile.origin_coverage[0].origin == "codex-session"
     assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1
 
 
@@ -181,8 +182,31 @@ async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: P
                 session_id TEXT PRIMARY KEY,
                 parent_session_id TEXT,
                 source_name TEXT,
+                origin TEXT,
+                branch_type TEXT,
+                title TEXT,
+                git_branch TEXT,
+                native_id TEXT,
+                message_count INTEGER,
+                tool_use_count INTEGER,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER,
                 sort_key REAL,
                 updated_at TEXT
+            );
+            CREATE TABLE blocks (
+                block_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                block_type TEXT,
+                message_id TEXT,
+                position INTEGER,
+                semantic_type TEXT,
+                tool_command TEXT,
+                tool_id TEXT,
+                tool_name TEXT,
+                tool_result_exit_code INTEGER,
+                tool_result_is_error INTEGER,
+                search_text TEXT
             );
             INSERT INTO sessions (session_id, parent_session_id, source_name, sort_key, updated_at)
             VALUES ('missing-root', NULL, 'codex', 1.0, '2026-04-01T00:00:00Z');

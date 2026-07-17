@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping
 
 from polylogue.core.degraded import DegradedReason, is_degraded, set_degraded
-from polylogue.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.logging import get_logger
 
 SCHEMA_MISMATCH_DEDUP_WINDOW_S = 60.0

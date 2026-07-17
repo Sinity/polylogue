@@ -1,0 +1,39 @@
+{
+  "domain": "E3-reality-ground-truth",
+  "summary": "The tree that git-status originally showed as uncommitted (polylogue/coordination/, cli/commands/agents.py, tests/unit/coordination/, tests/unit/mcp/test_agent_coordination.py, .beads-hooks/, doc regen) is now COMMITTED as 32ff31651 'feat(coordination): add agent coordination envelope' and the working tree is clean. That single commit fully lands the acceptance criteria of s7ae.1 (still in_progress) AND simultaneously ships the core deliverables of s7ae.2 (still open, no note) — the .beads-hooks install and the MCP coordination tool/prompt — so both coordination beads have drifted behind their code. Spot-checks of the recent lineage/browser/MCP-write commits (9p0y, 4ts.1, qvgt, 27p) are all correctly backed by closed beads with the code present; those are clean.",
+  "underspecified": [],
+  "gaps": [
+    {
+      "proposed_title": "Run and record a green full devtools verify for the coordination lane before deployment",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-s7ae.2",
+      "why": "Commit 32ff31651 (the coordination envelope + .beads-hooks + MCP tool, ~1376 LOC across 23 files) shipped with only `devtools verify --quick` and focused testmon selections green. Its own commit body states: 'Full devtools verify was started but stopped after pytest-testmon selected a broad noisy baseline that had many scattered failures by 74% and no final summary.' s7ae.2 is the explicit pre-deployment gate and its AC forbids requesting deployment until predeploy code+tests pass, but no bead records whether the broad failure set is coordination-caused or pre-existing/flaky.",
+      "design": "Run `devtools verify --all` (or a scoped broad selection over polylogue/coordination, polylogue/mcp, polylogue/cli/commands/agents.py and their tests) on 32ff31651's tree; classify each failure in the aborted 74% baseline as coordination-introduced vs pre-existing/flaky (re-run the exact node). Fix coordination-introduced failures; record the pre-existing ones as evidence.",
+      "acceptance": "Bead note states either a green full verify run-id for the coordination surface, or an explicit list of pre-existing/flaky failures with their node-ids proven unrelated to the coordination diff. Only then may s7ae.2 flip to 'pre-deployment complete; deployment required'.",
+      "deps": ["polylogue-s7ae.1"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-s7ae.2",
+      "kind": "bead-code-drift",
+      "evidence": "commit 32ff31651 installed the Beads git-hook shims (.beads-hooks/pre-commit, pre-push, post-merge, post-checkout, prepare-commit-msg — all git-tracked) and the MCP coordination surface (polylogue/mcp/server_tools.py:1046 agent_coordination tool; polylogue/mcp/server_prompts.py:223 agent_coordination_brief prompt) and refreshed generated CLI/topology docs (docs/cli-reference.md, docs/plans/topology-target.yaml, docs/topology-status.md). These map directly onto s7ae.2's own AC ('Beads git hooks are installed/verified in the Polylogue checkout', 'MCP prompt/tool surface for coordination is implemented', 'Generated MCP/OpenAPI/CLI schemas are refreshed'). Yet s7ae.2 status is still 'open' and the commit's .beads/issues.jsonl edit only advanced s7ae.1 (a comment, kept in_progress) — s7ae.2 got no status change and no note.",
+      "fix": "Move s7ae.2 to in_progress and record that the hook install + MCP agent_coordination tool/prompt + generated-schema refresh landed in 32ff31651. Carve the still-open predeploy remainder (Sinnix MCP-registry role wiring, hook-mediated advisory sources, hook-health-in-status) into the residual note so the bead reflects partial shipment rather than untouched. Note: the .beads-hooks git-hook wiring IS tracked here (s7ae.2), so it is NOT untracked-in-beads work; it is shipped-under-an-open-bead."
+    },
+    {
+      "id": "polylogue-s7ae.1",
+      "kind": "acc-mismatch",
+      "evidence": "s7ae.1 is 'in_progress' but every AC clause is satisfied by committed code in 32ff31651: typed envelope + read path (polylogue/coordination/envelope.py, payloads.py, rendering.py); CLI status/self/work-item/current/conflicts/overlap/handoff (polylogue/cli/commands/agents.py:51-97, all with --json/--format); MCP equivalent (agent_coordination tool + agent_coordination_brief prompt); Beads-present and Beads-absent git-fallback plus overlap-not-blocker, bounded output, and schema contracts all covered by tests/unit/coordination/test_envelope.py, tests/unit/cli/test_agents_command.py, tests/unit/mcp/test_agent_coordination.py (21 tests reported passing in the commit body). bby.9 is already reframed as a renderer over this envelope (its title now reads 'renderer over the shared agent envelope').",
+      "fix": "Close s7ae.1 (its AC is met and committed) once the full-verify gap above is resolved, or leave in_progress only pending that verification. Minor design/AC drift: the design lists a `watch` subcommand ('agents status/self/work-item/current/conflicts/handoff/watch') that agents.py does not implement; AC says 'at least ...' so `watch` is non-blocking, but either drop it from design or file it as a follow-up so the design stops naming an absent surface."
+    }
+  ],
+  "dep_priority": [],
+  "reorg": [],
+  "clean_spot_checks": [
+    {"commit": "1441f07e5 fix(lineage): repair stale prefix branch points", "bead": "polylogue-9p0y closed", "verdict": "consistent — repair primitive present (tests/unit/storage/test_lineage_normalization.py stale_immediate_parent_branch_point), Ref polylogue-9p0y, closed after code by 6dc4c1480"},
+    {"commit": "5e38582f9 feat(devtools): add lineage citation gate", "bead": "polylogue-4ts.1 closed", "verdict": "consistent — devtools/lineage_validation.py exists and is registered in devtools/command_catalog.py; gate correctly gated citability on the (then-dangling) 9p0y rows"},
+    {"commit": "fe0f050f4 + 2e6b68e08 (browser-capture bounding + UX proof)", "bead": "polylogue-qvgt closed", "verdict": "consistent — closure (2e6b68e08) recorded after the code fix (fe0f050f4); no post-closure code churn"},
+    {"commit": "c03098579 feat(mcp): attribute agent mutation writes + cffcc76a6 close", "bead": "polylogue-27p closed; polylogue-ahqd open (adoption observation)", "verdict": "consistent — author_ref/author_kind attribution present in server_mutation_tools.py + api/archive.py + mutation-result.schema.json; the actual role='write' deployment/registry step is correctly split into open follow-up ahqd. server.py still defaults role='read' (deployment concern, not repo drift)"}
+  ]
+}

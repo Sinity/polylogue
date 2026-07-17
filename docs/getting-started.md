@@ -2,9 +2,34 @@
 
 # Getting Started
 
-A 5-minute quickstart for Polylogue.
+A 5-minute path from installation to a searchable local archive.
 
-## Enter the source checkout
+## Install
+
+Choose the channel that fits the host:
+
+```bash
+# Python CLI in an isolated environment
+pipx install polylogue
+# or: uv tool install polylogue
+
+# Homebrew on macOS or Linux
+brew tap sinity/polylogue
+brew install polylogue
+
+# Nix, without installing
+nix run github:Sinity/polylogue -- --help
+```
+
+All three routes expose `polylogue`; Python and Nix also provide `polylogued`
+and `polylogue-mcp`. Verify the selected route:
+
+```bash
+polylogue --version
+polylogue --help
+```
+
+For source development, clone the repository and enter its reproducible shell:
 
 ```bash
 git clone https://github.com/Sinity/polylogue.git
@@ -12,16 +37,9 @@ cd polylogue
 nix develop
 ```
 
-Verify:
-
-```bash
-polylogue --version
-# polylogue X.Y.Z (commit 0000000)
-```
-
-No packaged PyPI/Homebrew/container install path is documented as current until
-release artifacts exist and have been smoke-tested. From the dev shell,
-Polylogue follows XDG conventions and works without a mandatory config file.
+See [Installation](installation.md) for container, NixOS/Home Manager, release
+verification, and source-checkout details. Polylogue follows XDG conventions
+and does not require a configuration file for its default local paths.
 
 ## First search
 
@@ -94,6 +112,41 @@ polylogued status
 | `polylogued run` | Start the daemon |
 | `polylogued status` | Daemon health check |
 | `polylogue --id <id> read --view transcript` | Display full session |
+
+## Optional terminal note widget (zsh)
+
+To turn the last shell command into an editable capture candidate, add this
+optional widget to `~/.zshrc`, after any other `precmd` hook registration. It
+has no Polylogue runtime dependency; it only prefills the command line, leaving
+you to edit and submit it normally.
+
+```zsh
+typeset -g POLYLOGUE_NOTE_LAST_STATUS=0
+
+_polylogue_note_remember_status() {
+  POLYLOGUE_NOTE_LAST_STATUS=$?
+}
+
+# Run first: later precmd hooks may themselves return a different status.
+precmd_functions=(
+  _polylogue_note_remember_status
+  ${precmd_functions:#_polylogue_note_remember_status}
+)
+
+_polylogue_note_prefill() {
+  local last_command note_text
+  last_command="$(fc -ln -1)"
+  note_text="${last_command} [exit ${POLYLOGUE_NOTE_LAST_STATUS}]"
+  BUFFER="polylogue note --ref last ${(qq)note_text}"
+  zle end-of-line
+}
+
+zle -N _polylogue_note_prefill
+bindkey '^Xn' _polylogue_note_prefill
+```
+
+Press `Ctrl-X`, then `n`, review the prefilled text, and press Enter to capture
+it as a candidate for later judgment.
 
 ## Configuration
 

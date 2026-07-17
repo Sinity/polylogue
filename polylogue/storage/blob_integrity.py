@@ -17,6 +17,7 @@ import time
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -24,8 +25,12 @@ from typing import Any, Literal
 
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
+from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection import open_read_connection
+from polylogue.storage.table_existence import table_exists as _table_exists
+
+logger = get_logger(__name__)
 
 BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch"]
 BlobIntegritySeverity = Literal["warning", "critical"]
@@ -449,14 +454,6 @@ class BlobReferenceSourceReplaceReport:
         }
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type='table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _blob_hash_text(value: object) -> str | None:
     if value is None:
         return None
@@ -522,8 +519,14 @@ def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str
                     return source_archive_hashes
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            # Falls through to _raw_session_hashes(conn), a less-complete
+            # reference set — a report consuming this could mis-classify a
+            # still-referenced blob as orphaned if source.db's evidence was
+            # silently dropped here (polylogue-cpf.4).
+            logger.warning(
+                "blob integrity: source.db referenced-hash query failed for %s: %s", source_db, exc, exc_info=True
+            )
 
     return _raw_session_hashes(conn)
 
@@ -543,8 +546,10 @@ def _reference_source_counts(db_path: Path, conn: sqlite3.Connection) -> dict[st
                     return {f"source.db:{table}": len(hashes) for table, hashes in source.items()}
             finally:
                 source_conn.close()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            logger.warning(
+                "blob integrity: source.db reference-count query failed for %s: %s", source_db, exc, exc_info=True
+            )
 
     fallback_count = len(_raw_session_hashes(conn))
     return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}
@@ -555,7 +560,7 @@ def referenced_blob_hashes(db_path: str | Path, *, immutable: bool = False) -> l
 
     resolved_db_path = Path(db_path)
     immutable_query = "&immutable=1" if immutable else ""
-    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True)) as conn:
         return _referenced_blob_hashes(resolved_db_path, conn)
 
 
@@ -693,7 +698,7 @@ def _group_reference_rows(rows: Iterable[dict[str, Any]]) -> dict[str, list[dict
 
 
 def _reference_rows_for_blob_debt(source_db: Path) -> list[dict[str, Any]]:
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         raw_refs = _raw_session_reference_rows(conn)
         raw_by_id = {str(row["ref_id"]): row for row in raw_refs if row.get("ref_id")}
         return [*raw_refs, *_blob_ref_reference_rows(conn, raw_by_id=raw_by_id)]
@@ -1306,7 +1311,7 @@ def prune_orphan_blob_reference_debt(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as read_conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as read_conn:
         rows = _blob_ref_rows_for_orphan_prune(read_conn)
 
     skipped_existing_blob = 0
@@ -1342,7 +1347,7 @@ def prune_orphan_blob_reference_debt(
             Path(quarantine_path) if quarantine_path is not None else _default_blob_ref_quarantine_path(source_db)
         )
         _write_blob_ref_quarantine(resolved_quarantine_path, limited_candidates)
-        with sqlite3.connect(source_db) as write_conn:
+        with closing(sqlite3.connect(source_db)) as write_conn:
             pruned_refs = _delete_blob_ref_rows(write_conn, limited_candidates)
             write_conn.commit()
         pruned_distinct_blobs = len({str(row["blob_hash"]) for row in limited_candidates})
@@ -1377,7 +1382,7 @@ def plan_raw_backed_blob_reference_recovery(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
     plan_rows: list[BlobReferenceRecoveryPlanRow] = []
@@ -1448,7 +1453,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
 
     source_db = _source_db_for_blob_reference_report(db_path)
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         rows = _missing_raw_backed_blob_rows(conn)
 
     samples: list[BlobReferenceSourceReplaceSample] = []
@@ -1597,7 +1602,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                     written_bytes += len(payload_bytes)
             publication_receipts.append(receipt_id)
         publisher.flush()
-        with sqlite3.connect(source_db) as conn:
+        with closing(sqlite3.connect(source_db)) as conn:
             conn.execute("PRAGMA foreign_keys = ON")
             with conn:
                 for (
@@ -1879,7 +1884,7 @@ def scan_blob_reference_debt(
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     immutable_query = "&immutable=1" if immutable else ""
-    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True)) as conn:
         referenced = _referenced_blob_hashes(resolved_db_path, conn)
         reference_sources = _reference_source_counts(resolved_db_path, conn)
 
@@ -1949,7 +1954,7 @@ def scan_attachment_acquisition_debt(
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
-    with sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         status_counts: dict[str, int] = dict(
             conn.execute("SELECT acquisition_status, COUNT(*) FROM attachments GROUP BY acquisition_status").fetchall()

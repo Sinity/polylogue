@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from polylogue.archive.models import Session
 from polylogue.archive.semantic.facts import build_session_semantic_facts
@@ -47,6 +48,203 @@ def _optional_string(value: object) -> str | None:
 def _content_blocks(message: JSONDocument) -> list[JSONDocument]:
     blocks = message.get("content_blocks")
     return json_document_list(blocks)
+
+
+def _object_mapping(value: object, *, context: str) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        if isinstance(dumped, Mapping):
+            return dumped
+    raise AssertionError(f"{context} is not a mapping or model payload: {type(value).__name__}")
+
+
+def _required_string(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise AssertionError(f"{context} is not a non-empty string")
+    return value
+
+
+def _required_int(value: object, *, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise AssertionError(f"{context} is not an integer")
+    return value
+
+
+def _optional_number(value: object, *, context: str) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise AssertionError(f"{context} is not numeric or null")
+    return float(value)
+
+
+def _timestamp_millis(value: object, *, context: str, required: bool = False) -> int | None:
+    if value is None:
+        if required:
+            raise AssertionError(f"{context} is required")
+        return None
+    if not isinstance(value, str) or not value:
+        raise AssertionError(f"{context} is not an ISO timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AssertionError(f"{context} is not an ISO timestamp: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
+@dataclass(frozen=True)
+class MaterializationProvenanceFacts:
+    """Public materialization provenance normalized by meaning, not encoding."""
+
+    materializer_version: int
+    materialized_at_ms: int
+    source_updated_at_ms: int | None
+    source_sort_key: float | None
+    input_high_water_mark_ms: int | None
+    input_high_water_mark_source: str | None
+    time_confidence: str
+
+    @classmethod
+    def from_value(cls, value: object, *, context: str = "provenance") -> MaterializationProvenanceFacts:
+        payload = _object_mapping(value, context=context)
+        materialized_at_ms = _timestamp_millis(
+            payload.get("materialized_at"),
+            context=f"{context}.materialized_at",
+            required=True,
+        )
+        assert materialized_at_ms is not None
+        source = payload.get("input_high_water_mark_source")
+        if source is not None and not isinstance(source, str):
+            raise AssertionError(f"{context}.input_high_water_mark_source is not a string or null")
+        return cls(
+            materializer_version=_required_int(
+                payload.get("materializer_version"), context=f"{context}.materializer_version"
+            ),
+            materialized_at_ms=materialized_at_ms,
+            source_updated_at_ms=_timestamp_millis(
+                payload.get("source_updated_at"), context=f"{context}.source_updated_at"
+            ),
+            source_sort_key=_optional_number(payload.get("source_sort_key"), context=f"{context}.source_sort_key"),
+            input_high_water_mark_ms=_timestamp_millis(
+                payload.get("input_high_water_mark"), context=f"{context}.input_high_water_mark"
+            ),
+            input_high_water_mark_source=source,
+            time_confidence=_required_string(payload.get("time_confidence"), context=f"{context}.time_confidence"),
+        )
+
+
+@dataclass(frozen=True)
+class SessionProfileFacts:
+    """One public session-profile fact set shared by stable read surfaces.
+
+    The selected algebra deliberately keeps the public ``origin`` token and
+    normalizes temporal strings to epoch milliseconds. Surface-local envelope
+    names and JSON formatting are not part of the comparison.
+    """
+
+    session_id: str
+    logical_session_id: str
+    origin: str
+    title: str | None
+    message_count: int
+    substantive_count: int
+    attachment_count: int
+    tool_use_count: int
+    thinking_count: int
+    word_count: int
+    provenance: MaterializationProvenanceFacts
+
+    @classmethod
+    def _from_payloads(
+        cls,
+        identity: object,
+        evidence: object,
+        provenance: object,
+        *,
+        context: str,
+    ) -> SessionProfileFacts:
+        identity_payload = _object_mapping(identity, context=f"{context}.identity")
+        evidence_payload = _object_mapping(evidence, context=f"{context}.evidence")
+        title = identity_payload.get("title")
+        if title is not None and not isinstance(title, str):
+            raise AssertionError(f"{context}.title is not a string or null")
+        return cls(
+            session_id=_required_string(identity_payload.get("session_id"), context=f"{context}.session_id"),
+            logical_session_id=_required_string(
+                identity_payload.get("logical_session_id"), context=f"{context}.logical_session_id"
+            ),
+            origin=_required_string(identity_payload.get("origin"), context=f"{context}.origin"),
+            title=title,
+            message_count=_required_int(evidence_payload.get("message_count"), context=f"{context}.message_count"),
+            substantive_count=_required_int(
+                evidence_payload.get("substantive_count"), context=f"{context}.substantive_count"
+            ),
+            attachment_count=_required_int(
+                evidence_payload.get("attachment_count"), context=f"{context}.attachment_count"
+            ),
+            tool_use_count=_required_int(evidence_payload.get("tool_use_count"), context=f"{context}.tool_use_count"),
+            thinking_count=_required_int(evidence_payload.get("thinking_count"), context=f"{context}.thinking_count"),
+            word_count=_required_int(evidence_payload.get("word_count"), context=f"{context}.word_count"),
+            provenance=MaterializationProvenanceFacts.from_value(provenance, context=f"{context}.provenance"),
+        )
+
+    @classmethod
+    def from_insight(cls, insight: object, *, context: str = "session profile insight") -> SessionProfileFacts:
+        evidence = getattr(insight, "evidence", None)
+        provenance = getattr(insight, "provenance", None)
+        if evidence is None:
+            raise AssertionError(f"{context} omitted evidence")
+        if provenance is None:
+            raise AssertionError(f"{context} omitted provenance")
+        return cls._from_payloads(insight, evidence, provenance, context=context)
+
+    @classmethod
+    def from_insight_payload(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        context: str = "session profile JSON",
+    ) -> SessionProfileFacts:
+        evidence = payload.get("evidence")
+        provenance = payload.get("provenance")
+        if evidence is None:
+            raise AssertionError(f"{context} omitted evidence")
+        if provenance is None:
+            raise AssertionError(f"{context} omitted provenance")
+        return cls._from_payloads(payload, evidence, provenance, context=context)
+
+    @classmethod
+    def from_daemon_payload(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        context: str = "daemon profile response",
+    ) -> SessionProfileFacts:
+        kinds = _object_mapping(payload.get("kinds"), context=f"{context}.kinds")
+        panel = _object_mapping(kinds.get("profile"), context=f"{context}.kinds.profile")
+        if panel.get("materialized") is not True or panel.get("readiness_tag") != "q-ready":
+            raise AssertionError(f"{context} did not return a materialized q-ready profile")
+        profile = panel.get("profile")
+        provenance = panel.get("provenance")
+        if profile is None:
+            raise AssertionError(f"{context} omitted profile")
+        if provenance is None:
+            raise AssertionError(f"{context} omitted provenance")
+        return cls._from_payloads(profile, profile, provenance, context=context)
+
+
+def assert_same_session_profile_facts(*facts: SessionProfileFacts) -> None:
+    """Assert all supplied profile projections preserve the selected algebra."""
+    if len(facts) < 2:
+        return
+    expected = facts[0]
+    mismatches = [fact for fact in facts[1:] if fact != expected]
+    assert not mismatches, f"Session profile facts disagree: expected={expected!r} mismatches={mismatches!r}"
 
 
 @dataclass(frozen=True)
@@ -191,17 +389,17 @@ class ArchiveFacts:
     def from_db_connection(cls, conn: sqlite3.Connection) -> ArchiveFacts:
         """Aggregate archive facts from a ``index.db``.
 
-        Reads archive `sessions` / ``messages``. The provider is recovered
-        from the session ``origin`` so the per-provider counts agree with the
-        domain ``Session.provider`` projection used by the facade surface.
+        Reads archive `sessions` / ``messages``. Legacy scenario accounting
+        uses the provider-wire token recovered from the canonical origin.
         """
-        from polylogue.api.archive import _provider_for_archive_origin
+        from polylogue.core.enums import Origin
+        from polylogue.core.sources import provider_from_origin
 
         total_convs = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         provider_rows = conn.execute("SELECT origin, COUNT(*) as cnt FROM sessions GROUP BY origin").fetchall()
         provider_counts: dict[str, int] = {}
         for row in provider_rows:
-            provider = str(_provider_for_archive_origin(str(row["origin"])))
+            provider = str(provider_from_origin(Origin.from_string(str(row["origin"]))))
             provider_counts[provider] = provider_counts.get(provider, 0) + int(row["cnt"])
         total_msgs = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
         session_ids = tuple(
@@ -246,7 +444,10 @@ def assert_same_archive_facts(*facts: ArchiveFacts) -> None:
 
 __all__ = [
     "ArchiveFacts",
+    "MaterializationProvenanceFacts",
     "SessionFacts",
+    "SessionProfileFacts",
     "assert_same_archive_facts",
     "assert_same_session_facts",
+    "assert_same_session_profile_facts",
 ]

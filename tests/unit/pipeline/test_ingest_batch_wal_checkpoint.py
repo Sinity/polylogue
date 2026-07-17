@@ -183,6 +183,13 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         return type("OptimizeObservation", (), {"error": None})()
 
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+
+    def fake_drain(*_: object, **kwargs: object) -> None:
+        ensure_transaction = kwargs.get("ensure_index_transaction")
+        assert callable(ensure_transaction)
+        ensure_transaction()
+
+    monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", fake_drain)
     monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
     monkeypatch.setattr("polylogue.storage.sqlite.maintenance.maybe_optimize_sqlite", fake_optimize)
 

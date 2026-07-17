@@ -13,6 +13,7 @@ from polylogue.archive.query.spec import parse_query_date
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.table_existence import table_exists_async as _table_exists
 
 InsightReadinessVerdict = Literal[
     "ready", "partial", "empty", "missing", "stale", "incompatible", "degraded", "unknown"
@@ -20,16 +21,10 @@ InsightReadinessVerdict = Literal[
 _REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
 
 
-def _origin_for_provider_value(provider: str | None) -> str | None:
-    from polylogue.storage.sqlite.archive_tiers.archive import _origin_for_provider_value as _impl
+def _origin_value(origin: str | None) -> str | None:
+    from polylogue.storage.sqlite.archive_tiers.archive import _origin_value as _impl
 
-    return _impl(provider)
-
-
-def _provider_for_origin_value(origin: str) -> str:
-    from polylogue.storage.sqlite.archive_tiers.archive import _provider_for_origin
-
-    return _provider_for_origin(origin).value
+    return _impl(origin)
 
 
 def _readiness_query_ms(field: str, value: str | None) -> int | None:
@@ -48,7 +43,7 @@ def _iso_from_ms(value: object) -> str | None:
 
 class InsightReadinessQuery(ArchiveInsightModel):
     insights: tuple[str, ...] = ()
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
 
@@ -66,8 +61,8 @@ class InsightVersionCoverage(ArchiveInsightModel):
     incompatible_count: int = 0
 
 
-class InsightProviderCoverage(ArchiveInsightModel):
-    source_name: str
+class InsightOriginCoverage(ArchiveInsightModel):
+    origin: str
     row_count: int
     min_time: str | None = None
     max_time: str | None = None
@@ -88,7 +83,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
     fallback_reason_counts: dict[str, int] = Field(default_factory=dict)
     storage_artifacts: tuple[InsightStorageArtifact, ...] = ()
     ready_flags: dict[str, bool] = Field(default_factory=dict)
-    provider_coverage: tuple[InsightProviderCoverage, ...] = ()
+    origin_coverage: tuple[InsightOriginCoverage, ...] = ()
     version_coverage: tuple[InsightVersionCoverage, ...] = ()
     schema_contract_issues: tuple[str, ...] = ()
     min_time: str | None = None
@@ -101,7 +96,7 @@ class InsightReadinessReport(ArchiveInsightModel):
     checked_at: str
     aggregate_verdict: InsightReadinessVerdict
     total_sessions: int = 0
-    provider: str | None = None
+    origin: str | None = None
     since: str | None = None
     until: str | None = None
     insights: tuple[InsightReadinessEntry, ...] = ()
@@ -169,10 +164,21 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
         ready_flags=("phase_rows_ready",),
         artifacts=("session_phases",),
     ),
+    # polylogue-dab/itvd: session_runs/session_observed_events/
+    # session_context_snapshots are source-derived CTE relations
+    # (run_projection_relations.py), not tables, so they can never appear in
+    # sqlite_master. table_name points at the always-present `sessions`
+    # table purely so the presence gate (`table_present` in `_entry()`)
+    # reports true and the real row_count/ready_flags (already computed in
+    # `status` from the CTE) actually drive the verdict, instead of
+    # permanently reporting "missing". `artifacts` intentionally keeps the
+    # legacy table name -- it is genuinely, permanently absent, and
+    # InsightStorageArtifact.present reporting that honestly is useful
+    # diagnostic info distinguishing "no cache table" from "not ready".
     InsightReadinessSpec(
         insight_name="session_runs",
         display_name="Session Runs",
-        table_name="session_runs",
+        table_name="sessions",
         row_count_attr="run_count",
         ready_flags=("run_rows_ready",),
         artifacts=("session_runs",),
@@ -181,7 +187,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec(
         insight_name="session_observed_events",
         display_name="Observed Events",
-        table_name="session_observed_events",
+        table_name="sessions",
         row_count_attr="observed_event_count",
         ready_flags=("observed_event_rows_ready",),
         artifacts=("session_observed_events",),
@@ -190,7 +196,7 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec(
         insight_name="session_context_snapshots",
         display_name="Context Snapshots",
-        table_name="session_context_snapshots",
+        table_name="sessions",
         row_count_attr="context_snapshot_count",
         ready_flags=("context_snapshot_rows_ready",),
         artifacts=("session_context_snapshots",),
@@ -333,37 +339,30 @@ def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightRea
     return "ready"
 
 
-async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
-    row = await (
-        await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table,))
-    ).fetchone()
-    return bool(row)
-
-
 async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:
     rows = await (await conn.execute(f"PRAGMA table_info({table})")).fetchall()
     return {str(row[1]) for row in rows}
 
 
-def _provider_filter_origin(provider: str | None) -> str | None:
-    if not provider:
+def _normalize_origin_filter(origin: str | None) -> str | None:
+    if not origin:
         return None
-    return _origin_for_provider_value(provider)
+    return _origin_value(origin)
 
 
 def _where_clause(
     spec: InsightReadinessSpec,
     query: InsightReadinessQuery,
 ) -> tuple[str, list[object]]:
-    """Build a provider/time filter expressed against the joined ``sessions``.
+    """Build a origin/time filter expressed against the joined ``sessions``.
 
-    Archive insight tables key everything on ``session_id``; provider identity
+    Archive insight tables key everything on ``session_id``; origin identity
     lives on ``sessions.origin`` and recency on ``sessions.sort_key_ms``, so
     every filter clause references the ``s.`` alias from the session join.
     """
     clauses: list[str] = []
     params: list[object] = []
-    origin = _provider_filter_origin(query.provider)
+    origin = _normalize_origin_filter(query.origin)
     if origin is not None:
         clauses.append("s.origin = ?")
         params.append(origin)
@@ -380,13 +379,13 @@ def _where_clause(
     return (" WHERE " + " AND ".join(clauses), params) if clauses else ("", params)
 
 
-async def _provider_coverage(
+async def _origin_coverage(
     conn: aiosqlite.Connection,
     spec: InsightReadinessSpec,
     query: InsightReadinessQuery,
     *,
     table_present: bool,
-) -> tuple[InsightProviderCoverage, ...]:
+) -> tuple[InsightOriginCoverage, ...]:
     if not table_present or spec.table_name is None or not spec.provider_via_session:
         return ()
     where, params = _where_clause(spec, query)
@@ -399,8 +398,8 @@ async def _provider_coverage(
     )
     rows = await (await conn.execute(sql, tuple(params))).fetchall()
     return tuple(
-        InsightProviderCoverage(
-            source_name=_provider_for_origin_value(str(row["origin"])) if row["origin"] is not None else "unknown",
+        InsightOriginCoverage(
+            origin=str(row["origin"]) if row["origin"] is not None else "unknown",
             row_count=int(row["row_count"]),
             min_time=_iso_from_ms(row["min_time_ms"]),
             max_time=_iso_from_ms(row["max_time_ms"]),
@@ -455,7 +454,7 @@ async def _fallback_coverage(
 def _schema_contract_issues(spec: InsightReadinessSpec, columns: set[str]) -> tuple[str, ...]:
     """Report structural schema drift for an archive insight table.
 
-    has no per-row version columns and derives provider/time
+    has no per-row version columns and derives origin/time
     via the ``sessions`` join, so the only contract a present table can break
     is its own primary ``session_id`` key (every archive insight table is keyed
     on it). A missing ``session_id`` column means the table is not the expected
@@ -515,7 +514,7 @@ async def _entry(
     schema_contract_issues = _schema_contract_issues(spec, columns) if table_present else ()
     version_coverage: tuple[InsightVersionCoverage, ...] = ()
     incompatible_count = row_count if schema_contract_issues else 0
-    provider_coverage = await _provider_coverage(conn, spec, query, table_present=table_present)
+    origin_coverage = await _origin_coverage(conn, spec, query, table_present=table_present)
     degraded_count, fallback_reason_counts = await _fallback_coverage(
         conn, spec, table_present=table_present, columns=columns
     )
@@ -528,8 +527,8 @@ async def _entry(
                 ready=_artifact_ready(status, artifact),
             )
         )
-    min_time = min((item.min_time for item in provider_coverage if item.min_time), default=None)
-    max_time = max((item.max_time for item in provider_coverage if item.max_time), default=None)
+    min_time = min((item.min_time for item in origin_coverage if item.min_time), default=None)
+    max_time = max((item.max_time for item in origin_coverage if item.max_time), default=None)
     verdict = _entry_verdict(
         table_present=table_present,
         row_count=row_count,
@@ -556,7 +555,7 @@ async def _entry(
         fallback_reason_counts=fallback_reason_counts,
         storage_artifacts=tuple(artifacts),
         ready_flags=ready_flags,
-        provider_coverage=provider_coverage,
+        origin_coverage=origin_coverage,
         version_coverage=version_coverage,
         schema_contract_issues=schema_contract_issues,
         min_time=min_time,
@@ -592,7 +591,7 @@ async def build_insight_readiness_report(
         checked_at=datetime.now(timezone.utc).isoformat(),
         aggregate_verdict=_aggregate_verdict(insights),
         total_sessions=status.total_sessions,
-        provider=request.provider,
+        origin=request.origin,
         since=request.since,
         until=request.until,
         insights=insights,
@@ -600,7 +599,7 @@ async def build_insight_readiness_report(
 
 
 __all__ = [
-    "InsightProviderCoverage",
+    "InsightOriginCoverage",
     "InsightReadinessEntry",
     "InsightReadinessQuery",
     "InsightReadinessReport",

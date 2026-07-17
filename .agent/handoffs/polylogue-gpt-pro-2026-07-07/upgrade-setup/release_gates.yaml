@@ -1,0 +1,92 @@
+generated_at: 2026-07-07T00:05:00Z
+releases:
+  - id: R0-normalize
+    name: "Backlog normalization and readiness lint"
+    purpose: "Make Beads itself delivery-grade: consistent ready counts, release/lane labels, missing acceptance criteria patched, and hidden blockers explicit."
+    entry: "Exported Beads snapshot available."
+    exit: "Every active bead has a delivery release, lane, readiness grade, proof lane, and either acceptance criteria or a deliberate horizon/spec status."
+    active_beads: 0
+  - id: A-trust-floor
+    name: "Trust floor"
+    purpose: "Prevent false evidence, unsafe byte deletion, unsafe daemon/capture access, and unsafe agent-written memory."
+    entry: "Backlog normalization generated and reviewed."
+    exit: "Full verification classified; security negative tests pass; missing bytes classified; numbers/time/prose-mined fields carry honest provenance; agent writes land as candidates."
+    active_beads: 59
+  - id: B-storage-rebuild-bytes
+    name: "Storage, rebuild, and byte-integrity floor"
+    purpose: "Make durable/derived storage and blob handling safe at real archive scale."
+    entry: "Trust-floor blob/security blockers either closed or explicitly isolated."
+    exit: "Blue-green derived rebuilds cannot show partial archives as ready; restore drill passes; blob refs resolve or carry classified missing state."
+    active_beads: 23
+  - id: C-read-evidence-contract
+    name: "One read contract and first-class evidence objects"
+    purpose: "Unify query/projection/render semantics and make query runs, result sets, findings, and citations addressable."
+    entry: "Trust-floor evidence-honesty bugs closed."
+    exit: "CLI, daemon, MCP, Python API, web, reports, and docs read through the same contract; content-hash citations expose drift states."
+    active_beads: 60
+  - id: D-agent-context-coordination
+    name: "Agent context, memory, and coordination"
+    purpose: "Make Polylogue useful while agents are working, with safe memory boundaries and scheduler-mediated context."
+    entry: "Daemon security and agent-write safety closed."
+    exit: "Hooks install; MCP roles/prompts discoverable; context scheduler emits ledgers; two-agent worktree proof exists."
+    active_beads: 48
+  - id: E-variants-preferences
+    name: "Content variants, preferences, and transformed views"
+    purpose: "Support translations, simplifications, summaries, and preferences without confusing transformed text with original evidence."
+    entry: "Evidence refs and agent-write safety available for source alignment and candidate review."
+    exit: "Variant refs/nodes/alignment/storage exist; reader/query/projection can show source, variant, and side-by-side views honestly."
+    active_beads: 12
+  - id: F-lineage-compaction
+    name: "Lineage truth and compaction recovery"
+    purpose: "Represent physical/logical sessions, shared prefixes, subagents, compactions, truncation, and regrounding truthfully."
+    entry: "Origin identity and read consistency contracts available."
+    exit: "Shared content is stored/counted once, compaction loss is queryable, and regrounding packs pass through the context scheduler."
+    active_beads: 12
+  - id: G-live-performance
+    name: "Live intake, capture, daemon, and interactive performance"
+    purpose: "Make capture/live surfaces observable, fast, bounded, and testable."
+    entry: "Security/capture safety controls landed."
+    exit: "Named SLOs and regression gates exist; daemon push/live cache paths work; capture reliability is visible and tested."
+    active_beads: 25
+  - id: H-web-cockpit
+    name: "Web evidence cockpit"
+    purpose: "Turn the web UI into an evidence workbench: baskets, reports, replay, timelines, live tail, long-session navigation."
+    entry: "Read/evidence contract and daemon push state available."
+    exit: "Evidence basket to citable export works; web UI shows stale/partial/degraded states instead of pretending readiness."
+    active_beads: 18
+  - id: I-analytics-experiments
+    name: "Analytics, experiments, and measured learning"
+    purpose: "Answer outcome/cost/process questions with sample frames, uncertainty, and construct-validity limits."
+    entry: "Evidence honesty, query identity, and measure registry foundations exist."
+    exit: "Measures are registered, experiments are first-class, analytics render caveats and evidence tiers."
+    active_beads: 30
+  - id: J-embeddings-retrieval
+    name: "Embeddings and semantic retrieval"
+    purpose: "Make vector search provider-general, budgeted, measurable, and useful for context retrieval."
+    entry: "Query contracts and context scheduler exist."
+    exit: "FTS/vector/hybrid quality evals exist; local/cloud providers share one interface; large sessions bound vector work."
+    active_beads: 11
+  - id: K-interop-origin-export
+    name: "Interop, origin breadth, and export"
+    purpose: "Import more origins through declared contracts and export citable evidence back out."
+    entry: "OriginSpec and evidence refs exist."
+    exit: "Each origin has detector/parser/fixtures/fidelity docs; Polylogue export/import is content-hash idempotent; outbound citations preserve provenance."
+    active_beads: 31
+  - id: L-external-legibility
+    name: "External legibility, demos, and launch"
+    purpose: "Make a stranger understand, run, verify, and cite Polylogue."
+    entry: "Claims ledger, demos, install proof, and evidence report substrate available."
+    exit: "README first screen is clear; one-command demo passes; public claims ledger covers launch claims; cold-reader proof passes."
+    active_beads: 29
+  - id: M-substrate-consolidation
+    name: "Substrate consolidation and codebase simplification"
+    purpose: "Remove duplicate storage/read/surface code after the contracts they should collapse onto are stable."
+    entry: "Read/evidence and storage/rebuild contracts stable enough to refactor around."
+    exit: "Storage twins collapse behind a clear boundary; public models are frozen; dead abstractions are deleted or adopted."
+    active_beads: 33
+  - id: N-horizon
+    name: "Horizon and vision work"
+    purpose: "Keep speculative or late-gated work visible without letting it distort the safety and proof spine."
+    entry: "Earlier foundation releases stable, or a decision memo explicitly pulls one item forward."
+    exit: "Each item either has an implementation-grade spec or remains parked with a decision record."
+    active_beads: 6

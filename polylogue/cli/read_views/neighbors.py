@@ -58,8 +58,6 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     from polylogue.archive.session.neighbor_candidates import NeighborDiscoveryError
     from polylogue.cli.shared.helper_support import fail
     from polylogue.cli.shared.machine_errors import emit_success
-    from polylogue.core.enums import Origin
-    from polylogue.core.sources import provider_from_origin
     from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
 
     query_seed = " ".join(request.query_terms).strip() or None
@@ -68,7 +66,6 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
     options = cast(ReadViewNeighborOptions, invocation.options or ReadViewNeighborOptions())
 
     origin = request.params.get("origin")
-    provider = provider_from_origin(Origin(str(origin))).value if origin else None
 
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     limit = (
@@ -84,7 +81,7 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
             env.polylogue.neighbor_candidates(
                 session_id=invocation.session_id,
                 query=query_seed,
-                provider=provider,
+                origin=str(origin) if origin is not None else None,
                 limit=max(1, limit if limit is not None else 10),
                 window_hours=max(1, window_hours),
             )

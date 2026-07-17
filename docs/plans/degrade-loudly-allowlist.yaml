@@ -1,0 +1,482 @@
+# Pre-approved broad except-handlers for `devtools verify degrade-loudly`
+# (polylogue-cpf.4). Each entry documents WHY the handler already carries a
+# degradation signal (or is safely fail-closed) despite having no log call.
+# Keyed by (path, function qualname, exception set, occurrence-within-function)
+# rather than line number, so unrelated edits elsewhere in the file don't
+# require re-numbering. New broad excepts must either log, or be added here
+# with a real rationale -- not a rubber stamp.
+#
+# Generated 2026-07-12 during the polylogue-cpf.4 degrade-loudly sweep after
+# converting ~35 genuine silent-failure sites to log/signal; these are the
+# audited remainder that already signal via a typed return value, a
+# convergence_debt/HealthAlert/_repair_result-style mechanism, or a
+# documented fail-safe direction.
+
+entries:
+- path: polylogue/daemon/backup.py
+  function: <module>._check_prerequisites
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Appends f"disk space check failed: {exc}" to the warnings list it returns -- a typed signal
+    via the list itself, not a log call.'
+- path: polylogue/daemon/backup.py
+  function: <module>._readable_sqlite
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Returns str(exc) itself as the "why unreadable" reason -- the exception text is the signal.
+- path: polylogue/daemon/backup.py
+  function: <module>._verify_backup_result
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Both sites already build {"ok": False, "error": str(exc)} / result.error = f"...: {exc}" typed
+    signals.'
+- path: polylogue/daemon/backup.py
+  function: <module>._verify_backup_result
+  exceptions:
+  - Exception
+  occurrence: 1
+  reason: 'Both sites already build {"ok": False, "error": str(exc)} / result.error = f"...: {exc}" typed
+    signals.'
+- path: polylogue/daemon/cli.py
+  function: <module>._close_raw_materialization_fts
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Records the failure via _record_raw_materialization_fts_debt(index_db, reason) -- signals through
+    convergence_debt, the pattern polylogue-cpf.4 explicitly says to leave alone.
+- path: polylogue/daemon/cli.py
+  function: <module>._close_raw_materialization_fts
+  exceptions:
+  - Exception
+  occurrence: 1
+  reason: Records the failure via _record_raw_materialization_fts_debt(index_db, reason) -- signals through
+    convergence_debt, the pattern polylogue-cpf.4 explicitly says to leave alone.
+- path: polylogue/daemon/convergence_debt_alert.py
+  function: <module>.source_family_for_path
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Returns the explicit "unknown" sentinel, distinguishable from any real family token.
+- path: polylogue/daemon/fts_startup.py
+  function: <module>._blocks_search_text_has_rows_sync
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: None triggers the not-ready path in the startup repair decision (fail-toward-needs-work).
+- path: polylogue/daemon/fts_startup.py
+  function: <module>._count_or_zero
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow startup probe; 0 is the fail-toward-repair default consumed by the FTS startup-readiness
+    decision (safe direction, matches the 1xc.11 precedent).
+- path: polylogue/daemon/fts_startup.py
+  function: <module>._message_fts_docsize_has_rows_sync
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: False triggers the not-ready path in the startup repair decision (fail-toward-needs-work).
+- path: polylogue/daemon/fts_startup.py
+  function: <module>._message_fts_freshness_row_sync
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: None triggers the not-ready path in the startup repair decision (fail-toward-needs-work).
+- path: polylogue/daemon/health.py
+  function: <module>._archive_repeated_stage_failure_info
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Internal fallback: None triggers the local-tier query in the caller (_check_repeated_stage_failures_medium),
+    which itself returns a typed HealthAlert(severity=ERROR) on its own failure.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_blob_integrity_expensive
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_convergence_debt_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_cursor_lag_anomaly_layer
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_cursor_lag_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_daemon_liveness_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Returns HealthAlert(severity=ERROR, message=f"...: {exc}") -- a typed degradation signal, the
+    established pattern for every _check_*_{fast,medium,expensive} probe in this file.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_db_integrity_expensive
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_disk_space_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_embedding_coverage_expensive
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_fts_readiness_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_hook_flow_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_insight_freshness_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_raw_failures_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_repeated_stage_failures_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_schema_version_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_source_availability_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_stale_ingest_attempts_medium
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
+  function: <module>._check_wal_size_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/http.py
+  function: <module>._handle_health
+  exceptions:
+  - Error
+  - OSError
+  occurrence: 0
+  reason: quick_check_ok=False is the safe fail-toward-unhealthy direction and is itself the boolean field
+    the JSON response reports.
+- path: polylogue/daemon/metrics.py
+  function: <module>.format_metrics
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: polylogue_version = "unknown" is an explicit sentinel distinguishable from any real version
+    string.
+- path: polylogue/daemon/status.py
+  function: <module>._archive_debt_status_summary
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Returns {"available": False, ...} -- the available flag already distinguishes this from a successful
+    lookup.'
+- path: polylogue/daemon/status.py
+  function: <module>._archive_insight_freshness_info
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Internal fallback: None triggers the local-DB query in the caller (_insight_freshness_info),
+    which now logs on its own failure (fixed in this sweep).'
+- path: polylogue/daemon/status.py
+  function: <module>._archive_live_cursor_summary_info
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Internal fallback: None triggers the local-DB query in the caller (_live_cursor_summary_info),
+    which now logs on its own failure (fixed in this sweep).'
+- path: polylogue/daemon/status.py
+  function: <module>._archive_live_ingest_attempt_summary_info
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Internal fallback: None triggers the local-DB query in the caller (_live_ingest_attempt_summary_info),
+    which now logs on its own failure (fixed in this sweep).'
+- path: polylogue/daemon/status.py
+  function: <module>._archive_raw_failure_info
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Internal fallback: None triggers the local-DB query in the caller (_raw_failure_info), which
+    now logs on its own failure (fixed in this sweep).'
+- path: polylogue/daemon/status.py
+  function: <module>._raw_replay_backlog_info
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Returns {"available": False, "reason": str(exc), ...} -- an already-typed signal.'
+- path: polylogue/daemon/status_snapshot.py
+  function: <module>._minimal_status_payload
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Captures refresh_error = refresh_error or str(exc), threaded into the returned snapshot payload
+    -- a typed signal.
+- path: polylogue/daemon/status_snapshot.py
+  function: <module>.refresh_status_snapshot
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Captures refresh_error = str(exc) and passes it into _minimal_status_payload(refresh_error=...)
+    -- a typed signal.
+- path: polylogue/daemon/write_coordinator.py
+  function: <module>._run_in_daemon_thread.worker
+  exceptions:
+  - BaseException
+  occurrence: 0
+  reason: Propagates the exception itself via loop.call_soon_threadsafe(publish, None, exc) to the awaiting
+    asyncio Future, which re-raises it to the caller -- the exception is not discarded, just marshalled
+    across the thread boundary.
+- path: polylogue/insights/audit.py
+  function: <module>.build_insight_rigor_audit_report
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Captures error = f"{type(exc).__name__}: {exc}" and merges it into the returned entry via model_copy(update={"error":
+    error}) -- a typed signal.'
+- path: polylogue/insights/correlation_view.py
+  function: <module>._print_otlp_evidence
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Prints a visible CLI message to the operator (console.print("No OTLP data available")) rather
+    than silently returning -- not a silent failure, though the wording could better distinguish absence
+    from failure (tracked as a wording follow-up, not a silent-failure instance).
+- path: polylogue/storage/archive_readiness.py
+  function: <module>.missing_source_raw_session_evidence
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Returns {"available": False, "reason": str(exc), ...} -- an already-typed signal.'
+- path: polylogue/storage/archive_readiness.py
+  function: <module>.raw_materialization_readiness_snapshot
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Returns {"available": False, "error": str(exc)} -- an already-typed signal.'
+- path: polylogue/storage/artifacts/inspection.py
+  function: <module>._hermes_state_db_schema_version
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow schema-version probe; None ("unknown version") is the fail-safe default already distinct
+    from a real version int.
+- path: polylogue/storage/artifacts/inspection.py
+  function: <module>.inspect_raw_artifact
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Falls through to classify_artifact_path()-derived kind/reason fields on the constructed record
+    rather than raising -- an already-typed fallback classification, not a bare default.
+- path: polylogue/storage/blob_gc.py
+  function: <module>._database_has_table
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow schema probe; False ("table absent") is the fail-safe direction already consumed defensively
+    by callers.
+- path: polylogue/storage/embeddings/materialization.py
+  function: <module>._embedding_status_row_exists
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'True on error is the conservative default for this specific caller: it runs immediately after
+    vec_provider.upsert() succeeded, so treating a post-hoc verification-query failure as "row exists"
+    avoids a false no_embeddable_messages misclassification of a session that was actually embedded. This
+    is not the 1xc.11 fail-toward-needs-work pattern; the safe direction here is inverted by the calling
+    context.'
+- path: polylogue/storage/embeddings/materialization.py
+  function: <module>._qualified_table_exists
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow schema probe; False ("table absent") is the fail-safe direction.
+- path: polylogue/storage/embeddings/materialization.py
+  function: <module>._table_columns
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow schema probe; an empty column set is the fail-safe direction (callers treat missing columns
+    as "feature unavailable").
+- path: polylogue/storage/embeddings/materialization.py
+  function: <module>.embed_archive_session_sync
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Calls mark_session_embedding_error(...) -- an already-typed signal recorded in the embedding_status
+    tier.
+- path: polylogue/storage/embeddings/materialization.py
+  function: <module>.embed_session_sync
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Calls _record_embedding_failure(...) and returns EmbedSessionOutcome(status="error", error=str(exc))
+    -- an already-typed signal.
+- path: polylogue/storage/embeddings/preflight.py
+  function: <module>._is_archive_index
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow probe; False ("not a usable archive index") is the fail-safe direction that causes the
+    candidate path to be skipped rather than mistakenly opened.
+- path: polylogue/storage/embeddings/status_payload.py
+  function: <module>._archive_catchup_runs
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Feeds latest_catchup_run/latest_material_catchup_run, informational display fields that render
+    as null for both "no runs" and "query failed" -- low severity (not a gating/health signal).
+- path: polylogue/storage/embeddings/status_payload.py
+  function: <module>._sqlite_stat1_index_rows
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow planner-stat probe; None ("unknown") is the fail-safe default for an optional diagnostic
+    field.
+- path: polylogue/storage/repair.py
+  function: <module>._archive_index_present
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow probe; False ("index not present/versioned") is the fail-safe direction.
+- path: polylogue/storage/repair.py
+  function: <module>._run_sql_repair
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Returns _repair_result(..., success=False, detail=f"Repair failed: {exc}") -- an already-typed
+    signal, the established pattern for every repair_* function in this file.'
+- path: polylogue/storage/repair.py
+  function: <module>.repair_orphaned_attachments
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+- path: polylogue/storage/repair.py
+  function: <module>.repair_orphaned_messages
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+- path: polylogue/storage/repair.py
+  function: <module>.repair_session_insights
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+- path: polylogue/storage/sqlite/archive_tiers/archive.py
+  function: <module>._ensure_read_runtime_indexes
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Explicitly documented "best-effort performance-index ensure" (see the function's own docstring)
+    -- not correctness-affecting.
+- path: polylogue/storage/sqlite/archive_tiers/archive_plan.py
+  function: <module>._read_user_version
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Narrow user_version probe (two except blocks: connect, then PRAGMA read); None ("unknown version")
+    is the fail-safe default.'
+- path: polylogue/storage/sqlite/archive_tiers/archive_plan.py
+  function: <module>._read_user_version
+  exceptions:
+  - Error
+  occurrence: 1
+  reason: 'Narrow user_version probe (two except blocks: connect, then PRAGMA read); None ("unknown version")
+    is the fail-safe default.'
+- path: polylogue/storage/sqlite/maintenance.py
+  function: <module>.maybe_optimize_archive_tiers
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Appends a SqliteOptimizeObservation capturing the exception -- an already-typed signal.
+- path: polylogue/storage/sqlite/maintenance.py
+  function: <module>.maybe_optimize_sqlite
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Returns SqliteOptimizeObservation(reason=reason, ran=False, ...) with the exception captured
+    -- an already-typed signal.
+- path: polylogue/storage/sqlite/sqlite_vec_extension.py
+  function: <module>.try_load_sqlite_vec
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Returns (False, exc) -- the exception object itself is the signal, not discarded.
+- path: polylogue/storage/sqlite/sqlite_vec_extension.py
+  function: <module>.try_load_sqlite_vec_async
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: Returns (False, exc) -- the exception object itself is the signal, not discarded.
+- path: polylogue/storage/sqlite/wal_checkpoint.py
+  function: <module>.maybe_checkpoint_wal
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Captures error = str(exc), included in the returned checkpoint result -- an already-typed signal.
+- path: polylogue/storage/usage.py
+  function: <module>._source_raw_stats
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Returns ({}, {}, f"...: {exc}") -- the third tuple element is an already-typed reason string.'
+- path: polylogue/storage/usage.py
+  function: <module>._source_schema_alias
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow ATTACH-DATABASE probe; None ("no usable source alias") is the fail-safe direction.
+- path: polylogue/storage/usage.py
+  function: <module>._table_exists_in_schema
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: Narrow schema probe; False ("table absent") is the fail-safe direction.

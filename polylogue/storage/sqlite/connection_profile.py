@@ -209,7 +209,12 @@ def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3
     return conn
 
 
-def open_daemon_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3.Connection:
+def open_daemon_connection(
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    busy_timeout_ms: int | None = None,
+) -> sqlite3.Connection:
     """Open a read-write SQLite connection for daemon maintenance/ops writes.
 
     Long-running daemon loops write small status, cursor, telemetry, and
@@ -220,6 +225,8 @@ def open_daemon_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> 
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         for stmt in DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS:
+            if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
+                stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
     except BaseException:

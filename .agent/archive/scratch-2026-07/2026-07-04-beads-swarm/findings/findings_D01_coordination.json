@@ -1,0 +1,67 @@
+{
+  "domain": "D01_coordination",
+  "summary": "The s7ae coordination substrate is healthy and actively landing: s7ae.1 (in_progress) has real code (coordination/envelope.py + agents CLI + MCP agent_coordination tool/prompt + tests) that matches most of its design/AC. The main gaps are structural: the epic's capstone two-agent live proof has no owning child bead, and two ready-frontier P1 children (pj8, ahqd) are missing acceptance/design fields. The Sinex-boundary decisions (6mv/lnd/jgp/lio) are recent and not stale, but lnd lacks its self-declared dependency on 7fj and 6mv's actionable residual is anonymous.",
+  "underspecified": [
+    {
+      "id": "polylogue-pj8",
+      "missing": ["acceptance"],
+      "proposed_acceptance": "MCP server registers ~6 intent-named prompts (resume-context, postmortem-last, decisions-about, unacknowledged-failures, sessions-touching-file, cost-of) that expand to concrete tool-call sequences with cwd/repo prefilled; each prompt is listed in EXPECTED prompt-name contract and covered by a contract test. A 'polylogue' harness skill exists (dots/claude/skills + codex overlay, sinnix-side) stating the archive-root env var rule and refs-over-dumps rule. Baseline vs post-rollout affordance-usage report shows tool diversity rising in agent sessions above today's search/get_session-dominated baseline (record the two measurements). Total prompt count stays small (curation, not a second catalog).",
+      "why": "pj8 is P1/wave:1 under the live s7ae epic and its description ends with an inline 'Acceptance:' sentence, but the acceptance_criteria field is null (D01_coordination.json line 314). Per the execution-grade contract, a ready-frontier P1 needs a checkable done-state; the prose acceptance should be promoted into the field with verify handles."
+    },
+    {
+      "id": "polylogue-ahqd",
+      "missing": ["design"],
+      "proposed_design": "(1) Wait for or launch a fresh full/evidence/browser-profile agent session started AFTER the Sinnix 7151697 Home Manager activation (the current Codex predates it per polylogue-27p close note). (2) From that session over MCP, perform benign writes against a demo or clearly test-marked session: record_correction, add_tag, blackboard_post. (3) Confirm each resulting user.db row carries the authoring session ref (add_tag/record_correction author_ref extension from 27p; blackboard already attributes). (4) Run `devtools workspace affordance-usage` (or the equivalent Polylogue query) and capture the report showing the real MCP write calls with author refs, distinct from unit-test/shell simulation. (5) Verify claude-lean profile still refuses writes (read role). Pitfall: do not synthesize the rows via CLI/tests — the proof value is that a live agent used the write MCP surface.",
+      "why": "ahqd is P1/wave:1 and depends_on the closed 27p; design is null (D01_coordination.json line 212) while description+acceptance exist. It is an observation task but still needs the 'how' recorded (which command, which profile, how author-ref is checked) to be execution-grade on the ready frontier."
+    }
+  ],
+  "gaps": [
+    {
+      "proposed_title": "Two-agent live coordination proof: worktrees, overlap, scoped message, context injection, handoff",
+      "type": "task",
+      "priority": 1,
+      "parent": "polylogue-s7ae",
+      "why": "The s7ae epic's headline acceptance criterion is 'A live proof demonstrates at least two agents on one repo with separate worktrees, visible overlap/resource awareness, a scoped coordination message, context injection, and a handoff packet.' The confirmed child set {s7ae.1, s7ae.2, s7ae.3, ahqd, bby.9, d1y, pj8} contains no bead that owns this capstone: s7ae.1 is the envelope, s7ae.3 is the message/advisory mechanism, ahqd is a single-agent MCP-write observation, bby.9 is the renderer. The epic cannot be closed against its own AC without this proof, and it is exactly the kind of end-to-end demo the priority frame ranks as a proof campaign (tier 1).",
+      "design": "Reuse existing worktree tooling and the shipped surfaces. (1) Create two git worktrees of polylogue on separate branches; launch one Claude and one Codex full-profile agent, one per worktree. (2) Each agent runs `polylogue agents status --json` (or the MCP agent_coordination tool) and observes the sibling as a same-repo-agent overlap plus any live resource episodes (build/test/daemon) as non-blocking awareness. (3) Agent A posts a session-tree/repo-scoped coordination message (s7ae.3 / blackboard); agent B receives it via the SessionStart preamble delivery leg (37t.11 scheduler + d1y hooks). (4) Show the context-injection ledger row proving the coordination ContextSource entered B's context. (5) Agent A writes a HANDOFF packet under .agent/conductor-devloop/ and B consumes it via `polylogue agents handoff`. Capture all JSON envelopes + ledger rows as the durable proof artifact.",
+      "acceptance": "A recorded run shows: two distinct agent sessions on one repo in separate worktrees; each agent's coordination envelope lists the other as same-repo overlap with blocking=false; at least one build/test/daemon resource episode surfaced as awareness; one scoped coordination message posted by A and delivered to B with provenance; one context-injection ledger row attributing the coordination source with its trust class; and a handoff packet authored by A and read back by B. Artifact stored under .local/ or a proof bead note; no step requires simulating rows outside a live agent session.",
+      "deps": ["polylogue-s7ae.1", "polylogue-s7ae.2", "polylogue-s7ae.3", "polylogue-d1y", "polylogue-37t.11"]
+    }
+  ],
+  "inconsistencies": [
+    {
+      "id": "polylogue-s7ae.1",
+      "kind": "acc-mismatch",
+      "evidence": "s7ae.1 design says the envelope's inputs are archive session evidence: 'session topology, run/session events, tool/action blocks, recent activity ... blackboard/coordination messages, proof/outcome summaries, and context-flow refs.' The in-progress implementation (polylogue/coordination/envelope.py) derives peers, resource episodes, and overlap from the live OS process table (`ps -eo ...`, lines 36/307-354) and /proc, plus git and .beads/bd; it touches the archive only to read PRAGMA user_version on the tier DBs (_archive_payload lines 427-454). It reads NO session topology, session/run events, tool/action blocks, blackboard messages, or context-flow refs.",
+      "fix": "Reconcile the bead with the build: either (a) amend s7ae.1's design/acceptance to state that live agent/resource presence is derived from the process table + git + Beads (a legitimate 'who else is active right now' evidence source that the archive cannot give in real time), and move archive-session-derived fields (session topology, tool/action blocks, blackboard messages, context-flow refs) to explicit 'remaining' or to s7ae.3/bby.9; or (b) record that the archive-evidence legs are still unimplemented so the AC ('reusable envelope over existing archive evidence', 'blackboard/coordination messages' as inputs) is not prematurely marked satisfied. The process-table approach is defensible but is a different evidence model than the bead currently describes."
+    },
+    {
+      "id": "polylogue-6mv",
+      "kind": "other",
+      "evidence": "6mv is a type=decision whose own text says 'Status: adopt as working doctrine' and names concrete residual work: 'the Sinex-side emitter is future work gated on the substrate write-leg and Sinex production restore.' The decision itself is made, but the emitter work exists only as a sentence inside the decision bead, with no task bead and no dependency edge.",
+      "fix": "Treat 6mv as a decided decision (doctrine can live in docs per the dropped-#1807 precedent) and split the actionable residual into a task bead 'Sinex agent-evidence emitter (derived privacy-preserving agent.* events)' gated on the Polylogue substrate write-leg and Sinex production restore, so the emitter is tracked work rather than anonymous debt inside a decision record."
+    }
+  ],
+  "dep_priority": [
+    {
+      "id": "polylogue-lnd",
+      "issue": "missing-dep",
+      "detail": "lnd (Decision: beads vs assertions boundary) ends 'Status: working doctrine; revisit when beads ingestion lands' and its seam (1) explicitly references 'the beads-history ingestion bead' (7fj) for the close-reason claim-vs-evidence composition. There is no recorded dependency or relates-to edge from lnd to 7fj (its dependencies are null in D01_coordination.json line 384-386).",
+      "proposed": "Add a relates-to (or revisit-blocked-by) edge lnd -> polylogue-7fj so the 'revisit when beads ingestion lands' trigger is a graph fact, and a relates-to lnd -> polylogue-4c0 (4c0 implements the close-reason cross-check the decision describes)."
+    },
+    {
+      "id": "polylogue-s7ae",
+      "issue": "epic-ac-gap",
+      "detail": "The epic's live two-agent proof AC (worktrees + overlap + scoped message + context injection + handoff) is not covered by any child (see gaps). Additionally the epic AC 'Beads integration enriches ... hook health, gates, merge slot, claims, dependencies' is only partially realized: s7ae.1 reads bd list for the work item, but hook-health/gates/merge-slot enrichment is deferred into s7ae.2/d1y with no explicit acceptance line tying those back to the coordination envelope's beads fields.",
+      "proposed": "Create the capstone proof child bead (gaps entry) and add an explicit acceptance line on s7ae.2 or d1y that Beads hook-health/merge-slot state is surfaced through the coordination envelope's work_item.fields when present, so the epic AC's Beads-enrichment clause has a checkable owner."
+    }
+  ],
+  "reorg": [
+    {
+      "id": "polylogue-4c0",
+      "change": "new-epic",
+      "from": "parent=null (standalone)",
+      "to": "new epic 'Beads/devloop work-evidence rail' grouping 4c0, 7fj, lnd, lio, kph (and 6mv's emitter task)",
+      "rationale": "4c0 (session<->bead join), 7fj (beads-history ingestion, its substrate dep), lnd (beads-vs-assertions decision), lio (cross-repo devloop contract on beads), and kph (provenance-carrying PRs) form one coherent theme — joining external work-tracking/PR evidence with the archive — that is distinct from s7ae's live-agent coordination. They are currently all parent=null. An epic would make 7fj's blocking role and the decisions' scope explicit instead of a loose standalone cluster. Medium confidence: only propose if the orchestrator agrees the cluster is real; do not force-fit h6r (it belongs to the analytics/uplift tower, blocking h10) into it."
+    }
+  ]
+}

@@ -2,6 +2,13 @@
   if (window.__polylogueChatgptCaptureInstalled) return;
   window.__polylogueChatgptCaptureInstalled = true;
 
+  // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
+  // next to each detected message. Reused across every capture trigger below
+  // (badge click, popup, background auto-capture) so the dots always reflect
+  // the most recent capture outcome for the whole session.
+  const MESSAGE_CONTAINER_SELECTOR = '[data-testid^="conversation-turn-"], article, [data-message-author-role]';
+  let messageLayer = null;
+
   const domAdapterName = "chatgpt-dom-v1";
   const nativeAdapterName = "chatgpt-native-v1";
   const nativeCaptureMessage = "polylogue.chatgpt.nativeCapture";
@@ -11,6 +18,12 @@
   const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
+  const freshnessHintTimers = new Map();
+  const pendingFreshnessObservations = new Map();
+  const lifecycleObservationHistory = new Map();
+  const lifecycleRuntime = new Map();
+  let domFreshnessScanTimer = null;
+  let lastDomFreshnessSignature = null;
 
   function rememberNativeAttempt(diagnostic) {
     nativeAttemptDiagnostics.push({
@@ -29,12 +42,189 @@
     return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
   }
 
+  function queueFreshnessHint(
+    reason,
+    nativeId = conversationIdFromUrl(),
+    delayMs = 5000,
+    providerUpdatedAt = null,
+    generationObservation = null,
+  ) {
+    if (!nativeId || !/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return;
+    if (generationObservation) {
+      const pending = pendingFreshnessObservations.get(nativeId) || [];
+      const byId = new Map(pending.map((observation) => [observation.observation_id, observation]));
+      byId.set(generationObservation.observation_id, generationObservation);
+      pendingFreshnessObservations.set(nativeId, [...byId.values()].slice(-24));
+
+      const history = lifecycleObservationHistory.get(nativeId) || [];
+      const historyById = new Map(history.map((observation) => [observation.observation_id, observation]));
+      historyById.set(generationObservation.observation_id, generationObservation);
+      lifecycleObservationHistory.set(nativeId, [...historyById.values()].slice(-64));
+    }
+    const existingTimer = freshnessHintTimers.get(nativeId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const timer = setTimeout(() => {
+      freshnessHintTimers.delete(nativeId);
+      const observations = pendingFreshnessObservations.get(nativeId) || [];
+      pendingFreshnessObservations.delete(nativeId);
+      chrome.runtime.sendMessage({
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: nativeId,
+        provider_updated_at: providerUpdatedAt,
+        reason,
+        delay_ms: delayMs,
+        generation_observations: observations,
+      }).catch(() => undefined);
+    }, 750);
+    freshnessHintTimers.set(nativeId, timer);
+  }
+
+  function displayedElapsedMs(label) {
+    const text = String(label || "").replace(/\s+/g, " ").trim();
+    if (!/^Worked for\b/i.test(text)) return null;
+    const hours = Number(text.match(/\b(\d+)\s*h\b/i)?.[1] || 0);
+    const minutes = Number(text.match(/\b(\d+)\s*m\b/i)?.[1] || 0);
+    const seconds = Number(text.match(/\b(\d+)\s*s\b/i)?.[1] || 0);
+    if (![hours, minutes, seconds].every(Number.isFinite) || hours + minutes + seconds === 0) return null;
+    return ((hours * 60 + minutes) * 60 + seconds) * 1000;
+  }
+
+  function lifecycleTurnIdentity(node) {
+    return node?.getAttribute?.("data-turn-id")
+      || node?.getAttribute?.("data-message-id")
+      || node?.getAttribute?.("data-testid")
+      || null;
+  }
+
+  function completedDurationControl() {
+    const turns = [...document.querySelectorAll(MESSAGE_CONTAINER_SELECTOR)].reverse();
+    for (const turn of turns) {
+      const role = turn.getAttribute("data-turn") || turn.getAttribute("data-message-author-role") || "";
+      if (role && role !== "assistant") continue;
+      for (const button of turn.querySelectorAll("button")) {
+        const label = String(button.innerText || button.textContent || "").replace(/\s+/g, " ").trim();
+        if (/^Worked for\b/i.test(label)) return { turn, label };
+      }
+    }
+    return null;
+  }
+
+  function observeGenerationLifecycle(trigger) {
+    const nativeId = conversationIdFromUrl();
+    if (!nativeId) return null;
+    const nowMs = Date.now();
+    const previous = lifecycleRuntime.get(nativeId) || {};
+    const stopButton = document.querySelector(
+      '[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]',
+    );
+    const completed = completedDurationControl();
+    let observation = null;
+    let next = previous;
+
+    if (stopButton) {
+      const stopTurnId = lifecycleTurnIdentity(stopButton.closest(MESSAGE_CONTAINER_SELECTOR));
+      const completedKey = completed
+        ? `${lifecycleTurnIdentity(completed.turn) || "active"}:${completed.label}`
+        : null;
+      const startedAtMs = previous.started_at_ms || nowMs;
+      const state = previous.running ? "in_progress" : "started";
+      if (state === "started" || nowMs - (previous.last_progress_at_ms || 0) >= 30_000) {
+        observation = {
+          observation_id: `${nativeId}:${stopTurnId || "active"}:${state}:${state === "started" ? startedAtMs : Math.floor(nowMs / 30_000)}`,
+          state,
+          observed_at: new Date(nowMs).toISOString(),
+          evidence_source: "dom_control",
+          fidelity: "observed",
+          duration_semantics: "dom_observed_wall",
+          turn_provider_id: stopTurnId,
+          wall_elapsed_ms: Math.max(0, nowMs - startedAtMs),
+          trigger,
+        };
+      }
+      next = {
+        ...previous,
+        running: true,
+        started_at_ms: startedAtMs,
+        last_progress_at_ms: observation ? nowMs : previous.last_progress_at_ms,
+        turn_provider_id: stopTurnId || previous.turn_provider_id,
+        baseline_completed_key: previous.running ? previous.baseline_completed_key : completedKey,
+      };
+    } else if (completed || previous.running) {
+      const completedKey = completed
+        ? `${lifecycleTurnIdentity(completed.turn) || "active"}:${completed.label}`
+        : null;
+      const effectiveCompleted = previous.running
+        && completedKey
+        && completedKey === previous.baseline_completed_key
+        ? null
+        : completed;
+      const turn = effectiveCompleted?.turn || null;
+      const label = effectiveCompleted?.label || null;
+      const turnId = lifecycleTurnIdentity(turn) || previous.turn_provider_id || "active";
+      const elapsedMs = displayedElapsedMs(label);
+      const terminalKey = `${turnId}:${label || "stop_disappeared"}`;
+      if (previous.terminal_key !== terminalKey) {
+        observation = {
+          observation_id: `${nativeId}:${turnId}:completed:${window.polylogueCapture.fnv1a(terminalKey)}`,
+          state: "completed",
+          observed_at: new Date(nowMs).toISOString(),
+          evidence_source: effectiveCompleted ? "dom_duration_control" : "dom_control_transition",
+          fidelity: effectiveCompleted ? "observed" : "inferred",
+          duration_semantics: effectiveCompleted ? "provider_ui_elapsed" : "dom_observed_wall",
+          turn_provider_id: turnId === "active" ? null : turnId,
+          displayed_elapsed_ms: elapsedMs,
+          wall_elapsed_ms: previous.started_at_ms ? Math.max(0, nowMs - previous.started_at_ms) : null,
+          raw_label: label,
+          trigger,
+        };
+      }
+      next = { ...previous, running: false, terminal_key: terminalKey, turn_provider_id: turnId };
+    }
+
+    lifecycleRuntime.set(nativeId, next);
+    if (observation) {
+      queueFreshnessHint(
+        `generation_${observation.state}`,
+        nativeId,
+        observation.state === "completed" ? 0 : 1000,
+        null,
+        observation,
+      );
+    }
+    return observation;
+  }
+
+  function nativeCaptureIdentity(capture) {
+    if (!capture?.ok || typeof capture.body !== "string") return null;
+    try {
+      const payload = JSON.parse(capture.body);
+      const nativeId = String(payload.conversation_id || payload.id || "");
+      if (!/^[A-Za-z0-9_-]{1,256}$/.test(nativeId)) return null;
+      const updatedAt = typeof payload.update_time === "number"
+        ? new Date(payload.update_time < 10_000_000_000 ? payload.update_time * 1000 : payload.update_time).toISOString()
+        : typeof payload.update_time === "string" ? payload.update_time : null;
+      return { nativeId, updatedAt };
+    } catch {
+      return null;
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
     const data = event.data || {};
     if (data.type !== nativeCaptureMessage || !data.capture) return;
     nativeCaptures.push(data.capture);
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
+    const identity = nativeCaptureIdentity(data.capture);
+    if (identity) queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
+  });
+
+  navigator.serviceWorker?.addEventListener?.("message", (event) => {
+    const data = event.data || {};
+    if (data.type !== "new-message") return;
+    const nativeId = String(data.conversation_id || data.data?.conversation_id || "");
+    queueFreshnessHint("provider_push_new_message", nativeId, 2000);
   });
 
   window.addEventListener("message", (event) => {
@@ -180,9 +370,16 @@
       const content = message && message.content;
       if (!message || !content) continue;
       const text = extractContentText(content);
-      if (!text) continue;
       const role = roleFromRaw(message.author && message.author.role);
       const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+      const hasAttachmentEvidence =
+        (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
+        || (Array.isArray(content.parts) && content.parts.some((part) =>
+          part && typeof part === "object" && (
+            typeof part.asset_pointer === "string" || typeof part.file_id === "string"
+          )
+        ));
+      if (!text && !hasAttachmentEvidence) continue;
       turns.push({
         provider_turn_id: String(message.id || node.id || nodeId),
         role,
@@ -201,24 +398,25 @@
     return turns;
   }
 
-  function parseNativeCapture(capture) {
+  function parseNativeCapture(capture, expectedConversationId = conversationIdFromUrl()) {
     if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    const currentConversationId = conversationIdFromUrl();
-    if (!currentConversationId || !String(capture.url || "").includes(`/conversation/${currentConversationId}`)) {
+    if (!expectedConversationId || !String(capture.url || "").includes(`/conversation/${expectedConversationId}`)) {
       return null;
     }
     try {
       const payload = JSON.parse(capture.body);
       if (!payload || typeof payload !== "object" || !payload.mapping) return null;
+      const payloadConversationId = payload.conversation_id || payload.id;
+      if (payloadConversationId && String(payloadConversationId) !== expectedConversationId) return null;
       return payload;
     } catch {
       return null;
     }
   }
 
-  function latestNativePayload() {
+  function latestNativePayload(expectedConversationId = conversationIdFromUrl()) {
     for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
-      const payload = parseNativeCapture(nativeCaptures[index]);
+      const payload = parseNativeCapture(nativeCaptures[index], expectedConversationId);
       if (payload) return payload;
     }
     return null;
@@ -316,12 +514,13 @@
     }
   }
 
-  async function fetchNativePayloadOnDemand() {
-    const conversationId = conversationIdFromUrl();
+  async function fetchNativePayloadOnDemand(requestedConversationId = null) {
+    const conversationId = requestedConversationId || conversationIdFromUrl();
     if (!conversationId) return null;
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return null;
     const pageResult = await requestNativeCaptureFromPage(conversationId);
     const pageCapture = pageResult && pageResult.capture;
-    const pagePayload = parseNativeCapture(pageCapture);
+    const pagePayload = parseNativeCapture(pageCapture, conversationId);
     rememberNativeAttempt({
       stage: "page_bridge_fetch",
       ok: pageCapture?.ok ?? null,
@@ -363,7 +562,7 @@
   // breaker: a conversation can reference dozens of sandbox files, and once
   // the sandbox container is gone every one of them fails the same way --
   // without these bounds a capture could stall for minutes on dead links.
-  // Must fit inside the 15s capturePage message timeout raced by popup and
+  // Must fit inside the 35s capturePage message timeout raced by popup and
   // background (CAPTURE_MESSAGE_TIMEOUT_MS) with headroom for the
   // conversation fetch itself. Dead links answer fast; anything slower is
   // skipped and disclosed -- a later re-capture backfills idempotently.
@@ -379,7 +578,13 @@
     const pending = assetResponses.get(data.requestId);
     if (!pending) return;
     assetResponses.delete(data.requestId);
-    pending.resolve({ asset: data.asset || null, error: data.error || null });
+    if (data.outcome && typeof data.outcome === "object") {
+      pending.resolve(data.outcome);
+    } else if (data.asset) {
+      pending.resolve({ status: "acquired", phase: "legacy_bridge", asset: data.asset });
+    } else {
+      pending.resolve({ status: "request_failed", phase: "legacy_bridge", detail: "legacy_bridge_error" });
+    }
   });
 
   function requestAssetFromPage(request) {
@@ -387,7 +592,7 @@
     const responsePromise = new Promise((resolve) => {
       const timeout = window.setTimeout(() => {
         assetResponses.delete(requestId);
-        resolve({ asset: null, error: "timeout" });
+        resolve({ status: "request_failed", phase: "content_bridge", detail: "response_timeout" });
       }, assetFetchTimeoutMs);
       assetResponses.set(requestId, {
         resolve(value) {
@@ -420,7 +625,33 @@
         descriptors.push(descriptor);
       }
     };
-    for (const [nodeId, node] of Object.entries(mapping)) {
+    // ChatGPT's mapping insertion order is not conversation order. In a
+    // branched conversation it can put old, expired interpreter assets before
+    // the selected branch's newest deliverable. Because acquisition is
+    // deliberately bounded by a failure breaker and a wall-clock budget, that
+    // incidental order can prevent the current node's live asset from ever
+    // being attempted. Walk the selected lineage newest-first, then cover the
+    // remaining branches newest-first as best-effort backfill.
+    const orderedNodeIds = [];
+    const orderedNodeIdSet = new Set();
+    let lineageNodeId = typeof payload.current_node === "string" ? payload.current_node : null;
+    while (lineageNodeId && !orderedNodeIdSet.has(lineageNodeId)) {
+      const node = mapping[lineageNodeId];
+      if (!node) break;
+      orderedNodeIds.push(lineageNodeId);
+      orderedNodeIdSet.add(lineageNodeId);
+      lineageNodeId = typeof node.parent === "string" ? node.parent : null;
+    }
+    const remainingNodeIds = Object.keys(mapping)
+      .filter((nodeId) => !orderedNodeIdSet.has(nodeId))
+      .sort((left, right) => {
+        const leftTime = Number(mapping[left]?.message?.create_time) || 0;
+        const rightTime = Number(mapping[right]?.message?.create_time) || 0;
+        return rightTime - leftTime;
+      });
+
+    for (const nodeId of [...orderedNodeIds, ...remainingNodeIds]) {
+      const node = mapping[nodeId];
       const message = node && node.message;
       if (!message) continue;
       const messageId = String(message.id || node.id || nodeId);
@@ -479,6 +710,8 @@
       attempted: descriptors.length,
       acquired: 0,
       failed: [],
+      acquired_assets: [],
+      status_counts: {},
       skipped_over_budget: 0,
       skipped_time_budget: 0,
       skipped_circuit_breaker: 0
@@ -511,10 +744,25 @@
         maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
       };
       const result = await requestAssetFromPage(request);
-      if (result.asset && result.asset.base64) {
+      const status = typeof result.status === "string" ? result.status : "request_failed";
+      const contentSha256 = result.asset && result.asset.sha256;
+      const acquiredIsValid =
+        status === "acquired" &&
+        result.asset &&
+        result.asset.base64 &&
+        typeof contentSha256 === "string" &&
+        /^[0-9a-f]{64}$/.test(contentSha256);
+      const recordedStatus = acquiredIsValid ? "acquired" : status === "acquired" ? "invalid_response" : status;
+      outcome.status_counts[recordedStatus] = (outcome.status_counts[recordedStatus] || 0) + 1;
+      if (acquiredIsValid) {
         totalBytes += result.asset.size_bytes || 0;
         consecutiveFailuresByKind[descriptor.kind] = 0;
         outcome.acquired += 1;
+        outcome.acquired_assets.push({
+          provider_attachment_id: descriptor.provider_attachment_id,
+          sha256: contentSha256,
+          size_bytes: result.asset.size_bytes || 0
+        });
         attachments.push({
           provider_attachment_id: descriptor.provider_attachment_id,
           message_provider_id: descriptor.message_provider_id,
@@ -525,28 +773,38 @@
           provider_meta: {
             capture_source: "chatgpt_page_asset_fetch",
             asset_kind: descriptor.kind,
-            sandbox_path: descriptor.sandboxPath || null
+            sandbox_path: descriptor.sandboxPath || null,
+            content_sha256: contentSha256
           }
         });
       } else {
         consecutiveFailuresByKind[descriptor.kind] += 1;
         outcome.failed.push({
           provider_attachment_id: descriptor.provider_attachment_id,
-          error: result.error || "unknown"
+          status: recordedStatus,
+          error: recordedStatus,
+          phase: result.phase || null,
+          http_status: typeof result.http_status === "number" ? result.http_status : null,
+          detail: status === "acquired" ? "acquired_asset_missing_sha256" : result.detail || null
         });
       }
     }
     return { attachments, outcome };
   }
 
-  function buildNativeEnvelope(payload, assetAcquisition = null) {
+  function buildNativeEnvelope(
+    payload,
+    assetAcquisition = null,
+    requestedConversationId = null,
+    generationObservations = [],
+  ) {
     const turns = collectNativeTurns(payload);
     if (!turns.length) return null;
     return window.polylogueCapture.buildEnvelope({
       provider: "chatgpt",
       adapterName: nativeAdapterName,
       turns,
-      providerSessionId: String(payload.conversation_id || payload.id || conversationIdFromUrl()),
+      providerSessionId: String(payload.conversation_id || payload.id || requestedConversationId || conversationIdFromUrl()),
       sessionKind: payload.is_temporary === true ? "temporary" : null,
       title: typeof payload.title === "string" && payload.title ? payload.title : null,
       createdAt: timestampFromSeconds(payload.create_time),
@@ -558,30 +816,93 @@
         mapping_node_count: payload.mapping ? Object.keys(payload.mapping).length : 0,
         is_temporary: payload.is_temporary === true,
         session_kind: payload.is_temporary === true ? "temporary" : null,
-        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null
+        asset_acquisition: assetAcquisition ? assetAcquisition.outcome : null,
+        generation_observations: generationObservations,
       },
       rawProviderPayload: payload,
       attachments: assetAcquisition ? assetAcquisition.attachments : []
     });
   }
 
-  async function capture() {
-    const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
+  async function capture(
+    reason = null,
+    requestedConversationId = null,
+    deferReceiver = false,
+    nativePayloadOverride = null,
+    generationObservationsOverride = [],
+  ) {
+    // Intercepted responses are only a bootstrap/fallback cache. A long-running
+    // conversation can grow substantially after the response observed at page
+    // load, so every explicit capture first asks ChatGPT for current native
+    // detail with cache: "no-store". Falling back preserves degraded/offline
+    // capture without allowing an old response to outrank fresh provider state.
+    let nativePayload = nativePayloadOverride;
+    if (nativePayload !== null) {
+      if (!nativePayload || typeof nativePayload !== "object" || !nativePayload.mapping) {
+        throw new Error("provided_native_payload_invalid");
+      }
+      const suppliedId = nativePayload.conversation_id || nativePayload.id;
+      if (requestedConversationId && suppliedId && String(suppliedId) !== requestedConversationId) {
+        throw new Error("provided_native_payload_identity_mismatch");
+      }
+    } else {
+      nativePayload =
+        (await fetchNativePayloadOnDemand(requestedConversationId))
+        || latestNativePayload(requestedConversationId || conversationIdFromUrl());
+    }
     let assetAcquisition = null;
     if (nativePayload) {
       try {
         assetAcquisition = await acquireAssets(
           nativePayload,
-          String(nativePayload.conversation_id || nativePayload.id || conversationIdFromUrl())
+          String(nativePayload.conversation_id || nativePayload.id || requestedConversationId || conversationIdFromUrl())
         );
-      } catch (error) {
+      } catch {
         assetAcquisition = {
           attachments: [],
-          outcome: { attempted: 0, acquired: 0, failed: [{ provider_attachment_id: null, error: String(error && error.message ? error.message : error) }], skipped_over_budget: 0 }
+          outcome: {
+            attempted: 0,
+            acquired: 0,
+            acquired_assets: [],
+            status_counts: { request_failed: 1 },
+            failed: [
+              {
+                provider_attachment_id: null,
+                status: "request_failed",
+                error: "request_failed",
+                detail: "asset_acquisition_failed"
+              }
+            ],
+            skipped_over_budget: 0,
+            skipped_time_budget: 0,
+            skipped_circuit_breaker: 0
+          }
         };
       }
     }
-    const envelope = nativePayload ? buildNativeEnvelope(nativePayload, assetAcquisition) : null;
+    const nativeId = String(
+      nativePayload?.conversation_id
+      || nativePayload?.id
+      || requestedConversationId
+      || conversationIdFromUrl()
+      || "",
+    );
+    const generationObservations = [
+      ...(lifecycleObservationHistory.get(nativeId) || []),
+      ...(Array.isArray(generationObservationsOverride) ? generationObservationsOverride : []),
+    ].reduce((byId, observation) => {
+      if (observation?.observation_id) byId.set(observation.observation_id, observation);
+      return byId;
+    }, new Map());
+    const normalizedGenerationObservations = [...generationObservations.values()].slice(-64);
+    const envelope = nativePayload
+      ? buildNativeEnvelope(
+        nativePayload,
+        assetAcquisition,
+        requestedConversationId,
+        normalizedGenerationObservations,
+      )
+      : null;
     const fallbackEnvelope = () => {
       const turns = collectTurns();
       if (!turns.length) return null;
@@ -591,54 +912,86 @@
         turns,
         providerMeta: {
           capture_fidelity: "dom_degraded",
-          native_attempts: nativeAttemptDiagnostics.slice(-6)
+          native_attempts: nativeAttemptDiagnostics.slice(-6),
+          generation_observations: normalizedGenerationObservations,
         }
       });
     };
-    const finalEnvelope = envelope || fallbackEnvelope();
+    const finalEnvelope = envelope || (requestedConversationId ? null : fallbackEnvelope());
     if (!finalEnvelope) return { ok: false, error: "no_turns" };
-    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope);
+    if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
+    const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
+    if (!captureResult?.ok) {
+      messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });
+      return {
+        ok: false,
+        envelope: finalEnvelope,
+        captureResult,
+        error: captureResult?.error || "capture_rejected",
+        timelineRecorded: true,
+      };
+    }
     const archiveState = await window.polylogueCapture.refreshArchiveState(
       "chatgpt",
       finalEnvelope.session.provider_session_id
     );
+    messageLayer?.reportOutcome({ ok: true, turnCount: finalEnvelope.session.turns.length });
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
   window.polylogueCapture.capturePage = capture;
+  if (window.polylogueMessageLayer) {
+    messageLayer = window.polylogueMessageLayer.mount({
+      containerSelector: MESSAGE_CONTAINER_SELECTOR,
+      onSave: () => {
+        capture("message_layer_save").catch(() => undefined);
+      },
+    });
+  }
+  if (typeof MutationObserver !== "undefined") {
+    const domFreshnessSignature = () => [...document.querySelectorAll(MESSAGE_CONTAINER_SELECTOR)]
+      .map((node) => {
+        const text = String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+        return [
+          node.getAttribute("data-message-id") || node.getAttribute("data-testid") || "",
+          node.getAttribute("data-message-author-role") || "",
+          text.length,
+          text.slice(-80),
+        ].join(":");
+      })
+      .join("|");
+    lastDomFreshnessSignature = domFreshnessSignature();
+    observeGenerationLifecycle("initial_scan");
+    const freshnessObserver = new MutationObserver(() => {
+      if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
+      domFreshnessScanTimer = setTimeout(() => {
+        domFreshnessScanTimer = null;
+        const lifecycleObservation = observeGenerationLifecycle("dom_mutation");
+        const signature = domFreshnessSignature();
+        if (!signature || signature === lastDomFreshnessSignature) return;
+        lastDomFreshnessSignature = signature;
+        if (!lifecycleObservation) {
+          queueFreshnessHint("provider_dom_changed", conversationIdFromUrl(), 5000);
+        }
+      }, 750);
+    });
+    freshnessObserver.observe(document.documentElement, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
-    capture().then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
-    return true;
-  });
-  // Outbound posting (reverse channel). Selectors target the ChatGPT composer
-  // as of 2026-06 and need live re-verification when the UI changes: composer is
-  // the ProseMirror contenteditable #prompt-textarea (verified live). The submit
-  // button has NO data-testid="send-button" in the current UI — it is the
-  // composer-submit slot (class composer-submit-button-color); its aria-label is
-  // "Start Voice"/dictation when empty and becomes a send label only with text,
-  // so match by the submit-slot class first, aria-label last.
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "polylogue.postReply") return false;
-    window.polylogueCapture
-      .postReplyToComposer({
-        command: message.command,
-        composerSelectors: [
-          "#prompt-textarea",
-          'div[contenteditable="true"]#prompt-textarea',
-          'form div[contenteditable="true"]'
-        ],
-        sendSelectors: [
-          "button.composer-submit-button-color",
-          'button[data-testid="composer-send-button"]',
-          'button[data-testid="send-button"]',
-          'button[aria-label*="Send" i]'
-        ]
-      })
+    capture(
+      message.reason || null,
+      message.providerSessionId || null,
+      message.deferReceiver === true,
+      message.nativePayload ?? null,
+      message.generationObservations ?? [],
+    )
       .then(sendResponse)
-      .catch((error) =>
-        sendResponse({ status: "failed", detail: String(error.message || error), observed_url: window.location.href })
-      );
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   });
 })();

@@ -24,14 +24,14 @@ class RepositoryInsightSummaryReadMixin:
     async def list_session_tag_rollup_records(
         self,
         *,
-        provider: str | None = None,
+        origin: str | None = None,
         since: str | None = None,
         until: str | None = None,
         query: str | None = None,
     ) -> list[SessionTagRollupRecord]:
         return await self._list_session_tag_rollup_rows_query(
             SessionTagRollupListQuery(
-                provider=provider,
+                origin=origin,
                 since=since,
                 until=until,
                 query=query,

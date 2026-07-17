@@ -105,6 +105,11 @@ class SessionRepository(
         """Access the underlying async storage backend."""
         return self._backend
 
+    @property
+    def source_backend(self) -> SQLiteBackend | None:
+        """Access the durable source-tier backend when this repository owns one."""
+        return self._source_backend
+
     async def close(self) -> None:
         """Close database connections and release resources."""
         await self._backend.close()

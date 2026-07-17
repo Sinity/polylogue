@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/demo-finding-packet-v2.schema.json",
+  "title": "Demo Finding Packet v2",
+  "description": "A construct-valid, evidence-resolvable product demonstration receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "identity",
+    "claim",
+    "judgment",
+    "corpus",
+    "method",
+    "controls",
+    "evidence",
+    "reproduction",
+    "environment",
+    "scope"
+  ],
+  "properties": {
+    "schema": {"const": "demo-finding-packet/v2"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "title", "project", "run_id", "run_date", "commit_sha", "measure_version"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"},
+        "title": {"type": "string", "minLength": 1},
+        "project": {"enum": ["polylogue", "sinex", "joint"]},
+        "run_id": {"type": "string", "minLength": 1},
+        "run_date": {"type": "string", "format": "date-time"},
+        "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+        "measure_version": {"type": "string", "minLength": 1},
+        "beads": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "claim_class", "primary_construct", "oracle"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "claim_class": {"enum": ["capability", "system_verification", "field_observation", "experiment"]},
+        "primary_construct": {"type": "string", "minLength": 1},
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "description", "expected"],
+          "properties": {
+            "kind": {"enum": ["external_authority", "structured_outcome", "material_bytes", "independent_baseline", "adjudicated_rubric", "heuristic"]},
+            "description": {"type": "string", "minLength": 1},
+            "expected": {},
+            "observed": {}
+          }
+        },
+        "falsifier": {"type": "string", "minLength": 1}
+      }
+    },
+    "judgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "checks"],
+      "properties": {
+        "verdict": {"enum": ["supported", "not_supported", "failed", "degraded", "inconclusive"]},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "pass", "description"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "pass": {"type": "boolean"},
+              "description": {"type": "string", "minLength": 1},
+              "evidence_refs": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        },
+        "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+        "coverage_notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "sample_frame_predicate", "manifest_digest"],
+      "properties": {
+        "mode": {"enum": ["deterministic_fixture", "redistributable_real", "private_field", "live_fault_injection"]},
+        "sample_frame_predicate": {"type": "string", "minLength": 1},
+        "archive_cursor": {"type": ["string", "null"]},
+        "manifest_digest": {"type": "string", "minLength": 1},
+        "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "selection_protocol": {"type": "string"},
+        "exclusions": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps", "baseline"],
+      "properties": {
+        "steps": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "baseline": {"type": "string", "minLength": 1},
+        "query_refs": {"type": "array", "items": {"type": "string"}},
+        "random_seed": {"type": ["integer", "null"]},
+        "preregistered_protocol_ref": {"type": ["string", "null"]}
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["positive", "negative", "missing_evidence"],
+      "properties": {
+        "positive": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/control"}},
+        "negative": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/control"}},
+        "missing_evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/control"}}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refs", "material_manifest", "derivation_manifest"],
+      "properties": {
+        "refs": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true},
+        "material_manifest": {"type": "string", "minLength": 1},
+        "derivation_manifest": {"type": "string", "minLength": 1},
+        "counterexample_refs": {"type": "array", "items": {"type": "string"}},
+        "omission_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "reproduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "clean_state", "expected_exit_code", "artifacts"],
+      "properties": {
+        "commands": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "clean_state": {"type": "string", "minLength": 1},
+        "expected_exit_code": {"type": "integer"},
+        "artifacts": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "recording_command": {"type": ["string", "null"]}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "software_versions"],
+      "properties": {
+        "platform": {"type": "string", "minLength": 1},
+        "software_versions": {"type": "object", "additionalProperties": {"type": "string"}},
+        "privacy_profile": {"type": "string"},
+        "network_required": {"type": "boolean"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proves", "does_not_prove", "known_limitations"],
+      "properties": {
+        "proves": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "does_not_prove": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "known_limitations": {"type": "array", "items": {"type": "string"}},
+        "generalization_boundary": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "expected", "observed", "pass"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "expected": {},
+        "observed": {},
+        "pass": {"type": "boolean"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

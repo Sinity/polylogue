@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import polylogue.paths as _paths
 from polylogue.logging import get_logger
+from polylogue.storage.fts.pl_fold import register_pl_fold
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     READ_CACHE_SIZE_KIB,
@@ -108,6 +109,7 @@ def _configure_read_connection(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
     _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
     _attach_sibling_tiers(conn)
+    register_pl_fold(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +166,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
         _load_sqlite_vec(conn)
         _attach_sibling_tiers(conn)
+        register_pl_fold(conn)
         with _schema_lock_for_path(path):
             if path.name == "index.db" and not _is_initialized_archive_index(path):
                 raise RuntimeError(f"Archive root was not initialized for {path}")

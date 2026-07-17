@@ -11,6 +11,7 @@ from typing import Any
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
@@ -22,6 +23,7 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
 from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
@@ -123,6 +125,22 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
 
     parse_blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     counters = {"raw_rows": 0, "index_rows": 0, "pending_messages": 0}
+    # A grouped JSONL file (Claude Code/Codex resume-fork chains, Gemini/Drive
+    # bundles) can parse into MULTIPLE sessions that all share the identical
+    # captured raw bytes (`_SessionEmitter._emit_grouped` yields the SAME
+    # `raw_data` for every session in the group). Without this cache, each
+    # session's write independently derives its raw_id from
+    # `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
+    # (see write_source_raw_session), so byte-identical content produces a
+    # DIFFERENT raw_sessions row per split session -- and a second, unrelated
+    # raw row for the same bytes reappears on every re-ingest. The live daemon
+    # watcher instead writes ONE raw per file (`write_raw_payload`, no
+    # native_id) and defers session identity to membership-census
+    # classification; this cache makes the one-shot importer converge on that
+    # SAME single-raw-per-bytes model, keyed by the raw's own (origin,
+    # source_path, source_index, blob_hash) so a later re-ingest of identical
+    # bytes resolves to the SAME raw_id every time. Ref polylogue-sjf6.
+    shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
 
@@ -136,22 +154,71 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             source_index = _archive_raw_source_index(raw_data)
             raw_id = None
             blob_hash = getattr(raw_data, "blob_hash", None)
-            if session.source_name is Provider.HERMES and isinstance(blob_hash, str) and blob_hash:
-                raw_id = hermes_profile_raw_id(source_path, source_index, blob_hash)
-            try:
-                write_result = archive.write_raw_and_parsed_result(
-                    session,
-                    payload=payload,
-                    source_path=source_path,
-                    acquired_at_ms=acquired_at_ms,
-                    source_index=source_index,
-                    raw_id=raw_id,
-                    stage_timings_s=result.stage_timings_s,
-                    manage_transaction=not batched,
-                    blob_publication_receipt_id=(
-                        raw_data.blob_publication_receipt_id if raw_data is not None else None
-                    ),
+            blob_hash_str = blob_hash if isinstance(blob_hash, str) and blob_hash else None
+            if session.source_name is Provider.HERMES and blob_hash_str is not None:
+                raw_id = hermes_profile_raw_id(source_path, source_index, blob_hash_str)
+            shared_key: tuple[str, str, int, str] | None = None
+            if raw_id is None and blob_hash_str is not None:
+                # Keyed by origin (not provider) to match deterministic_raw_session_id
+                # below -- origin_from_provider is non-injective (GEMINI and DRIVE
+                # both collapse to AISTUDIO_DRIVE), so two sessions with different
+                # `source_name` but the same origin must still share one raw_id.
+                shared_key = (
+                    origin_from_provider(session.source_name).value,
+                    source_path,
+                    source_index,
+                    blob_hash_str,
                 )
+            existing_raw_id = shared_raw_ids.get(shared_key) if shared_key is not None else None
+            try:
+                if existing_raw_id is not None:
+                    # A prior session parsed from this exact raw already
+                    # committed the raw row this batch; index this session
+                    # against that SAME raw_id instead of writing a duplicate.
+                    retained_result = archive.write_parsed_for_retained_raw_result(
+                        session,
+                        raw_id=existing_raw_id,
+                        source_path=source_path,
+                        acquired_at_ms=acquired_at_ms,
+                        source_index=source_index,
+                        stage_timings_s=result.stage_timings_s,
+                        manage_transaction=not batched,
+                    )
+                    write_result = retained_result
+                else:
+                    if shared_key is not None and blob_hash_str is not None:
+                        raw_id = deterministic_raw_session_id(
+                            origin_from_provider(session.source_name),
+                            source_path,
+                            source_index,
+                            bytes.fromhex(blob_hash_str),
+                            None,
+                        )
+                    write_result = archive.write_raw_and_parsed_result(
+                        session,
+                        payload=payload,
+                        source_path=source_path,
+                        acquired_at_ms=acquired_at_ms,
+                        source_index=source_index,
+                        raw_id=raw_id,
+                        stage_timings_s=result.stage_timings_s,
+                        manage_transaction=not batched,
+                        blob_publication_receipt_id=(
+                            raw_data.blob_publication_receipt_id if raw_data is not None else None
+                        ),
+                    )
+                    if shared_key is not None:
+                        shared_raw_ids[shared_key] = write_result.raw_id
+            except ContentExcisedError as exc:
+                # The archive can forget on purpose (polylogue-27m): this raw
+                # payload's content hash is durably excised, so acquire
+                # refuses to re-store it. This is deliberate, not a failure --
+                # skip only this one file and continue the batch (unlike the
+                # broad except below, do NOT roll back prior sessions already
+                # staged in this batch).
+                result.excised_skips += 1
+                logger.info("Skipping durably excised content: %s", exc)
+                return
             except Exception:
                 # Discard the in-flight uncommitted batch so a failed write
                 # never leaves prior sessions in this batch half-applied.
@@ -268,6 +335,7 @@ async def parse_sources_archive(archive_root: Path, sources: list[Source]) -> Pa
             "sessions": result.counts["sessions"],
             "messages": result.counts["messages"],
             "changed_sessions": result.changed_counts["sessions"],
+            "excised_skips": result.excised_skips,
         }
     )
     return result

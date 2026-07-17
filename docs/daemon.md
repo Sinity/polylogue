@@ -21,6 +21,13 @@ Check status:
 polylogued status
 ```
 
+Raw-evidence authority is an ordinary daemon invariant. After bounded raw
+materialization, the daemon records one complete accepted-frontier census,
+applies only byte/provenance-safe plans, and leaves conflicts or missing bytes
+as durable remediation references in status. Operators can inspect the same
+ledger with `polylogue ops maintenance raw-authority-frontier`; its apply
+options are break-glass controls for exact plan IDs, not routine maintenance.
+
 ## Auto-Discovery
 
 The daemon watches these directories by default:
@@ -61,8 +68,8 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | `--insecure-allow-remote` | off | Allow non-loopback binding |
 
 By default the receiver requires the auto-minted/loaded bearer token on every
-route (GET status/archive-state/post-commands and POST captures/post-commands
-alike) — run `polylogued browser-capture token show` to print it and paste it
+route (including capture, archive-state, and browser-action routes) — run
+`polylogued browser-capture token show` to print it and paste it
 into the extension popup's "Receiver token" field to pair. Pass
 `--browser-capture-allow-no-auth` to opt out and serve unauthenticated (any
 local process can then read/post to the receiver).
@@ -90,9 +97,10 @@ classified with explicit auth and response posture.
 |-------------|-------------|----------|
 | Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /s/:id`, `GET /p`, `GET /a` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
-| Stable read/query API | bearer token when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
-| User overlay reads | bearer token when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
-| Browser-accessible mutations | bearer token plus same-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id`, `POST /api/maintenance/run` |
+| Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
+| User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
+| Browser-accessible user-state mutations | bearer or scoped web credential plus exact-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id` |
+| Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest`, `POST /api/maintenance/run` |
 | Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
 
 User overlay mutation routes return the shared mutation result envelope
@@ -177,17 +185,21 @@ querying the archive through the daemon.
 
 ### Authentication
 
-When an API auth token is configured, `/api/*` routes require it even from
-loopback. Pass it as a Bearer token:
+When an API auth token is configured, machine clients pass it as a bearer:
 
 ```bash
 curl -H "Authorization: Bearer <token>" http://host:8766/api/status
 ```
 
-Mutating browser-accessible routes also reject cross-origin `Origin` headers,
-even when the Bearer token is valid. `GET /healthz/*` and `GET /metrics` remain
-unauthenticated so health checks and Prometheus scrapers can operate without
-credentials.
+The first-party web shell does not receive that bearer. It obtains a separate
+short-lived, scoped HttpOnly cookie from `POST /api/web-auth/session`; ordinary
+fetch and SSE reconnects use the same cookie. Mutation routes require exact
+`Origin`-to-`Host` authority in addition to authentication. The cookie carries
+only `read`, `events`, and `user_state` scopes; archive reset, ingest, and
+maintenance controls require the machine bearer when authentication is enabled.
+`GET /healthz/*`
+and `GET /metrics` remain unauthenticated so health checks and Prometheus
+scrapers can operate without credentials.
 
 ## Browser Capture Receiver
 
@@ -311,6 +323,64 @@ permanent client errors and are not retried. Persistent failure surfaces
 through the existing periodic-loop catch boundary in
 `polylogue/daemon/cli.py`; it does not crash the daemon. Dedup and
 rate-limiting are out of scope for this backend.
+
+## Build Identity & Deployment Attestation
+
+Every runtime (Nix package, `pip`/`uv` install from a git checkout, or an
+sdist) embeds the exact git commit it was built from and reports it through
+two channels, distinct on purpose:
+
+- **Concise human version** — `polylogue --version` / `polylogued --version`
+  and `polylogue.version.POLYLOGUE_VERSION`: `<pyproject-version>+<8-char
+  commit prefix>[-dirty]`, e.g. `0.1.0+d8194234`. Meant for logs and
+  `--version` banners, not for exact identity comparison — an 8-character
+  prefix is not collision-proof.
+- **Full machine-readable revision** — the same build's *complete* 40-character
+  commit hash, for attestation:
+  - `polylogue.version.VERSION_INFO.commit` (Python) — always the full hash,
+    never truncated.
+  - `polylogued status --json` → `archive_storage.identity.build_commit`
+    (also `.build_dirty`), from `ArchiveIdentity.as_dict()`
+    (`polylogue/storage/archive_identity.py`).
+  - `GET /metrics` → `polylogue_daemon_build_info{version="...",
+    revision="...", dirty="true|false"} 1` — `revision` is the full hash,
+    `version` is the concise human string above.
+
+For Nix-packaged deployments, the embedded commit comes from the flake's
+`self.rev` (or `self.dirtyRev` with the `-dirty` suffix stripped and tracked
+separately as `BUILD_DIRTY`, when the source tree was dirty at build time —
+see `flake.nix`'s `buildRevision`/`buildDirty` and the `checks.build-info`
+package-level proof that the embedded value matches `self`).
+
+**Joining runtime identity to deployment evidence.** A consuming flake (e.g.
+`sinnix`) pins Polylogue as a flake input and records its exact provenance in
+that flake's own `flake.lock`, under `nodes.polylogue.locked`:
+
+```json
+{
+  "rev": "d81942345…",       // full 40-char commit — compare directly to
+                              // polylogue_daemon_build_info{revision=…}
+  "narHash": "sha256-…"      // content hash of the fetched source tree
+}
+```
+
+To confirm a running daemon matches what was actually deployed:
+
+1. Read the running build's revision: `curl -s
+   http://127.0.0.1:8766/metrics | grep polylogue_daemon_build_info` (or
+   `polylogued status --json | jq .archive_storage.identity.build_commit`).
+2. Read the deploying flake's locked revision: `jq
+   .nodes.polylogue.locked.rev flake.lock` in the consuming repo (`sinnix`).
+3. The two full hashes must match exactly. A mismatch means the running
+   binary was built from a different commit than the one the deployment
+   flake currently locks — e.g. a `nixos-rebuild switch` that hasn't picked
+   up a `nix flake update` yet, or a manually-built/side-loaded package.
+   `narHash` corroborates that the fetched source tree content itself was
+   not tampered with in transit, independent of the `rev` string.
+4. `build_dirty` / `dirty="true"` means the build was taken from an
+   uncommitted working tree — there is no `rev` to join against a lockfile
+   at all for that build; treat it as unattested and rebuild from a clean
+   commit before trusting the comparison.
 
 ## Maintenance
 

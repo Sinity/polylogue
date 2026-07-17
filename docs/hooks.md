@@ -3,20 +3,22 @@
 # Hook Integration
 
 Polylogue integrates with AI coding agents (Claude Code, Codex) via their hook
-systems to capture session lifecycle data at creation time. This provides 100%
-data coverage for events that are not recorded in post-hoc session JSONL.
+systems to capture configured lifecycle data at creation time. It supplements
+post-hoc session JSONL with events that are otherwise unavailable there.
 
 ## How It Works
 
 1. The AI agent invokes `polylogue-hook <event-type>` on each hook event,
    passing the event payload on stdin as JSON.
 2. `polylogue-hook` validates the event, enriches it with metadata (provider,
-   timestamp, session_id), and writes a structured JSONL record to the Polylogue
-   hook sidecar directory.
-3. The Polylogue daemon watcher picks up the sidecar file and ingests it through
-   the standard archive/blob/artifact pipeline.
-4. Hook events are classified as `ArtifactKind.HOOK_EVENT` and linked to the
-   parent session via `link_group_key`.
+   timestamp, session_id), and atomically writes one immutable envelope to the
+   hook spool's `pending/` directory.
+3. The daemon watches that directory, persists the envelope in
+   `source.db.raw_hook_events`, and moves it to `acknowledged/` only after the
+   source-tier transaction commits. Failed writes remain pending for retry.
+4. The bundled main-package command also retains its legacy per-session JSONL
+   journal for local compatibility; all forms use spool envelopes for the
+   daemon's durable capture route.
 
 ## Supported Events
 
@@ -86,13 +88,17 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 
 ```
 ~/.local/share/polylogue/hooks/         # Default (XDG_DATA_HOME/polylogue/hooks)
-├── claude-code-<session-id>.jsonl      # Claude Code events for one session
-├── codex-<session-id>.jsonl            # Codex events for one session
-└── ...
+├── pending/
+│   └── <event-id>.json                 # Atomic producer envelopes
+├── acknowledged/
+│   └── <event-id>.json                 # Source-tier receipt after commit
+├── claude-code-<session-id>.jsonl      # Legacy Claude journal
+└── codex-<session-id>.jsonl            # Legacy Codex journal
 ```
 
-The sidecar directory is watched by the Polylogue daemon. Hook files are
-ingested and linked to the parent session automatically.
+The daemon creates and watches the pending spool directory on startup, so the
+first hook event after a cold start is captured automatically. The documented
+spool-root override applies to both the producer and daemon.
 
 ## Configuration
 
@@ -108,7 +114,7 @@ sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 
 | Variable | Description |
 |----------|-------------|
-| `POLYLOGUE_HOOK_SIDECAR_DIR` | Override default sidecar directory (in the hook script) |
+| `POLYLOGUE_HOOK_SIDECAR_DIR` | Override the shared producer/daemon spool root |
 | `POLYLOGUE_HOOK_PROVIDER` | Force provider detection to `claude-code` or `codex` |
 
 ### PolylogueConfig Properties
@@ -130,9 +136,10 @@ sidecar_dir = "/home/user/.local/share/polylogue/hooks"
 
 The `polylogue-hooks` package is the recommended path for environments where
 you do not want the full polylogue runtime closure (for example, inside the AI
-coding agent's own Python environment). The script behaviour is identical
-across all three forms and the version is kept in sync with the main package
-via release-please (#1309).
+coding agent's own Python environment). Each form atomically writes the same
+pending envelope; the Polylogue daemon performs the source-tier receipt and
+acknowledgement. The version is kept in sync with the main package via
+release-please (#1309).
 
 The main `polylogue` distribution also installs the `polylogue-hook` entry
 point. Once either distribution is installed, wire the recommended starter set
@@ -288,6 +295,12 @@ who decided. Currently invisible in session JSONL.
 
 Working directory, model configuration, and permission mode at session start.
 Final state at session end.
+
+When a SessionStart hook calls the MCP `compose_context_preamble` tool, it
+should forward the provider-supplied session identity as
+`successor_session_id`. The session need not be ingested yet: the value names
+the new recipient of the context and makes the durable MCP call record
+queryable against that successor without guessing a predecessor from time.
 
 ### File Change Tracking (FileChanged)
 

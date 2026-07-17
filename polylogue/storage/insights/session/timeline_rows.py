@@ -9,6 +9,7 @@ from polylogue.archive.session.documents import WorkEventDocument
 from polylogue.archive.session.extraction import WorkEvent
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.hashing import hash_text
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
@@ -32,7 +33,6 @@ from polylogue.storage.runtime import (
     SessionPhaseRecord,
     SessionWorkEventRecord,
 )
-from polylogue.types import SessionId
 
 # ---------------------------------------------------------------------------
 # Work-event row builders and hydration

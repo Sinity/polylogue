@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -14,6 +15,7 @@ BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
 BROWSER_CAPTURE_SCHEMA_VERSION: Literal[1] = 1
 BROWSER_CAPTURE_TRANSPORT_SOURCE: Literal["browser-extension"] = "browser-extension"
 BROWSER_CAPTURE_RECEIVER: Literal["polylogue-browser-capture"] = "polylogue-browser-capture"
+BROWSER_CAPTURE_API_SCHEMA: Literal["polylogue-browser-capture/v1"] = "polylogue-browser-capture/v1"
 BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "chrome-extension://*"
 BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "stale", "failed"]
 BrowserCaptureSessionKind = Literal["standard", "temporary"]
@@ -93,6 +95,7 @@ class BrowserCaptureProvenance(BaseModel):
     page_title: str | None = None
     captured_at: str
     extension_id: str | None = None
+    extension_instance_id: str | None = Field(default=None, min_length=1, max_length=128)
     browser_profile: str | None = None
     adapter_name: str
     adapter_version: str | None = None
@@ -192,6 +195,8 @@ class BrowserCaptureReceiverStatusPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    api_schema: Literal["polylogue-browser-capture/v1"] = BROWSER_CAPTURE_API_SCHEMA
+    receiver_id: str = Field(min_length=8, max_length=80)
     spool_path: str
     spool_ready: bool
     allowed_origins: list[str]
@@ -234,8 +239,100 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     provider: str
     provider_session_id: str
     artifact_ref: str
+    content_hash: str
+    dedup_content_hash: str
     bytes_written: int
     replaced: bool
+    deduplicated: bool
+    capture_instance_id: str | None = None
+
+
+class BrowserCaptureCapabilitiesPayload(BaseModel):
+    """Receiver-declared browser-capture contract required before backfill."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    durable_ack_fields: tuple[Literal["receiver_request_id"], Literal["content_hash"]] = (
+        "receiver_request_id",
+        "content_hash",
+    )
+
+
+class BrowserBackfillCheckpointRequest(BaseModel):
+    """Extension-submitted backfill-ledger checkpoint mirror (polylogue-06zm).
+
+    The receiver becomes a durable second copy of the extension's IndexedDB
+    backfill ledger (job/queue/revision state, already sanitized of provider
+    credentials by the extension before it ever leaves the browser — see
+    browser-extension/src/backfill/storage.js exportRecoveryCheckpoint), so a
+    browser profile loss that also destroys the extension's local
+    chrome.storage.local mirror still leaves a recoverable checkpoint.
+    IndexedDB remains the fast primary source; this mirror is a fallback.
+
+    The receiver treats ``checkpoint`` as an opaque JSON object: its internal
+    job/queue/revision shape is the extension's concern, matching the browser
+    capture envelope's own "receiver does not reinterpret payload structure"
+    trust boundary (see BrowserCaptureHandler's class docstring).
+    """
+
+    extension_instance_id: str = Field(min_length=1, max_length=128)
+    checkpoint: dict[str, object]
+
+    @field_validator("checkpoint", mode="before")
+    @classmethod
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # This field is the disaster-recovery mirror of the extension's
+        # backfill ledger (polylogue-06zm): a malformed request must be
+        # REJECTED, never silently coerced to {} and persisted as if it were
+        # a legitimate checkpoint -- that would report HTTP 202 success while
+        # overwriting a previously-good stored checkpoint with an empty one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
+
+
+class BrowserBackfillCheckpointRecord(BaseModel):
+    """Persisted checkpoint envelope, one per extension instance (last write wins)."""
+
+    extension_instance_id: str
+    checkpoint: dict[str, object]
+    stored_at: str
+
+    @field_validator("checkpoint", mode="before")
+    @classmethod
+    def require_checkpoint_document(cls, value: object) -> dict[str, object]:
+        # Same durability rationale as BrowserBackfillCheckpointRequest above:
+        # a checkpoint file on disk that fails to parse as a JSON object is
+        # corrupt, not an empty-but-valid checkpoint. Raising here makes
+        # read_backfill_checkpoint's `except Exception: return None` treat a
+        # corrupt stored file as "no checkpoint found" rather than silently
+        # presenting fabricated empty data as a real one.
+        if not is_json_document(value):
+            raise ValueError("checkpoint must be a JSON object")
+        return dict(value)
+
+
+class BrowserBackfillCheckpointAcceptedPayload(BaseModel):
+    """Response to ``POST /v1/backfill-checkpoint``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    extension_instance_id: str
+    stored_at: str
+    bytes_written: int
+
+
+class BrowserBackfillCheckpointPayload(BaseModel):
+    """Response to ``GET /v1/backfill-checkpoint``."""
+
+    ok: Literal[True] = True
+    receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
+    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
+    extension_instance_id: str
+    checkpoint: dict[str, object]
+    stored_at: str
 
 
 class BrowserCaptureErrorPayload(BaseModel):
@@ -247,106 +344,205 @@ class BrowserCaptureErrorPayload(BaseModel):
     error: str
 
 
-BrowserPostProvider = Literal["chatgpt", "claude"]
-BrowserPostCommandStatus = Literal["pending", "dispatched", "submitted", "failed"]
-BrowserPostAckStatus = Literal["submitted", "failed"]
+BrowserActionProvider = Literal["chatgpt", "claude"]
+BrowserActionOperation = Literal["conversation.create", "conversation.reply"]
+BrowserActionSubmitPolicy = Literal["stage_only", "submit_once"]
+BrowserActionStatus = Literal[
+    "queued",
+    "leased",
+    "preparing",
+    "submit_intent",
+    "outcome_unknown",
+    "drafted",
+    "submitted",
+    "blocked",
+    "failed",
+    "cancelled",
+]
+BrowserActionOutcome = Literal[
+    "progress",
+    "drafted",
+    "submitted",
+    "outcome_unknown",
+    "provider_warning",
+    "rate_limited",
+    "safety_locked",
+    "auth_challenge",
+    "network_error",
+    "capability_mismatch",
+    "provider_drift",
+    "failed",
+]
 
 
-class BrowserPostTarget(BaseModel):
-    """Where a post command should land.
+class BrowserActionTarget(BaseModel):
+    """Provider-qualified destination for one browser action."""
 
-    ``conversation_id`` is the provider-native conversation id of an existing
-    thread, or the literal ``"new"`` to request a fresh thread. ``project_ref``
-    optionally pins the post to a provider project/workspace (e.g. a ChatGPT
-    ``g-p-<project>`` segment).
-    """
+    conversation_id: str = Field(default="new", min_length=1, max_length=255)
+    conversation_url: str | None = Field(default=None, max_length=2_048)
+    project_ref: str | None = Field(default=None, max_length=255)
 
-    conversation_id: str = "new"
-    project_ref: str | None = None
 
-    @field_validator("conversation_id", mode="before")
+class BrowserActionPresentation(BaseModel):
+    """Exact provider UI selection requested at the submit boundary."""
+
+    surface: Literal["chat"] = "chat"
+    model_slug: str = Field(min_length=1, max_length=160)
+    model_label: str = Field(min_length=1, max_length=200)
+    effort_label: str = Field(min_length=1, max_length=120)
+
+
+class BrowserActionAttachmentInput(BaseModel):
+    """One caller-supplied attachment copied into receiver-owned storage."""
+
+    name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(default="application/octet-stream", min_length=1, max_length=255)
+    content_base64: str
+
+    @field_validator("name")
     @classmethod
-    def coerce_conversation_id(cls, value: object) -> str:
-        if value is None:
-            return "new"
-        text = str(value).strip()
-        return text or "new"
-
-
-class BrowserPostCommandRequest(BaseModel):
-    """Operator/agent request to enqueue an outbound post command."""
-
-    provider: BrowserPostProvider
-    target: BrowserPostTarget = Field(default_factory=BrowserPostTarget)
-    text: str
-    command_id: str | None = None
-    submit: bool = False
-
-    @field_validator("text")
-    @classmethod
-    def require_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("post command text must not be empty")
+    def require_safe_name(cls, value: str) -> str:
+        if value != Path(value).name or value in {".", ".."} or any(ord(char) < 32 for char in value):
+            raise ValueError("browser action attachment name must be a safe basename")
         return value
 
 
-class BrowserPostCommand(BaseModel):
-    """A persisted outbound post command and its lifecycle state."""
+class BrowserActionAttachment(BaseModel):
+    """Immutable metadata for receiver-copied action input bytes."""
 
-    polylogue_post_command_kind: Literal["browser_post_command"] = "browser_post_command"
-    schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    provider: BrowserPostProvider
-    target: BrowserPostTarget
+    attachment_id: str
+    name: str
+    mime_type: str
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class BrowserActionRequest(BaseModel):
+    """Provider-neutral request to draft or submit one conversational turn."""
+
+    action_id: str | None = Field(default=None, min_length=1, max_length=160)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    provider: BrowserActionProvider
+    operation: BrowserActionOperation
+    target: BrowserActionTarget = Field(default_factory=BrowserActionTarget)
+    text: str = Field(min_length=1, max_length=200_000)
+    attachments: list[BrowserActionAttachmentInput] = Field(default_factory=list, max_length=100)
+    presentation: BrowserActionPresentation
+    submit_policy: BrowserActionSubmitPolicy = "stage_only"
+
+    @field_validator("text")
+    @classmethod
+    def require_nonempty_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("browser action text must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def target_matches_operation(self) -> BrowserActionRequest:
+        is_new = self.target.conversation_id == "new"
+        if self.operation == "conversation.create" and not is_new:
+            raise ValueError("conversation.create requires target conversation_id=new")
+        if self.operation == "conversation.reply" and is_new:
+            raise ValueError("conversation.reply requires an existing conversation id")
+        return self
+
+
+class BrowserActionReceipt(BaseModel):
+    """Exact provider observation returned after draft or submit."""
+
+    action_id: str
+    receiver_id: str
+    extension_instance_id: str
+    provider_conversation_id: str | None = None
+    provider_conversation_url: str | None = None
+    provider_turn_id: str | None = None
+    observed_surface: str | None = None
+    observed_model: str | None = None
+    observed_effort: str | None = None
+    observed_project_ref: str | None = None
+    provider_evidence: dict[str, object] = Field(default_factory=dict)
+    observed_at: str
+
+
+class BrowserActionEvent(BaseModel):
+    event_id: str
+    at: str
+    kind: str
+    phase: str
+    detail: str | None = None
+    owner_instance_id: str | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+
+
+class BrowserActionIntent(BaseModel):
+    """Durable receiver-authoritative browser action transport state."""
+
+    polylogue_browser_action_kind: Literal["browser_action_intent"] = "browser_action_intent"
+    schema_version: Literal[1] = 1
+    contract: Literal["polylogue.browser-actions/v1"] = "polylogue.browser-actions/v1"
+    capability_version: Literal[1] = 1
+    action_id: str
+    idempotency_key: str
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receiver_id: str
+    provider: BrowserActionProvider
+    operation: BrowserActionOperation
+    target: BrowserActionTarget
     text: str
-    submit: bool = False
-    status: BrowserPostCommandStatus = "pending"
+    attachments: list[BrowserActionAttachment] = Field(default_factory=list)
+    presentation: BrowserActionPresentation
+    submit_policy: BrowserActionSubmitPolicy
+    status: BrowserActionStatus = "queued"
+    phase: str = "queued"
     created_at: str
     updated_at: str
-    dispatched_at: str | None = None
-    acked_at: str | None = None
-    detail: str | None = None
-    observed_url: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
+    submit_intent_at: str | None = None
+    last_error: str | None = None
+    failure_kind: str | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    receipt: BrowserActionReceipt | None = None
+    events: list[BrowserActionEvent] = Field(default_factory=list)
 
 
-class BrowserPostCommandAckRequest(BaseModel):
-    """Extension-reported result for a dispatched post command."""
+class BrowserActionUpdateRequest(BaseModel):
+    owner_instance_id: str = Field(min_length=1, max_length=200)
+    outcome: BrowserActionOutcome = "progress"
+    phase: str = Field(min_length=1, max_length=120)
+    detail: str | None = Field(default=None, max_length=4_000)
+    retry_after_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    receipt: BrowserActionReceipt | None = None
 
-    status: BrowserPostAckStatus
-    detail: str | None = None
-    observed_url: str | None = None
+
+class BrowserActionReconcileRequest(BaseModel):
+    """Explicitly bind a provider observation to an uncertain submit."""
+
+    resolution: Literal["submitted", "drafted"]
+    detail: str = Field(min_length=1, max_length=4_000)
+    receipt: BrowserActionReceipt
 
 
-class BrowserPostEnqueuedPayload(BaseModel):
-    """Response to ``POST /v1/post-commands``."""
-
+class BrowserActionListPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    provider: BrowserPostProvider
-    status: BrowserPostCommandStatus
-    submit: bool
+    actions: list[BrowserActionIntent] = Field(default_factory=list)
 
 
-class BrowserPostCommandListPayload(BaseModel):
-    """Response to ``GET /v1/post-commands``."""
-
+class BrowserActionPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    post_enabled: bool
-    commands: list[BrowserPostCommand] = Field(default_factory=list)
+    action: BrowserActionIntent
 
 
-class BrowserPostAckPayload(BaseModel):
-    """Response to ``POST /v1/post-commands/<command_id>/ack``."""
-
+class BrowserActionCapabilitiesPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    command_id: str
-    status: BrowserPostCommandStatus
+    contract: Literal["polylogue.browser-actions/v1"] = "polylogue.browser-actions/v1"
+    providers: dict[str, object]
 
 
 def looks_like_browser_capture(payload: object) -> bool:
@@ -362,12 +558,36 @@ def looks_like_browser_capture(payload: object) -> bool:
 
 
 __all__ = [
+    "BROWSER_CAPTURE_API_SCHEMA",
     "BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD",
     "BROWSER_CAPTURE_KIND",
     "BROWSER_CAPTURE_RECEIVER",
     "BROWSER_CAPTURE_SCHEMA_VERSION",
     "BROWSER_CAPTURE_TRANSPORT_SOURCE",
+    "BrowserBackfillCheckpointAcceptedPayload",
+    "BrowserBackfillCheckpointPayload",
+    "BrowserBackfillCheckpointRecord",
+    "BrowserBackfillCheckpointRequest",
+    "BrowserActionAttachment",
+    "BrowserActionAttachmentInput",
+    "BrowserActionCapabilitiesPayload",
+    "BrowserActionEvent",
+    "BrowserActionIntent",
+    "BrowserActionListPayload",
+    "BrowserActionOperation",
+    "BrowserActionOutcome",
+    "BrowserActionPayload",
+    "BrowserActionPresentation",
+    "BrowserActionProvider",
+    "BrowserActionReceipt",
+    "BrowserActionReconcileRequest",
+    "BrowserActionRequest",
+    "BrowserActionStatus",
+    "BrowserActionSubmitPolicy",
+    "BrowserActionTarget",
+    "BrowserActionUpdateRequest",
     "BrowserCaptureAcceptedPayload",
+    "BrowserCaptureCapabilitiesPayload",
     "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
@@ -379,15 +599,5 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
-    "BrowserPostAckPayload",
-    "BrowserPostAckStatus",
-    "BrowserPostCommand",
-    "BrowserPostCommandAckRequest",
-    "BrowserPostCommandListPayload",
-    "BrowserPostCommandRequest",
-    "BrowserPostCommandStatus",
-    "BrowserPostEnqueuedPayload",
-    "BrowserPostProvider",
-    "BrowserPostTarget",
     "looks_like_browser_capture",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, field_validator
 
+from polylogue.core.types import SessionId
 from polylogue.insights.archive_models import (
     SessionPhaseEvidencePayload,
     SessionPhaseInferencePayload,
@@ -16,7 +17,6 @@ from polylogue.storage.runtime.store_constants import (
     SESSION_INFERENCE_VERSION,
     SESSION_INSIGHT_MATERIALIZER_VERSION,
 )
-from polylogue.types import SessionId
 
 
 class SessionWorkEventRecord(BaseModel):
@@ -111,12 +111,13 @@ class SessionPhaseRecord(BaseModel):
 
 
 class SessionRunRecord(BaseModel):
-    """Materialized ``session_runs`` row wrapping one :class:`ProjectedRun`.
+    """Read-model row wrapping one :class:`ProjectedRun`.
 
-    The run model is the single source of truth: typed columns (run_ref,
-    harness, role, status, ...) are derived from it on write, and ``payload_json``
-    stores ``run.model_dump(mode="json")`` for lossless hydration on read. This
-    guarantees stored rows round-trip back to the exact projection output.
+    polylogue-dab/itvd: rows are source-derived on every read by
+    ``run_projection_relations.py``'s CTE (computed from ``sessions`` and
+    ``blocks``), not a materialized ``session_runs`` table. ``ProjectedRun``
+    is hydrated directly from the CTE's typed columns, not from a stored
+    ``payload_json`` blob.
     """
 
     session_id: SessionId
@@ -129,7 +130,7 @@ class SessionRunRecord(BaseModel):
 
 
 class SessionObservedEventRecord(BaseModel):
-    """Materialized ``session_observed_events`` row wrapping one :class:`ObservedEvent`."""
+    """Read-model row wrapping one :class:`ObservedEvent`, source-derived on every read (see :class:`SessionRunRecord`)."""
 
     session_id: SessionId
     position: int
@@ -141,7 +142,7 @@ class SessionObservedEventRecord(BaseModel):
 
 
 class SessionContextSnapshotRecord(BaseModel):
-    """Materialized ``session_context_snapshots`` row wrapping one :class:`ContextSnapshot`."""
+    """Read-model row wrapping one :class:`ContextSnapshot`, source-derived on every read (see :class:`SessionRunRecord`)."""
 
     session_id: SessionId
     position: int

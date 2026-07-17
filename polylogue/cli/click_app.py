@@ -9,6 +9,8 @@ The CLI uses a hybrid structure:
 from __future__ import annotations
 
 import os
+import sys
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import click
@@ -29,7 +31,12 @@ from polylogue.logging import configure_logging
 from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
+    from polylogue.cli.select import SelectSessionRow
+    from polylogue.config import Config
     from polylogue.ui import UI
+
+
+_CLI_CALLBACK_STARTED_AT = perf_counter()
 
 
 class QueryFirstGroup(QueryFirstGroupBase):
@@ -204,9 +211,95 @@ def _should_complete_then_connector(incomplete: str) -> bool:
 
 def _handle_query_mode(ctx: click.Context) -> None:
     """Handle query mode: display stats or perform search."""
+    if (
+        not ctx.meta.get("polylogue_query_terms")
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+        and _show_bare_tty_triage(ctx, ctx.obj)
+    ):
+        return
     from polylogue.cli.query import handle_query_mode
 
     handle_query_mode(ctx, show_stats=_show_stats)
+
+
+def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
+    """Render the interactive no-argument landing surface.
+
+    Returns ``False`` only when no archive exists, letting the caller render
+    ordinary Click help instead of presenting an empty archive as usable.
+    """
+
+    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.cli.root_request import RootModeRequest
+    from polylogue.cli.select import select_session_rows
+    from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.paths import archive_file_set_root_for_paths
+
+    config = load_effective_config(env)
+    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    if not (archive_root / "index.db").exists():
+        click.echo(ctx.get_help())
+        return True
+
+    rows = None if bool(ctx.params.get("no_daemon")) else _bare_tty_daemon_rows(config)
+    source = "daemon" if rows is not None else "direct"
+    if rows is None:
+        try:
+            rows = run_coroutine_sync(select_session_rows(env, RootModeRequest.from_params({}), limit=5))
+        except Exception:
+            click.echo(ctx.get_help())
+            return True
+
+    click.echo(f"Archive: ready ({source})")
+    click.echo("Recent sessions:")
+    if rows:
+        for row in rows:
+            click.echo(f"  {row.label}")
+    else:
+        click.echo("  No sessions yet.")
+    click.echo("Next: polylogue find …  |  polylogue read <id>  |  polylogue continue <id>")
+    return True
+
+
+def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
+    """Fetch the minimal recent-session page from a config-matched daemon."""
+
+    from pathlib import Path
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.select import SelectSessionRow
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    client = DaemonClient(
+        Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock",
+        auth_token=getattr(config, "api_auth_token", None),
+    )
+    if (
+        client.probe(
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.cli_query({"query": (), "limit": 5})
+    items = payload.get("items") if payload is not None else None
+    if not isinstance(items, list):
+        return None
+    rows: list[SelectSessionRow] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        session_id = item.get("id")
+        origin = item.get("origin")
+        title = item.get("title")
+        if isinstance(session_id, str) and isinstance(origin, str) and isinstance(title, str):
+            date = item.get("date")
+            rows.append(SelectSessionRow(session_id, origin, title, date if isinstance(date, str) else None))
+    return rows
 
 
 def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
@@ -310,6 +403,7 @@ def cli(
     add_tag: tuple[str, ...],
     # Global
     plain: bool,
+    no_daemon: bool,
     verbose: bool,
     diagnose: bool,
 ) -> None:
@@ -381,12 +475,19 @@ def cli(
         ctx.params["plain"] = plain
         ctx.params["output_format"] = output_format
 
-    # Set up logging early so all output goes to stderr
-    configure_logging(verbose=verbose)
+    # Keep the ordinary command path on the stdlib-backed logger.  The
+    # structlog setup is deliberately expensive and this callback also runs
+    # for nested command help, where no diagnostic logging is emitted.
+    if verbose:
+        configure_logging(verbose=True)
 
     use_plain = should_use_plain(plain=plain)
-    env = AppEnv(plain=use_plain)
+    debug_timing = os.environ.get("POLYLOGUE_DEBUG_TIMING", "").lower() in {"1", "true", "yes", "on"}
+    env = AppEnv(plain=use_plain, debug_timing=debug_timing)
+    env.record_timing("cli-callback", _CLI_CALLBACK_STARTED_AT)
     ctx.obj = env
+    if debug_timing:
+        ctx.call_on_close(env.emit_debug_timings)
 
 
 @click.command("find", hidden=True, context_settings={"help_option_names": ["-h", "--help"]})
@@ -427,7 +528,7 @@ register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
     "analyze": "Analyze matched sessions and named facet families.",
-    "continue": "Compile a successor-agent continuation report.",
+    "continue": "Resume a session or compile successor context as JSON.",
     "delete": "Delete matched sessions.",
     "mark": "Mark selected sessions; review candidates under mark candidates.",
     "read": "Read matched sessions (route to view/destination).",

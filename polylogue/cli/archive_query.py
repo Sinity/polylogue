@@ -6,12 +6,15 @@ import csv
 import io
 import json
 import multiprocessing
+import os
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -36,6 +39,7 @@ from polylogue.archive.query.spec import (
     normalize_action_terms,
     parse_query_date,
 )
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -78,6 +82,7 @@ _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
+_TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
 
 def _object_int(value: object) -> int:
@@ -138,27 +143,38 @@ def execute_delete_by_session_ids(
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
-    with ArchiveStore.open_existing(archive_root) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.delete.resolve",
+        arguments={"session_ids": session_ids, "dry_run": dry_run},
+        projection="delete-preview",
+    ) as archive:
         _emit_delete(env, archive, tuple(session_ids), params=params)
 
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
     """Execute the root query path."""
-    output = QueryOutputSpec.from_params(request.params)
-    if output.destination_labels() == ("stdout",) or request.params.get("stream"):
-        _execute_archive_query_stdout(env, request)
-        return
-    rendered = io.StringIO()
-    with redirect_stdout(rendered):
-        _execute_archive_query_stdout(env, request)
-    deliver_query_output(
-        env,
-        QueryOutputDocument(
-            content=rendered.getvalue().rstrip("\n"),
-            output_format=output.output_format,
-            destinations=output.destinations,
-        ),
-    )
+    timing_token = _TIMING_ENV.set(env)
+    env.begin_timing("execute")
+    try:
+        output = QueryOutputSpec.from_params(request.params)
+        if output.destination_labels() == ("stdout",) or request.params.get("stream"):
+            _execute_archive_query_stdout(env, request)
+            return
+        rendered = io.StringIO()
+        with redirect_stdout(rendered):
+            _execute_archive_query_stdout(env, request)
+        deliver_query_output(
+            env,
+            QueryOutputDocument(
+                content=rendered.getvalue().rstrip("\n"),
+                output_format=output.output_format,
+                destinations=output.destinations,
+            ),
+        )
+    finally:
+        env.finish_timing("execute")
+        _TIMING_ENV.reset(timing_token)
 
 
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
@@ -166,9 +182,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     params = dict(request.params)
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
+    config_started_at = perf_counter()
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     index_db_path = archive_root / "index.db"
+    env.record_timing("config", config_started_at)
+    compile_started_at = perf_counter()
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
@@ -196,6 +215,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
+    env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
@@ -306,6 +326,27 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         retrieval_lane=retrieval_lane,
     ):
         return
+    if _try_emit_daemon_unit_page(
+        config=config,
+        request=request,
+        params=params,
+        source=unit_source,
+        expression=unit_source_query,
+        limit=limit,
+        offset=page_offset,
+        output_format=output_format,
+        fields=fields,
+        stream=stream,
+        tags_to_add=tags_to_add,
+        metadata_to_set=metadata_to_set,
+        delete_matched=delete_matched,
+        sample_count=sample_count,
+        since_session_id=since_session_id,
+        cursor=cursor,
+        sort=sort,
+        reverse=reverse,
+    ):
+        return
     if not index_db_path.exists():
         if _emit_missing_archive_empty_read(
             params,
@@ -335,7 +376,24 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if delete_matched and metadata_to_set:
         raise click.UsageError("Root query cannot combine delete with --set.")
 
-    with ArchiveStore.open_existing(archive_root) as archive:
+    db_open_started_at = perf_counter()
+    with archive_read_context(
+        archive_root,
+        operation="cli.root_query",
+        arguments={
+            "query": query,
+            "unit_source": unit_source_query,
+            "limit": limit,
+            "offset": page_offset,
+            "params": params,
+        },
+        page_size=limit,
+        offset=page_offset,
+        projection=output_format,
+        stable_order=sort or "date,session_id",
+        workload_class="scan" if unit_source is not None or params.get("stats_only") else "interactive",
+    ) as archive:
+        env.record_timing("db-open", db_open_started_at)
         if unit_source is not None:
             if any(
                 (
@@ -564,6 +622,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         page_hits,
                         archive=archive,
                         query=similar_text or query,
+                        total=_count_root_matches(
+                            archive,
+                            query=query,
+                            similar_text=similar_text,
+                            session_id=session_id,
+                            filter_kwargs=filter_kwargs,
+                        ),
                         limit=limit,
                         offset=page_offset,
                         next_cursor=next_cursor,
@@ -674,6 +739,13 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 page_hits,
                 archive=archive,
                 query=similar_text or query,
+                total=_count_root_matches(
+                    archive,
+                    query=query,
+                    similar_text=similar_text,
+                    session_id=None,
+                    filter_kwargs=filter_kwargs,
+                ),
                 limit=limit,
                 offset=page_offset,
                 next_cursor=next_cursor,
@@ -692,38 +764,10 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         summaries = archive.list_summaries(
             limit=fetch_limit,
             offset=page_offset,
-            origin=origin,
-            origins=origins,
-            excluded_origins=excluded_origins,
-            tags=tags,
-            excluded_tags=excluded_tags,
-            repo_names=repo_names,
-            project_refs=project_refs,
-            has_types=has_types,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            has_paste=has_paste,
-            tool_terms=tool_terms,
-            excluded_tool_terms=excluded_tool_terms,
-            action_terms=action_terms,
-            excluded_action_terms=excluded_action_terms,
-            action_sequence=action_sequence,
-            action_text_terms=action_text_terms,
-            referenced_paths=referenced_paths,
-            cwd_prefix=cwd_prefix,
-            typed_only=typed_only,
-            message_type=message_type,
-            title=title_filter,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            max_words=max_words,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            since_session_id=since_session_id,
             sample=sample_count is not None,
             sort=sort,
             reverse=reverse,
+            **filter_kwargs,
         )
         page_summaries, next_cursor = _paginate_rows(summaries, limit=limit, offset=page_offset)
         if stream:
@@ -756,6 +800,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         _emit_list(
             page_summaries,
+            total=(
+                None
+                if sample_count is not None
+                else _count_root_matches(
+                    archive,
+                    query="",
+                    similar_text=None,
+                    session_id=None,
+                    filter_kwargs=filter_kwargs,
+                )
+            ),
             limit=limit,
             offset=page_offset,
             next_cursor=next_cursor,
@@ -854,6 +909,35 @@ def _query_hits(
     ], "hybrid"
 
 
+def _count_root_matches(
+    archive: ArchiveStore,
+    *,
+    query: str,
+    similar_text: str | None,
+    session_id: str | None,
+    filter_kwargs: _ArchiveFilterKwargs,
+) -> int | None:
+    """Return an exact indexed total for lexical/list pages.
+
+    Vector and hybrid retrieval have no cheap count relation: their result set
+    is ranked from embeddings and/or fused candidate windows.  Reporting the
+    page length for those lanes would be a false total, so the envelope uses
+    ``null`` there.  Lexical and browse pages have exact indexed count
+    primitives and retain the full total even when the page itself is bounded.
+    """
+
+    if similar_text is not None:
+        return None
+    counter = getattr(archive, "count_search_sessions" if query else "count_sessions", None)
+    if not callable(counter):
+        # Some narrow adapter doubles implement only the page primitives. A
+        # missing count is genuinely unknown; never substitute page length.
+        return None
+    if query:
+        return int(counter(query, session_id=session_id, **filter_kwargs))
+    return int(counter(session_id=session_id, **filter_kwargs))
+
+
 def _try_emit_daemon_session_page(
     env: AppEnv,
     *,
@@ -909,10 +993,15 @@ def _try_emit_daemon_session_page(
         retrieval_lane=retrieval_lane,
     ):
         return False
+    if bool(params.get("no_daemon")):
+        return False
     daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
     payload = _fetch_daemon_sessions_payload(config, daemon_params)
     if payload is None:
         return False
+    elapsed_ms = payload.pop("_daemon_elapsed_ms", None)
+    if bool(params.get("verbose")) and isinstance(elapsed_ms, int):
+        click.echo(f"served-by: daemon (uds, {elapsed_ms}ms)", err=True)
     if isinstance(payload.get("hits"), list):
         _emit_daemon_search_payload(
             payload,
@@ -936,6 +1025,71 @@ def _try_emit_daemon_session_page(
         )
         return True
     return False
+
+
+def _try_emit_daemon_unit_page(
+    *,
+    config: Config,
+    request: RootModeRequest,
+    params: dict[str, object],
+    source: QueryUnitSource | None,
+    expression: str,
+    limit: int,
+    offset: int,
+    output_format: str,
+    fields: str | None,
+    stream: bool,
+    tags_to_add: tuple[str, ...],
+    metadata_to_set: tuple[tuple[str, str], ...],
+    delete_matched: bool,
+    sample_count: int | None,
+    since_session_id: str | None,
+    cursor: object | None,
+    sort: str | None,
+    reverse: bool,
+) -> bool:
+    """Render daemon query-unit envelopes with the existing CLI renderer."""
+
+    if source is None or stream or tags_to_add or metadata_to_set or delete_matched:
+        return False
+    if any(
+        (
+            params.get("stats_only"),
+            params.get("stats_by"),
+            params.get("count_only"),
+            params.get("open_result"),
+            params.get("conv_id"),
+            sample_count is not None,
+            since_session_id is not None,
+            cursor is not None,
+            sort is not None,
+            reverse,
+        )
+    ):
+        # Session-only modes must keep failing with the local UsageError; the
+        # daemon endpoint would silently ignore these flags and return rows.
+        return False
+    daemon_params = _daemon_session_query_params(request, params, limit=limit, offset=offset)
+    daemon_params["expression"] = expression
+    payload = _fetch_daemon_payload(
+        config,
+        "/api/query-units?" + urlencode(tuple(_daemon_query_pairs(daemon_params)), doseq=True),
+        disabled=bool(params.get("no_daemon")),
+    )
+    if payload is None:
+        return False
+    payload.pop("_daemon_elapsed_ms", None)
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        return False
+    items = [item for item in raw_items if isinstance(item, dict)]
+    if not items:
+        _emit_unit_no_results(payload, unit=source.unit, output_format=output_format)
+    text_line = (
+        _aggregate_query_line if payload.get("mode") == "query-unit-aggregate" else _query_unit_text_line(source.unit)
+    )
+    _emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+    return True
 
 
 def _resolve_single_query_ref(archive: ArchiveStore, query: str) -> str | None:
@@ -1042,23 +1196,53 @@ def _daemon_session_query_params(
     return query_params
 
 
-def _fetch_daemon_sessions_payload(config: Config, query_params: Mapping[str, object]) -> dict[str, object] | None:
-    daemon_url_value = getattr(config, "daemon_url", "http://127.0.0.1:8766")
-    if not isinstance(daemon_url_value, str) or not daemon_url_value.startswith(("http://", "https://")):
+def _daemon_disabled(*, flag: bool = False) -> bool:
+    if flag:
+        return True
+    if os.environ.get("POLYLOGUE_NO_DAEMON", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return os.environ.get("POLYLOGUE_DAEMON", "").lower() == "off"
+
+
+def _fetch_daemon_sessions_payload(
+    config: Config,
+    query_params: Mapping[str, object],
+    *,
+    disabled: bool = False,
+) -> dict[str, object] | None:
+    return _fetch_daemon_payload(config, "/api/cli/query", body={"params": dict(query_params)}, disabled=disabled)
+
+
+def _fetch_daemon_payload(
+    config: Config,
+    path: str,
+    *,
+    body: dict[str, object] | None = None,
+    disabled: bool = False,
+) -> dict[str, object] | None:
+    if _daemon_disabled(flag=disabled):
         return None
-    daemon_url = daemon_url_value.rstrip("/")
-    auth_token = getattr(config, "api_auth_token", None)
-    auth_header = auth_token if isinstance(auth_token, str) and auth_token else None
-    expected_archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
-    return _fetch_daemon_sessions_payload_with_deadline(
-        daemon_url,
-        auth_header,
-        dict(query_params),
-        expected_archive_root=expected_archive_root,
-    )
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
+    client = DaemonClient(socket_path, auth_token=getattr(config, "api_auth_token", None))
+    if (
+        client.probe(
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.request_json("POST" if body is not None else "GET", path, body)
+    if payload is not None:
+        if client.last_elapsed_ms is not None:
+            payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+        return payload
+    return None
 
 
 def _fetch_daemon_sessions_payload_with_deadline(
@@ -1176,6 +1360,47 @@ def _daemon_query_pairs(query_params: Mapping[str, object]) -> Iterable[tuple[st
             yield key, str(value)
 
 
+_DAEMON_LIST_ITEM_KEEP_KEYS = (
+    "id",
+    "origin",
+    "title",
+    "target_ref",
+    "anchor",
+    "actions",
+    "created_at",
+    "updated_at",
+    "message_count",
+    "tags",
+    "summary",
+    "words",
+    "repo",
+    "cwd_display",
+    "flags",
+)
+
+
+def _normalize_daemon_list_item(item: Mapping[str, object]) -> dict[str, object]:
+    """Reshape a daemon web-reader session row into the CLI's native list-row shape.
+
+    The daemon's ``/api/sessions`` wire contract (``_archive_summary_payload`` /
+    ``_do_list`` in ``daemon/http.py``) is the stable webui row shape —
+    ``word_count`` naming, a ``date`` convenience field, and a ``session_id``
+    duplicate of ``id``. The CLI's direct-path renderer
+    (``archive_query._summary_payload`` -> ``SessionListRowPayload``) predates
+    that contract and uses ``words`` with no ``date``/``session_id`` fields.
+    Golden parity (polylogue-20d.1) requires the two to render identically, so
+    the CLI-side proxy adapts the wire shape here rather than either surface
+    changing its stable contract.
+    """
+
+    normalized = dict(item)
+    if "words" not in normalized and "word_count" in normalized:
+        normalized["words"] = normalized.get("word_count")
+    return {
+        key: normalized[key] for key in _DAEMON_LIST_ITEM_KEEP_KEYS if key in normalized and normalized[key] is not None
+    }
+
+
 def _emit_daemon_list_payload(
     payload: Mapping[str, object],
     *,
@@ -1185,7 +1410,11 @@ def _emit_daemon_list_payload(
     origin: str | None,
     fields: str | None,
 ) -> None:
-    items = [dict(item) for item in cast(list[object], payload.get("items") or []) if isinstance(item, Mapping)]
+    items = [
+        _normalize_daemon_list_item(item)
+        for item in cast(list[object], payload.get("items") or [])
+        if isinstance(item, Mapping)
+    ]
     total = _object_int(payload.get("total") or len(items))
     next_offset = offset + limit if total > offset + limit else None
     envelope: dict[str, object] = {
@@ -1559,6 +1788,7 @@ def _emit_missing_archive_empty_read(
     if params.get("list_mode") and not query:
         _emit_list(
             [],
+            total=0,
             limit=_limit(params),
             offset=_offset(params),
             next_cursor=None,
@@ -1789,6 +2019,7 @@ def _inject_attached_units(
 def _emit_list(
     summaries: list[ArchiveSessionSummary],
     *,
+    total: int | None,
     limit: int,
     offset: int,
     next_cursor: str | None,
@@ -1811,7 +2042,7 @@ def _emit_list(
         "mode": "list",
         "origin": origin,
         "items": items,
-        "total": len(items),
+        "total": total,
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
@@ -1828,6 +2059,7 @@ def _emit_search(
     *,
     archive: ArchiveStore,
     query: str,
+    total: int | None,
     limit: int,
     offset: int,
     next_cursor: str | None,
@@ -1860,7 +2092,7 @@ def _emit_search(
         "query": query,
         "retrieval_lane": retrieval_lane,
         "items": items,
-        "total": len(items),
+        "total": total,
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
@@ -1952,27 +2184,35 @@ def _emit_rows(
     text_line: Callable[[dict[str, object]], str],
     fields: str | None,
 ) -> None:
-    projected_items = [_project_payload(item, fields) for item in items]
-    if output_format == "json":
-        projected_envelope = {**envelope, "items": projected_items}
-        click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
-        return
-    if output_format == "ndjson":
-        for item in projected_items:
-            click.echo(json.dumps(item, sort_keys=True))
-        return
-    if output_format == "csv":
-        click.echo(_csv(projected_items), nl=False)
-        return
-    if output_format == "yaml":
-        import yaml
+    env = _TIMING_ENV.get()
+    if env is not None:
+        env.finish_timing("execute")
+        env.begin_timing("render")
+    try:
+        projected_items = [_project_payload(item, fields) for item in items]
+        if output_format == "json":
+            projected_envelope = {**envelope, "items": projected_items}
+            click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
+            return
+        if output_format == "ndjson":
+            for item in projected_items:
+                click.echo(json.dumps(item, sort_keys=True))
+            return
+        if output_format == "csv":
+            click.echo(_csv(projected_items), nl=False)
+            return
+        if output_format == "yaml":
+            import yaml
 
-        projected_envelope = {**envelope, "items": projected_items}
-        click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
-        return
-    if output_format not in {"markdown", "plaintext"}:
-        raise click.UsageError(f"Root query does not support --format {output_format}.")
-    click.echo("\n".join(text_line(item) for item in items))
+            projected_envelope = {**envelope, "items": projected_items}
+            click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
+            return
+        if output_format not in {"markdown", "plaintext"}:
+            raise click.UsageError(f"Root query does not support --format {output_format}.")
+        click.echo("\n".join(text_line(item) for item in items))
+    finally:
+        if env is not None:
+            env.finish_timing("render")
 
 
 def _emit_unit_source_rows(
@@ -2090,6 +2330,11 @@ def _context_snapshot_query_line(item: dict[str, object]) -> str:
     return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
 
 
+def _delegation_query_line(item: dict[str, object]) -> str:
+    detail = item.get("instruction_preview") or item.get("artifact_preview") or item.get("child_session_id") or ""
+    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {_snippet(detail)}"
+
+
 _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
     "message": _message_query_line,
     "action": _action_query_line,
@@ -2099,6 +2344,7 @@ _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
     "run": _run_query_line,
     "observed-event": _observed_event_query_line,
     "context-snapshot": _context_snapshot_query_line,
+    "delegation": _delegation_query_line,
 }
 
 

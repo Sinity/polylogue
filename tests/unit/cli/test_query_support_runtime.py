@@ -22,7 +22,7 @@ from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.types import SessionId
+from polylogue.core.types import SessionId
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -115,7 +115,7 @@ def _action(
         kind=kind,
         tool_name=tool_name,
         tool_id=None,
-        provider=Provider.CLAUDE_CODE,
+        origin=origin_from_provider(Provider.CLAUDE_CODE),
         affected_paths=affected_paths,
         cwd_path="/tmp",
         branch_names=(),

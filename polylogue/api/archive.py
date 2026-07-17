@@ -22,6 +22,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
+from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -29,13 +30,13 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
+from polylogue.core.errors import PolylogueError
 from polylogue.core.json import JSONDocument
-from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
-from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_delegation_edge_object_id, parse_public_ref
 from polylogue.core.timestamps import parse_archive_datetime
+from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
-from polylogue.errors import PolylogueError
 from polylogue.insights.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
@@ -45,10 +46,12 @@ from polylogue.insights.feedback import LearningCorrection, parse_correction_kin
 from polylogue.paths import archive_file_set_index_available_for_paths, archive_file_set_root_for_paths
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, IndexStatus
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAttachmentRow,
@@ -70,9 +73,12 @@ from polylogue.surfaces.temporal_evidence import (
     message_row_to_temporal_event,
     summary_to_temporal_event,
 )
-from polylogue.types import SessionId
 
 if TYPE_CHECKING:
+    from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
+    from polylogue.annotations.join import AnnotationStructuralJoinResult
+    from polylogue.annotations.schema import AnnotationSchemaRegistry
+    from polylogue.api import Polylogue
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -83,6 +89,8 @@ if TYPE_CHECKING:
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
+    from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
+    from polylogue.core.protocols import ProgressCallback
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.pathology import PathologyReport
@@ -92,13 +100,18 @@ if TYPE_CHECKING:
     from polylogue.insights.resume import ResumeBrief, ResumeCandidate
     from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
-    from polylogue.protocols import ProgressCallback, SessionQueryRuntimeStore
     from polylogue.readiness import ReadinessReport
+    from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
     from polylogue.storage.insights.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
     from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
         ArchiveAssertionEnvelope,
     )
@@ -106,6 +119,7 @@ if TYPE_CHECKING:
     from polylogue.storage.usage import ProviderUsageReport
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
+        AssertionBulkJudgmentPayload,
         AssertionCandidateReviewListPayload,
         AssertionClaimPayload,
         AssertionJudgmentResultPayload,
@@ -140,6 +154,24 @@ _FACET_DEFERRED_FAMILIES = (
 )
 
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
+
+_CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
+    "note": AssertionKind.NOTE,
+    "claim": AssertionKind.DECISION,
+    "correction": AssertionKind.CORRECTION,
+    "lesson": AssertionKind.LESSON,
+}
+
+
+def candidate_capture_kind(value: str) -> AssertionKind:
+    """Resolve the stable terminal/MCP candidate-capture kind vocabulary."""
+
+    try:
+        return _CANDIDATE_CAPTURE_KIND_MAP[value]
+    except KeyError as exc:
+        choices = ", ".join(_CANDIDATE_CAPTURE_KIND_MAP)
+        raise ValueError(f"candidate kind must be one of: {choices}") from exc
+
 
 _FACET_FAMILY_METADATA: dict[str, dict[str, object]] = {
     "total_counts": {
@@ -274,6 +306,79 @@ def _unresolved_ref_payload(
     )
 
 
+def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
+    """Return a bounded unresolved descriptor for an oversized batch-like ref."""
+
+    if not ref.startswith("annotation-batch"):
+        return None
+    from polylogue.surfaces.payloads import (
+        AnnotationBatchRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = AnnotationBatchRefDigestPayload.from_oversized_ref(ref)
+    except (UnicodeEncodeError, ValueError):
+        return None
+    return PublicRefResolutionPayload(
+        ref=f"annotation-batch:sha256-{descriptor.original_ref_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch",
+        resolved=False,
+        payload_kind="annotation-batch-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("oversized annotation batch reference omitted from the public response",),
+    )
+
+
+def _invalid_unicode_ref_payload(ref: str) -> Any | None:
+    """Fail closed before an invalid Python string reaches parsing or SQLite."""
+
+    from polylogue.surfaces.payloads import (
+        InvalidUnicodeRefDigestPayload,
+        PublicRefResolutionPayload,
+        model_json_document,
+    )
+
+    try:
+        descriptor = InvalidUnicodeRefDigestPayload.from_invalid_ref(ref)
+    except ValueError:
+        return None
+    batch_like = ref.startswith("annotation-batch")
+    stable_prefix = "annotation-batch:invalid-unicode" if batch_like else "invalid-unicode-ref"
+    return PublicRefResolutionPayload(
+        ref=f"{stable_prefix}:sha256-{descriptor.original_ref_surrogatepass_sha256}",
+        normalized_ref=None,
+        kind="annotation-batch" if batch_like else None,
+        resolved=False,
+        payload_kind="invalid-unicode-ref-digest",
+        payload=model_json_document(descriptor),
+        caveats=("invalid Unicode public reference omitted from the response",),
+    )
+
+
+#: ObjectRefKind values registered ahead of their backing storage tier
+#: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
+#: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
+#: attempting a lookup against tables that do not exist yet.
+_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort", "analysis"})
+
+
+def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
+    from polylogue.surfaces.payloads import PendingObjectRefPayload, PublicRefResolutionPayload, model_json_document
+
+    return PublicRefResolutionPayload(
+        ref=ref,
+        normalized_ref=normalized_ref,
+        kind=kind,
+        resolved=False,
+        payload_kind="pending",
+        payload=model_json_document(PendingObjectRefPayload(kind=kind)),
+        caveats=(f"{kind} substrate is not implemented yet (reason=substrate-pending)",),
+    )
+
+
 def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_sequence("action_sequence", ",".join(values))
 
@@ -284,19 +389,6 @@ def _archive_index_available(config: Config) -> bool:
 
 def _active_archive_root(config: Config) -> Path:
     return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-
-
-def _archive_origin_for_provider(provider: str | None) -> str | None:
-    if provider is None:
-        return None
-    return origin_from_provider(Provider.from_string(provider)).value
-
-
-def _provider_for_archive_origin(origin: str) -> Provider:
-    try:
-        return provider_from_origin(Origin(origin))
-    except ValueError:
-        return Provider.UNKNOWN
 
 
 def _archive_context_message_window(
@@ -451,8 +543,6 @@ def _archive_context_session_predicate(session_id: str) -> QueryFieldPredicate:
 def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
     """Build a bounded temporal context window for one selected session."""
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
     session_id = str(summary.id)
     message_limit = 8
     action_limit = 4
@@ -460,7 +550,14 @@ def _archive_context_temporal_window(config: Config, summary: SessionSummary) ->
     if session_event := summary_to_temporal_event(summary):
         events.append(session_event)
     caveats: list[str] = []
-    with ArchiveStore.open_existing(_active_archive_root(config)) as archive:
+    with archive_read_context(
+        _active_archive_root(config),
+        operation="archive.context.temporal_window",
+        arguments={"session_id": session_id},
+        page_size=message_limit,
+        projection="temporal-window",
+        stable_order="time,message_id",
+    ) as archive:
         message_rows = archive.query_messages(
             _archive_context_session_predicate(session_id),
             limit=message_limit,
@@ -651,7 +748,7 @@ def _archive_facet_buckets(
         }
     )
     return FacetBuckets(
-        providers=origins,
+        origins=origins,
         tags=tags,
         repos=sql_buckets["repos"],
         role_counts=sql_buckets["role_counts"],
@@ -837,8 +934,8 @@ def _is_noisy_repo_label(value: str) -> bool:
 
 
 def _archive_health_report(config: Config) -> ReadinessReport:
+    from polylogue.archive.query.transaction import archive_read_context
     from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     checks: list[ReadinessCheck] = []
     root = config.archive_root
@@ -861,7 +958,12 @@ def _archive_health_report(config: Config) -> ReadinessReport:
         checks.append(_archive_tier_readiness_check(tier, path))
 
     try:
-        with ArchiveStore.open_existing(root) as archive:
+        with archive_read_context(
+            root,
+            operation="archive.health_check",
+            arguments={},
+            projection="health",
+        ) as archive:
             stats = archive.stats()
             checks.append(
                 ReadinessCheck(
@@ -974,6 +1076,144 @@ def _archive_list_assertion_claims(
         return []
 
 
+def _archive_get_context_delivery(
+    config: Config,
+    *,
+    snapshot_ref: str,
+    recipient_ref: str,
+) -> ArchiveContextDeliveryEnvelope | None:
+    """Read one delivery receipt only when it belongs to its recorded recipient."""
+
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import read_context_delivery
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            receipt = read_context_delivery(conn, snapshot_ref)
+            return receipt if receipt is not None and receipt.recipient_ref == recipient_ref else None
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _archive_correlate_hermes_context_deliveries(
+    config: Config,
+    *,
+    hermes_session_native_id: str,
+) -> tuple[HermesContextDeliveryCorrelation, ...]:
+    """Correlate a Hermes session's drained ``context_injected`` events with their receipts.
+
+    Read-only audit seam over two durable tiers (fs1.7 spool + fs1.11
+    delivery ledger); see ``context.hermes_delivery_correlation`` for the
+    join semantics. Returns an empty tuple, never raises, when either tier is
+    unavailable -- consistent with the explicit-unavailable-state AC this
+    correlation exists to satisfy. "Archive not yet initialized" (no
+    source.db/user.db file at all) and "archive present but the read failed"
+    (corrupt file, missing table, decode failure) both still return the same
+    empty-tuple shape to the caller -- this facade method's contract predates
+    this fix and changing its return type is a separate, larger decision --
+    but the two cases are distinguished in the logs: only the second case
+    logs a warning, so an operator/on-call scan for "hermes_context_deliveries
+    read failed" is never confused with the ordinary "nothing ingested yet"
+    path (review finding: these were previously collapsed into total silence).
+    """
+
+    from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    user_db = archive_root / "user.db"
+    if not source_db.exists() or not user_db.exists():
+        return ()
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            user_conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+            user_conn.row_factory = sqlite3.Row
+            try:
+                return correlate_hermes_context_deliveries(
+                    source_conn,
+                    user_conn,
+                    hermes_session_native_id=hermes_session_native_id,
+                )
+            finally:
+                user_conn.close()
+        finally:
+            source_conn.close()
+    except (sqlite3.Error, ValueError):
+        logger.warning(
+            "hermes_context_deliveries read failed (archive present but unreadable): "
+            "hermes_session_native_id=%s source_db=%s user_db=%s",
+            hermes_session_native_id,
+            source_db,
+            user_db,
+            exc_info=True,
+        )
+        return ()
+
+
+def _archive_reconcile_hermes_session_lifecycle(
+    config: Config,
+    *,
+    hermes_session_native_id: str,
+) -> HermesLifecycleReconciliation | None:
+    """Reconcile a Hermes session's drained lifecycle-event stream (fs1.7 AC).
+
+    Read-only audit seam over two durable tiers (source.db lifecycle spool +
+    index.db ingested snapshot); see
+    ``context.hermes_lifecycle_reconciliation`` for the join semantics.
+    Returns ``None``, never raises, when either tier is unavailable -- the
+    caller distinguishes "not available yet" from "reconciled, zero events
+    observed" (``total_events == 0``). "Archive not yet initialized" (no
+    source.db/index.db file at all) and "archive present but the read
+    failed" (corrupt file, missing table) both still return ``None`` to the
+    caller -- this facade method's contract predates this fix and changing
+    its return type is a separate, larger decision -- but the two cases are
+    distinguished in the logs: only the second case logs a warning (mirrors
+    ``_archive_correlate_hermes_context_deliveries``'s same review fix).
+    """
+
+    from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return None
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn.row_factory = sqlite3.Row
+            try:
+                return reconcile_hermes_session_lifecycle(
+                    source_conn,
+                    index_conn,
+                    hermes_session_native_id=hermes_session_native_id,
+                )
+            finally:
+                index_conn.close()
+        finally:
+            source_conn.close()
+    except sqlite3.Error:
+        logger.warning(
+            "hermes_session_lifecycle reconciliation read failed (archive present but unreadable): "
+            "hermes_session_native_id=%s source_db=%s index_db=%s",
+            hermes_session_native_id,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
+
+
 def _archive_list_assertion_candidate_reviews(
     config: Config,
     *,
@@ -1013,6 +1253,7 @@ def _archive_judge_assertion_candidate(
     decision: str,
     reason: str | None = None,
     actor_ref: str = "user:local",
+    inject: bool = False,
     replacement_kind: str | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
@@ -1034,6 +1275,7 @@ def _archive_judge_assertion_candidate(
                 decision=decision,
                 reason=reason,
                 actor_ref=actor_ref,
+                inject=inject,
                 replacement_kind=replacement_kind,
                 replacement_body_text=replacement_body_text,
                 replacement_value=replacement_value,
@@ -1044,6 +1286,111 @@ def _archive_judge_assertion_candidate(
             conn.close()
     except sqlite3.Error as exc:
         raise RuntimeError(f"failed to judge assertion candidate: {exc}") from exc
+
+
+def _archive_capture_assertion_candidate(
+    config: Config,
+    *,
+    body_text: str,
+    kind: AssertionKind,
+    refs: Sequence[str] = (),
+    scope_refs: Sequence[str] = (),
+    cwd: Path | None = None,
+    author_ref: str = "user:local",
+    author_kind: str = "user",
+) -> Any:
+    """Write one terminal-captured assertion through the user-tier gate."""
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    normalized_body = body_text.strip()
+    if not normalized_body:
+        raise ValueError("note text cannot be empty")
+
+    assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+    resolved_refs: list[str] = []
+    with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
+        for ref in refs:
+            if ref == "last":
+                resolved_cwd = (cwd or Path.cwd()).resolve()
+                repo_root = next(
+                    (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
+                    resolved_cwd,
+                )
+                summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
+                if not summaries:
+                    raise ValueError("--ref last found no archived session for the current repository/cwd")
+                session_ref = f"session:{summaries[0].session_id}"
+                resolved_refs.append(session_ref)
+                continue
+            parsed = ObjectRef.parse(ref)
+            if parsed.kind != "session":
+                raise ValueError("--ref must be a session:<id> ref or 'last'")
+            try:
+                session_id = archive.resolve_session_id(parsed.object_id)
+            except KeyError:
+                raise ValueError(f"session ref not found: {parsed.object_id}") from None
+            resolved_refs.append(f"session:{session_id}")
+
+        normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
+        target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
+        user_db = archive.user_db_path
+
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = upsert_assertion(
+                conn,
+                assertion_id=assertion_id,
+                target_ref=target_ref,
+                scope_ref=normalized_scope_refs[0] if normalized_scope_refs else None,
+                kind=kind,
+                key="terminal-note",
+                value={
+                    "capture_surface": "terminal",
+                    "scope_refs": normalized_scope_refs,
+                    "unanchored": not bool(resolved_refs),
+                },
+                body_text=normalized_body,
+                author_ref=author_ref,
+                author_kind=author_kind,
+                evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+            )
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
+
+
+def _archive_judge_assertion_candidates(
+    config: Config,
+    *,
+    items: Sequence[Any],
+) -> Any:
+    """Write an independently-recoverable bulk candidate judgment batch."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidates
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("assertion user tier is not initialized")
+    try:
+        conn = sqlite3.connect(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            result = judge_assertion_candidates(conn, items)
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
 
 
 def _archive_emit_pathology_assertions(
@@ -1118,7 +1465,7 @@ def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachmen
     )
 
 
-def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider) -> Message:
+def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message:
     text = "\n\n".join(block.text for block in message.blocks if block.text) or None
     content_blocks: list[dict[str, object]] = [
         {
@@ -1144,7 +1491,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
         role=Role.normalize(message.role),
         text=text,
         timestamp=parse_archive_datetime(message.occurred_at),
-        provider=provider,
+        origin=origin,
         blocks=content_blocks,
         message_type=MessageType.normalize(message.message_type),
         material_origin=MaterialOrigin.normalize(message.material_origin),
@@ -1160,8 +1507,8 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, provider: Provider
 
 
 def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
-    provider = _provider_for_archive_origin(session.origin)
-    messages = [_archive_message_to_domain(message, provider=provider) for message in session.messages]
+    origin = Origin.from_string(session.origin)
+    messages = [_archive_message_to_domain(message, origin=origin) for message in session.messages]
     timestamps = [message.timestamp for message in messages if message.timestamp is not None]
     # Prefer the stored session timestamps (sessions.created_at_ms/updated_at_ms);
     # fall back to the message-timestamp envelope only when the session row has
@@ -1171,7 +1518,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
     stored_updated = parse_archive_datetime(session.updated_at)
     return Session(
         id=SessionId(session.session_id),
-        origin=origin_from_provider(provider),
+        origin=origin,
         title=session.title,
         messages=MessageCollection(messages=messages),
         created_at=stored_created or (min(timestamps) if timestamps else None),
@@ -1189,7 +1536,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
 def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
     return SessionSummary(
         id=SessionId(summary.session_id),
-        origin=origin_from_provider(summary.provider),
+        origin=Origin.from_string(summary.origin),
         title=summary.title,
         created_at=parse_archive_datetime(summary.created_at),
         updated_at=parse_archive_datetime(summary.updated_at),
@@ -1205,7 +1552,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
 def _archive_search_hit_to_domain(hit: ArchiveSessionSearchHit) -> SearchHit:
     return SearchHit(
         session_id=hit.session_id,
-        source_name=hit.provider.value,
+        source_name=hit.origin,
         message_id=hit.message_id,
         title=hit.title,
         timestamp=None,
@@ -1260,7 +1607,7 @@ class _ArchiveInsightExportOperations:
     async def list_session_profile_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_session_profile_insights(
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 workflow_shape=getattr(query, "workflow_shape", None),
                 terminal_state=getattr(query, "terminal_state", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
@@ -1275,7 +1622,7 @@ class _ArchiveInsightExportOperations:
         return list(
             self._archive.list_session_work_event_insights(
                 session_id=getattr(query, "session_id", None),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 heuristic_label=getattr(query, "heuristic_label", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1288,7 +1635,7 @@ class _ArchiveInsightExportOperations:
         return list(
             self._archive.list_session_phase_insights(
                 session_id=getattr(query, "session_id", None),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 kind=getattr(query, "kind", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1311,7 +1658,7 @@ class _ArchiveInsightExportOperations:
     async def list_session_tag_rollup_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_session_tag_rollup_insights(
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 query=getattr(query, "query", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
@@ -1323,8 +1670,8 @@ class _ArchiveInsightExportOperations:
     async def list_archive_coverage_insights(self, query: object) -> list[ArchiveInsightModel]:
         return list(
             self._archive.list_archive_coverage_insights(
-                group_by=str(getattr(query, "group_by", "provider")),
-                provider=str(provider) if (provider := getattr(query, "provider", None)) is not None else None,
+                group_by=str(getattr(query, "group_by", "origin")),
+                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
                 limit=getattr(query, "limit", None),
@@ -1334,7 +1681,10 @@ class _ArchiveInsightExportOperations:
 
 
 class _ArchiveNeighborRuntime:
-    """Repository-shaped read adapter for archive neighbor discovery."""
+    """Minimal neighbor discovery store adapter for archive neighbor discovery.
+
+    Implements: NeighborStore protocol (resolve_id, get, list_summaries_by_query, search_summary_hits)
+    """
 
     def __init__(self, archive: Any) -> None:
         self._archive = archive
@@ -1353,196 +1703,54 @@ class _ArchiveNeighborRuntime:
         except KeyError:
             return None
 
-    async def get_eager(self, session_id: str) -> Session | None:
-        return await self.get(session_id)
-
-    async def get_summary(self, session_id: str) -> SessionSummary | None:
-        try:
-            resolved = self._archive.resolve_session_id(session_id)
-            return _archive_summary_to_domain(self._archive.read_summary(resolved))
-        except KeyError:
-            return None
-
-    async def list_summaries_by_query(self, query: object) -> builtins.list[SessionSummary]:
-        return [
-            _archive_summary_to_domain(summary)
-            for summary in self._archive.list_summaries(**self._query_kwargs(query, default_limit=50))
-        ]
-
-    async def list_by_query(self, query: object) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for summary in await self.list_summaries_by_query(query):
-            session = await self.get(str(summary.id))
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def list(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for summary in await self.list_summaries(
-            limit=limit,
-            offset=offset,
-            provider=provider,
-            providers=providers,
-            since=since,
-            until=until,
-            title_contains=title_contains,
-            referenced_path=referenced_path,
-            cwd_prefix=cwd_prefix,
-            action_terms=action_terms,
-            excluded_action_terms=excluded_action_terms,
-            tool_terms=tool_terms,
-            excluded_tool_terms=excluded_tool_terms,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            max_words=max_words,
-            message_type=message_type,
-        ):
-            session = await self.get(str(summary.id))
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def list_summaries(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[SessionSummary]:
-        del source
-        origin, origins = self._provider_filters(provider=provider, providers=providers)
+    async def list_summaries_by_query(self, query: SessionRecordQuery) -> builtins.list[SessionSummary]:
+        origin, origins = self._origin_filters(
+            origin=query.origin,
+            origins=builtins.list(query.origins) if query.origins else [],
+        )
         return [
             _archive_summary_to_domain(summary)
             for summary in self._archive.list_summaries(
-                limit=limit or 50,
-                offset=offset,
+                limit=query.limit or 50,
+                offset=query.offset or 0,
                 origin=origin,
                 origins=origins,
-                referenced_paths=tuple(referenced_path or ()),
-                cwd_prefix=cwd_prefix,
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                message_type=_archive_message_type(message_type),
-                title=title_contains,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since_ms=_archive_query_date_ms("since", since),
-                until_ms=_archive_query_date_ms("until", until),
+                referenced_paths=tuple(query.referenced_path or ()),
+                cwd_prefix=query.cwd_prefix,
+                action_terms=tuple(query.action_terms or ()),
+                excluded_action_terms=tuple(query.excluded_action_terms or ()),
+                tool_terms=tuple(query.tool_terms or ()),
+                excluded_tool_terms=tuple(query.excluded_tool_terms or ()),
+                has_tool_use=query.has_tool_use or False,
+                has_thinking=query.has_thinking or False,
+                message_type=_archive_message_type(query.message_type),
+                title=query.title_contains,
+                min_messages=query.min_messages,
+                max_messages=query.max_messages,
+                min_words=query.min_words,
+                max_words=query.max_words,
+                since_ms=_archive_query_date_ms("since", query.since),
+                until_ms=_archive_query_date_ms("until", query.until),
             )
         ]
-
-    async def count(
-        self,
-        provider: str | None = None,
-        providers: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        message_type: str | None = None,
-    ) -> int:
-        origin, origins = self._provider_filters(provider=provider, providers=providers)
-        return cast(
-            int,
-            self._archive.count_sessions(
-                origin=origin,
-                origins=origins,
-                referenced_paths=tuple(referenced_path or ()),
-                cwd_prefix=cwd_prefix,
-                action_terms=tuple(action_terms or ()),
-                excluded_action_terms=tuple(excluded_action_terms or ()),
-                tool_terms=tuple(tool_terms or ()),
-                excluded_tool_terms=tuple(excluded_tool_terms or ()),
-                has_tool_use=has_tool_use,
-                has_thinking=has_thinking,
-                message_type=_archive_message_type(message_type),
-                title=title_contains,
-                min_messages=min_messages,
-                max_messages=max_messages,
-                min_words=min_words,
-                max_words=max_words,
-                since_ms=_archive_query_date_ms("since", since),
-                until_ms=_archive_query_date_ms("until", until),
-            ),
-        )
 
     async def search_summary_hits(
         self,
         query: str,
         limit: int = 20,
-        providers: builtins.list[str] | None = None,
+        origins: builtins.list[str] | None = None,
         since: str | None = None,
-    ) -> builtins.list[Any]:
+    ) -> builtins.list[SessionSearchHit]:
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
 
-        _origin, origins = self._provider_filters(provider=None, providers=providers)
+        _origin, filter_origins = self._origin_filters(origin=None, origins=origins if origins else [])
         hits = self._archive.search_summaries(
             query,
             limit=limit,
-            origins=origins,
+            origins=filter_origins,
             since_ms=_archive_query_date_ms("since", since),
         )
-        results: builtins.list[Any] = []
+        results: builtins.list[SessionSearchHit] = []
         for hit in hits:
             try:
                 summary = _archive_summary_to_domain(self._archive.read_summary(hit.session_id))
@@ -1561,103 +1769,15 @@ class _ArchiveNeighborRuntime:
             )
         return results
 
-    async def search(
-        self,
-        query: str,
-        limit: int = 20,
-        providers: builtins.list[str] | None = None,
-    ) -> builtins.list[Session]:
-        sessions: builtins.list[Session] = []
-        for hit in await self.search_summary_hits(query, limit=limit, providers=providers):
-            session = await self.get(hit.session_id)
-            if session is not None:
-                sessions.append(session)
-        return sessions
-
-    async def search_summaries(
-        self,
-        query: str,
-        limit: int = 20,
-        providers: builtins.list[str] | None = None,
-    ) -> builtins.list[SessionSummary]:
-        return [hit.summary for hit in await self.search_summary_hits(query, limit=limit, providers=providers)]
-
-    def iter_messages(
-        self,
-        session_id: str,
-        *,
-        message_roles: MessageRoleFilter = (),
-        material_origin: tuple[MaterialOrigin, ...] = (),
-        limit: int | None = None,
-    ) -> AsyncIterator[Message]:
-        async def _iter() -> AsyncIterator[Message]:
-            session = await self.get(session_id)
-            if session is None:
-                return
-            count = 0
-            for message in session.messages:
-                if message_roles and message.role not in message_roles:
-                    continue
-                if material_origin and message.material_origin not in material_origin:
-                    continue
-                if limit is not None and count >= limit:
-                    break
-                count += 1
-                yield message
-
-        return _iter()
-
-    async def search_similar(
-        self,
-        text: str,
-        limit: int = 10,
-        vector_provider: object | None = None,
-    ) -> builtins.list[Session]:
-        del text, limit, vector_provider
-        return []
-
-    def _query_kwargs(self, query: object, *, default_limit: int) -> dict[str, object]:
-        origin, origins = self._provider_filters(
-            provider=getattr(query, "provider", None),
-            providers=builtins.list(getattr(query, "providers", ()) or ()),
-        )
-        return {
-            "limit": getattr(query, "limit", None) or default_limit,
-            "offset": int(getattr(query, "offset", 0) or 0),
-            "origin": origin,
-            "origins": origins,
-            "referenced_paths": tuple(getattr(query, "referenced_path", ()) or ()),
-            "cwd_prefix": getattr(query, "cwd_prefix", None),
-            "action_terms": tuple(getattr(query, "action_terms", ()) or ()),
-            "excluded_action_terms": tuple(getattr(query, "excluded_action_terms", ()) or ()),
-            "tool_terms": tuple(getattr(query, "tool_terms", ()) or ()),
-            "excluded_tool_terms": tuple(getattr(query, "excluded_tool_terms", ()) or ()),
-            "has_tool_use": bool(getattr(query, "has_tool_use", False)),
-            "has_thinking": bool(getattr(query, "has_thinking", False)),
-            "has_paste": bool(getattr(query, "has_paste", False)),
-            "message_type": _archive_message_type(getattr(query, "message_type", None)),
-            "title": getattr(query, "title_contains", None),
-            "min_messages": getattr(query, "min_messages", None),
-            "max_messages": getattr(query, "max_messages", None),
-            "min_words": getattr(query, "min_words", None),
-            "max_words": getattr(query, "max_words", None),
-            "since_ms": _archive_query_date_ms("since", getattr(query, "since", None)),
-            "until_ms": _archive_query_date_ms("until", getattr(query, "until", None)),
-        }
-
-    def _provider_filters(
+    def _origin_filters(
         self,
         *,
-        provider: str | None,
-        providers: builtins.list[str] | None,
+        origin: str | None,
+        origins: builtins.list[str],
     ) -> tuple[str | None, tuple[str, ...]]:
-        origin = _archive_origin_for_provider(provider)
-        origins: builtins.list[str] = []
-        for provider_value in providers or []:
-            candidate = _archive_origin_for_provider(provider_value)
-            if candidate is not None:
-                origins.append(candidate)
-        return origin, tuple(origins)
+        validated_origin = Origin(origin).value if origin is not None else None
+        validated_origins = tuple(Origin(value).value for value in origins)
+        return validated_origin, validated_origins
 
 
 def _actions_for_session(session: Session) -> tuple[Action, ...]:
@@ -1673,7 +1793,7 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     events: builtins.list[Action] = []
     for message in session.messages:
         calls = build_tool_calls_from_content_blocks(
-            provider=provider_from_origin(session.origin),
+            origin=session.origin,
             content_blocks=message.blocks,
         )
         events.extend(build_actions(message, calls))
@@ -1749,15 +1869,44 @@ class PolylogueArchiveMixin:
         @property
         def repository(self) -> SessionRepository: ...
 
+    async def import_annotation_batch(
+        self,
+        request: AnnotationBatchImportRequest,
+        *,
+        registry: AnnotationSchemaRegistry | None = None,
+    ) -> AnnotationBatchImportResult:
+        """Import bounded, provenance-stamped annotation candidates.
+
+        This is the library binding for the shared annotation-import product
+        operation used by the CLI and MCP surfaces. ``registry`` lets callers
+        use a deliberately constructed schema registry without bypassing the
+        facade.
+        """
+        from polylogue.annotations.importer import import_annotation_batch
+
+        class _ActiveArchiveImportFacade:
+            @property
+            def archive_root(self) -> Path:
+                return _active_archive_root(self._archive.config)
+
+            def __init__(self, archive: PolylogueArchiveMixin) -> None:
+                self._archive = archive
+
+            async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
+                return await self._archive.resolve_ref(ref)
+
+        import_facade = cast("Polylogue", _ActiveArchiveImportFacade(self))
+        if registry is None:
+            return await import_annotation_batch(import_facade, request)
+        return await import_annotation_batch(import_facade, request, registry=registry)
+
     async def get_session(
         self,
         session_id: str,
         *,
         content_projection: ContentProjectionSpec | None = None,
     ) -> Session | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> Session | None:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
             except KeyError:
@@ -1766,6 +1915,15 @@ class PolylogueArchiveMixin:
             if content_projection is None or not content_projection.filters_content():
                 return session
             return session.with_content_projection(content_projection)
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.get",
+            arguments={"session_id": session_id, "content_projection": content_projection},
+            work=read,
+            projection="session",
+            stable_order="session,message,block",
+        )
 
     async def explain_import(
         self,
@@ -1839,15 +1997,21 @@ class PolylogueArchiveMixin:
             PostmortemScope,
             compile_postmortem_bundle,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         cap = limit if limit is not None and limit > 0 else 200
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if spec is not None and spec.has_filters():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-            else:
-                summaries = archive.list_summaries(limit=1_000_000)
+        summaries = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.postmortem.scope",
+            arguments={"spec": spec, "limit": cap},
+            work=lambda archive: (
+                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                if spec is not None and spec.has_filters()
+                else archive.list_summaries(limit=1_000_000)
+            ),
+            page_size=cap,
+            projection="session-scope",
+            workload_class="scan",
+        )
 
         session_ids: list[str] = []
         seen: set[str] = set()
@@ -1909,15 +2073,21 @@ class PolylogueArchiveMixin:
         to 200 sessions.
         """
         from polylogue.insights.pathology import compile_pathology_report
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         cap = limit if limit is not None and limit > 0 else 200
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if spec is not None and spec.has_filters():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-            else:
-                summaries = archive.list_summaries(limit=1_000_000)
+        summaries = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.pathology.scope",
+            arguments={"spec": spec, "limit": cap},
+            work=lambda archive: (
+                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                if spec is not None and spec.has_filters()
+                else archive.list_summaries(limit=1_000_000)
+            ),
+            page_size=cap,
+            projection="session-scope",
+            workload_class="scan",
+        )
 
         session_ids: list[str] = []
         seen: set[str] = set()
@@ -1963,15 +2133,21 @@ class PolylogueArchiveMixin:
         defaults to 200 sessions.
         """
         from polylogue.insights.pathology import detect_session_pathologies
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         cap = limit if limit is not None and limit > 0 else 200
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if spec is not None and spec.has_filters():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-            else:
-                summaries = archive.list_summaries(limit=1_000_000)
+        summaries = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.pathology_assertions.scope",
+            arguments={"spec": spec, "limit": cap},
+            work=lambda archive: (
+                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                if spec is not None and spec.has_filters()
+                else archive.list_summaries(limit=1_000_000)
+            ),
+            page_size=cap,
+            projection="session-scope",
+            workload_class="scan",
+        )
 
         session_ids: list[str] = []
         seen: set[str] = set()
@@ -2020,15 +2196,21 @@ class PolylogueArchiveMixin:
             compile_portfolio_bundle,
         )
         from polylogue.insights.postmortem import PostmortemScope
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         cap = limit if limit is not None and limit > 0 else 200
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            if spec is not None and spec.has_filters():
-                summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-            else:
-                summaries = archive.list_summaries(limit=1_000_000)
+        summaries = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.portfolio.scope",
+            arguments={"spec": spec, "limit": cap},
+            work=lambda archive: (
+                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                if spec is not None and spec.has_filters()
+                else archive.list_summaries(limit=1_000_000)
+            ),
+            page_size=cap,
+            projection="session-scope",
+            workload_class="scan",
+        )
 
         session_ids: list[str] = []
         seen: set[str] = set()
@@ -2094,6 +2276,60 @@ class PolylogueArchiveMixin:
                 context_inject=context_inject,
                 limit=limit,
             ),
+        )
+
+    async def get_context_delivery(
+        self, snapshot_ref: str, *, recipient_ref: str
+    ) -> ArchiveContextDeliveryEnvelope | None:
+        """Return an exact delivery receipt only for its recorded recipient.
+
+        This is a read-only audit seam over the durable user-tier receipt. It
+        does not schedule recall or grant a caller broader archive access.
+        """
+
+        return _archive_get_context_delivery(
+            self.config,
+            snapshot_ref=snapshot_ref,
+            recipient_ref=recipient_ref,
+        )
+
+    async def correlate_hermes_context_deliveries(
+        self, hermes_session_native_id: str
+    ) -> tuple[HermesContextDeliveryCorrelation, ...]:
+        """Correlate a Hermes session's ``context_injected`` events with delivery receipts.
+
+        Read-only audit seam (fs1.11 x fs1.7): for every durable
+        ``context_injected`` lifecycle event drained for this Hermes session,
+        resolves the exact delivered context-image bytes, token budget, and
+        rendered-token estimate from the existing delivery ledger. An event
+        with no resolvable receipt (archive outage, or the write has not
+        committed yet) is returned with ``available=False`` and an explicit
+        caveat rather than omitted.
+        """
+
+        return _archive_correlate_hermes_context_deliveries(
+            self.config,
+            hermes_session_native_id=hermes_session_native_id,
+        )
+
+    async def reconcile_hermes_session_lifecycle(
+        self, hermes_session_native_id: str
+    ) -> HermesLifecycleReconciliation | None:
+        """Reconcile a Hermes session's drained lifecycle-event stream (fs1.7 AC).
+
+        Read-only audit seam over the durable spool (source.db
+        ``raw_hook_events``) and the ingested session snapshot (index.db
+        ``messages``): renders unpaired start/finish events, per-turn-end
+        without durable finalization, and events referencing a message id
+        the snapshot does not retain -- all *visible* in one report rather
+        than left as an assumption. Returns ``None`` only when the archive
+        itself is not yet initialized; a session with zero drained events
+        still returns a well-formed report (``total_events == 0``).
+        """
+
+        return _archive_reconcile_hermes_session_lifecycle(
+            self.config,
+            hermes_session_native_id=hermes_session_native_id,
         )
 
     async def list_assertion_claim_payloads(
@@ -2180,6 +2416,7 @@ class PolylogueArchiveMixin:
         decision: str,
         reason: str | None = None,
         actor_ref: str = "user:local",
+        inject: bool = False,
         replacement_kind: str | None = None,
         replacement_body_text: str | None = None,
         replacement_value: object | None = None,
@@ -2194,11 +2431,81 @@ class PolylogueArchiveMixin:
             decision=decision,
             reason=reason,
             actor_ref=actor_ref,
+            inject=inject,
             replacement_kind=replacement_kind,
             replacement_body_text=replacement_body_text,
             replacement_value=replacement_value,
         )
         return AssertionJudgmentResultPayload.from_envelope(result)
+
+    async def capture_assertion_candidate(
+        self,
+        *,
+        body_text: str,
+        kind: AssertionKind,
+        refs: Sequence[str] = (),
+        scope_refs: Sequence[str] = (),
+        cwd: Path | None = None,
+        author_ref: str = "user:local",
+        author_kind: str = "user",
+    ) -> AssertionClaimPayload:
+        """Capture a terminal assertion as a non-injected candidate for review."""
+
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        envelope = _archive_capture_assertion_candidate(
+            self.config,
+            body_text=body_text,
+            kind=kind,
+            refs=refs,
+            scope_refs=scope_refs,
+            cwd=cwd,
+            author_ref=author_ref,
+            author_kind=author_kind,
+        )
+        return AssertionClaimPayload.from_envelope(envelope)
+
+    async def judge_assertion_candidates(
+        self,
+        *,
+        items: Sequence[Any],
+    ) -> AssertionBulkJudgmentPayload:
+        """Apply a review batch with per-candidate partial-success outcomes."""
+
+        from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+        result = _archive_judge_assertion_candidates(self.config, items=items)
+        return AssertionBulkJudgmentPayload.from_envelope(cast("ArchiveAssertionBulkJudgmentEnvelope", result))
+
+    async def join_typed_annotations(
+        self,
+        *,
+        schema_id: str,
+        schema_version: int,
+        statuses: Sequence[str | AssertionStatus],
+        target_kind: str | None = None,
+        group_by: Sequence[Literal["repo", "model", "time", "origin"]] = (),
+        limit: int = 500,
+        offset: int = 0,
+    ) -> AnnotationStructuralJoinResult:
+        """Join selected typed annotations to exact structural targets."""
+
+        from polylogue.annotations.join import (
+            AnnotationStructuralJoinRequest,
+            StructuralJoinArchive,
+            join_typed_annotations,
+        )
+
+        request = AnnotationStructuralJoinRequest(
+            schema_id=schema_id,
+            schema_version=schema_version,
+            statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
+            target_kind=target_kind,
+            group_by=tuple(group_by),
+            limit=limit,
+            offset=offset,
+        )
+        return await join_typed_annotations(cast(StructuralJoinArchive, self), request)
 
     async def _compile_context_seed_query(
         self,
@@ -2643,8 +2950,12 @@ class PolylogueArchiveMixin:
         message_type: str | None = None,
     ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
+        from polylogue.archive.query.execution_control import (
+            QueryExecutionContext,
+            classify_unit_expression_workload,
+            execute_archive_read,
+        )
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         request = query_unit_request(
             expression=expression,
@@ -2681,8 +2992,16 @@ class PolylogueArchiveMixin:
             max_words=max_words,
             message_type=message_type,
         )
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return query_unit_envelope(archive, request)
+        ctx = QueryExecutionContext.create(
+            query_text=expression,
+            workload_class=classify_unit_expression_workload(expression),
+            owner_ref="api.query_units",
+        )
+        return await execute_archive_read(
+            _active_archive_root(self.config),
+            lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
+            ctx=ctx,
+        )
 
     async def export_otel(
         self,
@@ -2707,12 +3026,28 @@ class PolylogueArchiveMixin:
 
     async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+        invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
+        if invalid_unicode_ref is not None:
+            return cast(PublicRefResolutionPayload, invalid_unicode_ref)
+        bounded_batch_ref = _oversized_annotation_batch_ref_payload(ref)
+        if bounded_batch_ref is not None:
+            # ``parse_public_ref`` deliberately falls back to EvidenceRef, whose
+            # one-segment form accepts arbitrary colon-bearing session ids. Guard
+            # batch-like malformed inputs before that fallback can misclassify
+            # and reflect a multi-megabyte value through the session miss path.
+            try:
+                batch_candidate = ObjectRef.parse(ref)
+            except ValueError:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
+            if batch_candidate.kind != "annotation-batch":
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
         try:
             parsed = parse_public_ref(ref)
         except ValueError as exc:
+            if bounded_batch_ref is not None:
+                return cast(PublicRefResolutionPayload, bounded_batch_ref)
             return cast(PublicRefResolutionPayload, _unresolved_ref_payload(ref, str(exc)))
 
         if isinstance(parsed, EvidenceRef):
@@ -2723,7 +3058,8 @@ class PolylogueArchiveMixin:
             object_ref = parsed
         normalized_ref = parsed.format()
         archive_root = _active_archive_root(self.config)
-        with ArchiveStore.open_existing(archive_root) as archive:
+
+        def read(archive: ArchiveStore) -> PublicRefResolutionPayload:
             if object_ref.kind == "session":
                 return self._resolve_session_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "message":
@@ -2732,16 +3068,33 @@ class PolylogueArchiveMixin:
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "finding":
+                return self._resolve_finding_object_ref(archive_root, ref, normalized_ref, object_ref)
+            if object_ref.kind == "annotation-batch":
+                return self._resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
+            if object_ref.kind == "delegation":
+                return self._resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
             if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
                 return self._resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
-        return cast(
-            PublicRefResolutionPayload,
-            _unresolved_ref_payload(
-                ref,
-                f"unsupported public ref kind for resolution: {object_ref.kind}",
-                normalized_ref=normalized_ref,
-                kind=object_ref.kind,
-            ),
+            if object_ref.kind in _PENDING_OBJECT_REF_KINDS:
+                return cast(PublicRefResolutionPayload, _pending_ref_payload(ref, normalized_ref, object_ref.kind))
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    f"unsupported public ref kind for resolution: {object_ref.kind}",
+                    normalized_ref=normalized_ref,
+                    kind=object_ref.kind,
+                ),
+            )
+
+        return await run_archive_read(
+            archive_root,
+            operation="archive.resolve_ref",
+            arguments={"ref": normalized_ref},
+            work=read,
+            projection="ref-resolution",
+            stable_order="canonical",
         )
 
     def _resolve_session_object_ref(
@@ -2944,6 +3297,214 @@ class PolylogueArchiveMixin:
             object_refs=(normalized_ref, payload.target_ref),
             evidence_refs=payload.evidence_refs,
             actions=(_resolution_action("list assertion target", f"polylogue find {payload.target_ref} then read"),),
+        )
+
+    def _resolve_finding_object_ref(
+        self,
+        archive_root: Path,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
+        from polylogue.surfaces.payloads import (
+            FindingEvidenceRefState,
+            FindingProvenancePayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        user_db = archive_root / "user.db"
+        if not user_db.exists():
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
+            )
+        with closing(sqlite3.connect(user_db)) as conn:
+            conn.row_factory = sqlite3.Row
+            provenance = compute_finding_provenance(conn, object_ref.object_id)
+        if provenance is None:
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
+            )
+        payload = FindingProvenancePayload(
+            assertion_id=provenance.assertion_id,
+            claim_key=provenance.claim_key,
+            target_ref=provenance.target_ref,
+            finding_kind=provenance.finding_kind,
+            query_ref=provenance.query_ref,
+            result_set_ref=provenance.result_set_ref,
+            baseline_ref=provenance.baseline_ref,
+            current_ref=provenance.current_ref,
+            detector_ref=provenance.detector_ref,
+            status=AssertionStatus.from_string(provenance.status),
+            evidence=tuple(
+                FindingEvidenceRefState(ref=item.ref, resolvable=item.resolvable, reason=item.reason)
+                for item in provenance.evidence
+            ),
+            staleness_verdict=provenance.staleness_verdict,
+            created_at_ms=provenance.created_at_ms,
+            updated_at_ms=provenance.updated_at_ms,
+        )
+        caveats: tuple[str, ...] = ()
+        if provenance.staleness_verdict != "current":
+            caveats = (f"finding evidence staleness verdict: {provenance.staleness_verdict}",)
+        object_refs = tuple(
+            dict.fromkeys(
+                ref_value
+                for ref_value in (
+                    normalized_ref,
+                    provenance.target_ref,
+                    provenance.query_ref,
+                    provenance.result_set_ref,
+                )
+                if ref_value
+            )
+        )
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="finding",
+            resolved=True,
+            payload_kind="finding-provenance",
+            payload=model_json_document(payload),
+            title=provenance.claim_key or provenance.finding_kind or "finding",
+            summary=f"{provenance.finding_kind or 'finding'} ({provenance.status})",
+            object_refs=object_refs,
+            evidence_refs=tuple(item.ref for item in provenance.evidence),
+            caveats=caveats,
+            actions=(_resolution_action("list target evidence", f"polylogue find {provenance.target_ref} then read"),),
+        )
+
+    def _resolve_annotation_batch_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        from polylogue.surfaces.payloads import (
+            AnnotationBatchPayload,
+            PublicRefResolutionPayload,
+            RefResolutionActionPayload,
+            model_json_document,
+        )
+
+        batch = archive.get_annotation_batch(object_ref.object_id)
+        if batch is None:
+            bounded = _oversized_annotation_batch_ref_payload(ref)
+            if bounded is not None:
+                return cast(PublicRefResolutionPayload, bounded)
+            return cast(
+                PublicRefResolutionPayload,
+                _unresolved_ref_payload(
+                    ref,
+                    "annotation batch not found",
+                    normalized_ref=normalized_ref,
+                    kind="annotation-batch",
+                ),
+            )
+        payload = AnnotationBatchPayload.from_batch(batch)
+        scalar_ref_pairs = (
+            (batch.batch_ref, payload.batch_ref),
+            (batch.target_ref, payload.target_ref),
+            (batch.source_result_ref, payload.source_result_ref),
+            (batch.actor_ref, payload.actor_ref),
+            (batch.model_ref, payload.model_ref),
+            (batch.prompt_ref, payload.prompt_ref),
+        )
+        object_refs = tuple(dict.fromkeys(value for value, preview in scalar_ref_pairs if not preview.truncated))
+        public_ref = normalized_ref
+        public_normalized_ref: str | None = normalized_ref
+        if payload.batch_ref.truncated:
+            public_ref = f"annotation-batch:sha256-{payload.batch_ref.text_sha256}"
+            public_normalized_ref = None
+        actions: tuple[RefResolutionActionPayload, ...] = ()
+        if not payload.target_ref.truncated:
+            actions = (_resolution_action("read annotation target", f"polylogue find {batch.target_ref} then read"),)
+        return PublicRefResolutionPayload(
+            ref=public_ref,
+            normalized_ref=public_normalized_ref,
+            kind="annotation-batch",
+            resolved=True,
+            payload_kind="annotation-batch",
+            payload=model_json_document(payload),
+            title="annotation batch provenance",
+            summary=(
+                f"{payload.valid_count}/{payload.total_count} valid; "
+                f"{payload.invalid_count} invalid; {payload.abstained_count} abstained"
+            ),
+            object_refs=object_refs,
+            caveats=payload.truncation_caveats(),
+            actions=actions,
+        )
+
+    def _resolve_delegation_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        object_ref: ObjectRef,
+    ) -> PublicRefResolutionPayload:
+        """Resolve a ``delegation:`` ref against the polylogue-y964 `delegations`
+        view. Two id shapes share one lookup: action-observed refs carry an
+        ``instruction_tool_use_block_id`` verbatim; edge-only refs carry the
+        deterministic ``edge:<parent>::<child>`` relation identity (no
+        parent-side dispatch action exists to key off for edge_only/
+        quarantined attempts). Missing, ambiguous, edge_only, and quarantined
+        states are returned as typed payloads, never silently guessed."""
+
+        from polylogue.surfaces.payloads import (
+            DELEGATION_STATE_CAVEATS,
+            DelegationCardPayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
+        if edge_identity is not None:
+            parent_session_id, child_session_id = edge_identity
+            card = archive.get_delegation_card(parent_session_id=parent_session_id, child_session_id=child_session_id)
+        else:
+            card = archive.get_delegation_card(instruction_tool_use_block_id=object_ref.object_id)
+
+        if card is None:
+            return PublicRefResolutionPayload(
+                ref=ref,
+                normalized_ref=normalized_ref,
+                kind="delegation",
+                resolved=False,
+                payload_kind="missing",
+                caveats=("delegation attempt not found for this identity",),
+            )
+
+        payload = DelegationCardPayload.from_card(card)
+        attempt = payload.attempt
+        object_refs = [f"session:{attempt.parent_session_id}"]
+        if attempt.child_session_id is not None:
+            object_refs.append(f"session:{attempt.child_session_id}")
+        if payload.run_ref is not None:
+            object_refs.append(payload.run_ref)
+        caveats: tuple[str, ...] = ()
+        state_caveat = DELEGATION_STATE_CAVEATS.get(attempt.mapping_state)
+        if state_caveat is not None:
+            caveats = (state_caveat,)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="delegation",
+            resolved=True,
+            payload_kind="delegation-card",
+            payload=model_json_document(payload),
+            title=f"delegation attempt ({attempt.mapping_state})",
+            summary=(payload.instruction or "")[:240] or None,
+            object_refs=tuple(object_refs),
+            evidence_refs=payload.evidence_refs,
+            caveats=caveats,
+            actions=(
+                _resolution_action("read parent session", f"polylogue find id:{attempt.parent_session_id} then read"),
+            ),
         )
 
     def _resolve_runtime_object_ref(
@@ -3155,9 +3716,7 @@ class PolylogueArchiveMixin:
         limit: int | None = None,
         content_projection: ContentProjectionSpec | None = None,
     ) -> list[Session]:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> list[Session]:
             summaries = archive.list_summaries(
                 origin=origin,
                 limit=50 if limit is None else limit,
@@ -3166,6 +3725,16 @@ class PolylogueArchiveMixin:
             if content_projection is None or not content_projection.filters_content():
                 return sessions
             return [session.with_content_projection(content_projection) for session in sessions]
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.sessions.list",
+            arguments={"origin": origin, "content_projection": content_projection},
+            work=read,
+            page_size=limit,
+            projection="session",
+            stable_order="date,session_id",
+        )
 
     async def list_summaries(
         self,
@@ -3180,17 +3749,23 @@ class PolylogueArchiveMixin:
         (title, timestamps, origin, model, counts). Use
         :meth:`list_sessions` when full message bodies are required.
         """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return [
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.summaries.list",
+            arguments={"origin": origin},
+            work=lambda archive: [
                 _archive_summary_to_domain(summary)
                 for summary in archive.list_summaries(
                     origin=origin,
                     limit=50 if limit is None else limit,
                     offset=offset,
                 )
-            ]
+            ],
+            page_size=limit,
+            offset=offset,
+            projection="session-summary",
+            stable_order="date,session_id",
+        )
 
     async def list_sessions_for_spec(
         self,
@@ -3252,10 +3827,13 @@ class PolylogueArchiveMixin:
         The cheap counterpart of :meth:`stats`: counts and provider/tag
         breakdowns straight from ``index.db`` for status surfaces.
         """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.stats()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.storage_stats",
+            arguments={},
+            work=lambda archive: archive.stats(),
+            projection="stats",
+        )
 
     async def search(
         self,
@@ -3265,10 +3843,11 @@ class PolylogueArchiveMixin:
         source: str | None = None,
         since: str | None = None,
     ) -> SearchResult:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return SearchResult(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.search",
+            arguments={"query": query, "source": source, "since": since},
+            work=lambda archive: SearchResult(
                 hits=[
                     _archive_search_hit_to_domain(hit)
                     for hit in archive.search_summaries(
@@ -3278,7 +3857,11 @@ class PolylogueArchiveMixin:
                         since_ms=_archive_query_date_ms("since", since),
                     )
                 ]
-            )
+            ),
+            page_size=limit,
+            projection="search-hits",
+            stable_order="rank,session_id,message_id",
+        )
 
     async def search_envelope(
         self,
@@ -3303,7 +3886,6 @@ class PolylogueArchiveMixin:
         from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
         from polylogue.archive.query.spec import SessionQuerySpec
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import (
             InvalidSearchCursorError,
             SessionSearchHitPayload,
@@ -3341,7 +3923,8 @@ class PolylogueArchiveMixin:
         fetch_offset = decoded_cursor.r if decoded_cursor is not None else display_offset
         fetch_limit = display_limit * 2 if decoded_cursor is not None else display_limit
         query_text = _archive_text_query(spec)
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+
+        def read(archive: ArchiveStore) -> tuple[tuple[SessionSearchHitPayload, ...], int]:
             if query_text is not None:
                 hits = _archive_search_hits_for_spec(
                     archive,
@@ -3380,6 +3963,27 @@ class PolylogueArchiveMixin:
             else:
                 hit_payloads = ()
                 total = _archive_count_sessions_for_spec(archive, spec)
+            return hit_payloads, total
+
+        hit_payloads, total = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.search_envelope",
+            arguments={
+                "query": query,
+                "origin": origin,
+                "since": since,
+                "until": until,
+                "retrieval_lane": retrieval_lane,
+                "sort": sort,
+                "cursor": cursor,
+            },
+            work=read,
+            page_size=display_limit,
+            offset=display_offset,
+            projection="search-envelope",
+            stable_order=spec.sort or "rank,session_id,message_id",
+            workload_class="scan" if query_text is not None else "interactive",
+        )
         return build_search_envelope(
             hit_payloads,
             total=total,
@@ -3423,10 +4027,49 @@ class PolylogueArchiveMixin:
         until: str | None = None,
     ) -> int:
         """Count sessions in the index tier."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.count_sessions(
+        arguments = {
+            "origin": origin,
+            "excluded_origins": tuple(excluded_origins),
+            "tags": tuple(tags),
+            "excluded_tags": tuple(excluded_tags),
+            "repo_names": tuple(repo_names),
+            "project_refs": tuple(project_refs),
+            "has_types": tuple(has_types),
+            "has_tool_use": has_tool_use,
+            "has_thinking": has_thinking,
+            "has_paste": has_paste,
+            "tool_terms": tuple(tool_terms),
+            "excluded_tool_terms": tuple(excluded_tool_terms),
+            "action_terms": tuple(action_terms),
+            "excluded_action_terms": tuple(excluded_action_terms),
+            "action_sequence": tuple(action_sequence),
+            "action_text_terms": tuple(action_text_terms),
+            "referenced_paths": tuple(referenced_paths),
+            "cwd_prefix": cwd_prefix,
+            "typed_only": typed_only,
+            "message_type": message_type,
+            "title": title,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+            "max_words": max_words,
+            "since": since,
+            "until": until,
+        }
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_count_sessions",
+                arguments=arguments,
+                page_size=1,
+                projection="count",
+                stable_order="canonical",
+            ),
+        )
+        return await transaction.run(
+            lambda archive: archive.count_sessions(
                 origin=origin,
                 excluded_origins=tuple(excluded_origins),
                 tags=tuple(tags),
@@ -3455,6 +4098,7 @@ class PolylogueArchiveMixin:
                 since_ms=_archive_query_date_ms("since", since),
                 until_ms=_archive_query_date_ms("until", until),
             )
+        )
 
     async def archive_list_sessions(
         self,
@@ -3491,10 +4135,38 @@ class PolylogueArchiveMixin:
         sample: bool = False,
     ) -> list[ArchiveSessionSummary]:
         """List session summaries."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return list(
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "limit", "offset"}}
+        arguments.update(
+            {
+                "has_types": tuple(has_types),
+                "excluded_origins": tuple(excluded_origins),
+                "tags": tuple(tags),
+                "excluded_tags": tuple(excluded_tags),
+                "repo_names": tuple(repo_names),
+                "project_refs": tuple(project_refs),
+                "tool_terms": tuple(tool_terms),
+                "excluded_tool_terms": tuple(excluded_tool_terms),
+                "action_terms": _archive_action_terms("action", action_terms),
+                "excluded_action_terms": _archive_action_terms("exclude_action", excluded_action_terms),
+                "action_sequence": _archive_action_sequence(action_sequence),
+                "message_type": _archive_message_type(message_type),
+                "since": _archive_query_date_ms("since", since),
+                "until": _archive_query_date_ms("until", until),
+            }
+        )
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_list_sessions",
+                arguments=arguments,
+                page_size=limit,
+                offset=max(0, offset),
+            ),
+        )
+        return await transaction.run(
+            lambda archive: list(
                 archive.list_summaries(
                     origin=origin,
                     excluded_origins=tuple(excluded_origins),
@@ -3528,6 +4200,7 @@ class PolylogueArchiveMixin:
                     sample=sample,
                 )
             )
+        )
 
     async def archive_search_sessions(
         self,
@@ -3563,10 +4236,37 @@ class PolylogueArchiveMixin:
         limit: int = 20,
     ) -> list[ArchiveSessionSearchHit]:
         """Search session block text."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return list(
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "limit"}}
+        arguments.update(
+            {
+                "has_types": tuple(has_types),
+                "excluded_origins": tuple(excluded_origins),
+                "tags": tuple(tags),
+                "excluded_tags": tuple(excluded_tags),
+                "repo_names": tuple(repo_names),
+                "project_refs": tuple(project_refs),
+                "tool_terms": tuple(tool_terms),
+                "excluded_tool_terms": tuple(excluded_tool_terms),
+                "action_terms": _archive_action_terms("action", action_terms),
+                "excluded_action_terms": _archive_action_terms("exclude_action", excluded_action_terms),
+                "action_sequence": _archive_action_sequence(action_sequence),
+                "message_type": _archive_message_type(message_type),
+                "since": _archive_query_date_ms("since", since),
+                "until": _archive_query_date_ms("until", until),
+            }
+        )
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_search_sessions",
+                arguments=arguments,
+                page_size=limit,
+            ),
+        )
+        return await transaction.run(
+            lambda archive: list(
                 archive.search_summaries(
                     query,
                     origin=origin,
@@ -3599,23 +4299,40 @@ class PolylogueArchiveMixin:
                     limit=limit,
                 )
             )
+        )
 
     async def archive_get_session(self, session_id: str) -> ArchiveSessionEnvelope | None:
         """Read a full session envelope by exact id or prefix."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        transaction = QueryTransaction(
+            _active_archive_root(self.config),
+            QueryTransactionRequest(
+                operation="archive_get_session",
+                arguments={"session_id": session_id},
+                page_size=1,
+                projection="session-envelope",
+                stable_order="session,message,block",
+            ),
+        )
+
+        def read(archive: ArchiveStore) -> ArchiveSessionEnvelope | None:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
             except KeyError:
                 return None
             return archive.read_session(resolved_id)
 
-    async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        return await transaction.run(read)
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.session_insight_status()
+    async def get_session_insight_status(self) -> SessionInsightStatusSnapshot:
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_status",
+            arguments={},
+            work=lambda archive: archive.session_insight_status(),
+            projection="insight-status",
+        )
 
     async def get_session_profile_insight(
         self,
@@ -3623,30 +4340,44 @@ class PolylogueArchiveMixin:
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_session_profile_insight(session_id, tier=tier)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile.get",
+            arguments={"session_id": session_id, "tier": tier},
+            work=lambda archive: archive.get_session_profile_insight(session_id, tier=tier),
+            projection="session-profile",
+        )
 
     async def get_session_profile_record(
         self,
         session_id: str,
     ) -> SessionProfileRecord | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_session_profile_record(session_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile_record.get",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.get_session_profile_record(session_id),
+            projection="session-profile-record",
+        )
 
     async def list_session_profile_insights(
         self,
         query: SessionProfileInsightQuery | None = None,
     ) -> list[SessionProfileInsight]:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         request = query or SessionProfileInsightQuery()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_session_profile_insights(
-                provider=request.provider,
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile.list",
+            arguments={
+                "origin": request.origin,
+                "workflow_shape": request.workflow_shape,
+                "terminal_state": request.terminal_state,
+                "since": request.since,
+                "until": request.until,
+                "tier": request.tier,
+            },
+            work=lambda archive: archive.list_session_profile_insights(
+                origin=request.origin,
                 workflow_shape=request.workflow_shape,
                 terminal_state=request.terminal_state,
                 since_ms=_archive_query_date_ms("since", request.since),
@@ -3657,7 +4388,12 @@ class PolylogueArchiveMixin:
                 min_wallclock_seconds=request.min_wallclock_seconds,
                 max_wallclock_seconds=request.max_wallclock_seconds,
                 sort=request.sort,
-            )
+            ),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="session-profile",
+            stable_order="time,session_id",
+        )
 
     def filter(self) -> SessionFilter:
         from polylogue.archive.filter.filters import SessionFilter
@@ -3682,23 +4418,31 @@ class PolylogueArchiveMixin:
         detail: str = "full",
     ) -> ProviderUsageReport:
         """Return provider usage accounting diagnostics for the active archive."""
-        from polylogue.storage.usage import provider_usage_report_for_archive_root
+        from polylogue.storage.usage import provider_usage_report_from_connection
 
         if detail not in {"headline", "full"}:
             raise ValueError("detail must be 'headline' or 'full'")
         usage_detail = cast(Literal["headline", "full"], detail)
-        return provider_usage_report_for_archive_root(
+        return await run_archive_read(
             _active_archive_root(self.config),
-            origin=origin,
-            limit=limit,
-            detail=usage_detail,
+            operation="archive.provider_usage",
+            arguments={"origin": origin, "limit": limit, "detail": detail},
+            work=lambda archive: provider_usage_report_from_connection(
+                archive._conn,
+                archive_root=_active_archive_root(self.config),
+                origin=origin,
+                limit=limit,
+                detail=usage_detail,
+            ),
+            page_size=limit,
+            projection="provider-usage",
+            workload_class="scan",
         )
 
     async def stats(self) -> ArchiveStats:
         from polylogue.operations import ArchiveStats as PublicArchiveStats
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> PublicArchiveStats:
             stats = archive.stats()
             word_row = archive._conn.execute("SELECT COALESCE(SUM(word_count), 0) FROM sessions").fetchone()
             recent = [
@@ -3714,6 +4458,14 @@ class PolylogueArchiveMixin:
                 last_sync=None,
                 recent=recent,
             )
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.stats",
+            arguments={},
+            work=read,
+            projection="stats",
+        )
 
     async def facets(
         self,
@@ -3744,7 +4496,7 @@ class PolylogueArchiveMixin:
 
         def _payload(b: _FacetBuckets) -> FacetBucketsPayload:
             return FacetBucketsPayload(
-                origins=dict(b.providers),
+                origins=dict(b.origins),
                 tags=dict(b.tags),
                 repos=dict(b.repos),
                 role_counts=dict(b.role_counts),
@@ -3765,16 +4517,20 @@ class PolylogueArchiveMixin:
                 **_FACET_FAMILY_METADATA.get(family, {}),
             }
 
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         scoped_to_query = spec is not None and spec.has_filters()
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
-            scoped_buckets = (
+        global_buckets, scoped_buckets = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.facets",
+            arguments={"spec": spec, "include_deferred": include_deferred},
+            work=lambda archive: (
+                _archive_facet_buckets(archive, None, include_deferred=include_deferred),
                 _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
                 if scoped_to_query
-                else global_buckets
-            )
+                else _archive_facet_buckets(archive, None, include_deferred=include_deferred),
+            ),
+            projection="facets",
+            workload_class="scan",
+        )
         idf_map = compute_idf(global_buckets) if include_idf else {}
         active = scoped_buckets if scoped_to_query else global_buckets
         complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
@@ -3796,7 +4552,7 @@ class PolylogueArchiveMixin:
                         for family, reason in deferred_families.items()
                     },
                 },
-                "origins": dict(active.providers),
+                "origins": dict(active.origins),
                 "tags": dict(active.tags),
                 "repos": dict(active.repos),
                 "role_counts": dict(active.role_counts),
@@ -3867,10 +4623,13 @@ class PolylogueArchiveMixin:
         query: InsightReadinessQuery | None = None,
     ) -> InsightReadinessReport:
         """Return insight materialization readiness for downstream consumers."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.insight_readiness_report(query)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.readiness",
+            arguments={"query": query},
+            work=lambda archive: archive.insight_readiness_report(query),
+            projection="insight-readiness",
+        )
 
     async def archive_debt(
         self,
@@ -3896,10 +4655,14 @@ class PolylogueArchiveMixin:
         query: InsightRigorAuditQuery | None = None,
     ) -> InsightRigorAuditReport:
         """Per-product rigor profile across materialized insights (#1275)."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.audit_insight_rigor(query)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.rigor_audit",
+            arguments={"query": query},
+            work=lambda archive: archive.audit_insight_rigor(query),
+            projection="insight-rigor",
+            workload_class="scan",
+        )
 
     async def get_messages_paginated(
         self,
@@ -4024,10 +4787,16 @@ class PolylogueArchiveMixin:
         Delegates to the archive layer rather than accessing
         the private ``_backend`` connection directly.
         """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.raw_artifacts_for_session(session_id, limit=limit, offset=offset)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.raw_artifacts.list",
+            arguments={"session_id": session_id},
+            work=lambda archive: archive.raw_artifacts_for_session(session_id, limit=limit, offset=offset),
+            page_size=limit,
+            offset=offset,
+            projection="raw-artifacts",
+            stable_order="artifact_id",
+        )
 
     async def query_sessions(
         self,
@@ -4075,10 +4844,16 @@ class PolylogueArchiveMixin:
             },
             strict=True,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            archive_summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=50)
+        archive_summaries = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.sessions.query",
+            arguments={"origin": origin, "tag": tag, "since": since, "until": until, "sort": sort, **kwargs},
+            work=lambda archive: _archive_list_summaries_for_spec(archive, spec, default_limit=50),
+            page_size=limit,
+            offset=offset,
+            projection="session-summary",
+            stable_order=sort or "date,session_id",
+        )
         return [
             {
                 "id": summary.session_id,
@@ -4114,38 +4889,59 @@ class PolylogueArchiveMixin:
             {"origin": origin, "since": since, "until": until, **query_params},
             strict=True,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return _archive_count_sessions_for_spec(archive, spec)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.sessions.count",
+            arguments={"origin": origin, "since": since, "until": until, **query_params},
+            work=lambda archive: _archive_count_sessions_for_spec(archive, spec),
+            page_size=1,
+            projection="count",
+            workload_class="scan",
+        )
 
     async def export_insight_bundle(
         self,
         request: InsightExportBundleRequest,
     ) -> InsightExportBundleResult:
         """Write a versioned archive-insight export bundle."""
-        from polylogue.insights.export_bundles import export_insight_bundle
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        import asyncio
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return await export_insight_bundle(_ArchiveInsightExportOperations(archive), self.config, request)
+        from polylogue.insights.export_bundles import export_insight_bundle
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.export_bundle",
+            arguments={"request": request},
+            work=lambda archive: asyncio.run(
+                export_insight_bundle(_ArchiveInsightExportOperations(archive), self.config, request)
+            ),
+            page_size=1,
+            projection="insight-export",
+            workload_class="scan",
+        )
 
     async def get_session_summary(self, session_id: str) -> SessionSummary | None:
         """Return a summary record for a single session, or ``None`` if not found."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> SessionSummary | None:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
                 return _archive_summary_to_domain(archive.read_summary(resolved_id))
             except KeyError:
                 return None
 
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_summary.get",
+            arguments={"session_id": session_id},
+            work=read,
+            projection="session-summary",
+        )
+
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         """Return message-count and word-count stats for a single session."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> dict[str, int]:
             try:
                 resolved_id = archive.resolve_session_id(session_id)
                 summary = archive.read_summary(resolved_id)
@@ -4157,19 +4953,34 @@ class PolylogueArchiveMixin:
                 "attachments": 0,
             }
 
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_stats.get",
+            arguments={"session_id": session_id},
+            work=read,
+            projection="session-stats",
+        )
+
     async def get_stats_by(self, group_by: str = "origin") -> dict[str, int]:
         """Group session counts by origin/calendar dimensions."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.stats_by(group_by)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.stats_by",
+            arguments={"group_by": group_by},
+            work=lambda archive: archive.stats_by(group_by),
+            projection="stats-by",
+            workload_class="scan",
+        )
 
     async def get_index_status(self) -> IndexStatus:
         """Return archive block-FTS index existence and document count."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.index_status()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.index_status",
+            arguments={},
+            work=lambda archive: archive.index_status(),
+            projection="index-status",
+        )
 
     async def update_index(self, session_ids: list[str]) -> bool:
         """Repair the archive block-FTS index.
@@ -4192,7 +5003,7 @@ class PolylogueArchiveMixin:
         *,
         session_id: str | None = None,
         query: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[SessionNeighborCandidate]:
@@ -4200,30 +5011,43 @@ class PolylogueArchiveMixin:
 
         At least one of ``session_id`` or ``query`` must be provided.
         """
+        import asyncio
+
         from polylogue.archive.session.neighbor_candidates import (
             NeighborDiscoveryRequest,
             discover_neighbor_candidates,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return await discover_neighbor_candidates(
-                cast("SessionQueryRuntimeStore", _ArchiveNeighborRuntime(archive)),
-                NeighborDiscoveryRequest(
-                    session_id=session_id,
-                    query=query,
-                    provider=provider,
-                    limit=limit,
-                    window_hours=window_hours,
-                ),
-            )
+        request = NeighborDiscoveryRequest(
+            session_id=session_id,
+            query=query,
+            origin=origin,
+            limit=limit,
+            window_hours=window_hours,
+        )
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.neighbor_candidates",
+            arguments={
+                "session_id": session_id,
+                "query": query,
+                "origin": origin,
+                "limit": limit,
+                "window_hours": window_hours,
+            },
+            work=lambda archive: asyncio.run(discover_neighbor_candidates(_ArchiveNeighborRuntime(archive), request)),
+            page_size=limit,
+            projection="neighbor-candidates",
+            stable_order="score,time,session_id",
+            workload_class="scan",
+        )
 
     async def neighbor_candidate_payloads(
         self,
         *,
         session_id: str | None = None,
         query: str | None = None,
-        provider: str | None = None,
+        origin: str | None = None,
         limit: int = 10,
         window_hours: int = 24,
     ) -> list[JSONDocument]:
@@ -4234,7 +5058,7 @@ class PolylogueArchiveMixin:
         candidates = await self.neighbor_candidates(
             session_id=session_id,
             query=query,
-            provider=provider,
+            origin=origin,
             limit=limit,
             window_hours=window_hours,
         )
@@ -4296,17 +5120,27 @@ class PolylogueArchiveMixin:
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
         """Return the full session tree (parent + children) for a session."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return [_archive_session_to_session(session) for session in archive.get_session_tree(session_id)]
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_tree",
+            arguments={"session_id": session_id},
+            work=lambda archive: [
+                _archive_session_to_session(session) for session in archive.get_session_tree(session_id)
+            ],
+            projection="session-tree",
+            stable_order="depth,session_id",
+        )
 
     async def list_tags(self, *, origin: str | None = None) -> dict[str, int]:
         """List all tags with session counts, optionally filtered by origin."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_user_tags(origin=origin)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.tags.list",
+            arguments={"origin": origin},
+            work=lambda archive: archive.list_user_tags(origin=origin),
+            projection="tags",
+            stable_order="tag",
+        )
 
     async def delete_session(self, session_id: str) -> bool:
         """Permanently delete a session and all associated data.
@@ -4396,14 +5230,21 @@ class PolylogueArchiveMixin:
 
     async def get_metadata(self, session_id: str) -> dict[str, str]:
         """Return all metadata key-value pairs for a session."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
+        def read(archive: ArchiveStore) -> dict[str, str]:
             try:
                 doc = archive.read_user_metadata(session_id)
             except KeyError:
                 return {}
-        return {str(k): str(v) if not isinstance(v, str) else v for k, v in doc.items()}
+            return {str(k): str(v) if not isinstance(v, str) else v for k, v in doc.items()}
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.metadata.get",
+            arguments={"session_id": session_id},
+            work=read,
+            projection="metadata",
+        )
 
     async def update_metadata(self, session_id: str, key: str, value: str) -> bool:
         """Set a metadata key on a session.
@@ -4597,14 +5438,17 @@ class PolylogueArchiveMixin:
         return bool(await self._archive_message_exists(session_id, message_id))
 
     async def _archive_resolve_session_id(self, token: str) -> str | None:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         archive_db = _active_archive_root(self.config) / "index.db"
         if not archive_db.exists():
             return None
         try:
-            with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-                return archive.resolve_session_id(token)
+            return await run_archive_read(
+                _active_archive_root(self.config),
+                operation="archive.session.resolve",
+                arguments={"token": token},
+                work=lambda archive: archive.resolve_session_id(token),
+                projection="session-id",
+            )
         except KeyError:
             raise SessionNotFoundError(token) from None
         except ValueError:
@@ -4613,18 +5457,23 @@ class PolylogueArchiveMixin:
             return None
 
     async def _archive_message_exists(self, session_id: str, message_id: str) -> bool | None:
-        import sqlite3
-
         archive_db = _active_archive_root(self.config) / "index.db"
         if not archive_db.exists():
             return None
         try:
-            with closing(sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)) as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM messages WHERE session_id = ? AND message_id = ?",
-                    (session_id, message_id),
-                ).fetchone()
-            return row is not None
+            return await run_archive_read(
+                _active_archive_root(self.config),
+                operation="archive.message.exists",
+                arguments={"session_id": session_id, "message_id": message_id},
+                work=lambda archive: (
+                    archive._conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? AND message_id = ?",
+                        (session_id, message_id),
+                    ).fetchone()
+                    is not None
+                ),
+                projection="message-existence",
+            )
         except sqlite3.Error:
             return None
 
@@ -4690,8 +5539,6 @@ class PolylogueArchiveMixin:
         message_id: str | None = None,
     ) -> list[dict[str, str]]:
         """List marks, optionally filtered by type, target, session, or message."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         resolved_target_type = target_type
         resolved_target_id = target_id
         if message_id is not None:
@@ -4703,12 +5550,18 @@ class PolylogueArchiveMixin:
                 resolved_target_type = TARGET_SESSION
             except SessionNotFoundError:
                 return []
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_marks(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.marks.list",
+            arguments={"mark_type": mark_type, "target_type": resolved_target_type, "target_id": resolved_target_id},
+            work=lambda archive: archive.list_marks(
                 mark_type=mark_type,
                 target_type=resolved_target_type,
                 target_id=resolved_target_id,
-            )
+            ),
+            projection="marks",
+            stable_order="created_at,target_id",
+        )
 
     async def save_annotation(
         self,
@@ -4743,10 +5596,13 @@ class PolylogueArchiveMixin:
 
     async def get_annotation(self, annotation_id: str) -> dict[str, str] | None:
         """Get an annotation by ID."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_annotation(annotation_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.annotation.get",
+            arguments={"annotation_id": annotation_id},
+            work=lambda archive: archive.get_annotation(annotation_id),
+            projection="annotation",
+        )
 
     async def list_annotations(
         self,
@@ -4757,8 +5613,6 @@ class PolylogueArchiveMixin:
         message_id: str | None = None,
     ) -> list[dict[str, str]]:
         """List annotations, optionally filtered by target, session, or message."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
         resolved_target_type = target_type
         resolved_target_id = target_id
         scope_session_id: str | None = None
@@ -4770,12 +5624,22 @@ class PolylogueArchiveMixin:
                 scope_session_id = await self._resolve_user_state_session_id(session_id)
             except SessionNotFoundError:
                 return []
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_annotations(
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.annotations.list",
+            arguments={
+                "target_type": resolved_target_type,
+                "target_id": resolved_target_id,
+                "session_id": scope_session_id,
+            },
+            work=lambda archive: archive.list_annotations(
                 target_type=resolved_target_type,
                 target_id=resolved_target_id,
                 session_id=scope_session_id,
-            )
+            ),
+            projection="annotations",
+            stable_order="created_at,annotation_id",
+        )
 
     async def delete_annotation(self, annotation_id: str) -> bool:
         """Delete an annotation. Returns ``True`` if deleted."""
@@ -4797,24 +5661,34 @@ class PolylogueArchiveMixin:
 
     async def get_view(self, view_id: str) -> dict[str, str] | None:
         """Get a saved view by ID."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_view(view_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.view.get",
+            arguments={"view_id": view_id},
+            work=lambda archive: archive.get_view(view_id),
+            projection="saved-view",
+        )
 
     async def get_view_by_name(self, name: str) -> dict[str, str] | None:
         """Get a saved view by name."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_view_by_name(name)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.view_by_name.get",
+            arguments={"name": name},
+            work=lambda archive: archive.get_view_by_name(name),
+            projection="saved-view",
+        )
 
     async def list_views(self) -> list[dict[str, str]]:
         """List all saved views."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_views()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.views.list",
+            arguments={},
+            work=lambda archive: archive.list_views(),
+            projection="saved-views",
+            stable_order="name,view_id",
+        )
 
     async def delete_view(self, view_id: str) -> bool:
         """Delete a saved view. Returns ``True`` if deleted."""
@@ -5080,17 +5954,24 @@ class PolylogueArchiveMixin:
 
     async def get_recall_pack(self, pack_id: str) -> dict[str, str] | None:
         """Get a recall pack by ID."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_recall_pack(pack_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.recall_pack.get",
+            arguments={"pack_id": pack_id},
+            work=lambda archive: archive.get_recall_pack(pack_id),
+            projection="recall-pack",
+        )
 
     async def list_recall_packs(self) -> list[dict[str, str]]:
         """List all recall packs."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_recall_packs()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.recall_packs.list",
+            arguments={},
+            work=lambda archive: archive.list_recall_packs(),
+            projection="recall-packs",
+            stable_order="updated_at,pack_id",
+        )
 
     async def delete_recall_pack(self, pack_id: str) -> bool:
         """Delete a recall pack. Returns ``True`` if deleted."""
@@ -5169,17 +6050,24 @@ class PolylogueArchiveMixin:
 
     async def get_workspace(self, workspace_id: str) -> dict[str, str] | None:
         """Get a durable reader workspace by ID."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.get_workspace(workspace_id)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.workspace.get",
+            arguments={"workspace_id": workspace_id},
+            work=lambda archive: archive.get_workspace(workspace_id),
+            projection="workspace",
+        )
 
     async def list_workspaces(self) -> list[dict[str, str]]:
         """List durable reader workspaces."""
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return archive.list_workspaces()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.workspaces.list",
+            arguments={},
+            work=lambda archive: archive.list_workspaces(),
+            projection="workspaces",
+            stable_order="updated_at,workspace_id",
+        )
 
     async def delete_workspace(self, workspace_id: str) -> bool:
         """Delete a durable reader workspace. Returns ``True`` if deleted."""
@@ -5246,13 +6134,17 @@ class PolylogueArchiveMixin:
 
         if kind is not None:
             parse_correction_kind(kind)
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            try:
-                return archive.list_corrections(session_id=session_id, kind=kind)
-            except KeyError as exc:
-                raise SessionNotFoundError(str(session_id)) from exc
+        try:
+            return await run_archive_read(
+                _active_archive_root(self.config),
+                operation="user_state.corrections.list",
+                arguments={"session_id": session_id, "kind": kind},
+                work=lambda archive: archive.list_corrections(session_id=session_id, kind=kind),
+                projection="corrections",
+                stable_order="created_at,correction_id",
+            )
+        except KeyError as exc:
+            raise SessionNotFoundError(str(session_id)) from exc
 
     async def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one correction. Returns ``True`` when a row was removed."""
@@ -5360,10 +6252,16 @@ class PolylogueArchiveMixin:
             UNRESOLVED_KINDS,
             decode_blackboard_note,
         )
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            envelopes = archive.list_blackboard_notes()
+        envelopes = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="user_state.blackboard.list",
+            arguments={"kind": kind, "scope_repo": scope_repo, "unresolved": unresolved},
+            work=lambda archive: archive.list_blackboard_notes(),
+            page_size=limit,
+            projection="blackboard-notes",
+            stable_order="updated_at:desc,note_id",
+        )
         notes: list[BlackboardNote] = []
         for envelope in envelopes:
             note = decode_blackboard_note(

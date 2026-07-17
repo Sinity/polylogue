@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-09",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "artifact": {"filename": "testdiet-09-claude-code-normalization-r01.zip", "sha256": "ff1220a65cfa3e882d4887e257a68cfadd34e686f77042fd6a35058912646047", "size_bytes": 25182, "custody_path": "testdiet/results/testdiet-09/a01/raw/testdiet-09-claude-code-normalization-r01.zip"},
+  "local_adjudication": "Current Claude Code dispatch/parser reconciliation admits authoredness, streaming identity, background completion, and lineage law coverage.",
+  "beads": ["polylogue-2qx", "polylogue-2qx.1", "polylogue-866e", "polylogue-4ts.3"],
+  "merge_commit": "1d3145afa5f07a8f90ffceefc33ba425c877a8ad",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3044",
+  "verification": "Focused new-law set and devtools verify --quick passed.",
+  "scope": "Provider normalization witnesses; lineage-write P0 remains separately in progress."
+}

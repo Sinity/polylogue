@@ -14,7 +14,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.rendering.semantic_cards import (
     build_semantic_transcript,
-    lineage_descriptor_from_topology,
+    lineage_descriptor_from_session,
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
 from polylogue.surfaces.payloads import (
@@ -103,13 +103,10 @@ def run_messages(
                     click.echo(_json.dumps(line))
             else:
                 # Keep archive access at the existing CLI orchestration seam.
-                # Card construction below is pure and receives fully hydrated
-                # messages plus an already-read topology descriptor.
+                # The renderer receives bounded facts from the already-read
+                # session row rather than hydrating a whole lineage family.
                 session = await api.get_session(session_id)
-                topology = await api.get_session_topology(session_id)
-                lineage = (
-                    lineage_descriptor_from_topology(topology, session_id=session_id) if topology is not None else None
-                )
+                lineage = lineage_descriptor_from_session(session) if session is not None else None
                 transcript = build_semantic_transcript(
                     messages,
                     session_id=session_id,

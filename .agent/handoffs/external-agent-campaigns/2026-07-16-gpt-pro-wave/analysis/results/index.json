@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "analysis",
+  "attempts": [
+    {
+      "job": "analysis-01",
+      "workload": "analysis",
+      "zip": "analysis-01-bead-overlap-contradictions-r01.zip",
+      "sha256": "833d16be7bd83ba6000c069b112a0b0a2436f3f324fc7938051149982fe3e74a",
+      "bytes": 101167,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "members": [
+        "REPORT.md",
+        "EVIDENCE.md",
+        "DECISIONS.md",
+        "NEXT-ACTIONS.md",
+        "ACTIVE-CENSUS.csv",
+        "GRAPH-CHANGES.csv",
+        "EXECUTION-CLUSTERS.csv",
+        "AUDIT-STATS.json"
+      ],
+      "integration": "current-master adjudication retained status/query/raw-chain/synchronization evidence but rejected stale ownership proposals, especially superseding t46.9; no source patch admitted",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "adjudicated_mixed_snapshot"
+    },
+    {
+      "job": "analysis-02",
+      "workload": "analysis",
+      "zip": "analysis-02-campaign-effectiveness-r01.zip",
+      "sha256": "3170b3999b062f5b0ee6c048661c55478dd65f72c9f952f2ebf6d9a218de0039",
+      "bytes": 31570,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "integration": "admitted to polylogue-yyvg.6: distinct funnel identities, immutable event receipts, mission shape, custody, and generic product-boundary requirements; no campaign ontology enters product code",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "integrated_campaign_contract"
+    },
+    {
+      "job": "analysis-03",
+      "workload": "analysis",
+      "zip": "analysis-03-active-diff-ac-review-r01.zip",
+      "sha256": "7e60be9d8f14dc7aac6e00635a0cf9ed098f94f36ad98347e1f4f2b26bb3b7b4",
+      "bytes": 30429,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "integration": "useful as historical branch/closure forensics only; its proposed baseline and stale-branch actions are superseded by current master and current Bead authority",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "adjudicated_forensic_snapshot"
+    },
+    {
+      "job": "analysis-04",
+      "workload": "analysis",
+      "zip": "analysis-04-surface-semantic-matrix-r01.zip",
+      "sha256": "01e51ca0f2f122fa1484ed9a17b0e0f279876d3a71ca1524d8167b148b8b07f2",
+      "bytes": 31672,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "integration": "current-compatible surface semantics map to existing owners: z9gh.9.1 query transaction, 2qx origin boundary, cuxz.2 absence/provenance, t46.9/kwsb.2/71ey mutation execution, t46.8.2 MCP retirement, and s1kr operation parity; no parallel surface model admitted",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "adjudicated_current_owner_map"
+    },
+    {
+      "job": "analysis-05",
+      "workload": "analysis",
+      "zip": "analysis-05-duplicate-authority-census-r01.zip",
+      "sha256": "e8b470b89cbea09279016f282a09683facf96b90ff7c587de9480ce896ec3271",
+      "bytes": 23488,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "integration": "admitted execution-grade proof refinements to 71ey, fd2s, mhx.7, and s1kr; query recipe and MCP-declaration findings map to z9gh.3/t46.8 without a second registry",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "integrated_bead_evidence"
+    }
+  ]
+}

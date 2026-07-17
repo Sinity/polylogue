@@ -1,0 +1,60 @@
+{
+  "runSettings": {
+    "enableAutoFunctionResponse": false,
+    "enableBrowseAsATool": false,
+    "enableCodeExecution": false,
+    "enableSearchAsATool": false,
+    "maxOutputTokens": 44000,
+    "model": "models/gemini-2.5-pro",
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HARASSMENT HAR",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH H",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CO",
+        "threshold": "OFF"
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE"
+      }
+    ],
+    "temperature": 1.0453362388984688,
+    "topK": 54,
+    "topP": 0.9241626446518381
+  },
+  "systemInstruction": {},
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "text": "Please inspect the attached fixture note.",
+        "createTime": "2024-02-03T04:29:36.990973+00:00",
+        "inlineFile": {
+          "mimeType": "text/plain",
+          "data": "ZGVtbyBhdHRhY2htZW50IGJ5dGVzIGZvciBQb2x5bG9ndWUgZml4dHVyZSBjb3ZlcmFnZQo="
+        }
+      },
+      {
+        "role": "model",
+        "text": "I'll explain step by step.",
+        "createTime": "2024-02-03T04:30:36.990973+00:00"
+      },
+      {
+        "role": "user",
+        "text": "I need to implement a function that processes this data.",
+        "createTime": "2024-02-03T04:31:36.990973+00:00"
+      },
+      {
+        "role": "model",
+        "text": "Here's a breakdown of the architecture.",
+        "createTime": "2024-02-03T04:32:36.990973+00:00"
+      }
+    ]
+  }
+}

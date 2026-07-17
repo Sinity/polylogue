@@ -19,7 +19,7 @@ from polylogue.insights.export_bundles import (
     InsightExportFileSummary,
 )
 from polylogue.insights.readiness import (
-    InsightProviderCoverage,
+    InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessReport,
     InsightVersionCoverage,
@@ -87,7 +87,7 @@ def _status_report() -> InsightReadinessReport:
         checked_at="2026-04-23T00:00:00+00:00",
         aggregate_verdict="partial",
         total_sessions=10,
-        provider="codex",
+        origin="codex-session",
         since="2026-04-01",
         until="2026-04-30",
         insights=(
@@ -102,7 +102,7 @@ def _status_report() -> InsightReadinessReport:
                 orphan_count=3,
                 incompatible_count=4,
                 ready_flags={"fts": True},
-                provider_coverage=(InsightProviderCoverage(source_name="codex", row_count=7),),
+                origin_coverage=(InsightOriginCoverage(origin="codex-session", row_count=7),),
                 version_coverage=(
                     InsightVersionCoverage(field="materializer_version", current_version=4, versions={"4": 7}),
                 ),
@@ -228,7 +228,7 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
 
     query = captured["query"]
     assert query.insights == ("profiles",)
-    assert query.provider == "codex"
+    assert query.origin == "codex-session"
     assert query.since == "2026-04-01T00:00:00+00:00"
     assert query.until == "2026-04-30T00:00:00+00:00"
     emit_success.assert_called_once()
@@ -305,7 +305,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     request = captured["request"]
     assert request.output_path == tmp_path / "bundle"
     assert request.insights == ("profiles",)
-    assert request.provider == "codex"
+    assert request.origin == "codex-session"
     assert request.since == "2026-04-01T00:00:00+00:00"
     assert request.until == "2026-04-30T00:00:00+00:00"
     assert request.overwrite is True

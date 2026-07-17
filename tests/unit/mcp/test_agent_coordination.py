@@ -126,6 +126,29 @@ def test_agent_coordination_tool_returns_shared_payload(
     assert calls == [True]
 
 
+def test_agent_coordination_compact_cache_is_bypassable(
+    mcp_server: MCPServerUnderTest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    def fake_build(**kwargs: object) -> AgentCoordinationPayload:
+        calls.append(bool(kwargs["detail"]))
+        return _payload(str(kwargs["view"]))
+
+    monkeypatch.setattr("polylogue.mcp.server_tools.build_coordination_envelope", fake_build)
+    tool = mcp_server._tool_manager._tools["agent_coordination"].fn
+
+    invoke_surface(tool, view="status", limit=5)
+    invoke_surface(tool, view="status", limit=5)
+    invoke_surface(tool, view="status", limit=5, fresh=True)
+    invoke_surface(tool, view="status", limit=5, detail=True)
+
+    # The second compact call hits the real server-local cache; fresh and
+    # detail requests retain their live/evidence semantics.
+    assert calls == [False, False, True]
+
+
 def test_agent_coordination_prompt_embeds_bounded_envelope(
     mcp_server: MCPServerUnderTest,
     monkeypatch: pytest.MonkeyPatch,

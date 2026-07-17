@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
@@ -25,6 +25,30 @@ class SyntheticSchemaSelection:
     element_kind: str | None
     schema: SchemaRecord
     wire_format: WireFormat
+    workload_profile: SchemaRecord | None = None
+
+
+@dataclass(frozen=True)
+class SyntheticArtifactFacts:
+    """Independent facts planted by the generator before archive ingestion.
+
+    These are intentionally a narrow provider-wire blueprint.  Consumers may
+    compare normalized archive outcomes with it, but fact construction never
+    calls a provider parser, query evaluator, or storage reader.
+    """
+
+    provider: str
+    native_session_id: str | None
+    expected_session_id: str | None
+    message_count: int
+    tool_use_ids: tuple[str, ...]
+    tool_result_ids: tuple[str, ...]
+    raw_sha256: str
+
+    @property
+    def paired_tool_ids(self) -> tuple[str, ...]:
+        results = set(self.tool_result_ids)
+        return tuple(tool_id for tool_id in self.tool_use_ids if tool_id in results)
 
 
 @dataclass(frozen=True)
@@ -32,6 +56,7 @@ class SyntheticArtifact:
     raw_bytes: bytes
     message_count: int
     style: str
+    facts: SyntheticArtifactFacts
 
 
 @dataclass(frozen=True)
@@ -44,6 +69,10 @@ class SyntheticGenerationReport:
     generated_count: int
     style: SyntheticStyle
     seed: int | None
+    workload_profile_id: str | None = None
+    structural_variant_counts: dict[str, int] = field(default_factory=dict)
+    relationship_variant_counts: dict[str, int] = field(default_factory=dict)
+    lineage_edge_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -73,6 +102,7 @@ __all__ = [
     "SchemaScalar",
     "SchemaValue",
     "SyntheticArtifact",
+    "SyntheticArtifactFacts",
     "SyntheticGenerationBatch",
     "SyntheticGenerationState",
     "SyntheticGenerationReport",

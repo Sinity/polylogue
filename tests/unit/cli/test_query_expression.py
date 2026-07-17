@@ -33,6 +33,9 @@ from polylogue.archive.query.expression import (
     QueryUnitPipeline,
     QueryUnitSessionScopeStage,
     QueryUnitSource,
+    RefOperand,
+    RefOperandCycleError,
+    ResolvedRefOperand,
     UnsupportedSessionTerminalActionError,
     _CountRangeToken,
     _CountToken,
@@ -45,7 +48,9 @@ from polylogue.archive.query.expression import (
     compile_expression_into,
     explain_expression,
     parse_expression_ast,
+    parse_reference_query_pipeline,
     parse_unit_source_expression,
+    resolve_ref_operand,
 )
 from polylogue.archive.query.metadata import query_unit_descriptors
 from polylogue.archive.query.predicate import (
@@ -60,6 +65,7 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
 
 # ---------------------------------------------------------------------------
@@ -68,12 +74,29 @@ from polylogue.storage.runtime import MessageRecord
 
 
 def _materialize_run_projection(index_db: Path) -> None:
-    """Rebuild session insights so materialized run/context projection tables exist."""
+    """Rebuild session insights (profile/work-event/phase rows).
+
+    Run/observed-event/context-snapshot query units are source-derived
+    (polylogue-dab) and need no materialization; this only exercises that a
+    rebuild alongside a source-derived query doesn't interfere with it.
+    """
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(index_db) as conn:
         rebuild_session_insights_sync(conn)
+
+
+def _assert_run_projection_table_absent(index_db: Path, table_name: str) -> None:
+    """Assert a run-projection materialized table was dropped (polylogue-dab).
+
+    Stronger than the old "materialized count stays 0" check this replaces:
+    the table no longer exists at all, so there is no write path to assert
+    against in the first place.
+    """
+    with sqlite3.connect(index_db) as conn:
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)).fetchone()
+    assert row is None, f"{table_name} should not exist (polylogue-dab dropped it)"
 
 
 def _spec(**kwargs: Any) -> SessionQuerySpec:
@@ -493,6 +516,70 @@ class TestExplainExpression:
 
 
 class TestBooleanQueryExpression:
+    def test_reference_pipeline_preserves_result_set_as_typed_operand(self) -> None:
+        pipeline = parse_reference_query_pipeline("from result-set:stable-set | group by model | count")
+
+        assert pipeline is not None
+        assert pipeline.operand == RefOperand(reference=ObjectRef(kind="result-set", object_id="stable-set"))
+        assert pipeline.stages == ("group by model", "count")
+
+    def test_reference_pipeline_bypasses_lark_field_clause_colon_ambiguity(self) -> None:
+        ast = parse_expression_ast("from result-set:stable-set | count")
+
+        assert ast.ref_operand == RefOperand(reference=ObjectRef(kind="result-set", object_id="stable-set"))
+        assert ast.clauses == ()
+
+    @pytest.mark.parametrize(
+        ("expression", "match"),
+        [
+            ("from query:not-a-hash", "query hash must be 64 lowercase hexadecimal characters"),
+            ("from query-run:not-a-run", "query run id must start with 'qr_'"),
+        ],
+    )
+    def test_reference_pipeline_uses_canonical_substrate_identity_validation(self, expression: str, match: str) -> None:
+        with pytest.raises(ExpressionCompileError, match=match):
+            parse_reference_query_pipeline(expression)
+
+    def test_reference_explain_reports_durable_lineage_without_textual_expansion(self) -> None:
+        payload = explain_expression("from result-set:stable-set | group by model | count").to_payload()
+
+        assert payload["ast"] == {
+            "entry": "reference_pipeline",
+            "reference_pipeline": {
+                "source": {
+                    "kind": "ref_operand",
+                    "reference": "result-set:stable-set",
+                    "reference_kind": "result-set",
+                    "evaluation_mode": "retained",
+                },
+                "stages": ["group by model", "count"],
+            },
+        }
+        assert cast(dict[str, Any], payload["lowering_plan"])["reference_lineage"] == ["result-set:stable-set"]
+
+    def test_reference_pipeline_rejects_compatibility_text_lowering(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="never expanded into text"):
+            compile_expression("from result-set:stable-set")
+
+    def test_reference_resolver_rejects_a_cycle_before_materialization(self) -> None:
+        operand = RefOperand(reference=ObjectRef(kind="query", object_id="stable-query"))
+
+        class _CyclicResolver:
+            def resolve_ref_operand(self, resolved_operand: RefOperand) -> ResolvedRefOperand:
+                repeated_parent = ObjectRef(kind="query", object_id="parent-query")
+                return ResolvedRefOperand(
+                    operand=resolved_operand,
+                    grain="session",
+                    lineage=(repeated_parent, repeated_parent),
+                )
+
+        with pytest.raises(RefOperandCycleError, match="reference cycle"):
+            resolve_ref_operand(operand, _CyclicResolver())
+
+    def test_macro_token_is_not_reinterpreted_as_a_reference_operand(self) -> None:
+        assert parse_reference_query_pipeline("@saved") is None
+        assert _clauses("@saved") == [_TextToken(text="@saved", quoted=False, negated=False)]
+
     def test_boolean_ast_exposes_predicate_tree(self) -> None:
         ast = parse_expression_ast("repo:polylogue OR origin:chatgpt-export")
 
@@ -938,6 +1025,57 @@ class TestBooleanQueryExpression:
         with pytest.raises(ExpressionCompileError, match="unsupported pipeline stage"):
             parse_unit_source_expression("sessions where repo:polylogue | messages where role:assistant | sample 3")
 
+    def test_pipeline_sessions_count_names_the_unsupported_shape(self) -> None:
+        """`sessions where ... | count` (polylogue-9srm): sessions has no terminal
+        row/aggregate lowerer of its own, so this must fail with an error that
+        names `count` specifically and points at the working alternative
+        (`find ... then analyze --count`), not the generic
+        "must be an executable `<unit>s where ...` query" message.
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where repo:polylogue | count")
+
+        message = str(exc_info.value)
+        assert "`count` cannot follow `sessions where ...` directly" in message
+        assert "analyze --count" in message
+        assert "actions/blocks" in message  # supported terminal units are named
+
+    def test_pipeline_sessions_group_by_names_the_unsupported_shape(self) -> None:
+        """Same as above for `group by` directly on `sessions where ...`
+        (polylogue-9srm): previously raised the identical generic message even
+        though `group by` (not the missing terminal stage) is the actual
+        problem.
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where origin:codex-session | group by origin | count")
+
+        message = str(exc_info.value)
+        assert "`group by` cannot follow `sessions where ...` directly" in message
+        assert "analyze --count" in message
+
+    @pytest.mark.parametrize("stage", ["sort by time", "limit 10", "offset 5"])
+    def test_pipeline_sessions_other_terminal_keywords_name_the_unsupported_shape(self, stage: str) -> None:
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression(f"sessions where repo:polylogue | {stage}")
+
+        message = str(exc_info.value)
+        assert "cannot follow `sessions where ...` directly" in message
+
+    def test_pipeline_sessions_unrecognized_second_stage_keeps_generic_message(self) -> None:
+        """A second stage that isn't a `<unit>s where ...` query AND doesn't
+        look like a known terminal pipeline keyword still falls back to the
+        original generic message (now naming supported terminal units too).
+        """
+
+        with pytest.raises(ExpressionCompileError) as exc_info:
+            parse_unit_source_expression("sessions where repo:polylogue | not a real stage")
+
+        message = str(exc_info.value)
+        assert "must be an executable `<unit>s where ...` query" in message
+        assert "cannot follow `sessions where ...` directly" not in message
+
     def test_pipeline_accepts_sort_by_time_on_sql_run_rows(self) -> None:
         source = parse_unit_source_expression(
             "sessions where repo:polylogue | runs where status:completed | sort by time desc"
@@ -1052,6 +1190,117 @@ class TestBooleanQueryExpression:
                 QueryFieldPredicate(field="status", values=("active",)),
             ),
         )
+
+    def test_assertion_value_path_equality_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.status:approved")
+
+        assert source is not None
+        assert source.unit == "assertion"
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=("approved",), op="=")
+
+    def test_assertion_value_path_quoted_string_preserves_literal_type(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:"true"')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=('"true"',), op="=")
+
+    def test_assertion_value_path_equality_preserves_alternation(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:("4"|"true"|null)')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(
+            field="value.status",
+            values=('"4"', '"true"', "null"),
+            op="=",
+        )
+
+    def test_assertion_value_path_quoted_pipe_is_not_an_alternation(self) -> None:
+        source = parse_unit_source_expression('assertions where value.status:"a|b"')
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.status", values=('"a|b"',), op="=")
+
+    def test_assertion_value_path_comparison_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.score", values=("4",), op=">=")
+
+    def test_assertion_value_path_nested_predicate(self) -> None:
+        source = parse_unit_source_expression("assertions where value.rubric.confidence:<0.5")
+
+        assert source is not None
+        assert source.predicate == QueryFieldPredicate(field="value.rubric.confidence", values=("0.5",), op="<")
+
+    def test_assertion_value_path_negation(self) -> None:
+        source = parse_unit_source_expression("assertions where NOT value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryNotPredicate(QueryFieldPredicate(field="value.score", values=("4",), op=">="))
+
+    def test_assertion_value_path_boolean_combination(self) -> None:
+        source = parse_unit_source_expression("assertions where kind:annotation AND value.score:>=4")
+
+        assert source is not None
+        assert source.predicate == QueryBoolPredicate(
+            op="and",
+            children=(
+                QueryFieldPredicate(field="kind", values=("annotation",)),
+                QueryFieldPredicate(field="value.score", values=("4",), op=">="),
+            ),
+        )
+
+    def test_exists_assertion_value_path_predicate(self) -> None:
+        ast = parse_expression_ast("exists assertion(value.score:>=4 AND kind:annotation)")
+
+        assert ast.boolean_predicate == QueryExistsPredicate(
+            unit="assertion",
+            child=QueryBoolPredicate(
+                op="and",
+                children=(
+                    QueryFieldPredicate(field="value.score", values=("4",), op=">="),
+                    QueryFieldPredicate(field="kind", values=("annotation",)),
+                ),
+            ),
+        )
+
+    def test_assertion_value_path_non_numeric_comparator_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="numeric value"):
+            parse_unit_source_expression("assertions where value.score:>=not-a-number")
+
+    def test_assertion_value_path_non_finite_comparator_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="finite numeric value"):
+            parse_unit_source_expression("assertions where value.score:>=NaN")
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1" + "0" * 400])
+    def test_assertion_value_path_non_finite_equality_rejected(self, literal: str) -> None:
+        with pytest.raises(ExpressionCompileError, match="finite JSON scalar"):
+            parse_unit_source_expression(f"assertions where value.score:{literal}")
+
+    @pytest.mark.parametrize("literal", ["[]", "{}"])
+    def test_assertion_value_path_structured_equality_rejected(self, literal: str) -> None:
+        # These shapes are rejected at the grammar boundary before the
+        # value-path scalar validator runs; either way they cannot become an
+        # equality predicate or reach SQL lowering.
+        with pytest.raises(ExpressionCompileError):
+            parse_unit_source_expression(f"assertions where value.score:{literal}")
+
+    def test_assertion_value_path_rejected_for_non_assertion_unit(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="not supported"):
+            parse_unit_source_expression("messages where value.score:>=4")
+
+    def test_assertion_value_path_rejected_for_empty_path(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="unknown query field"):
+            parse_unit_source_expression("assertions where value.:4")
+
+    def test_assertion_value_path_requires_a_value(self) -> None:
+        # An empty value never matches FIELD_CLAUSE's non-empty value
+        # requirement, so this is a grammar-level parse failure (same as any
+        # other empty-valued field clause) rather than a value-path-specific
+        # message -- documented here so the empty-path shape has a pinned
+        # regression rather than relying on incidental grammar behavior.
+        with pytest.raises(ExpressionCompileError):
+            compile_expression("exists assertion(value.score:)")
 
     def test_parse_observed_event_source_expression_preserves_terminal_unit(self) -> None:
         source = parse_unit_source_expression(
@@ -2375,6 +2624,10 @@ class TestBooleanQueryExpression:
         from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
         from tests.infra.storage_records import SessionBuilder
 
+        # Observed events are source-derived (polylogue-dab): a 'tool_finished'
+        # event exists only where a real tool_use block joins a tool_result
+        # block by tool_id, with handler_kind/status derived from tool_name
+        # and tool_result_is_error -- seed real blocks, not a materialized row.
         index_db = workspace_env["archive_root"] / "index.db"
         (
             SessionBuilder(index_db, "tool-events")
@@ -2382,59 +2635,33 @@ class TestBooleanQueryExpression:
             .git_repository_url("polylogue")
             .title("tool events")
             .add_message("m-user", role="user", text="tool events")
-            .save()
-        )
-        session_id = "claude-code-session:ext-tool-events"
-        with sqlite3.connect(index_db) as conn:
-            conn.executemany(
-                """
-                INSERT INTO session_observed_events (
-                    event_ref, session_id, run_ref, position, kind, summary,
-                    delivery_state, payload_json, search_text
-                ) VALUES (?, ?, ?, ?, 'tool_finished', ?, 'observed', ?, ?)
-                """,
-                [
-                    (
-                        "event:serena-ok",
-                        session_id,
-                        "run:tool-events",
-                        1,
-                        "serena ok",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "ok",
-                            }
-                        ),
-                        "serena ok",
-                    ),
-                    (
-                        "event:serena-failed",
-                        session_id,
-                        "run:tool-events",
-                        2,
-                        "serena failed",
-                        json.dumps(
-                            {
-                                "tool_name": "mcp__serena__find_symbol",
-                                "handler_kind": "mcp",
-                                "status": "failed",
-                            }
-                        ),
-                        "serena failed",
-                    ),
-                    (
-                        "event:bash-ok",
-                        session_id,
-                        "run:tool-events",
-                        3,
-                        "bash ok",
-                        json.dumps({"tool_name": "Bash", "handler_kind": "shell", "status": "ok"}),
-                        "bash ok",
-                    ),
+            .add_message(
+                "m-assistant",
+                role="assistant",
+                text="running tools",
+                blocks=[
+                    {"type": "tool_use", "tool_name": "mcp__serena__find_symbol", "tool_id": "t-serena-ok"},
+                    {"type": "tool_use", "tool_name": "mcp__serena__find_symbol", "tool_id": "t-serena-failed"},
+                    {"type": "tool_use", "tool_name": "Bash", "tool_id": "t-bash-ok"},
                 ],
             )
+            .add_message(
+                "m-tool-results",
+                role="tool",
+                text="",
+                blocks=[
+                    {"type": "tool_result", "tool_id": "t-serena-ok", "tool_result_is_error": 0, "text": "serena ok"},
+                    {
+                        "type": "tool_result",
+                        "tool_id": "t-serena-failed",
+                        "tool_result_is_error": 1,
+                        "text": "serena failed",
+                    },
+                    {"type": "tool_result", "tool_id": "t-bash-ok", "tool_result_is_error": 0, "text": "bash ok"},
+                ],
+            )
+            .save()
+        )
 
         source = parse_unit_source_expression(
             "observed-events where kind:tool_finished AND handler:mcp | group by status | count"
@@ -2563,6 +2790,7 @@ class TestBooleanQueryExpression:
                 caller_offset=0,
                 fetch_limit=11,
                 session_filters=None,
+                execution_context=None,
             )
 
     def test_terminal_source_pipeline_sort_desc_executes_before_limit(
@@ -2727,6 +2955,100 @@ class TestBooleanQueryExpression:
                 "file_edit",
                 "polylogue/archive/query/expression.py",
             )
+        ]
+
+    def test_codex_exec_freeform_arguments_are_queryable_as_commands(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.sources.parsers.codex import parse as parse_codex
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        script = 'const result = await tools.exec_command({"cmd":"polylogue find repo:polylogue"});'
+        parsed = parse_codex(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "dogfood-command-query",
+                        "cwd": "/realm/project/polylogue",
+                        "git": {"repository_url": "https://example.test/polylogue.git"},
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "call_id": "call-exec",
+                        "name": "exec",
+                        "arguments": script,
+                    },
+                },
+            ],
+            "dogfood-command-query",
+        )
+
+        archive_root = workspace_env["archive_root"]
+        with ArchiveStore(archive_root) as archive:
+            session_id = archive.write_parsed(parsed)
+
+        source = parse_unit_source_expression("actions where command:polylogue")
+        assert source is not None
+        with ArchiveStore.open_existing(archive_root) as archive:
+            rows = archive.query_actions(source.predicate, limit=100)
+
+        assert [(row.session_id, row.semantic_type, row.tool_command) for row in rows] == [
+            (session_id, "shell", script)
+        ]
+
+    def test_legacy_codex_execution_payloads_are_queryable_without_rewrite(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = workspace_env["archive_root"] / "index.db"
+        fixtures = (
+            ("legacy-arguments", "exec", {"arguments": "polylogue find repo:polylogue"}),
+            ("legacy-cmd", "exec_command", {"cmd": "polylogue status"}),
+            ("unrelated-arguments", "Task", {"arguments": "polylogue should remain ordinary task input"}),
+        )
+        for session_id, tool_name, tool_input in fixtures:
+            (
+                SessionBuilder(index_db, session_id)
+                .provider("codex")
+                .add_message(
+                    f"message-{session_id}",
+                    role="assistant",
+                    text="tool invocation",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": tool_name,
+                            "tool_id": f"tool-{session_id}",
+                            "input": tool_input,
+                        }
+                    ],
+                )
+                .save()
+            )
+
+        action_source = parse_unit_source_expression("actions where command:polylogue")
+        block_source = parse_unit_source_expression("blocks where command:polylogue")
+        assert action_source is not None
+        assert block_source is not None
+        with ArchiveStore.open_existing(index_db.parent) as archive:
+            action_rows = archive.query_actions(action_source.predicate, limit=100)
+            block_rows = archive.query_blocks(block_source.predicate, limit=100)
+
+        assert sorted((row.session_id, row.tool_name, row.tool_command) for row in action_rows) == [
+            ("codex-session:ext-legacy-arguments", "exec", "polylogue find repo:polylogue"),
+            ("codex-session:ext-legacy-cmd", "exec_command", "polylogue status"),
+        ]
+        assert sorted((row.session_id, row.tool_name, row.tool_command) for row in block_rows) == [
+            ("codex-session:ext-legacy-arguments", "exec", "polylogue find repo:polylogue"),
+            ("codex-session:ext-legacy-cmd", "exec_command", "polylogue status"),
         ]
 
     def test_file_unit_source_parses_terminal_and_exists_forms(self) -> None:
@@ -3613,7 +3935,12 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        query = "observed-events where session.repo:polylogue AND kind:test_failed AND delivery_state:observed"
+        # kind:test_failed (a richer digest-derived event kind) has no
+        # source-derived equivalent (polylogue-dab): the CTE only synthesizes
+        # 'session_started' and 'tool_finished' directly from sessions/blocks.
+        # This test's distinguishing concern -- session.repo scoping -- still
+        # applies to the tool_finished kind the model does produce.
+        query = "observed-events where session.repo:polylogue AND kind:tool_finished AND delivery_state:observed"
         source = parse_unit_source_expression(query)
         assert source is not None
         _materialize_run_projection(index_db)
@@ -3626,12 +3953,11 @@ class TestBooleanQueryExpression:
         row = envelope.items[0]
         assert isinstance(row, ObservedEventQueryRowPayload)
         assert (row.kind, row.delivery_state, row.session_id) == (
-            "test_failed",
+            "tool_finished",
             "observed",
             "codex-session:ext-hit",
         )
-        # Structured outcome events synthesize no GitHub/issue object refs.
-        assert row.object_refs == ()
+        assert row.object_refs == ("tool-call:codex-session:ext-hit:t1",)
 
     def test_terminal_observed_event_tool_finished_reads_blocks_without_materialization(
         self, workspace_env: dict[str, Path]
@@ -3669,8 +3995,7 @@ class TestBooleanQueryExpression:
         source = parse_unit_source_expression(query)
         assert source is not None
 
-        with sqlite3.connect(index_db) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM session_observed_events").fetchone()[0] == 0
+        _assert_run_projection_table_absent(index_db, "session_observed_events")
 
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(archive, source, query=query, limit=10)
@@ -3732,8 +4057,7 @@ class TestBooleanQueryExpression:
         source = parse_unit_source_expression(query)
         assert source is not None
 
-        with sqlite3.connect(index_db) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM session_observed_events").fetchone()[0] == 0
+        _assert_run_projection_table_absent(index_db, "session_observed_events")
 
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(archive, source, query=query, limit=10)
@@ -3742,6 +4066,16 @@ class TestBooleanQueryExpression:
         assert sorted((row.group_key, row.count) for row in envelope.items) == [("failed", 1), ("ok", 1)]
 
     def test_terminal_run_source_returns_runtime_rows(self, workspace_env: dict[str, Path]) -> None:
+        """A subagent run row is derived from a real branch_type='subagent' child session.
+
+        Source-derived runs (polylogue-dab) key one row per session, not one
+        per Task dispatch, so 'role:subagent' requires a real child session --
+        there is no synthesized virtual run from parsing a Task tool_use/
+        tool_result pair alone. agent_ref is deliberately coarse
+        ('agent:<harness>/subagent'): the old model's per-dispatch
+        subagent_type ('Explore') is not reconstructed by the source-derived
+        CTE (see run_projection_relations.py's run_relation_sql docstring).
+        """
         from polylogue.archive.query.unit_results import query_unit_rows
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import RunQueryRowPayload
@@ -3769,7 +4103,7 @@ class TestBooleanQueryExpression:
                         "tool_input": {
                             "subagent_type": "Explore",
                             "taskId": "task-run",
-                            "child_session_id": "codex-session:child-run",
+                            "child_session_id": "codex-session:ext-hit-subagent",
                             "prompt": "Map the remaining run query substrate.",
                         },
                     },
@@ -3783,38 +4117,29 @@ class TestBooleanQueryExpression:
             .save()
         )
         (
-            SessionBuilder(index_db, "wrong-repo")
+            SessionBuilder(index_db, "hit-subagent")
             .provider("codex")
+            .parent_session("ext-hit")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .git_branch("feature/query-runs")
+            .working_directories(["/realm/project/polylogue"])
+            .title("run-query audit subagent")
+            .add_message("m-child", role="assistant", text="Run query substrate mapped.")
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "wrong-repo-subagent")
+            .provider("codex")
+            .branch_type("subagent")
             .git_repository_url("sinex")
-            .title("run projection wrong repo")
-            .add_message(
-                "m-wrong",
-                role="assistant",
-                text="Subagent finished elsewhere.",
-                blocks=[
-                    {
-                        "type": "tool_use",
-                        "id": "tool-wrong",
-                        "name": "Task",
-                        "tool_input": {
-                            "subagent_type": "Explore",
-                            "taskId": "task-wrong",
-                            "child_session_id": "codex-session:child-wrong",
-                            "prompt": "Map another repository.",
-                        },
-                    },
-                    {
-                        "type": "tool_result",
-                        "tool_id": "tool-wrong",
-                        "text": "Subagent done elsewhere.",
-                    },
-                ],
-            )
+            .title("subagent in a different repo")
+            .add_message("m-wrong", role="assistant", text="Subagent finished elsewhere.")
             .save()
         )
 
         source = parse_unit_source_expression(
-            "runs where session.repo:polylogue AND role:subagent AND agent:Explore AND status:completed"
+            "runs where session.repo:polylogue AND role:subagent AND status:completed"
         )
         assert source is not None
         _materialize_run_projection(index_db)
@@ -3823,7 +4148,7 @@ class TestBooleanQueryExpression:
             envelope = query_unit_rows(
                 archive,
                 source,
-                query="runs where session.repo:polylogue AND role:subagent AND agent:Explore AND status:completed",
+                query="runs where session.repo:polylogue AND role:subagent AND status:completed",
                 limit=10,
             )
 
@@ -3831,16 +4156,16 @@ class TestBooleanQueryExpression:
         assert len(envelope.items) == 1
         row = envelope.items[0]
         assert isinstance(row, RunQueryRowPayload)
-        assert row.session_id == "codex-session:ext-hit"
+        assert row.session_id == "codex-session:ext-hit-subagent"
         assert row.role == "subagent"
         assert row.status == "completed"
         assert row.harness == "codex"
-        assert row.agent_ref == "agent:codex/Explore"
+        assert row.agent_ref == "agent:codex/subagent"
         assert row.parent_run_ref == "run:codex-session:ext-hit"
-        assert row.run_ref == "run:codex-session:ext-hit:subagent:0:tool-run"
+        assert row.run_ref == "run:codex-session:ext-hit-subagent"
         assert row.git_branch == "feature/query-runs"
-        assert row.cwd == "/realm/project/polylogue"
-        assert row.context_snapshot_ref == "context-snapshot:codex-session:ext-hit:subagent:0:tool-run:subagent_start"
+        assert row.cwd is None  # run_relation_sql() has no cwd source column post-dab
+        assert row.context_snapshot_ref == "context-snapshot:codex-session:ext-hit-subagent:subagent_start"
 
     def test_terminal_main_run_reads_sessions_without_materialization(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.archive.query.unit_results import query_unit_rows
@@ -3864,8 +4189,7 @@ class TestBooleanQueryExpression:
         source = parse_unit_source_expression(query)
         assert source is not None
 
-        with sqlite3.connect(index_db) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM session_runs").fetchone()[0] == 0
+        _assert_run_projection_table_absent(index_db, "session_runs")
 
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(archive, source, query=query, limit=10)
@@ -4013,8 +4337,7 @@ class TestBooleanQueryExpression:
         source = parse_unit_source_expression(query)
         assert source is not None
 
-        with sqlite3.connect(index_db) as conn:
-            assert conn.execute("SELECT COUNT(*) FROM session_context_snapshots").fetchone()[0] == 0
+        _assert_run_projection_table_absent(index_db, "session_context_snapshots")
 
         with ArchiveStore.open_existing(archive_root) as archive:
             envelope = query_unit_rows(archive, source, query=query, limit=10)
@@ -4259,7 +4582,16 @@ class TestBooleanQueryExpression:
         }
 
     def test_exists_run_projection_predicates_select_sessions(self, workspace_env: dict[str, Path]) -> None:
-        """`exists run/observed-event/context-snapshot(...)` lower to SQL session selectors."""
+        """`exists run/observed-event/context-snapshot(...)` lower to SQL session selectors.
+
+        role:subagent and boundary:subagent_start are only true of a real
+        branch_type='subagent' child session (polylogue-dab): they select the
+        CHILD's own session_id, not the dispatching parent's. kind:tool_finished
+        (not kind:subagent_started -- unsupported post-dab, see
+        run_projection_relations.py) is exercised against the parent's real
+        Task tool_use/tool_result pair, so it selects the parent instead --
+        giving each exists(...) unit a distinct, model-accurate selection.
+        """
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder
 
@@ -4282,13 +4614,23 @@ class TestBooleanQueryExpression:
                         "tool_input": {
                             "subagent_type": "Explore",
                             "taskId": "task-hit",
-                            "child_session_id": "codex-session:exists-child",
+                            "child_session_id": "codex-session:ext-exists-child",
                             "prompt": "Audit the run projection.",
                         },
                     },
                     {"type": "tool_result", "tool_id": "tool-hit", "text": "Subagent done.\n1 passed"},
                 ],
             )
+            .save()
+        )
+        (
+            SessionBuilder(index_db, "exists-child")
+            .provider("codex")
+            .parent_session("ext-exists-hit")
+            .branch_type("subagent")
+            .git_repository_url("polylogue")
+            .title("exists child")
+            .add_message("m-child", role="assistant", text="Audit complete.")
             .save()
         )
         (
@@ -4310,9 +4652,9 @@ class TestBooleanQueryExpression:
                 return sorted(row.session_id for row in rows)
 
             # Discriminating exists predicates select only the subagent session.
-            assert selected("sessions where exists run(role:subagent)") == ["codex-session:ext-exists-hit"]
-            assert selected("exists observed-event(kind:subagent_started)") == ["codex-session:ext-exists-hit"]
-            assert selected("exists context-snapshot(boundary:subagent_start)") == ["codex-session:ext-exists-hit"]
+            assert selected("sessions where exists run(role:subagent)") == ["codex-session:ext-exists-child"]
+            assert selected("exists observed-event(kind:tool_finished)") == ["codex-session:ext-exists-hit"]
+            assert selected("exists context-snapshot(boundary:subagent_start)") == ["codex-session:ext-exists-child"]
 
     def test_exists_run_projection_predicates_use_source_relations(self, workspace_env: dict[str, Path]) -> None:
         """`exists` selectors agree with source-derived run projection terminal rows."""
@@ -4349,11 +4691,10 @@ class TestBooleanQueryExpression:
             .title("source exists miss")
             .save()
         )
-        with sqlite3.connect(index_db) as conn:
-            conn.execute("DELETE FROM session_runs")
-            conn.execute("DELETE FROM session_observed_events")
-            conn.execute("DELETE FROM session_context_snapshots")
-            conn.commit()
+        # Run/observed-event/context-snapshot rows are source-derived
+        # (polylogue-dab): there is no materialized table left to clear, so
+        # this itself proves the premise -- these predicates run against
+        # `blocks`/`sessions` directly with no separate materialization step.
 
         with ArchiveStore.open_existing(archive_root) as archive:
 

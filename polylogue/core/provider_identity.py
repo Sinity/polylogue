@@ -73,6 +73,7 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "gemini-cli",
     "hermes",
     "antigravity",
+    "beads",
     "grok",
     "drive",
     "unknown",

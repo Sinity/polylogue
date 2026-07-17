@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.config import Config, Source
-from polylogue.protocols import ProgressCallback
+from polylogue.core.protocols import ProgressCallback
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 

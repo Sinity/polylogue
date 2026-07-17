@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
@@ -15,7 +15,8 @@ from polylogue.archive.semantic.pricing import (
     CostUsagePayload,
 )
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.errors import PolylogueError
+from polylogue.core.errors import PolylogueError
+from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveEnrichmentProvenance,
@@ -33,6 +34,14 @@ from polylogue.insights.archive_models import (
     WeekSessionSummaryPayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
+)
+from polylogue.insights.temporal_source import (
+    TemporalSource,
+    TimeConfidence,
+    is_valid_temporal_source,
+    time_confidence_for_record,
+    time_confidence_for_sources,
+    weakest_of,
 )
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -71,15 +80,15 @@ class SearchableTimeWindowInsightQuery(TimeWindowInsightQuery):
         return bool(self.query)
 
 
-class ProviderTimeWindowInsightQuery(TimeWindowInsightQuery):
-    provider: str | None = None
+class OriginTimeWindowInsightQuery(TimeWindowInsightQuery):
+    origin: str | None = None
 
 
-class ProviderSearchInsightQuery(SearchableTimeWindowInsightQuery):
-    provider: str | None = None
+class OriginSearchInsightQuery(SearchableTimeWindowInsightQuery):
+    origin: str | None = None
 
 
-class SessionWindowInsightQuery(ProviderSearchInsightQuery):
+class SessionWindowInsightQuery(OriginSearchInsightQuery):
     first_message_since: str | None = None
     first_message_until: str | None = None
     session_date_since: str | None = None
@@ -89,7 +98,7 @@ class SessionWindowInsightQuery(ProviderSearchInsightQuery):
     sort: str = "source"
 
 
-class SessionTimelineWindowInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionTimelineWindowInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     session_date_since: str | None = None
     session_date_until: str | None = None
@@ -109,7 +118,7 @@ class SessionProfileInsightQuery(SessionWindowInsightQuery):
     terminal_state: str | None = None
 
 
-class SessionLatencyProfileInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionLatencyProfileInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     only_stuck: bool = False
 
@@ -126,27 +135,27 @@ class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
     pass
 
 
-class SessionTagRollupQuery(ProviderSearchInsightQuery):
+class SessionTagRollupQuery(OriginSearchInsightQuery):
     limit: int | None = 100
 
 
-class ArchiveCoverageInsightQuery(ProviderTimeWindowInsightQuery):
-    group_by: str = "provider"
+class ArchiveCoverageInsightQuery(OriginTimeWindowInsightQuery):
+    group_by: str = "origin"
     limit: int | None = None
 
 
-class SessionCostInsightQuery(ProviderTimeWindowInsightQuery):
+class SessionCostInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     model: str | None = None
     status: str | None = None
 
 
-class CostRollupInsightQuery(ProviderTimeWindowInsightQuery):
+class CostRollupInsightQuery(OriginTimeWindowInsightQuery):
     model: str | None = None
     limit: int | None = None
 
 
-class UsageTimelineInsightQuery(ProviderTimeWindowInsightQuery):
+class UsageTimelineInsightQuery(OriginTimeWindowInsightQuery):
     model: str | None = None
     group_by: str = "month-origin-model"
     limit: int | None = None
@@ -170,6 +179,8 @@ class _InsightRecordWithProvenance(Protocol):
     materialized_at: str
     source_updated_at: str | None
     source_sort_key: float | None
+    input_high_water_mark: str | None
+    input_high_water_mark_source: str | None
 
 
 class _InsightRecordWithInference(_InsightRecordWithProvenance, Protocol):
@@ -188,6 +199,9 @@ def _record_provenance(record: _InsightRecordWithProvenance) -> ArchiveInsightPr
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
     )
 
 
@@ -197,6 +211,9 @@ def _record_inference_provenance(record: _InsightRecordWithInference) -> Archive
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
         inference_version=record.inference_version,
         inference_family=record.inference_family,
     )
@@ -208,6 +225,9 @@ def _record_enrichment_provenance(record: _InsightRecordWithEnrichment) -> Archi
         materialized_at=record.materialized_at,
         source_updated_at=record.source_updated_at,
         source_sort_key=record.source_sort_key,
+        input_high_water_mark=record.input_high_water_mark,
+        input_high_water_mark_source=record.input_high_water_mark_source,
+        time_confidence=time_confidence_for_record(record),
         enrichment_version=record.enrichment_version,
         enrichment_family=record.enrichment_family,
     )
@@ -219,7 +239,7 @@ class SessionProfileInsight(ArchiveInsightModel):
     semantic_tier: str = "merged"
     session_id: str
     logical_session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
     evidence: SessionEvidencePayload | None = None
@@ -257,7 +277,7 @@ class SessionProfileInsight(ArchiveInsightModel):
             semantic_tier=tier,
             session_id=str(record.session_id),
             logical_session_id=str(record.logical_session_id),
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             title=record.title,
             provenance=_record_provenance(record),
             evidence=(record.evidence_payload if include_evidence else None),
@@ -272,7 +292,7 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_latency_profile"
     session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     provenance: ArchiveInsightProvenance
     latency: SessionLatencyProfilePayload
@@ -300,7 +320,7 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
         )
         return cls(
             session_id=str(record.session_id),
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             title=record.title,
             provenance=_record_provenance(record),
             latency=payload,
@@ -313,7 +333,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
     semantic_tier: str = "inference"
     event_id: str
     session_id: str
-    source_name: str
+    origin: str
     event_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance
@@ -325,7 +345,7 @@ class SessionWorkEventInsight(ArchiveInsightModel):
         return cls(
             event_id=record.event_id,
             session_id=record.session_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             event_index=record.event_index,
             provenance=_record_provenance(record),
             inference_provenance=_record_inference_provenance(record),
@@ -340,7 +360,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
     semantic_tier: str = "evidence"
     phase_id: str
     session_id: str
-    source_name: str
+    origin: str
     phase_index: int
     provenance: ArchiveInsightProvenance
     inference_provenance: ArchiveInferenceProvenance | None = None
@@ -352,7 +372,7 @@ class SessionPhaseInsight(ArchiveInsightModel):
         return cls(
             phase_id=record.phase_id,
             session_id=record.session_id,
-            source_name=record.source_name,
+            origin=source_name_to_origin(record.source_name),
             phase_index=record.phase_index,
             provenance=_record_provenance(record),
             evidence=record.evidence_payload,
@@ -379,6 +399,9 @@ class ThreadInsight(ArchiveInsightModel):
                 materialized_at=record.materialized_at,
                 source_updated_at=record.end_time or record.start_time,
                 source_sort_key=None,
+                input_high_water_mark=record.input_high_water_mark,
+                input_high_water_mark_source=record.input_high_water_mark_source,
+                time_confidence=time_confidence_for_record(record),
             ),
             thread=record.payload,
         )
@@ -395,19 +418,6 @@ class SessionTagRollupInsight(ArchiveInsightModel):
     origin_breakdown: dict[str, int]
     repo_breakdown: dict[str, int]
     provenance: ArchiveInsightProvenance
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
-            updated = dict(data)
-            updated["origin_breakdown"] = updated["provider_breakdown"]
-            return updated
-        return data
-
-    @property
-    def provider_breakdown(self) -> dict[str, int]:
-        return self.origin_breakdown
 
 
 class DaySessionSummaryInsight(ArchiveInsightModel):
@@ -429,9 +439,9 @@ class WeekSessionSummaryInsight(ArchiveInsightModel):
 class ArchiveCoverageInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "archive_coverage"
-    group_by: str = "provider"
+    group_by: str = "origin"
     bucket: str = ""
-    source_name: str | None = None
+    origin: str | None = None
     session_count: int
     logical_session_count: int = 0
     message_count: int = 0
@@ -461,26 +471,13 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     origin_breakdown: dict[str, int] = Field(default_factory=dict)
     provenance: ArchiveInsightProvenance | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
-            updated = dict(data)
-            updated["origin_breakdown"] = updated["provider_breakdown"]
-            return updated
-        return data
-
-    @property
-    def provider_breakdown(self) -> dict[str, int]:
-        return self.origin_breakdown
-
 
 class SessionCostInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "session_cost"
     semantic_tier: str = "estimate"
     session_id: str
-    source_name: str
+    origin: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -492,7 +489,7 @@ class CostRollupInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "cost_rollup"
     semantic_tier: str = "estimate"
-    source_name: str
+    origin: str
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0
@@ -507,7 +504,9 @@ class CostRollupInsight(ArchiveInsightModel):
     unavailable_reason_counts: dict[str, int] = {}
     per_model_breakdown: tuple[CostModelBreakdown, ...] = ()
     usage: CostUsagePayload
-    confidence: float = 0.0
+    # A rollup with no priced sessions has no confidence frame.  ``None`` is
+    # deliberately distinct from a measured 0.0 confidence (9e5.29/uwk3).
+    confidence: float | None = None
     provenance: ArchiveInsightProvenance
 
 
@@ -517,7 +516,7 @@ class UsageTimelineInsight(ArchiveInsightModel):
     semantic_tier: str = "evidence"
     group_by: str = "month-origin-model"
     bucket: str
-    source_name: str | None = None
+    origin: str | None = None
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0
@@ -596,6 +595,8 @@ def records_provenance(
     materialized_at_attr: str = "materialized_at",
     source_updated_at_attr: str = "source_updated_at",
     source_sort_key_attr: str = "source_sort_key",
+    input_high_water_mark_attr: str = "input_high_water_mark",
+    input_high_water_mark_source_attr: str = "input_high_water_mark_source",
 ) -> ArchiveInsightProvenance:
     row_list = list(rows)
     materialized_at_values = [
@@ -618,11 +619,32 @@ def records_provenance(
         ),
         default=None,
     )
+    input_high_water_mark_values = [
+        _parse_iso_timestamp(str(getattr(row, input_high_water_mark_attr)))
+        for row in row_list
+        if getattr(row, input_high_water_mark_attr, None)
+    ]
+    input_high_water_mark = max(input_high_water_mark_values).isoformat() if input_high_water_mark_values else None
+    contributor_sources: list[TemporalSource] = []
+    has_unknown_contributor_source = False
+    for row in row_list:
+        value = getattr(row, input_high_water_mark_source_attr, None)
+        if isinstance(value, str) and is_valid_temporal_source(value):
+            contributor_sources.append(value)
+        else:
+            has_unknown_contributor_source = True
+    input_high_water_mark_source = None if has_unknown_contributor_source else weakest_of(contributor_sources)
+    time_confidence: TimeConfidence = (
+        "unknown" if has_unknown_contributor_source else time_confidence_for_sources(contributor_sources)
+    )
     return ArchiveInsightProvenance(
         materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
         materialized_at=materialized_at,
         source_updated_at=source_updated_at,
         source_sort_key=source_sort_key,
+        input_high_water_mark=input_high_water_mark,
+        input_high_water_mark_source=input_high_water_mark_source,
+        time_confidence=time_confidence,
     )
 
 

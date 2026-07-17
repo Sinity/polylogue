@@ -11,11 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.semantic.facts import message_model_name, message_tokens
 from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
+from polylogue.core.sources import source_name_to_origin
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Message, Session
@@ -140,7 +141,7 @@ class CostModelBreakdown(PricingModel):
 
 
 class CostEstimatePayload(PricingModel):
-    source_name: str
+    origin: str
     session_id: str | None = None
     message_id: str | None = None
     model_name: str | None = None
@@ -160,6 +161,11 @@ class CostEstimatePayload(PricingModel):
     missing_reasons: tuple[str, ...] = ()
     unavailable_reason: CostUnavailableReason | None = None
     provenance: tuple[str, ...] = ()
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def _normalize_origin(cls, value: object) -> str:
+        return source_name_to_origin(value)
 
     @property
     def priced(self) -> bool:
@@ -318,10 +324,6 @@ def _record(value: object) -> Mapping[str, object]:
     return document or {}
 
 
-def _provider_text(value: object) -> str:
-    return str(value) if value is not None else "unknown"
-
-
 def _normalize_model(model: str) -> str:
     """Normalize a provider model name for catalog lookup."""
 
@@ -347,17 +349,180 @@ def _normalize_model(model: str) -> str:
     return lowered
 
 
-def canonical_model_family(model_name: str | None) -> str | None:
-    """Map a raw provider model name to its canonical family (anthropic,
-    openai, deepseek, ...) via the same normalized-lookup path the pricing
-    catalog uses, so the mapping never drifts from the catalog's own model
-    coverage (1vpm.1: the enabling primitive for the `delegations` view's
-    orchestrator/subagent model identity)."""
+# polylogue-4c27: pure model-name pattern matching for the semantic vendor
+# family. Deliberately independent of PRICING/ModelPricing.source_name --
+# that field is *pricing-catalog provenance* (for the vendored LiteLLM
+# catalog it is the literal `litellm_provider` routing tag, e.g.
+# "vertex_ai-anthropic_models", "bedrock_converse", "openrouter",
+# "azure_ai" -- whichever catalog row happened to win a bare-name
+# collision), not a stable vendor identity. Reusing it as "family" was the
+# defect: `canonical_model_family("claude-fable-5")` returned
+# "vertex_ai-anthropic_models" and `canonical_model_family("gemini-2.0-flash-001")`
+# returned "openrouter" -- neither is Anthropic/Google, they are catalog
+# routing tags for models that plainly belong to those vendors. Ordered
+# most-specific-first; matched via substring on the normalized model name so
+# vendor-prefixed or routed forms (e.g. "vertex_ai/claude-haiku-4-5",
+# "openrouter/anthropic/claude-3-haiku") still resolve.
+_VENDOR_MARKERS: tuple[tuple[str, str], ...] = (
+    ("claude", "anthropic"),
+    ("gemini", "google"),
+    ("palm-", "google"),
+    ("bard", "google"),
+    ("deepseek", "deepseek"),
+    ("grok", "xai"),
+    ("codestral", "mistral"),
+    ("mixtral", "mistral"),
+    ("mistral", "mistral"),
+    ("llama", "meta"),
+    ("qwen", "alibaba"),
+    ("kimi", "moonshot"),
+    ("moonshot", "moonshot"),
+    ("glm-", "zhipu"),
+    ("command-", "cohere"),
+    ("chatgpt", "openai"),
+    ("codex", "openai"),
+    ("gpt-", "openai"),
+    ("gpt5", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+)
+
+
+def semantic_model_vendor(model_name: str | None) -> str | None:
+    """Map a raw provider model name to its semantic vendor family
+    (anthropic, openai, google, deepseek, ...) via pure model-name pattern
+    matching -- never via which pricing-catalog entry happens to match (see
+    the module-level note above `_VENDOR_MARKERS`). Unknown/unrecognized
+    names return None rather than a guess."""
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    if not normalized:
+        return None
+    for marker, vendor in _VENDOR_MARKERS:
+        if marker in normalized:
+            return vendor
+    return None
+
+
+# polylogue-4c27: coarse model-line grouping within a vendor (e.g. Anthropic's
+# opus/sonnet/haiku/fable tiers, OpenAI's gpt-5/gpt-4/o-series/codex lines).
+# Best-effort and deliberately conservative: returns None rather than
+# fabricating a line for a name it doesn't recognize.
+_MODEL_LINE_MARKERS: tuple[tuple[str, str], ...] = (
+    ("claude-opus", "opus"),
+    ("claude-sonnet", "sonnet"),
+    ("claude-haiku", "haiku"),
+    ("claude-fable", "fable"),
+    ("codex", "codex"),
+    ("gpt-5", "gpt-5"),
+    ("gpt-4", "gpt-4"),
+    ("gpt-3", "gpt-3"),
+    ("o1", "o1"),
+    ("o3", "o3"),
+    ("o4", "o4"),
+    ("gemini-2.5", "gemini-2.5"),
+    ("gemini-2.0", "gemini-2.0"),
+    ("gemini-1.5", "gemini-1.5"),
+    ("deepseek-chat", "deepseek-chat"),
+    ("deepseek-reasoner", "deepseek-reasoner"),
+)
+
+
+def semantic_model_line(model_name: str | None) -> str | None:
+    """Best-effort coarse model-line grouping within a vendor family (e.g.
+    "opus"/"sonnet"/"haiku"/"fable" within Anthropic). Unknown stays None."""
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    if not normalized:
+        return None
+    for marker, line in _MODEL_LINE_MARKERS:
+        if marker in normalized:
+            return line
+    return None
+
+
+def pricing_catalog_source(model_name: str | None) -> str | None:
+    """The pricing catalog's own provenance tag for a model (the vendored
+    LiteLLM `litellm_provider` field, or a curated override's source label).
+    This is catalog/routing provenance, NOT a semantic vendor family -- see
+    `semantic_model_vendor`. Named explicitly so a cost-lookup caller that
+    genuinely wants "which catalog entry priced this" has an honest entry
+    point instead of overloading `canonical_model_family`."""
     if not model_name:
         return None
     normalized = _normalize_model(model_name)
     pricing = PRICING.get(normalized)
     return pricing.source_name if pricing is not None else None
+
+
+def canonical_model_family(model_name: str | None) -> str | None:
+    """Map a raw provider model name to its canonical semantic family
+    (anthropic, openai, deepseek, ...). Delegates to `semantic_model_vendor`
+    -- pure model-name pattern matching, independent of the pricing catalog
+    (1vpm.1 named this the enabling primitive for the `delegations` view's
+    model identity; polylogue-4c27 fixed it to stop returning the pricing
+    catalog's routing-tag provenance, which drifted from vendor identity on
+    every bare-name catalog collision)."""
+    return semantic_model_vendor(model_name)
+
+
+ModelAttributionSource = Literal[
+    "dispatch_turn",
+    "requested",
+    "child_observed",
+    "session_dominant_fallback",
+    "unknown",
+]
+
+ModelIdentityConfidence = Literal["exact", "normalized", "unknown"]
+
+
+@dataclass(frozen=True)
+class ModelIdentity:
+    """polylogue-4c27: one shared model identity projection over a single raw
+    provider model-name value, tagged with WHERE that value was attributed
+    from. Callers combine several of these (one per raw column) instead of
+    the archive collapsing dispatch-turn authorship, requested routing,
+    observed child execution, and session-dominant fallback into a single
+    "orchestrator model" -- construct-validity requires keeping them
+    separate even when they happen to agree."""
+
+    raw_model_name: str | None
+    attribution_source: ModelAttributionSource
+    normalized_model: str | None = None
+    vendor: str | None = None
+    model_line: str | None = None
+    pricing_source: str | None = None
+    confidence: ModelIdentityConfidence = "unknown"
+
+
+def resolve_model_identity(
+    model_name: str | None,
+    *,
+    attribution_source: ModelAttributionSource,
+) -> ModelIdentity:
+    """Build a `ModelIdentity` for one raw model-name value, explicit about
+    which turn/scope it was attributed from. `model_name=None` (unsupported
+    attribution, e.g. a provider that never records a dispatch-turn model)
+    stays unknown rather than falling back to a different scope's value --
+    callers that want a fallback must resolve a *different* raw column
+    (e.g. the session-dominant model) and label it accordingly."""
+    if not model_name:
+        return ModelIdentity(raw_model_name=None, attribution_source=attribution_source, confidence="unknown")
+    normalized = _normalize_model(model_name)
+    vendor = semantic_model_vendor(model_name)
+    return ModelIdentity(
+        raw_model_name=model_name,
+        attribution_source=attribution_source,
+        normalized_model=normalized or None,
+        vendor=vendor,
+        model_line=semantic_model_line(model_name),
+        pricing_source=pricing_catalog_source(model_name),
+        confidence="exact" if normalized in PRICING else ("normalized" if vendor is not None else "unknown"),
+    )
 
 
 def _usage_payload(value: object) -> CostUsagePayload:
@@ -462,7 +627,7 @@ def estimate_cost(
 
 def _exact_estimate(
     *,
-    source_name: str,
+    origin: str,
     total_usd: float,
     session_id: str | None = None,
     message_id: str | None = None,
@@ -484,7 +649,7 @@ def _exact_estimate(
         catalog_priced_usd=catalog_usd,
     )
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=message_id,
         model_name=model_name,
@@ -501,7 +666,7 @@ def _exact_estimate(
 
 def _estimate_from_usage(
     *,
-    source_name: str,
+    origin: str,
     model_name: str | None,
     usage: CostUsagePayload,
     session_id: str | None = None,
@@ -510,7 +675,7 @@ def _estimate_from_usage(
 ) -> CostEstimatePayload:
     if model_name is None or not model_name.strip():
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             status="unavailable",
@@ -522,7 +687,7 @@ def _estimate_from_usage(
         )
     if usage.billable_tokens <= 0:
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             model_name=model_name,
@@ -538,7 +703,7 @@ def _estimate_from_usage(
     pricing = PRICING.get(normalized_model)
     if pricing is None:
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=session_id,
             message_id=message_id,
             model_name=model_name,
@@ -567,7 +732,7 @@ def _estimate_from_usage(
             unpriced.append("missing_cache_write_price")
         missing_reasons = tuple(unpriced)
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=message_id,
         model_name=model_name,
@@ -590,7 +755,7 @@ def _estimate_from_usage(
 def estimate_message_cost(
     message: Message,
     *,
-    source_name: str,
+    origin: str,
     session_id: str | None = None,
     fallback_model: str | None = None,
 ) -> CostEstimatePayload:
@@ -616,7 +781,7 @@ def estimate_message_cost(
             cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
         )
     return _estimate_from_usage(
-        source_name=source_name,
+        origin=origin,
         session_id=session_id,
         message_id=str(message.id),
         model_name=model_name,
@@ -643,7 +808,7 @@ def _dominant_model(estimates: Iterable[CostEstimatePayload]) -> tuple[str | Non
 def estimate_session_cost(session: Session) -> CostEstimatePayload:
     """Estimate cost for a session/session with confidence metadata."""
 
-    source_name = _provider_text(session.origin)
+    origin = session.origin.value
     session_estimate = _session_level_estimate(session)
     if session_estimate is not None and session_estimate.status == "exact":
         return session_estimate
@@ -651,7 +816,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
     message_estimates = [
         estimate_message_cost(
             message,
-            source_name=source_name,
+            origin=origin,
             session_id=str(session.id),
             fallback_model=session_estimate.model_name if session_estimate else None,
         )
@@ -666,7 +831,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
         missing = ("missing_token_usage",) if message_estimates else ("no_messages",)
         unavailable: CostUnavailableReason = "no_tokens" if message_estimates else "no_messages"
         return CostEstimatePayload(
-            source_name=source_name,
+            origin=origin,
             session_id=str(session.id),
             status="unavailable",
             confidence=0.0,
@@ -731,7 +896,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
         # per-message fallbacks from providers that report only session totals.
         return session_estimate
     return CostEstimatePayload(
-        source_name=source_name,
+        origin=origin,
         session_id=str(session.id),
         model_name=model_name,
         normalized_model=normalized_model,

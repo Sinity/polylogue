@@ -5,7 +5,7 @@
 # command validation, SSRF prevention, HTML sanitization, schema
 # privacy, and token-store security.
 #
-# Updated 2026-04-29 from realized codebase state.
+# Updated 2026-07-12 from realized codebase state.
 
 description: >
   Security and privacy verification surface for polylogue.
@@ -13,7 +13,7 @@ description: >
 
 areas:
   xss_prevention:
-    description: Cross-site scripting defense in HTML rendering
+    description: Cross-site scripting defense in rendered HTML and the daemon web shell
     implemented: true
     controls:
       - jinja2_autoescape: Jinja2 template autoescaping is active
@@ -21,15 +21,27 @@ areas:
           sanitize_html() filter in polylogue/rendering/renderers/
           html_sanitizer.py strips <script> tags, event-handler
           attributes (onclick, onload, etc.), and javascript: URLs
-      - regex_defense_in_depth: >
-          _SCRIPT_RE tolerates whitespace and junk-attributes in
-          closing tags (browser-compatible bypass defense)
+      - parser_based_sanitizer: >
+          nh3's HTML5 parser and conservative allowlist strip scripts,
+          event handlers, unsafe URL schemes, and embedded active-content
+          elements without relying on regex matching.
+      - web_shell_context_escaping: >
+          The web shell distinguishes HTML text, HTML attributes, and
+          JavaScript strings nested in event-handler attributes. escJsAttr()
+          escapes the JavaScript string before HTML-attribute escaping, while
+          attachment and paste-library innerHTML renderers escape every
+          captured-content field at its sink.
     test_coverage:
-      location: tests/unit/security/ (indirect, via snapshot rendering)
+      location: >
+        tests/unit/rendering/test_html_sanitizer_security.py and
+        tests/unit/daemon/test_web_shell_xss_escaping.py
       hypothesis: false
     notes: >
-      Regex sanitization is defense-in-depth atop Jinja2 autoescape.
-      No dedicated XSS test file. No bleach/HTML-parser dependency.
+      The parser-based HTML sanitizer is defense-in-depth atop Jinja2 autoescape. The
+      web-shell suite executes the shipped escaping helpers through Node when
+      available and checks the identified JS-string and innerHTML regression
+      paths, so this is dedicated regression coverage rather than snapshot-only
+      coverage.
 
   file_permissions:
     description: File permission controls on token store and data files
@@ -44,8 +56,25 @@ areas:
       hypothesis: false
     notes: >
       Token store permissions were hardened in commit 3796914
-      (0644 -> 0600). Crawl-source file permissions not under
-      automated verification.
+      (0644 -> 0600). Polylogue has no crawl-source implementation or
+      crawl-owned file artifacts in the current source tree; a crawler must
+      add its own permission contract and coverage when introduced.
+
+  secret_log_hygiene:
+    description: Prevent secret values from leaking through Polylogue log and print calls
+    implemented: true
+    controls:
+      - log_secret_guard: >
+          The repository-wide AST guard rejects logger/print calls that
+          interpolate known secret-bearing variable names or credential-shaped
+          literal prefixes.
+    test_coverage:
+      location: tests/unit/security/test_no_secret_leak_in_logs.py
+      hypothesis: false
+    notes: >
+      This log-boundary control is distinct from captured-content secret
+      detection (see the captured_content_secret_detection area below,
+      polylogue-27m).
 
   redaction:
     description: PII/private-content redaction in schema inference
@@ -84,13 +113,12 @@ areas:
     controls:
       - sanitize_path: >
           polylogue/core/security.py::sanitize_path() strips null
-          bytes, control characters, blocks .. traversal, symlink
-          attacks, and absolute paths. Returns _blocked_<hash>
-          for unsafe inputs.
+          bytes and control characters, blocks .. traversal and absolute
+          paths, and returns _blocked_<hash> for unsafe inputs.
       - attachment_sanitization: >
           ParsedAttachment applies sanitize_path to attachment
-          paths. Hypothesis property tests for traversal, symlink,
-          and control-char inputs.
+          paths. Hypothesis property tests cover traversal and
+          control-character inputs.
       - token_store_key_sanitization: >
           FileTokenStore._path_for_key prevents traversal via
           key name (slashes, backslashes, double-dots sanitized).
@@ -99,9 +127,10 @@ areas:
       hypothesis: true
     notes: >
       Hypothesis strategies in tests/infra/strategies/adversarial.py
-      generate path-traversal, symlink-path, and control-char
-      inputs. TestSanitizePathTraversal covers traversal, control
-      chars, absolute paths, symlink OSError handling.
+      generate adversarial path inputs. TestSanitizePathTraversal covers
+      traversal, control characters, and absolute paths. A CWD-relative
+      symlink probe was intentionally removed because it did not protect this
+      metadata-only boundary.
 
   mcp_traceback_exposure:
     description: Traceback and internal path exposure in MCP error responses
@@ -117,6 +146,87 @@ areas:
     notes: >
       Tests verify no traceback, no "File ", no /realm/ or
       polylogue/ paths in error responses.
+
+  captured_content_secret_detection:
+    description: >
+      Candidate-only secret detection in captured content, with an excision
+      handoff (polylogue-27m: "the archive can forget on purpose")
+    implemented: true
+    controls:
+      - secret_candidate_scanner: >
+          polylogue/security/secret_scan.py scans captured content for
+          credential-shaped spans (AWS/GitHub/Slack/OpenAI/Anthropic key
+          shapes, PEM private-key headers, JWTs, an entropy-filtered generic
+          key=value assignment rule) and records them as non-injectable
+          AssertionKind.SECRET_CANDIDATE assertions. The matched literal is
+          never returned, stored, or logged -- only a SHA-256 fingerprint,
+          byte length, pattern id, and span offsets survive.
+      - production_caller: >
+          scan_session_for_secret_candidates (same module) is the real
+          entrypoint: it reads a session's block text/tool-input from
+          index.db, scans it, and records candidates in user.db. Wired to
+          `polylogue ops scan-secrets --session <id>`
+          (polylogue/cli/commands/scan_secrets.py). Fix-round note
+          (2026-07-14): an earlier revision of this PR marked this area
+          implemented with the scanner functions defined but zero
+          production callers -- an operator running the archive got no
+          candidates ever, only a test calling the functions directly did.
+          This caller closes that gap.
+      - detector_candidate_gate: >
+          author_kind="detector" is unconditionally coerced to
+          status=CANDIDATE with {"inject": false, "promotion_required": true}
+          by the shared upsert_assertion write chokepoint (the same
+          invariant PATHOLOGY/TRANSFORM_CANDIDATE findings already use) --
+          a detector can never self-promote a finding to authoritative or
+          injectable context.
+      - local_excision: >
+          polylogue/security/excision.py (standalone/off mode, locally
+          authoritative) gives an operator `polylogue ops excise` to act on
+          a candidate: cross-tier removal (source.db/index.db/
+          embeddings.db/blob_refs/user.db) plus a durable removed-hash
+          marker consulted at the acquire-time write choke point
+          (write_source_raw_session) so ordinary re-ingest of unmodified
+          source files cannot resurrect the content.
+      - mirror_primary_lifecycle_mechanism: >
+          polylogue/security/lifecycle.py implements the durable local
+          request/outbox mechanics for Sinex-backed mirror/primary modes,
+          proven against a fault-injecting versioned contract fake
+          (SinexContractFake): pending-through-network-loss, restart
+          recovers state from the durable row not client memory, an
+          ops.db reset cannot erase the request, rejection can never report
+          success, and primary-mode local invalidation happens only after a
+          synthetic confirmation.
+    test_coverage:
+      location: >
+        tests/unit/security/test_secret_scan.py and
+        tests/unit/security/test_excision.py and
+        tests/unit/security/test_excision_lifecycle.py and
+        tests/unit/cli/test_excise.py and
+        tests/unit/cli/test_scan_secrets.py
+      hypothesis: false
+    notes: >
+      Standalone/off-mode excision is locally authoritative and proven
+      end-to-end, including a real parse_sources_archive re-ingest round
+      trip through the synthetic-corpus fixture (not a hand-rolled
+      literal). Mirror/primary-mode excision is mechanism-only by explicit
+      design: this bead (polylogue-27m) does not claim a real Sinex purge,
+      clean Sinex rebuild, disconnected-replica closure, or backup-restore
+      proof -- polylogue-303r.6 owns binding the durable request/outbox
+      mechanics proven here to a real Sinex confirmation, and a
+      contract-fake-only test run must never be read as satisfying that
+      separate scope.
+
+      Explicit scope note on `implemented: true` (fix-round verification,
+      2026-07-14, polylogue-layg): the claim covers the *mechanism* --
+      credential-shaped spans are actually detected, recorded as
+      non-injectable candidates, and reachable by an operator through a real
+      production entrypoint (`polylogue ops scan-secrets --session <id>`).
+      It does NOT mean archive-wide or automatic coverage: there is no
+      bulk/all-sessions scan command and no daemon convergence stage wires
+      this in automatically, so an operator must invoke it per session id.
+      That gap is real but is a coverage-breadth follow-up, not evidence
+      that the mechanism itself is unimplemented or fake -- tracked
+      separately as polylogue-layg.1.
 
   dependency_audit:
     description: Dependency vulnerability auditing
@@ -137,31 +247,6 @@ areas:
       omitted until the GitHub Dependency Graph feature is enabled
       on the repo; see the comment block in dep-audit.yml.
 
-coverage_gaps:
-   - id: security.xss-prevention
-     area: xss_prevention
-     gap: No dedicated XSS test file; relies on snapshot rendering
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: pytest -q tests/unit/security
-   - id: security.file-permissions
-     area: file_permissions
-     gap: Crawl-source file permissions not verified
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: pytest -q tests/unit/security
-   - id: security.secrets-detection
-     area: secrets_detection
-     gap: No automated secrets scanning in CI
-     owner: security-privacy
-     severity: major
-     declared_at: "2026-05-02"
-     review_after: "2026-08-01"
-     issue: 590
-     next_evidence: devtools verify --quick
+# security.captured-content-secret-detection resolved 2026-07-14 by
+# polylogue-27m: see the captured_content_secret_detection area above.
+coverage_gaps: []

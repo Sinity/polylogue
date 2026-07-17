@@ -141,6 +141,8 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
+  --no-daemon                     Run archive reads in-process instead of
+                                  using the local daemon.
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
@@ -156,10 +158,11 @@ Commands:
     read      Read matched sessions (route to view/destination).
     select    Select one matched session or print candidate identities.
     mark      Mark selected sessions; review candidates under mark candidates.
+    note      Capture a terminal memory candidate.
     analyze   Analyze matched sessions and named facet families.
     facets    Show global or scoped archive facet families.
     delete    Delete matched sessions.
-    continue  Compile a successor-agent continuation report.
+    continue  Resume a session or compile successor context as JSON.
     Use `find QUERY then ACTION`; `facets` is the direct archive aggregate
     command.
 
@@ -184,6 +187,10 @@ Commands:
     ops     Run operational archive and daemon commands.
     `polylogue status` is the root shortcut for `polylogue ops status`; deeper
     maintenance stays under `ops`.
+
+  Other commands:
+    annotations  Import typed annotation batches.
+    judge        Interactively triage candidate assertions.
 ```
 
 ## Analyze Verb
@@ -469,16 +476,17 @@ Commands:
 ```text
 Usage: polylogue continue [OPTIONS]
 
-  Compile a successor-agent continuation report for one matched session.
+  Print or execute a resume command, or emit successor context as JSON.
 
   Examples:
       polylogue find id:abc then continue
       polylogue find id:abc then continue --format json
-      polylogue --latest continue --to clipboard
-      polylogue find 'repo:polylogue near:id:abc' then continue --to file --out handoff.md
+      polylogue find id:abc then continue --exec
       polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
 
 Options:
+  --exec                          Run the verified interactive resume command
+                                  instead of printing it.
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
   --out PATH                      File path for --to file.
@@ -493,8 +501,8 @@ Options:
   --limit INTEGER                 Maximum continuation candidates to return.
                                   [default: 10]
   --json                          Shortcut for --format json.
-  -f, --format [json]             Output format. JSON emits the shared
-                                  ContextImage payload.
+  -f, --format [json]             Emit the successor ContextImage as JSON
+                                  instead of a resume command.
   --help                          Show this message and exit.
 ```
 
@@ -525,16 +533,18 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  auth         Authenticate optional external services.
-  backup       Create a timestamped durability-tier backup.
-  debt         List archive work that needs operator attention.
-  diagnostics  Run archive and session diagnostics.
-  doctor       Run archive health checks and repairs.
-  embed        Enable, preflight, and backfill the embedding pipeline.
-  insights     Check and export derived insight materialization.
-  maintenance  Preview and run maintenance backfill operations.
-  reset        Reset local archive state.
-  status       Show daemon and archive status.
+  auth          Authenticate optional external services.
+  backup        Create a timestamped durability-tier backup.
+  debt          List archive work that needs operator attention.
+  diagnostics   Run archive and session diagnostics.
+  doctor        Run archive health checks and repairs.
+  embed         Enable, preflight, and backfill the embedding pipeline.
+  excise        Excise a session: durable cross-tier removal (polylogue-27m).
+  insights      Check and export derived insight materialization.
+  maintenance   Preview and run maintenance backfill operations.
+  reset         Reset local archive state.
+  scan-secrets  Scan a session for credential-shaped content (polylogue-27m).
+  status        Show daemon and archive status.
 ```
 
 ## Doctor
@@ -546,7 +556,7 @@ Usage: polylogue ops doctor [OPTIONS]
 
 Options:
   -f, --format [json]             Output format
-  -v, --verbose                   Show breakdown by provider
+  -v, --verbose                   Show breakdown by origin
   --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
@@ -574,10 +584,10 @@ Options:
   --artifact-coverage             Inspect durable artifact coverage
   --artifacts                     List durable artifact observations
   --cohorts                       Summarize durable artifact cohorts
-  --schema-provider TEXT          Limit schema verification to DB provider
-                                  name (repeatable)
-  --artifact-provider TEXT        Limit artifact coverage/listing/cohorting to
-                                  effective provider (repeatable)
+  --schema-origin TEXT            Limit schema verification to archive origin
+                                  (repeatable)
+  --artifact-origin TEXT          Limit artifact coverage/listing/cohorting to
+                                  effective origin (repeatable)
   --artifact-status TEXT          Limit artifact listing/cohorting to support
                                   status (repeatable)
   --artifact-kind TEXT            Limit artifact listing/cohorting to artifact
@@ -674,7 +684,7 @@ Commands:
   action-affordances  Print shared query-action affordance metadata as JSON.
   completions         Generate shell completion scripts.
   paths               Print canonical archive paths and filesystem topology.
-  query-completions   Print shared query-builder completion metadata as...
+  query-completions   Print shared query-builder completion metadata as JSON.
 ```
 
 ## Completions
@@ -775,7 +785,7 @@ The schema files live under `docs/schemas/cli-output/`.
 | `session-messages-response` | `SessionMessagesResponsePayload` | `polylogue read --view messages --format json` |
 | `session-search-hit` | `SessionSearchHitPayload` | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` |
 | `search-envelope` | `SearchEnvelope` | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` |
-| `query-unit-envelope` | `QueryUnitEnvelope` | `polylogue --format json messages where ...`<br>`polylogue --format json actions where ...`<br>`polylogue --format json blocks where ...`<br>`polylogue --format json assertions where ...`<br>`polylogue --format json files where ...`<br>`polylogue --format json runs where ...`<br>`polylogue --format json observed-events where ...`<br>`polylogue --format json context-snapshots where ...`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
+| `query-unit-envelope` | `QueryUnitEnvelope` | `polylogue --format json messages where ...`<br>`polylogue --format json actions where ...`<br>`polylogue --format json blocks where ...`<br>`polylogue --format json assertions where ...`<br>`polylogue --format json files where ...`<br>`polylogue --format json runs where ...`<br>`polylogue --format json observed-events where ...`<br>`polylogue --format json context-snapshots where ...`<br>`polylogue --format json delegations where ...`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `query-unit-aggregate-envelope` | `QueryUnitAggregateEnvelope` | `polylogue --format json messages where ... | group by role | count`<br>`Polylogue.query_units(...)`<br>`MCP query_units`<br>`GET /api/query-units?expression=...` |
 | `import-explain` | `ImportExplainPayload` | `polylogue import PATH --explain --format json`<br>`polylogue import PATH --explain --format ndjson (entries)` |
 | `archive-debt-list` | `ArchiveDebtListPayload` | `polylogue ops debt list --format json` |

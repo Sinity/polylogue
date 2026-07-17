@@ -24,12 +24,15 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
+from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
     ImportExplainEntryPayload,
     ImportExplainPayload,
+    ImportFidelityCapabilityPayload,
+    ImportFidelityDeclarationPayload,
     ImportProducedRowsPayload,
     ImportSkippedRowPayload,
 )
@@ -409,6 +412,9 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     if path.suffix.lower() == ".zip":
         return _explain_zip(path, provider_hint=provider_hint, path_classification=path_classification)
 
+    if hermes_state.looks_like_state_db_path(path):
+        return _explain_hermes_state_db(path, provider_hint=provider_hint)
+
     try:
         raw_bytes = path.read_bytes()
     except OSError as exc:
@@ -424,6 +430,43 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
         source_path=str(path),
         provider_hint=provider_hint,
         path_classification=path_classification,
+    )
+
+
+def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportExplainEntryPayload:
+    """Inspect the real Hermes SQLite parser path without writing a raw blob."""
+
+    try:
+        sessions = hermes_state.parse_state_db(path, fallback_id=path.stem, profile_root=path.parent)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"Hermes state.db parser failure: {type(exc).__name__}: {exc}",
+            detected_provider=Provider.HERMES,
+        )
+    fidelity = hermes_state.import_fidelity_declaration(sessions, acquisition_method="sqlite_backup")
+    return ImportExplainEntryPayload(
+        source_path=str(path),
+        artifact_kind="sqlite_state_database",
+        provider_hint=provider_hint.value,
+        detected_origin=_origin_value(Provider.HERMES),
+        detected_provider=Provider.HERMES.value,
+        detector="hermes_state_db",
+        detector_evidence=(
+            _evidence("hermes_state_db.signature", matched=True, reason="required Hermes tables and signature columns"),
+        ),
+        parser="hermes_state_db",
+        parser_version=None if fidelity.schema_version is None else f"state-db-v{fidelity.schema_version}",
+        parser_mode="sqlite_backup",
+        produced=_produced_rows(sessions),
+        caveats=(
+            "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
+            *fidelity.caveats,
+        ),
+        raw_evidence_refs=(),
+        fidelity=_fidelity_payload(fidelity),
     )
 
 
@@ -573,6 +616,17 @@ def _explain_bytes(
             detected_provider=detected_provider,
         )
 
+    fidelity = None
+    if detected_provider is Provider.HERMES:
+        atif_session = next(
+            (session for session in sessions if "hermes:atif-trajectory" in session.ingest_flags),
+            None,
+        )
+        fidelity = _fidelity_payload(
+            hermes_spans.import_fidelity_declaration(atif_session)
+            if atif_session is not None
+            else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
+        )
     return ImportExplainEntryPayload(
         source_path=source_path,
         artifact_kind=artifact.kind.value,
@@ -584,8 +638,32 @@ def _explain_bytes(
         parser=detected_provider.value,
         parser_mode=_parser_mode(detected_provider, payload),
         produced=_produced_rows(sessions),
-        caveats=() if sessions else ("parser produced no sessions",),
+        caveats=(
+            (() if sessions else ("parser produced no sessions",)) + (() if fidelity is None else fidelity.caveats)
+        ),
         raw_evidence_refs=(),
+        fidelity=fidelity,
+    )
+
+
+def _fidelity_payload(fidelity: hermes_state.HermesImportFidelity) -> ImportFidelityDeclarationPayload:
+    def capability(item: hermes_state.HermesFidelityCapability) -> ImportFidelityCapabilityPayload:
+        return ImportFidelityCapabilityPayload(
+            status=item.status,
+            observed=item.observed,
+            expected=item.expected,
+            counts=item.counts,
+            detail=item.detail,
+        )
+
+    return ImportFidelityDeclarationPayload(
+        producer=fidelity.producer,
+        schema_version=fidelity.schema_version,
+        profile_namespace=fidelity.profile_namespace,
+        acquisition_method=fidelity.acquisition_method,
+        retained_blob_reproducibility=capability(fidelity.retained_blob_reproducibility),
+        capabilities={name: capability(item) for name, item in fidelity.capabilities.items()},
+        caveats=fidelity.caveats,
     )
 
 

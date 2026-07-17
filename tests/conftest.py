@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -202,6 +202,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item,
+    call: pytest.CallInfo[None],
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """Retain the call outcome so passing test temp trees can be reclaimed."""
+    report = yield
+    setattr(item, f"rep_{report.when}", report)
+    return report
+
+
+@pytest.fixture(autouse=True)
+def _reclaim_passing_test_tmp_path(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+) -> Iterator[None]:
+    """Bound broad-run temp growth while preserving failed-test evidence."""
+    yield
+    report: pytest.TestReport | None = getattr(request.node, "rep_call", None)
+    if report is not None and report.passed:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
 # ---------------------------------------------------------------------------
@@ -260,7 +283,10 @@ _TESTS_ROOT = str(Path(__file__).resolve().parent)
 
 
 @pytest.fixture(autouse=True)
-def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _close_test_opened_sqlite_connections(
+    monkeypatch: pytest.MonkeyPatch,
+    _reclaim_passing_test_tmp_path: None,
+) -> Iterator[None]:
     """Close sync ``sqlite3`` connections that *test code* opened but never closed.
 
     Many tests use ``with sqlite3.connect(...) as conn:`` which commits on exit
@@ -378,12 +404,26 @@ def _close_test_opened_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> It
 
 
 @pytest.fixture(autouse=True)
-def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _clear_polylogue_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _reclaim_passing_test_tmp_path: None,
+    request: pytest.FixtureRequest,
+) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.sqlite.connection import _clear_connection_cache
 
     _clear_connection_cache()
+
+    # The daemon's structural-fault gate is intentionally process-local in
+    # production, but tests simulate that fault routinely.  Reset it on both
+    # sides of every test so a simulated mismatch cannot silently turn a later
+    # live-ingest or demo test into an all-skipped batch.
+    from polylogue.core.degraded import clear_degraded
+
+    clear_degraded()
+    request.addfinalizer(clear_degraded)
 
     # Clear search runtime state to prevent monkeypatched package-level search
     # adapters and cached results from leaking across tests.
@@ -475,7 +515,11 @@ def _clear_polylogue_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
 
 @pytest.fixture
-def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def workspace_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_archive_template: Path,
+) -> dict[str, Path]:
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
@@ -487,10 +531,7 @@ def workspace_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore(archive_root):
-        pass
+    _clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -534,7 +575,11 @@ def storage_repository(workspace_env: dict[str, Path]) -> SessionRepository:
 
 
 @pytest.fixture
-def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def cli_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_archive_template: Path,
+) -> dict[str, Path]:
     """
     Isolated CLI workspace with archive roots and database.
 
@@ -568,10 +613,7 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore(archive_root):
-        pass
+    _clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -581,6 +623,72 @@ def cli_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
         "render_root": render_root,
         "db_path": db_path,
     }
+
+
+def _clone_archive_template(source: Path, destination: Path) -> None:
+    """Clone one immutable empty archive into a test-private workspace."""
+    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["cp", "-a", "--reflink=auto", f"{source}/.", str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+
+
+@pytest.fixture(scope="session")
+def empty_archive_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+) -> Path:
+    """Build a census-complete empty archive once per pytest run.
+
+    A complete five-tier layout alone is no longer sufficient to claim raw
+    materialization readiness: the raw-authority frontier must have a
+    completed census too.  The shared fixture represents a usable empty
+    archive, so establish that real durable state through the production
+    census route before sharing clones with CLI and insight tests.
+    """
+    import fcntl
+
+    from polylogue.config import Config
+    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    worker_base = tmp_path_factory.getbasetemp()
+    run_root = worker_base.parent if worker_id != "master" else worker_base
+    template = run_root / ".empty-archive-template"
+    ready = run_root / ".empty-archive-template.ready"
+    lock_path = run_root / ".empty-archive-template.lock"
+
+    with lock_path.open("a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        if ready.exists() and template.is_dir():
+            return template
+
+        building = run_root / f".empty-archive-template.building-{os.getpid()}"
+        shutil.rmtree(building, ignore_errors=True)
+        try:
+            with ArchiveStore(building):
+                pass
+            inspect_raw_authority_frontier(
+                Config(
+                    archive_root=building,
+                    render_root=building / "render",
+                    sources=[],
+                    db_path=building / "index.db",
+                )
+            )
+            building.replace(template)
+            ready.touch()
+        finally:
+            shutil.rmtree(building, ignore_errors=True)
+
+    return template
 
 
 @pytest.fixture
@@ -854,174 +962,6 @@ def cli_runner() -> CliRunner:
     from click.testing import CliRunner
 
     return CliRunner()
-
-
-# =============================================================================
-# SEEDED DATABASE FIXTURE (for tests that need real provider data)
-# =============================================================================
-
-
-@pytest.fixture(scope="session")
-def seeded_db(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
-    """Create a database seeded with synthetic data from all providers.
-
-    Built once across all pytest-xdist workers via a file lock on a
-    shared tmpfs path.  Only ``gw0`` pays the build cost (~15 s per
-    provider); all other workers wait for the lock, then open the
-    already-built read-only database.
-
-    Returns:
-        Path to the seeded database file (shared across workers).
-    """
-    import asyncio
-    import fcntl
-    import hashlib
-    from datetime import datetime, timezone
-
-    from polylogue.config import Source
-    from polylogue.schemas.synthetic import SyntheticCorpus
-    from polylogue.sources import iter_source_sessions
-    from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.runtime import RawSessionRecord
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-    from polylogue.storage.sqlite.connection import open_connection
-    from tests.infra.live_ingest import ingest_session
-
-    # Shared location so all xdist workers reuse the same DB. It follows the
-    # managed temp-root policy: /realm/tmp by default, /dev/shm only for
-    # explicit POLYLOGUE_PYTEST_TMPFS=1 performance lanes.
-    suffix = os.environ.get("POLYLOGUE_PYTEST_CHECKOUT")
-    if not suffix:
-        suffix = hashlib.sha1(str(tmp_path_factory.getbasetemp()).encode("utf-8"), usedforsecurity=False).hexdigest()[
-            :8
-        ]
-    shared_root = _managed_pytest_temp_root()[0] / f"pytest-polylogue-seeded-{suffix}"
-    shared_root.mkdir(parents=True, exist_ok=True)
-
-    db_path = shared_root / "index.db"
-    lock_path = shared_root / ".build.lock"
-
-    # ------------------------------------------------------------------
-    # Cross-worker coordination: only one worker builds; others wait.
-    # ------------------------------------------------------------------
-    with lock_path.open("a+") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-        # Re-check after acquiring the lock — another worker may have
-        # finished building while we waited.
-        done_marker = shared_root / ".build.done"
-        blob_root = shared_root / "blob"
-        if done_marker.exists() and db_path.exists() and any(blob_root.glob("*/*")):
-            return db_path
-
-        # We hold the lock and the DB doesn't exist yet — build it.
-        # Intermediate artifacts use a per-worker tmpdir; only the
-        # final SQLite file lives in the shared location.
-        tmp_dir = tmp_path_factory.mktemp(f"seeded-build-{worker_id}")
-        blob_store = BlobStore(blob_root)
-
-        with open_connection(db_path):
-            pass
-
-        backend = SQLiteBackend(db_path=db_path)
-
-        corpus_dir = tmp_dir / "corpus"
-        corpus_dir.mkdir()
-
-        async def _seed() -> None:
-            specs = build_default_corpus_specs(
-                providers=SyntheticCorpus.available_providers(),
-                count=20,
-                messages_min=10,
-                messages_max=40,
-                seed=42,
-                origin="generated.test-seeded-db",
-                tags=("synthetic", "test", "seeded-db"),
-            )
-            for spec in specs:
-                provider_dir = corpus_dir / spec.provider
-                written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synthetic")
-
-                for file_path, artifact in zip(written.files, written.batch.artifacts, strict=True):
-                    raw_bytes = artifact.raw_bytes
-
-                    try:
-                        raw_id, blob_size = blob_store.write_from_bytes(raw_bytes)
-                        record = RawSessionRecord(
-                            raw_id=raw_id,
-                            source_name=spec.provider,
-                            source_path=str(file_path),
-                            blob_size=blob_size,
-                            acquired_at=datetime.now(timezone.utc).isoformat(),
-                        )
-                        await backend.save_raw_session(record)
-                    except Exception as e:
-                        import warnings
-
-                        warnings.warn(f"Failed to store raw {spec.provider}/{file_path.name}: {e}", stacklevel=2)
-
-            for provider_dir in sorted(corpus_dir.iterdir()):
-                provider = provider_dir.name
-                for file_path in sorted(provider_dir.iterdir()):
-                    try:
-                        source = Source(name=provider, path=file_path)
-                        raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                        for convo in iter_source_sessions(source):
-                            await ingest_session(
-                                convo,
-                                backend=backend,
-                                raw_id=raw_id,
-                            )
-                    except Exception as e:
-                        import warnings
-
-                        warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
-
-            await backend.close()
-
-        asyncio.run(_seed())
-
-        done_marker.touch()
-        return db_path
-
-
-@pytest.fixture
-def seeded_repository(seeded_db: Path) -> SessionRepository:
-    """Repository backed by the shared read-only seeded database.
-
-    Tests that only read (query, search, stats, schema inspection) should
-    use this fixture.  The underlying database is shared across xdist
-    workers — do NOT write through this repository.
-
-    Use ``seeded_db_writable`` for tests that need to mutate data.
-    """
-    from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    backend = SQLiteBackend(db_path=seeded_db)
-    return SessionRepository(backend=backend)
-
-
-@pytest.fixture
-def seeded_db_writable(seeded_db: Path, tmp_path: Path) -> Path:
-    """Copy-on-write clone of the shared seeded database.
-
-    Returns a path to a private writable copy.  Tests that need to insert,
-    update, or delete rows should use this fixture so they don't corrupt
-    the shared read-only database used by all other workers.
-
-    The copy is cheap (~1-2 MB on tmpfs).
-    """
-    import shutil
-
-    dest = tmp_path / "polylogue-writable.db"
-    shutil.copy2(seeded_db, dest)
-    # Also copy WAL/SHM sidecars if they exist, though the shared DB is
-    # built with a clean checkpoint so they normally don't.
-    for suffix in ("-wal", "-shm"):
-        sidecar = seeded_db.with_suffix(seeded_db.suffix + suffix)
-        if sidecar.exists():
-            shutil.copy2(sidecar, dest.with_suffix(dest.suffix + suffix))
-    return dest
 
 
 # =============================================================================

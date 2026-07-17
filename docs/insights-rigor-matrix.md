@@ -56,6 +56,36 @@ API.
 - Consumer-facing fields: `session_id`, `provider_name`, `title`,
   `semantic_tier`, `evidence`, `inference`, `enrichment`,
   `provenance`, `inference_provenance`, `enrichment_provenance`.
+- Notes (heuristic-tier inventory, polylogue-b0b): `inference.terminal_state`
+  (`archive/session/runtime.py::_terminal_state`) now prefers a structural,
+  session-wide `tool_id -> outcome` map (`_session_tool_results`)
+  sourced from the keystone `blocks.tool_result_is_error`/
+  `tool_result_exit_code` columns (index schema v16) over the prior prose
+  `_ERROR_MARKERS` keyword scan for the mid-session error-action signal. The
+  lookup is session-wide (mirroring `_pending_tool_blocks` and
+  `insights/transforms.py::_extract_events`) rather than routed through the
+  per-message `Action`/`ToolCall` pairing, because Claude/Codex-style
+  transcripts near-always place a `tool_use` in one message and its
+  `tool_result` in a later message — per-message pairing alone would miss
+  the common case. That structural signal is origin-gated, not universal
+  (polylogue-9e5.3 audit): `tool_result_is_error`
+  is well-populated only for claude-code-session (44.8%) and claude-ai-export
+  (100% of a small volume), 0% for chatgpt-export/hermes-session/
+  aistudio-drive; `tool_result_exit_code` is populated only for
+  codex-session, and just 14.2% of even that. For origins/results with no
+  structural coverage the code falls back to the tagged text scan rather
+  than reporting a false negative. Every branch of `_terminal_state` now
+  returns an `evidence_class` key in `inference.terminal_state_evidence` —
+  `raw_evidence` (tool-pairing counts, the structural action signal, the
+  provider-emitted session-event status field, or message role) or
+  `text_derived` (the last-message `_ERROR_MARKERS` scan and its
+  `clean_finish` complement, and the structural-fallback text scan above).
+  Consumers needing only grounded rows should filter on
+  `inference.terminal_state_evidence.evidence_class == 'raw_evidence'`.
+  `session_work_events`' sibling classifier's 50.5% (coin-flip) accuracy
+  finding (9e5.9, below) is the reason this scan was not simply deleted: not
+  measured as reliable, but not proven unreliable enough to remove entirely
+  while the last-resort fallback path still has explicit provenance.
 
 ### `session_work_events` — Work Events
 
@@ -138,7 +168,7 @@ API.
   rows are direct evidence. Inspect `explicit_count` vs `auto_count`
   for rigor.
 - Consumer-facing fields: `tag`, `session_count`,
-  `explicit_count`, `auto_count`, `provider_breakdown`,
+  `explicit_count`, `auto_count`, `origin_breakdown`,
   `repo_breakdown`.
 
 ### `archive_coverage` — Archive Coverage
@@ -154,10 +184,10 @@ API.
   `work_event_type` labels the session_work_events materializer assigns,
   so it is an aggregation over inferred labels, not raw evidence.
   `provenance` is only populated for day/week grouping (never for the
-  default provider grouping).
+  default origin grouping).
 - Notes: `provenance.materializer_version` is a hardcoded literal `1` for
   day/week grouping with no dedicated version constant, and absent
-  entirely for provider grouping — not declared as a version field.
+  entirely for origin grouping — not declared as a version field.
 - Field contracts (9e5.29): `avg_messages_per_session`, `avg_user_words`,
   `avg_authored_user_words`, `avg_assistant_words`, `tool_use_percentage`,
   and `thinking_percentage` are `derived` fields whose declared
@@ -169,7 +199,7 @@ API.
   at all (no per-type message counts fetched there), so those fields
   render `None` on every day/week row today, not only zero-denominator
   ones — a documented coverage gap, not a bug.
-- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+- Consumer-facing fields: `bucket`, `group_by`, `origin`,
   `session_count`, `message_count`, `total_cost_usd`,
   `tool_use_percentage`, `thinking_percentage`, `work_event_breakdown`,
   `origin_breakdown`, `repos_active`.
@@ -184,11 +214,11 @@ API.
 - Readiness: Every field is a deterministic count, distinct-value count,
   or presence flag read from the canonical actions view; there is no
   heuristic/estimate layer. Check `has_coverage_gaps` (or the per-entry
-  `provider_coverage[].data_available`) to distinguish a genuine zero
+  `origin_coverage[].data_available`) to distinguish a genuine zero
   tool-use count from an origin with no ingested action data at all.
-- Consumer-facing fields: `entries`, `provider_coverage`,
-  `total_call_count`, `total_distinct_tools`, `providers_with_data`,
-  `providers_without_data`, `has_coverage_gaps`.
+- Consumer-facing fields: `entries`, `origin_coverage`,
+  `total_call_count`, `total_distinct_tools`, `origins_with_data`,
+  `origins_without_data`, `has_coverage_gaps`.
 
 ### `session_costs` — Session Costs
 
@@ -197,13 +227,13 @@ API.
 - Fallback markers: `estimate.missing_reasons`, `estimate.unavailable_reason`
 - Confidence field: `estimate.confidence`
 - Versions: `materializer_version`
-- Readiness: `session_id`/`source_name`/`title`/timestamps are direct
+- Readiness: `session_id`/`origin`/`title`/timestamps are direct
   archive facts. The nested `estimate` payload carries the pricing
   outcome: `estimate.status` is one of exact/priced/partial/unavailable,
   `estimate.confidence` quantifies trust in a non-exact price, and a
   non-empty `estimate.missing_reasons` or a set
   `estimate.unavailable_reason` flags a fallback/unpriced row.
-- Consumer-facing fields: `session_id`, `source_name`, `title`,
+- Consumer-facing fields: `session_id`, `origin`, `title`,
   `created_at`, `updated_at`, `estimate`, `provenance`.
 
 ### `cost_rollups` — Cost Rollups
@@ -216,11 +246,16 @@ API.
 - Readiness: session/priced/unavailable counts, `status_counts`,
   `total_usd`, `basis`, and `usage` are grounded SQL sums/counts.
   `confidence` is the one probabilistic signal — a session-count-weighted
-  average of the same per-row confidence heuristic `session_costs` uses.
+  average of the same per-row confidence heuristic `session_costs` uses. It
+  renders `None` (plain output: `uncovered`) when `priced_session_count` is
+  zero, rather than fabricating a `0.0` confidence.
 - Notes: `provenance.materializer_version` is a hardcoded literal `0`, a
   sentinel for "computed live at query time", not a stored materialized
   artifact — not declared as a version field.
-- Consumer-facing fields: `source_name`, `model_name`,
+- Field contract: `confidence` is `derived` from priced-session confidence
+  values with `priced_session_count` as its denominator; an empty denominator
+  is not applicable, not a measured zero.
+- Consumer-facing fields: `origin`, `model_name`,
   `normalized_model`, `session_count`, `priced_session_count`,
   `unavailable_session_count`, `status_counts`, `total_usd`, `basis`,
   `usage`, `confidence`, `per_model_breakdown`.
@@ -241,7 +276,7 @@ API.
 - Notes: `provenance.materializer_version` is the same hardcoded literal
   `0` live-aggregation sentinel as `cost_rollups` — not declared as a
   version field.
-- Consumer-facing fields: `bucket`, `group_by`, `source_name`,
+- Consumer-facing fields: `bucket`, `group_by`, `origin`,
   `model_name`, `normalized_model`, `session_count`, `event_count`,
   `usage`, `reasoning_output_tokens`, `stored_cost_usd`,
   `subscription_credits`, `cost_provenance_counts`.
@@ -272,6 +307,12 @@ Every insight product registered in
 insight-honesty` enforces this statically; the audit runner reports an
 uncovered product's `coverage_status` as `"uncovered"` rather than
 silently omitting it (9e5.28).
+
+The same policy recursively inspects each registered descriptor's item
+model. Every public numeric leaf must have a `RigorFieldContract` or an
+explicitly justified field exemption; a registry descriptor without an item
+model is itself a policy failure. This keeps newly exposed nested quantitative
+fields from bypassing the rigor matrix.
 
 ## Audit CLI
 

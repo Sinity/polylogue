@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from polylogue.mcp.declarations.adapter import DeclaredToolRegistrar
 from polylogue.mcp.server_prompts import register_prompts
 from polylogue.mcp.server_resources import register_resources
 from polylogue.mcp.server_support import (
@@ -16,6 +17,7 @@ from polylogue.mcp.server_support import (
     _get_config,
     _get_polylogue,
     _json_payload,
+    _response_context,
     _safe_call,
     _set_runtime_services,
 )
@@ -42,15 +44,28 @@ def build_server(*, role: MCPRole = "read") -> FastMCP:
     hooks = ServerCallbacks(
         json_payload=_json_payload,
         clamp_limit=_clamp_limit,
-        safe_call=lambda fn_name, fn: _safe_call(fn_name, fn),
-        async_safe_call=lambda fn_name, fn: _async_safe_call(fn_name, fn),
+        safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _safe_call(
+            fn_name,
+            fn,
+            session_id=session_id,
+            session_ids=session_ids,
+        ),
+        async_safe_call=lambda fn_name, fn, *, session_id=None, session_ids=(): _async_safe_call(
+            fn_name,
+            fn,
+            session_id=session_id,
+            session_ids=session_ids,
+        ),
         error_json=lambda message, **extra: _error_json(message, **extra),
         get_config=lambda: _get_config(),
         get_polylogue=lambda: _get_polylogue(),
         extract_fenced_code=_extract_fenced_code,
+        response_context=_response_context,
         role=role,
     )
-    register_tools(mcp, hooks)
+    declared_mcp = DeclaredToolRegistrar(mcp, role=role)
+    register_tools(declared_mcp, hooks)
+    declared_mcp.finalize()
     register_resources(mcp, hooks)
     register_prompts(mcp, hooks)
     return mcp
@@ -72,6 +87,9 @@ def _get_server(services: RuntimeServices | None = None, *, role: MCPRole = "rea
 
 def serve_stdio(services: RuntimeServices | None = None, *, role: MCPRole = "read") -> None:
     """Start MCP server with stdio transport."""
+    from polylogue.mcp.call_log import start_mcp_call_log
+
+    start_mcp_call_log()
     _get_server(services, role=role).run(transport="stdio")
 
 

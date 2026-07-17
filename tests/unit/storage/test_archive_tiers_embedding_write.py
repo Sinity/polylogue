@@ -9,11 +9,16 @@ from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.materialization import _record_archive_embedding_success
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
+    ArchiveEmbeddingFailure,
     ArchiveEmbeddingMeta,
     ArchiveEmbeddingStatus,
     ArchiveEmbeddingWrite,
+    list_active_embedding_failures,
     mark_session_embedding_error,
+    read_embedding_failure,
     read_embedding_status,
+    record_embedding_failure,
+    resolve_embedding_failure,
     upsert_message_embedding,
     upsert_message_embeddings,
 )
@@ -145,3 +150,167 @@ def test_archive_tiers_embedding_writer_records_terminal_errors(tmp_path: Path) 
         needs_reindex=False,
         error_message="Embedding generation failed: HTTP 400",
     )
+    [failure] = list_active_embedding_failures(conn)
+    assert failure.session_id == "codex-session:bad-input"
+    assert failure.lifecycle_state == "terminal"
+    assert failure.message_refs == ()
+    assert failure.provider == "unknown"
+    assert failure.error_class == "embedding_error"
+
+
+def test_embedding_failure_lifecycle_preserves_audit_and_requeues(tmp_path: Path) -> None:
+    """Terminal rows are inspectable, acknowledgeable, and requeueable.
+
+    Anti-vacuity: replacing the ledger with aggregate-only status rows loses
+    message/provider/error identities; deleting on resolution loses the audit;
+    omitting the requeue mutation leaves the session permanently excluded.
+    """
+    conn = _connect(tmp_path / "embeddings.db")
+    terminal = record_embedding_failure(
+        conn,
+        session_id="aistudio-drive:poisoned",
+        origin="aistudio-drive",
+        message_refs=("aistudio-drive:poisoned:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_http_400",
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+        occurred_at_ms=1_800_000_000_000,
+    )
+    assert terminal == ArchiveEmbeddingFailure(
+        failure_id=terminal.failure_id,
+        session_id="aistudio-drive:poisoned",
+        origin="aistudio-drive",
+        message_refs=("aistudio-drive:poisoned:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_http_400",
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+        lifecycle_state="terminal",
+        created_at_ms=1_800_000_000_000,
+        updated_at_ms=1_800_000_000_000,
+        resolved_at_ms=None,
+        resolution_action=None,
+        resolution_note=None,
+        superseded_by=None,
+    )
+    assert list_active_embedding_failures(conn) == (terminal,)
+
+    acknowledged = resolve_embedding_failure(
+        conn,
+        failure_id=terminal.failure_id,
+        action="acknowledge",
+        note="provider rejects this historical payload",
+        resolved_at_ms=1_800_000_000_100,
+    )
+    assert acknowledged.lifecycle_state == "acknowledged"
+    assert acknowledged.resolution_action == "acknowledge"
+    assert list_active_embedding_failures(conn) == ()
+    assert conn.execute("SELECT COUNT(*) FROM embedding_failures").fetchone()[0] == 1
+    assert read_embedding_status(conn, "aistudio-drive:poisoned").needs_reindex is False
+
+    requeued = record_embedding_failure(
+        conn,
+        session_id="codex-session:retry-me",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:retry-me:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_http_400",
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+        occurred_at_ms=1_800_000_000_200,
+    )
+    resolved = resolve_embedding_failure(
+        conn,
+        failure_id=requeued.failure_id,
+        action="requeue",
+        resolved_at_ms=1_800_000_000_300,
+    )
+    assert resolved.lifecycle_state == "resolved"
+    assert resolved.resolution_action == "requeue"
+    status = read_embedding_status(conn, "codex-session:retry-me")
+    assert status.needs_reindex is True
+    assert status.error_message is None
+
+
+def test_new_failure_supersedes_prior_active_failure_for_same_session(tmp_path: Path) -> None:
+    """A later attempt is current debt; earlier attempts remain durable evidence.
+
+    Anti-vacuity: deleting the lifecycle transition leaves both rows active, so
+    status and archive debt overcount a single repeatedly failing session.
+    """
+    conn = _connect(tmp_path / "embeddings.db")
+    prior = record_embedding_failure(
+        conn,
+        session_id="codex-session:retry-loop",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:retry-loop:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_timeout",
+        error_message="Embedding generation timed out",
+        retryable=True,
+        occurred_at_ms=1_800_000_000_000,
+    )
+    current = record_embedding_failure(
+        conn,
+        session_id="codex-session:retry-loop",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:retry-loop:m2",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_http_400",
+        error_message="Embedding generation failed: HTTP 400",
+        retryable=False,
+        occurred_at_ms=1_800_000_100_000,
+    )
+
+    superseded = read_embedding_failure(conn, prior.failure_id)
+    assert superseded.lifecycle_state == "superseded"
+    assert superseded.resolution_action == "superseded"
+    assert superseded.superseded_by == current.failure_id
+    assert superseded.resolved_at_ms == current.created_at_ms
+    assert list_active_embedding_failures(conn) == (current,)
+    status = read_embedding_status(conn, "codex-session:retry-loop")
+    assert status.needs_reindex is False
+    assert status.error_message == "Embedding generation failed: HTTP 400"
+
+
+def test_acknowledging_retryable_failure_stops_auto_requeue_but_stays_blocked(tmp_path: Path) -> None:
+    """Operator acknowledgement of a retryable failure ends the retry loop.
+
+    Anti-vacuity: without the non-requeue resolution clearing needs_reindex,
+    the session stays in the automatic backlog despite the operator resolution;
+    clearing error_message too would erase it from the visible blocked count.
+    """
+    conn = _connect(tmp_path / "embeddings.db")
+    failure = record_embedding_failure(
+        conn,
+        session_id="codex-session:flaky",
+        origin=Origin.CODEX_SESSION,
+        message_refs=("codex-session:flaky:m1",),
+        provider="voyage",
+        model="voyage-4",
+        error_class="provider_timeout",
+        error_message="Embedding generation timed out",
+        retryable=True,
+        occurred_at_ms=1_800_000_000_000,
+    )
+    before = read_embedding_status(conn, "codex-session:flaky")
+    assert before.needs_reindex is True
+    assert before.error_message == "Embedding generation timed out"
+
+    acknowledged = resolve_embedding_failure(
+        conn,
+        failure_id=failure.failure_id,
+        action="acknowledge",
+        note="known flaky historical payload",
+        resolved_at_ms=1_800_000_000_100,
+    )
+    assert acknowledged.lifecycle_state == "acknowledged"
+    after = read_embedding_status(conn, "codex-session:flaky")
+    assert after.needs_reindex is False
+    assert after.error_message == "Embedding generation timed out"

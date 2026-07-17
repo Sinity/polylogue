@@ -5,18 +5,23 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.raw_payload import extract_payload_samples, record_bucket_key
+from polylogue.archive.raw_payload import ReplayableRecordSamples, extract_payload_samples, record_bucket_key
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
+from polylogue.schemas.field_stats.detection import is_dynamic_key, should_collapse_observed_keys
 from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
-from polylogue.schemas.observation_models import ProviderConfig, SchemaClusterPayload, SchemaUnit
+from polylogue.schemas.observation_models import (
+    SCHEMA_SAMPLE_STRING_LIMIT,
+    ProviderConfig,
+    SchemaClusterPayload,
+    SchemaUnit,
+)
 
 SchemaSample: TypeAlias = JSONDocument
 
-_SCHEMA_SAMPLE_STRING_LIMIT = 1024
 _MAX_PROFILE_TOKENS = 160
 _MAX_NESTED_PROFILE_TOKENS = 8
 
@@ -49,6 +54,7 @@ def _build_observation_context(
     observed_at: str | None,
     config: ProviderConfig,
     max_samples: int | None,
+    full_corpus: bool,
 ) -> _ObservationContext:
     provider_token = Provider.from_string(source_name)
     source_path_obj = Path(source_path) if source_path is not None else None
@@ -59,7 +65,11 @@ def _build_observation_context(
         raw_id=raw_id,
         observed_at=observed_at,
         bundle_scope=derive_bundle_scope(provider_token, source_path_obj),
-        effective_max_samples=max_samples if max_samples is not None else config.schema_sample_cap,
+        effective_max_samples=None
+        if full_corpus
+        else max_samples
+        if max_samples is not None
+        else config.schema_sample_cap,
     )
 
 
@@ -128,14 +138,14 @@ def _extract_document_observations(
     normalized_payload: JSONValue,
     *,
     context: _ObservationContext,
+    values_compacted: bool,
 ) -> list[_ObservedSchemaUnit]:
-    documents = _compact_schema_samples(
-        extract_payload_samples(
-            normalized_payload,
-            sample_granularity="document",
-            max_samples=context.effective_max_samples,
-        )
+    extracted_documents = extract_payload_samples(
+        normalized_payload,
+        sample_granularity="document",
+        max_samples=context.effective_max_samples,
     )
+    documents = extracted_documents if values_compacted else _compact_schema_samples(extracted_documents)
     units: list[_ObservedSchemaUnit] = []
     for sample in documents:
         artifact_kind = _eligible_artifact_kind(sample, context=context)
@@ -162,18 +172,21 @@ def extract_schema_units_from_payload(
     observed_at: str | None = None,
     config: ProviderConfig,
     max_samples: int | None = None,
+    values_compacted: bool = False,
+    full_corpus: bool = False,
 ) -> list[SchemaUnit]:
     """Extract clusterable schema units from one decoded payload."""
-    if not is_json_value(payload):
+    if not isinstance(payload, ReplayableRecordSamples) and not is_json_value(payload):
         return []
-    normalized_payload: JSONValue = payload
+    normalized_payload = cast(JSONValue, payload)
     context = _build_observation_context(
         source_name=source_name,
         source_path=source_path,
         raw_id=raw_id,
         observed_at=observed_at,
         config=config,
-        max_samples=max_samples,
+        max_samples=None if full_corpus else max_samples,
+        full_corpus=full_corpus,
     )
 
     if config.sample_granularity == "record":
@@ -191,13 +204,14 @@ def extract_schema_units_from_payload(
         for observed in _extract_document_observations(
             normalized_payload,
             context=context,
+            values_compacted=values_compacted,
         )
     ]
 
 
 def _compact_schema_value(value: JSONValue) -> JSONValue:
     if isinstance(value, str):
-        return value[:_SCHEMA_SAMPLE_STRING_LIMIT] if len(value) > _SCHEMA_SAMPLE_STRING_LIMIT else value
+        return value[:SCHEMA_SAMPLE_STRING_LIMIT] if len(value) > SCHEMA_SAMPLE_STRING_LIMIT else value
     if isinstance(value, list):
         return [_compact_schema_value(item) for item in value]
     if isinstance(value, dict):
@@ -206,12 +220,19 @@ def _compact_schema_value(value: JSONValue) -> JSONValue:
 
 
 def _compact_schema_samples(samples: list[SchemaSample]) -> list[SchemaSample]:
+    if isinstance(samples, ReplayableRecordSamples):
+        return samples.mapped(_compact_schema_document)  # type: ignore[return-value]
     compacted: list[SchemaSample] = []
     for sample in samples:
         compacted_sample = _compact_schema_value(sample)
         if isinstance(compacted_sample, dict):
             compacted.append(json_document(compacted_sample))
     return compacted
+
+
+def _compact_schema_document(sample: JSONDocument) -> JSONDocument:
+    compacted = _compact_schema_value(sample)
+    return json_document(compacted)
 
 
 def _coarse_type(value: object) -> str:
@@ -230,10 +251,26 @@ def _coarse_type(value: object) -> str:
     return type(value).__name__
 
 
+def _structural_child_keys(keys: Iterable[object]) -> tuple[str, ...]:
+    normalized = tuple(str(key) for key in keys)
+    collapse_all = should_collapse_observed_keys(normalized)
+    stable: set[str] = set()
+    has_dynamic = False
+    for key in normalized:
+        if collapse_all or is_dynamic_key(key):
+            has_dynamic = True
+        else:
+            stable.add(key)
+    ordered = sorted(stable)
+    if has_dynamic:
+        ordered.append("*")
+    return tuple(ordered[:_MAX_NESTED_PROFILE_TOKENS])
+
+
 def _nested_object_keys(value: object) -> tuple[str, ...]:
     if not isinstance(value, dict):
         return ()
-    return tuple(sorted(str(key) for key in value)[:_MAX_NESTED_PROFILE_TOKENS])
+    return _structural_child_keys(value)
 
 
 def _nested_list_object_keys(value: object) -> tuple[str, ...]:
@@ -246,7 +283,7 @@ def _nested_list_object_keys(value: object) -> tuple[str, ...]:
         keys.update(str(key) for key in item)
         if len(keys) >= _MAX_NESTED_PROFILE_TOKENS:
             break
-    return tuple(sorted(keys)[:_MAX_NESTED_PROFILE_TOKENS])
+    return _structural_child_keys(keys)
 
 
 def _append_tokens(tokens: list[str], values: Iterable[str]) -> None:

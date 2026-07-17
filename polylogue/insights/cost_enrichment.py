@@ -57,7 +57,7 @@ def enrich_session_cost_insight(
         update={
             "estimate": estimate.model_copy(
                 update={
-                    "source_name": insight.estimate.source_name,
+                    "origin": insight.estimate.origin,
                     "session_id": insight.session_id,
                 }
             )

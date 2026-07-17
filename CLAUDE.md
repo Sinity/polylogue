@@ -93,7 +93,7 @@ unresolved/resolved/repaired/**quarantined** (cycle-break).
 | `source.db` | 3 | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
 | `index.db` | 24 | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
 | `embeddings.db` | 1 | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
-| `user.db` | 4 | **durable, irreplaceable** | unified `assertions` + `user_settings` |
+| `user.db` | 6 | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
 | `ops.db` | 1 | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs, otlp |
 
 `user.db` is a **single unified `assertions` table** keyed by a closed
@@ -104,7 +104,10 @@ overlay tables; `context_policy_json` (default `{"inject":false}`) gates whether
 an assertion is injected into agent context. The column is plain `TEXT` so the
 vocabulary can grow without a user-tier schema bump. User corrections are
 `AssertionKind.CORRECTION` rows here (a legacy `user_corrections` table survives
-only as a compat read path for pre-split single-file archives).
+only as a compat read path for pre-split single-file archives). Versioned
+annotation construct definitions live in `annotation_schemas`; independent
+label-run provenance lives in `annotation_batches`, while the labels remain
+ordinary assertion rows scoped by `annotation-batch:<id>` ObjectRefs.
 
 ### Content-hash idempotency
 
@@ -203,15 +206,17 @@ commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`
   (`storage/repository/__init__.py`: archive reads, archive writes, raw,
   vectors, + six insight readers — profile, run-projection, timeline, thread,
   summary, topology) and on `services.py`.
-- **MCP** (`mcp/`): the large agent-facing surface (~130 tools across
-  `server_*.py`) — search/list/get, insights, corrections, context/recall,
-  postmortem bundles. This, not the API, is the continuity surface. Adding a
-  tool requires updating `EXPECTED_TOOL_NAMES` + a tool contract.
+- **MCP** (`mcp/`): the large agent-facing surface (103 tools across
+  `server_*.py`, pinned by `tests/unit/mcp/test_server_surfaces.py` against
+  `EXPECTED_TOOL_NAMES`) — search/list/get, insights, corrections,
+  context/recall, postmortem bundles. This, not the API, is the continuity
+  surface. Adding a tool requires updating `EXPECTED_TOOL_NAMES` + a tool
+  contract.
 - **Insights** (`insights/registry.py`): descriptor-driven — one
   `INSIGHT_REGISTRY` where each `InsightType` declares field accessors + a
   Pydantic query model + operations method + CLI/MCP metadata, driving
-  plaintext, JSON, and MCP from one place. `project_origin_payload` renames
-  provider-token keys → origin at the output boundary (see Vocabulary).
+  plaintext, JSON, and MCP from one place. Insight models carry canonical
+  `origin` fields directly; surfaces serialize them without a vocabulary shim.
 - **`SessionFilter`** (`archive/filter/filters.py`) is a fluent shell over an
   immutable `SessionQueryPlan` that separates SQL-pushdown from post-filters and
   summaries-from-full loading, plus the `with_units` projection.
@@ -234,14 +239,20 @@ Three origin-related vocabularies with different scopes (`core/enums.py`,
   public surfaces.
 - **`Source`** — richer identity (`family`, `runtime_root`, `originating_lab`).
 
-The provider→origin retirement is **in progress**, not a done rename.
-`project_origin_payload` is a transitional shim: internal storage columns
-(`session_profiles.source_name`, cost keys) and insight models still speak
-provider vocabulary, so public surfaces project to `origin` at the boundary. A
-naive rename is unsafe because `GEMINI` **and** `DRIVE` both collapse to
-`AISTUDIO_DRIVE` (non-injective). Tracked in Beads **polylogue-9e5.8**
-(retirement plan), **polylogue-jnj.7** (CLI help leakage), **polylogue-2qx**
-(OriginSpec). Anti-goal: provider wording on source-origin public filters/payloads.
+The provider→origin retirement is complete for normalized archive identity:
+sessions, messages, actions, insights, query filters, CLI/API/MCP/daemon read
+payloads, and topology/resume models carry `Origin` natively. There is no
+payload-rewrite shim. Older `source_name` columns in rebuildable storage rows
+are persistence details and are converted while hydrating their typed models,
+not exposed as a second public identity vocabulary.
+
+`Provider` deliberately remains at raw acquisition/parser/schema boundaries
+and in genuinely provider-scoped concepts such as embedding backends, pricing
+catalog vendors, provider-reported cost, and provider-usage billing. The
+`GEMINI` + `DRIVE` → `AISTUDIO_DRIVE` mapping is non-injective, so normalized
+code must not reverse an `Origin` into a guessed `Provider`; raw-wire code uses
+its original acquisition evidence. Anti-goal: provider wording on
+source-origin public filters or payloads.
 
 ---
 
@@ -394,10 +405,6 @@ isolated XDG paths + archive root.
   (`tests/infra/frozen_clock.py`), not the host wall clock. The
   `verify-test-clock-hygiene` lint rejects new direct `datetime.now`/`time.time`
   in tests outside `docs/plans/test-clock-allowlist.yaml`.
-- **Protected — never delete:** `tests/unit/sources/test_parsers_props.py`,
-  `test_null_guard_properties.py`; `tests/unit/core/test_properties.py`;
-  `tests/integration/`; `tests/unit/security/`;
-  `tests/unit/storage/test_crud.py`.
 - Pytest temp DBs default to `/realm/tmp/polylogue-pytest` (not `/dev/shm`).
   `seeded_db`/`corpus_seeded_db` build a shared DB once under a `.build.done`
   guard — a SIGKILL mid-build leaves a partial DB + set guard →
@@ -469,7 +476,7 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
 - New MCP tool → update `EXPECTED_TOOL_NAMES` (lives in `tests/infra/mcp.py`,
-  96 tools currently) + tool contract, or discovery tests fail.
+  103 tools currently) + tool contract, or discovery tests fail.
 - New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green
@@ -494,6 +501,7 @@ Read on demand (paths relative to repo root):
 | System rings, data flow, provider table | `docs/architecture.md` |
 | Invariants, hot files, schema-version history, extension points | `docs/internals.md` |
 | Target shape + architectural decision log | `docs/architecture-spine.md` |
+| Execution control center hotspot map + decomposition sequence | `docs/architecture-hotspots.md` |
 | Contributor workflow (branches, PRs, hooks, releases) | `CONTRIBUTING.md` |
 | Full testing reference | `TESTING.md` |
 | devtools command catalog | `docs/devtools.md` |
@@ -505,3 +513,4 @@ Read on demand (paths relative to repo root):
 | Cost/usage model | `docs/cost-model.md` |
 | CLI reference (generated) | `docs/cli-reference.md` |
 | MCP reference | `docs/mcp-reference.md` |
+| Normalized-session material protocol v1 (Sinex-independent wire format) | `docs/material-protocol-v1.md` |

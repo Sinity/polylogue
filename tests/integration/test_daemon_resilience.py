@@ -24,8 +24,10 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -169,6 +171,29 @@ def _polylogue_binary() -> str:
     return "polylogue"
 
 
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_lifecycle_start(proc: subprocess.Popen[bytes], ops_db: Path, *, timeout_s: float = 30.0) -> None:
+    """Wait for the real daemon entry point to persist its lifecycle start row."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        _assert_daemon_alive(proc)
+        try:
+            with sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True) as conn:
+                row = conn.execute("SELECT run_id FROM daemon_lifecycle LIMIT 1").fetchone()
+            if row is not None:
+                return
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).lower() and "unable to open" not in str(exc).lower():
+                raise
+        time.sleep(0.1)
+    raise TimeoutError("timed out waiting for daemon_lifecycle start row")
+
+
 def _wait_for_messages(
     db: Path,
     *,
@@ -202,6 +227,95 @@ def _wait_for_messages(
     raise TimeoutError(
         f"Timed out waiting for {min_count} messages after {timeout_s}s; last observed count: {last_count}"
     )
+
+
+def test_sigterm_read_only_daemon_records_forensics(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A real read-only daemon records SIGTERM before its process exits."""
+    archive_root = workspace_env["archive_root"]
+    daemon_log = archive_root / "daemon-sigterm.log"
+    api_port = _free_local_port()
+    env = os.environ.copy()
+
+    with daemon_log.open("wb") as log:
+        daemon = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from polylogue.daemon.cli import main; main()",
+                "run",
+                "--no-watch",
+                "--no-source-catchup",
+                "--no-browser-capture",
+                "--api-port",
+                str(api_port),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        try:
+            _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+            daemon.send_signal(signal.SIGTERM)
+            assert daemon.wait(timeout=15) == 128 + signal.SIGTERM
+        finally:
+            if daemon.poll() is None:
+                _cleanup_process(daemon)
+
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT signal, exit_kind, stopped_at_ms
+            FROM daemon_lifecycle
+            ORDER BY started_at_ms DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert row[:2] == ("SIGTERM", "signal")
+    assert isinstance(row[2], int)
+    log_text = daemon_log.read_text(encoding="utf-8", errors="replace")
+    assert "received SIGTERM; dumping all thread stacks" in log_text
+    assert "Current thread" in log_text
+
+
+def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A contended OPS tier cannot hold a signalled daemon for the normal 30 seconds."""
+    archive_root = workspace_env["archive_root"]
+    api_port = _free_local_port()
+    daemon = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from polylogue.daemon.cli import main; main()",
+            "run",
+            "--no-watch",
+            "--no-source-catchup",
+            "--no-browser-capture",
+            "--api-port",
+            str(api_port),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=os.environ.copy(),
+    )
+    lock = sqlite3.connect(archive_root / "ops.db")
+    try:
+        _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+        lock.execute("BEGIN EXCLUSIVE")
+        started = time.monotonic()
+        daemon.send_signal(signal.SIGTERM)
+        assert daemon.wait(timeout=12) == 128 + signal.SIGTERM
+        assert time.monotonic() - started < 8.0
+    finally:
+        lock.rollback()
+        lock.close()
+        if daemon.poll() is None:
+            _cleanup_process(daemon)
 
 
 def _daemon_debug(proc: subprocess.Popen[bytes], *, db: Path, corpus_root: Path) -> str:

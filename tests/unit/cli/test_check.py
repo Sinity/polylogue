@@ -567,7 +567,7 @@ class TestCheckCommand:
         assert result_verbose.exit_code == 0
 
         # Verbose output should contain provider names for breakdowns
-        # (provider_distribution check always has breakdown)
+        # (origin_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude-ai" in result_verbose.output
 
     def test_check_detects_empty_sessions(self, db_path: Path, cli_runner: CliRunner) -> None:
@@ -727,12 +727,48 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
+    def test_check_origin_options_advertise_no_provider_aliases(self, cli_workspace: WorkspacePaths) -> None:
+        """Doctor help exposes only the origin-worded flags -- no provider aliases."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        result = CliRunner().invoke(cli, ["ops", "doctor", "--help"])
+
+        assert result.exit_code == 0
+        assert "--schema-origin TEXT" in result.output
+        assert "--artifact-origin TEXT" in result.output
+        assert "--schema-provider" not in result.output
+        assert "--artifact-provider" not in result.output
+
+    @pytest.mark.parametrize(
+        "flag,hint",
+        [
+            ("--schema-provider", "--schema-origin"),
+            ("--artifact-provider", "--artifact-origin"),
+        ],
+    )
+    def test_check_rejects_retired_provider_flags_with_origin_hint(
+        self, cli_workspace: WorkspacePaths, flag: str, hint: str
+    ) -> None:
+        """The retired provider-named flags fail with an actionable did-you-mean-origin hint."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        result = CliRunner().invoke(cli, ["ops", "doctor", flag, "claude-code"])
+
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert flag in result.output
+        assert hint in result.output
+
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
         (["ops", "doctor", "--vacuum"], "--vacuum requires --repair or --cleanup"),
         (["ops", "doctor", "--preview"], "--preview requires --repair or --cleanup"),
-        (["ops", "doctor", "--schema-provider", "chatgpt"], "--schema-provider requires --schemas"),
+        (["ops", "doctor", "--schema-origin", "chatgpt"], "--schema-origin requires --schemas"),
         (["ops", "doctor", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
         (["ops", "doctor", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
         (["ops", "doctor", "--schema-quarantine-malformed"], "--schema-quarantine-malformed requires --schemas"),
@@ -892,7 +928,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--schemas",
-                    "--schema-provider",
+                    "--schema-origin",
                     "claude-code",
                     "--schema-samples",
                     "16",
@@ -912,6 +948,27 @@ class TestCheckCommandSupplementary:
         assert request.quarantine_malformed is False
         assert request.progress_callback is not None
         assert mock_verify.call_args.kwargs["db_path"] == ANY
+
+    def test_check_schemas_rejects_retired_schema_provider_flag(self, cli_workspace: WorkspacePaths) -> None:
+        """The retired --schema-provider spelling fails outright; no alias reaches the workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = SchemaVerificationReport(providers={}, max_samples=None, total_records=0)
+        with patch(
+            "polylogue.cli.shared.check_workflow.run_schema_verification",
+            return_value=fake_report,
+        ) as mock_verify:
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "doctor", "--schemas", "--schema-provider", "claude-code"],
+            )
+
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert "--schema-origin" in result.output
+        mock_verify.assert_not_called()
 
     def test_check_schemas_forwards_quarantine_flag(self, cli_workspace: WorkspacePaths) -> None:
         """Quarantine option is forwarded to verify_raw_corpus."""
@@ -974,7 +1031,7 @@ class TestCheckCommandSupplementary:
                 "ops",
                 "doctor",
                 "--schemas",
-                "--schema-provider",
+                "--schema-origin",
                 "codex",
                 "--schema-quarantine-malformed",
             ],
@@ -1106,7 +1163,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--artifact-coverage",
-                    "--artifact-provider",
+                    "--artifact-origin",
                     "claude-code",
                     "--artifact-limit",
                     "25",
@@ -1120,6 +1177,29 @@ class TestCheckCommandSupplementary:
         assert request.providers == ["claude-code"]
         assert request.record_limit == 25
         assert request.record_offset == 50
+
+    def test_check_artifact_coverage_rejects_retired_artifact_provider_flag(
+        self, cli_workspace: WorkspacePaths
+    ) -> None:
+        """The retired --artifact-provider spelling fails outright; no alias reaches the workflow."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        fake_report = ArtifactCoverageReport(providers={}, total_records=0)
+        with patch(
+            "polylogue.cli.shared.check_workflow.run_artifact_coverage",
+            return_value=ArtifactCoverageResult(report=fake_report),
+        ) as mock_prove:
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "doctor", "--artifact-coverage", "--artifact-provider", "claude-code"],
+            )
+
+        assert result.exit_code != 0
+        assert "No such option" in result.output
+        assert "--artifact-origin" in result.output
+        mock_prove.assert_not_called()
 
     def test_check_artifacts_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--artifacts adds artifact_observations rows to JSON output."""
@@ -1170,7 +1250,7 @@ class TestCheckCommandSupplementary:
                     "--format",
                     "json",
                     "--artifacts",
-                    "--artifact-provider",
+                    "--artifact-origin",
                     "chatgpt",
                     "--artifact-status",
                     "supported_parseable",

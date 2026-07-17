@@ -1,0 +1,290 @@
+{
+  "id": "chatgpt-fixture-conversation",
+  "conversation_id": "chatgpt-fixture-conversation",
+  "title": "Privacy-safe ChatGPT native fixture",
+  "create_time": 1784164500.0,
+  "update_time": 1784169740.0,
+  "current_node": "answer-active",
+  "default_model_slug": "gpt-5-6-pro",
+  "mapping": {
+    "root": {
+      "id": "root",
+      "message": null,
+      "parent": null,
+      "children": [
+        "context"
+      ]
+    },
+    "context": {
+      "id": "context",
+      "parent": "root",
+      "children": [
+        "user"
+      ],
+      "message": {
+        "id": "context-message",
+        "author": {
+          "role": "system",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784164500.0,
+        "update_time": null,
+        "content": {
+          "content_type": "user_editable_context",
+          "user_profile": "Privacy-safe fixture profile.",
+          "user_instructions": "Preserve structured provider evidence."
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {},
+        "recipient": "all"
+      }
+    },
+    "user": {
+      "id": "user",
+      "parent": "context",
+      "children": [
+        "answer-inactive",
+        "thought-active"
+      ],
+      "message": {
+        "id": "user-message",
+        "author": {
+          "role": "user",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784164540.0,
+        "update_time": null,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Analyze the attached fixture and create an artifact.",
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "file-service://fixture-input-image",
+              "size_bytes": 128,
+              "width": 8,
+              "height": 8
+            }
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {
+          "attachments": [
+            {
+              "id": "fixture-upload-1",
+              "name": "input.txt",
+              "mime_type": "text/plain",
+              "size": 42,
+              "file_id": "file-fixture-upload-1"
+            }
+          ]
+        },
+        "recipient": "all"
+      }
+    },
+    "answer-inactive": {
+      "id": "answer-inactive",
+      "parent": "user",
+      "children": [],
+      "message": {
+        "id": "answer-inactive-message",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784164542.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "Superseded answer."
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 1.0,
+        "metadata": {
+          "model_slug": "gpt-5-6-pro",
+          "thinking_effort": "standard"
+        },
+        "recipient": "all"
+      }
+    },
+    "thought-active": {
+      "id": "thought-active",
+      "parent": "user",
+      "children": [
+        "tool-call"
+      ],
+      "message": {
+        "id": "thought-active-message",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784164544.946,
+        "update_time": null,
+        "content": {
+          "content_type": "thoughts",
+          "parts": [
+            "Privacy-safe reasoning trace."
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": false,
+        "weight": 1.0,
+        "metadata": {
+          "model_slug": "gpt-5-6-pro",
+          "thinking_effort": "extended",
+          "reasoning_start_time": 1784164541.690012,
+          "durationMs": 5190000
+        },
+        "recipient": "all"
+      }
+    },
+    "tool-call": {
+      "id": "tool-call",
+      "parent": "thought-active",
+      "children": [
+        "tool-result"
+      ],
+      "message": {
+        "id": "tool-call-message",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784164545.0,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "{\"query\":\"fixture evidence\"}"
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": false,
+        "weight": 1.0,
+        "metadata": {
+          "model_slug": "gpt-5-6-pro",
+          "thinking_effort": "extended",
+          "reasoning_start_time": 1784164541.690012,
+          "duration_ms": 5190000
+        },
+        "recipient": "browser.search"
+      }
+    },
+    "tool-result": {
+      "id": "tool-result",
+      "parent": "tool-call",
+      "children": [
+        "recap-active"
+      ],
+      "message": {
+        "id": "tool-result-message",
+        "author": {
+          "role": "tool",
+          "name": "browser.search",
+          "metadata": {}
+        },
+        "create_time": 1784164546.0,
+        "update_time": null,
+        "content": {
+          "content_type": "execution_output",
+          "text": "Privacy-safe tool result."
+        },
+        "status": "finished_successfully",
+        "end_turn": false,
+        "weight": 1.0,
+        "metadata": {
+          "reasoning_start_time": 1784164541.690012,
+          "durationMs": 5190000
+        },
+        "recipient": "all"
+      }
+    },
+    "recap-active": {
+      "id": "recap-active",
+      "parent": "tool-result",
+      "children": [
+        "answer-active"
+      ],
+      "message": {
+        "id": "recap-active-message",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784169732.588194,
+        "update_time": null,
+        "content": {
+          "content_type": "reasoning_recap",
+          "parts": [
+            "Privacy-safe reasoning summary."
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": false,
+        "weight": 1.0,
+        "metadata": {
+          "model_slug": "gpt-5-6-pro",
+          "thinking_effort": "extended",
+          "reasoning_start_time": 1784164541.690012,
+          "reasoning_end_time": 1784169732.588194,
+          "finished_duration_sec": 5190,
+          "durationMs": 5190000
+        },
+        "recipient": "all"
+      }
+    },
+    "answer-active": {
+      "id": "answer-active",
+      "parent": "recap-active",
+      "children": [],
+      "message": {
+        "id": "answer-active-message",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1784169733.0,
+        "update_time": null,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)",
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "file-service://fixture-output-image",
+              "size_bytes": 256,
+              "width": 16,
+              "height": 16
+            }
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 1.0,
+        "metadata": {
+          "model_slug": "gpt-5-6-pro",
+          "thinking_effort": "extended",
+          "reasoning_start_time": 1784164541.690012,
+          "finished_duration_sec": 5190,
+          "duration_ms": 5190000
+        },
+        "recipient": "all"
+      }
+    }
+  }
+}

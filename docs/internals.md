@@ -37,7 +37,7 @@ debugging landmarks. For the conceptual system shape, see
 | `storage/sqlite/schema_bootstrap.py` | Shared schema snapshot, bootstrap branching, and extension planning |
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
 | `storage/repository/__init__.py` | Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology) |
-| `storage/search_providers/fts5.py` | Lexical search |
+| `storage/search/query_builders.py` | Lexical search |
 | `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
 
 ### Sources and Pipeline
@@ -137,6 +137,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   migrations are allowed only under the numbered migration resource roots, while
   derived-tier upgrade helpers remain forbidden.
 
+- User schema version 7 adds durable content-addressed `queries`, mutable
+  `query_names`, promoted `result_sets`/`result_set_members`, and planner
+  emitted `query_edges`. Existing `saved_query` assertions are repointed to
+  their canonical `query:<hash>` target in the same verified-backup migration.
+  Exact result members are retained only for watch/pinned/finding/cohort
+  persistence classes; ordinary execution relations remain ops-tier telemetry.
+- User schema version 6 adds immutable, fingerprinted `annotation_schemas`
+  definitions and independent `annotation_batches` provenance containers.
+  Batch labels remain assertion rows linked through an
+  `annotation-batch:<id>` `scope_ref`. Existing v5 tiers migrate additively
+  only after an authenticated verified-backup receipt; fresh user tiers create
+  the same canonical tables and registered `delegation.discourse@v1` schema.
 - User schema version 5 adds `context_deliveries`, an immutable receipt ledger
   for the exact context image delivered to an agent, including recipient,
   actor, run/boundary, included refs, omissions, caveats, and image digest.
@@ -161,6 +173,78 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   hash, so concurrent publishers of identical bytes remain independent.
   Existing v3 tiers migrate additively through
   `004_blob_publication_reservations.sql` after a verified backup manifest.
+- Index schema version 37 drops the three run-projection materialized cache
+  tables — `session_runs`, `session_observed_events`,
+  `session_context_snapshots` — added by v11 (polylogue-dab). Their write
+  path (`replace_session_*_bulk_sync`) is deleted; `run_relation_sql()`,
+  `observed_event_relation_sql()`, and `context_snapshot_relation_sql()` now
+  raise `ValueError` if ever called with `include_materialized=True`. All
+  `run` / `observed-event` / `context-snapshot` reads (CLI query units,
+  `coordination/envelope.py` agent-coordination evidence, MCP tools) are
+  purely source-derived from `sessions` and `blocks` — main runs from
+  `sessions`, subagent runs from `branch_type='subagent'` sessions,
+  tool-finished events from paired `tool_use`/`tool_result` blocks joined by
+  `tool_id`. `projected_run_from_row()` reads `role` from the query row
+  rather than hardcoding `"main"` (a bug that had made every subagent run
+  report as `role="main"` regardless of the materialized/source split).
+  Existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`); the drop needs no
+  migration since derived tiers are rebuilt wholesale, not migrated in place.
+- Index schema version 36 has no structural DDL change of its own; it is the
+  version bump accompanying `beads-issue` origin ingestion support
+  (polylogue-2800) landing alongside other index-tier work in the same
+  release window.
+- Index schema version 35 adds Polish lexical search-recall folding
+  (polylogue-9jsi). The `messages_fts`, `threads_fts`, and
+  `session_work_events_fts` tokenizers move from `unicode61` to
+  `unicode61 remove_diacritics 2`, which folds ordinary combining-mark
+  diacritics (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) symmetrically for indexed
+  and `MATCH` query text. Separately, `ł`/`Ł` (Latin L with stroke) has no
+  Unicode decomposition, so neither NFD normalization nor
+  `remove_diacritics` can fold it; every write path for the three FTS
+  surfaces—fresh-write triggers, full rebuilds, missing-row repair, and
+  dangling derived-surface repair—applies an inline `REPLACE`-chain fold
+  (`polylogue/storage/fts/pl_fold.py:pl_fold_sql_expr`) to the indexed
+  `text` column, and `escape_fts5_query` applies the byte-identical Python
+  fold (`pl_fold`) to query text, so `latwo`/`zrobilem` queries find seeded
+  `łatwo`/`zrobiłem` content. The fold is deliberately narrow (`ł`/`Ł`
+  only) and expressed once from `PL_FOLD_TABLE`; real-route rebuild and
+  repair tests lock the write-side calls to query-side normalization.
+  Existing index tiers must be
+  rebuilt from source evidence (`polylogue ops reset --index && polylogued
+  run`) to pick up the new tokenizer and re-fold already-indexed rows.
+- Index schema version 34 rebuilds the `delegations` view (polylogue-y964,
+  polylogue-4c27). The prior view aliased `session_links.src_session_id`
+  (canonically the CHILD) as `parent_session_id` and
+  `resolved_dst_session_id` (canonically the PARENT) as `child_session_id` —
+  backwards — and joined `branch_point_message_id` (the child's last
+  inherited parent message, for lineage composition) as if it were the Task
+  dispatch pointer. The rebuilt view spines on parent-side `actions` rows
+  (`semantic_type='subagent'`) instead of `session_links`, exposes a
+  `mapping_state` (`resolved`/`unresolved`/`ambiguous`/`edge_only`/
+  `quarantined`) instead of silently dropping unpaired or quarantined edges,
+  and separates model identity into `dispatch_turn_model` (the message that
+  authored the dispatch), `requested_model` (an explicit routing override
+  from the dispatch tool_input, if the provider recorded one), and
+  `parent_session_dominant_model`/`child_session_dominant_model` (the
+  session-level dominant-model fallback, explicitly named and excluded from
+  turn-level claims) — replacing the old `orchestrator_model`/
+  `subagent_model` columns, which conflated a session-wide aggregate with
+  per-turn dispatch authorship. Existing index tiers must be rebuilt from
+  source evidence (`polylogue ops reset --index && polylogued run`); no
+  public reader should keep consuming the old column names.
+- Index schema version 33 adds `'provider_usage'` to the
+  `insight_materialization.insight_type` CHECK constraint (polylogue-f2qv.5),
+  so `session_model_usage` can carry a materializer-version stamp and
+  self-heal through the same session-insight rebuild path as
+  `session_profile`/`latency`/etc instead of requiring a manual
+  `ops reset --index` after a provider-usage materializer fix. Existing index
+  tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`) — a `CREATE TABLE IF NOT
+  EXISTS` on an already-existing table does not retroactively widen its CHECK
+  constraint, so the version bump (not just the DDL edit) is what forces
+  existing archives through the fresh-first rebuild path rather than hitting a
+  CHECK-constraint violation the first time a session's insights are rebuilt.
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed

@@ -1,0 +1,253 @@
+{
+  "session_id": "fixture:mixed-tool-result-context",
+  "provider_family": "claude-code",
+  "freeze_entries": true,
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "origin": "claude-code-session",
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "Bash",
+          "tool_id": "mixed-1",
+          "tool_input": {
+            "command": "git status --short"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "origin": "claude-code-session",
+      "material_origin": "tool_result",
+      "text": "Independent envelope context: cached branch state retained.",
+      "parent_id": "m-use",
+      "variant_index": 2,
+      "is_active_path": true,
+      "is_active_leaf": true,
+      "inherited_prefix": false,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "mixed-1",
+          "text": " M tracked.py",
+          "tool_result_exit_code": 0
+        },
+        {
+          "id": "b-context",
+          "type": "text",
+          "text": "Operator context beside the protocol row."
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "succeeded"
+    ],
+    "entry_types": [
+      "card",
+      "prose",
+      "prose"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:mixed-tool-result-context",
+        "provider_family": "claude-code",
+        "origin": "claude-code-session",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "Bash",
+        "tool_id": "mixed-1",
+        "material_origin": "unknown",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0,
+        "result_material_origin": "tool_result",
+        "result_inherited_prefix": false
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Bash"
+        },
+        {
+          "label": "semantic family",
+          "value": "shell"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
+        },
+        {
+          "label": "command",
+          "value": "git status --short"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": " M tracked.py",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "git status --short",
+      "outcome": {
+        "state": "succeeded",
+        "exit_code": 0
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "git status --short"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": " M tracked.py",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ],
+  "expected_entries": [
+    {
+      "entry_type": "card",
+      "card": {
+        "schema_version": "semantic-card.v1",
+        "kind": "shell",
+        "title": "Shell command",
+        "source": {
+          "session_id": "fixture:mixed-tool-result-context",
+          "provider_family": "claude-code",
+          "origin": "claude-code-session",
+          "message_id": "m-use",
+          "block_id": "b-use",
+          "block_index": 0,
+          "tool_name": "Bash",
+          "tool_id": "mixed-1",
+          "material_origin": "unknown",
+          "result_message_id": "m-result",
+          "result_block_id": "b-result",
+          "result_block_index": 0,
+          "result_material_origin": "tool_result",
+          "result_inherited_prefix": false
+        },
+        "fields": [
+          {
+            "label": "tool",
+            "value": "Bash"
+          },
+          {
+            "label": "semantic family",
+            "value": "shell"
+          },
+          {
+            "label": "classification",
+            "value": "exact_alias"
+          },
+          {
+            "label": "command",
+            "value": "git status --short"
+          }
+        ],
+        "previews": [
+          {
+            "kind": "output",
+            "text": " M tracked.py",
+            "line_count": 1,
+            "omitted_lines": 0,
+            "omitted_characters": 0,
+            "truncated": false,
+            "strategy": "full",
+            "encoding_replacements": 0
+          }
+        ],
+        "caveats": [],
+        "summary": "git status --short",
+        "outcome": {
+          "state": "succeeded",
+          "exit_code": 0
+        },
+        "raw_evidence": {
+          "tool_input": {
+            "command": "git status --short"
+          },
+          "result_preview": {
+            "kind": "raw_result",
+            "text": " M tracked.py",
+            "line_count": 1,
+            "omitted_lines": 0,
+            "omitted_characters": 0,
+            "truncated": false,
+            "strategy": "full",
+            "encoding_replacements": 0
+          }
+        }
+      }
+    },
+    {
+      "entry_type": "prose",
+      "prose": {
+        "message_id": "m-result",
+        "role": "tool",
+        "message_type": "tool_result",
+        "provider_family": "claude-code",
+        "origin": "claude-code-session",
+        "material_origin": "tool_result",
+        "text": "Operator context beside the protocol row.",
+        "block_id": "b-context",
+        "block_index": 1,
+        "block_type": "text",
+        "parent_message_id": "m-use",
+        "variant_index": 2,
+        "is_active_path": true,
+        "is_active_leaf": true,
+        "inherited_prefix": false
+      }
+    },
+    {
+      "entry_type": "prose",
+      "prose": {
+        "message_id": "m-result",
+        "role": "tool",
+        "message_type": "tool_result",
+        "provider_family": "claude-code",
+        "origin": "claude-code-session",
+        "material_origin": "tool_result",
+        "text": "Independent envelope context: cached branch state retained.",
+        "parent_message_id": "m-use",
+        "variant_index": 2,
+        "is_active_path": true,
+        "is_active_leaf": true,
+        "inherited_prefix": false
+      }
+    }
+  ]
+}

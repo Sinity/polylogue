@@ -10,7 +10,7 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.model_runtime import MessageRuntimeMixin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin
 
 
 class Message(MessageRuntimeMixin, BaseModel):
@@ -18,7 +18,7 @@ class Message(MessageRuntimeMixin, BaseModel):
     role: Role
     text: str | None = None
     timestamp: datetime | None = None
-    provider: Provider | None = None
+    origin: Origin | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     blocks: list[dict[str, object]] = Field(default_factory=list)
     message_type: MessageType = MessageType.MESSAGE
@@ -49,14 +49,14 @@ class Message(MessageRuntimeMixin, BaseModel):
         raw = (str(v) if v is not None else "").strip() or "unknown"
         return Role.normalize(raw)
 
-    @field_validator("provider", mode="before")
+    @field_validator("origin", mode="before")
     @classmethod
-    def coerce_provider(cls, v: object) -> Provider | None:
+    def coerce_origin(cls, v: object) -> Origin | None:
         if v is None:
             return None
-        if isinstance(v, Provider):
+        if isinstance(v, Origin):
             return v
-        return Provider.from_string(str(v))
+        return Origin.from_string(str(v))
 
     @field_validator("message_type", mode="before")
     @classmethod

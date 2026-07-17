@@ -32,6 +32,52 @@ _MAX_APPEND_PLAN_GROUP_FILES = 64
 _DEFAULT_LIVE_FULL_INGEST_WORKERS = 1
 _BROWSER_CAPTURE_PREFIX_PROBE_BYTES = 1 * 1024 * 1024
 _BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
+_CURSOR_HASH_AUTHORITY_PREFIX = "sha256-prefix-v1"
+
+
+def _sha256_hex(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def encode_cursor_hash_authority(prefix_hash: str, tail_hash: str, *, ctime_ns: int) -> str:
+    """Bind a complete accepted-prefix digest to its bounded tail digest."""
+    normalized_prefix = prefix_hash.lower()
+    normalized_tail = tail_hash.lower()
+    if not _sha256_hex(normalized_prefix) or not _sha256_hex(normalized_tail):
+        raise ValueError("cursor hash authority requires SHA-256 hex digests")
+    if ctime_ns < 0:
+        raise ValueError("cursor hash authority requires a non-negative ctime")
+    return f"{_CURSOR_HASH_AUTHORITY_PREFIX}:{normalized_prefix}:{normalized_tail}:{ctime_ns}"
+
+
+def cursor_prefix_hash(authority: str | None) -> str | None:
+    if authority is None:
+        return None
+    parts = authority.split(":")
+    if (
+        len(parts) != 4
+        or parts[0] != _CURSOR_HASH_AUTHORITY_PREFIX
+        or not _sha256_hex(parts[1])
+        or not _sha256_hex(parts[2])
+        or not parts[3].isdigit()
+    ):
+        return None
+    return parts[1]
+
+
+def cursor_ctime_ns(authority: str | None) -> int | None:
+    if cursor_prefix_hash(authority) is None:
+        return None
+    assert authority is not None
+    return int(authority.rsplit(":", 1)[1])
+
+
+def cursor_tail_hash(authority: str | None) -> str | None:
+    """Return the bounded tail digest embedded in cursor authority."""
+    if cursor_prefix_hash(authority) is None:
+        return None
+    assert authority is not None
+    return authority.split(":")[2]
 
 
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:
@@ -79,6 +125,10 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
+    accepted_tail_hash: str | None = None
+    ctime_ns: int | None = None
+    accepted_prefix_hash: str | None = None
+    authority_bytes_read: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +156,8 @@ class _FullIngestResult:
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_source_names: dict[Path, str] = field(default_factory=dict)
     raw_source_revisions: dict[Path, str] = field(default_factory=dict)
+    captured_content_hashes: dict[Path, str] = field(default_factory=dict)
+    captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -129,6 +181,8 @@ def _full_ingest_result_from_summary(
     raw_byte_sizes: dict[Path, int],
     raw_source_names: dict[Path, str] | None = None,
     raw_source_revisions: dict[Path, str] | None = None,
+    captured_content_hashes: dict[Path, str] | None = None,
+    captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
 ) -> _FullIngestResult:
     error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None
@@ -140,6 +194,8 @@ def _full_ingest_result_from_summary(
         raw_byte_sizes=raw_byte_sizes,
         raw_source_names=raw_source_names or {},
         raw_source_revisions=raw_source_revisions or {},
+        captured_content_hashes=captured_content_hashes or {},
+        captured_file_observations=captured_file_observations or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
@@ -188,6 +244,31 @@ def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK)
                 last_complete_newline = offset + newline_at + 1
             offset += len(chunk)
     return hasher.hexdigest(), last_complete_newline
+
+
+def sha256_range_from_path(
+    path: Path,
+    *,
+    start_offset: int,
+    end_offset: int,
+    chunk_size: int = _FINGERPRINT_STREAM_CHUNK,
+) -> tuple[str, int]:
+    """Hash one exact byte range, rejecting a short read."""
+    if start_offset < 0 or end_offset < start_offset:
+        raise ValueError("invalid source byte range")
+    hasher = hashlib.sha256()
+    remaining = end_offset - start_offset
+    bytes_read = 0
+    with path.open("rb") as handle:
+        handle.seek(start_offset)
+        while remaining > 0:
+            chunk = handle.read(min(chunk_size, remaining))
+            if not chunk:
+                raise EOFError(f"source ended before byte offset {end_offset}")
+            hasher.update(chunk)
+            bytes_read += len(chunk)
+            remaining -= len(chunk)
+    return hasher.hexdigest(), bytes_read
 
 
 def tail_hash_from_path(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:

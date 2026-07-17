@@ -23,6 +23,24 @@ WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
 
 
+def _decode_provider_utf8(raw: bytes) -> str:
+    """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
+
+    Some historical exports contain a lone UTF-16 surrogate encoded directly
+    as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
+    so ``orjson`` correctly rejects it, but Python can preserve the original
+    code unit with ``surrogatepass``. Arbitrary malformed byte sequences still
+    raise and retain the ordinary malformed-JSONL behavior.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        try:
+            return raw.decode("utf-8", errors="surrogatepass")
+        except UnicodeDecodeError:
+            raise error from None
+
+
 def _load_json_record(line: str) -> JSONValue:
     try:
         return loads(line)
@@ -32,6 +50,19 @@ def _load_json_record(line: str) -> JSONValue:
         import json
 
         return cast("JSONValue", json.loads(line))
+
+
+def _load_raw_json(raw: bytes | str) -> JSONValue:
+    """Parse a JSON document, retaining recoverable provider surrogates."""
+    try:
+        return loads(raw)
+    except (orjson.JSONDecodeError, ValueError) as error:
+        if not isinstance(raw, bytes):
+            raise
+        try:
+            return _load_json_record(_decode_provider_utf8(raw))
+        except (orjson.JSONDecodeError, ValueError, UnicodeDecodeError):
+            raise error from None
 
 
 @dataclass(frozen=True)
@@ -66,7 +97,7 @@ def _decode_jsonl_payload(
         for raw_line in stream:
             line_number += 1
             try:
-                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -118,7 +149,7 @@ def _sample_jsonl_payload_with_detail(
         for raw_line in stream:
             line_number += 1
             try:
-                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
                 malformed_lines += 1
                 if malformed_detail is None:
@@ -188,7 +219,7 @@ def _decode_raw_payload(
                 pass
         raw_bytes = raw_content.read_bytes()
         try:
-            return loads(raw_bytes), "json", 0, None
+            return _load_raw_json(raw_bytes), "json", 0, None
         except (orjson.JSONDecodeError, ValueError) as exc:
             try:
                 payload, malformed_lines, malformed_detail = _decode_jsonl_payload(
@@ -213,7 +244,7 @@ def _decode_raw_payload(
         except (UnicodeDecodeError, ValueError):
             pass
     try:
-        return loads(raw), "json", 0, None
+        return _load_raw_json(raw), "json", 0, None
     except (orjson.JSONDecodeError, ValueError) as exc:
         try:
             payload, malformed_lines, malformed_detail = _decode_jsonl_payload(

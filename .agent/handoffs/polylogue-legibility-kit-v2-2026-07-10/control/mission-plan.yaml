@@ -1,0 +1,734 @@
+schema: polylogue-sinex-legibility-mission-plan/v2
+generated_at: '2026-07-10T00:00:00Z'
+policy:
+  planning_authority: Beads remain authoritative; this file is an executable launch cut, not a replacement roadmap.
+  merge_policy: Optimize for validated product state, not elegant branch history.
+  claim_policy: No public copy before executable proof and independent oracle exist.
+  ownership_policy: One active writer per overlapping write-path root.
+  integration_policy: Only coordinator-owned integration missions run full verification or publish artifacts.
+resource_capacities:
+  poly-python-light:
+    capacity: 4
+    reason: Docs, focused tests, small Python changes.
+  poly-python-heavy:
+    capacity: 2
+    reason: Archive generation, broad tests, renderers, and data migrations.
+  sinex-rust-heavy:
+    capacity: 1
+    reason: Cargo builds and large Rust link steps contend for RAM and disk.
+  postgres-nats-stack:
+    capacity: 1
+    reason: One isolated live Sinex proof stack on a single machine.
+  browser-vhs:
+    capacity: 1
+    reason: Browser/terminal recording uses shared display and ports.
+  full-verification:
+    capacity: 1
+    reason: Only the integrator runs broad release gates.
+  integration-worktree:
+    capacity: 1
+    reason: One authority merges and publishes evidence.
+  docs-static:
+    capacity: 6
+    reason: Mostly CPU-light and low-conflict when ownership is bounded.
+horizons:
+  72h:
+    goal: A cold reader can install Polylogue, run one trustworthy proof, and understand its non-claims.
+  7d:
+    goal: The public arc includes semantic receipts, real-field evidence, lineage accounting, and visible degradation.
+  30d:
+    goal: The joint system proves coverage-aware cross-domain evidence and transcript-complete Sinex-backed rebuild.
+missions:
+- id: PLG-72-01
+  horizon: 72h
+  priority: P1
+  title: Land executable Receipts demo and claims gate
+  repo: polylogue
+  prompt_file: fork-prompts/01-receipts-and-claims.md
+  beads:
+  - polylogue-3tl.15
+  - polylogue-3tl.16
+  depends_on: []
+  resources:
+    poly-python-heavy: 1
+  write_paths:
+  - polylogue/demo/
+  - polylogue/scenarios/
+  - polylogue/cli/commands/demo.py
+  - devtools/public_claims.py
+  - docs/public-claims.yaml
+  - tests/unit/
+  read_paths: []
+  required_outputs:
+  - polylogue demo receipts
+  - machine-checked claims ledger
+  - focused test receipts
+  verification:
+  - uv run pytest tests/unit/cli/test_demo_command.py tests/unit/devtools/test_public_claims.py
+  - uv run python -m devtools verify public-claims --json
+  stop_condition: The command resolves structural evidence, defeats the anti-grep control, and the claims gate passes
+    from a clean checkout.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-72-02
+  horizon: 72h
+  priority: P1
+  title: Expose truthful readiness and degraded result states
+  repo: polylogue
+  prompt_file: fork-prompts/02-readiness-and-degradation.md
+  beads:
+  - polylogue-avg
+  - polylogue-cpf.4
+  depends_on:
+  - PLG-72-01
+  resources:
+    poly-python-heavy: 1
+  write_paths:
+  - polylogue/core/
+  - polylogue/storage/
+  - polylogue/cli/
+  - polylogue/daemon/
+  - tests/
+  read_paths: []
+  required_outputs:
+  - claim-state vocabulary
+  - timeout/partial/degraded fixtures
+  - machine-readable result-state tests
+  verification:
+  - uv run pytest -q tests -k "readiness or degraded or timeout or partial"
+  stop_condition: Every bounded failure path returns one explicit state and caveat rather than ordinary-looking
+    incomplete output.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-72-03
+  horizon: 72h
+  priority: P1
+  title: Put the claims ledger in CI and release readiness
+  repo: polylogue
+  prompt_file: fork-prompts/03-claims-ci.md
+  beads:
+  - polylogue-3tl.16
+  depends_on:
+  - PLG-72-01
+  resources:
+    poly-python-light: 1
+  write_paths:
+  - devtools/
+  - .github/
+  - flake.nix
+  - docs/plans/release-readiness-gate.md
+  read_paths: []
+  required_outputs:
+  - release gate
+  - CI command
+  - failure fixture
+  verification:
+  - uv run python -m devtools verify public-claims --json
+  - uv run pytest tests/unit/devtools/test_public_claims.py tests/unit/devtools/test_release_readiness.py
+  stop_condition: A deliberately broken claim fails locally and in the declared release-readiness path.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-72-04
+  horizon: 72h
+  priority: P1
+  title: Rewrite first-contact copy around one falsifiable promise
+  repo: polylogue
+  prompt_file: fork-prompts/04-readme-and-antigrep.md
+  beads:
+  - polylogue-3tl.12
+  - polylogue-3tl.15
+  depends_on:
+  - PLG-72-01
+  resources:
+    docs-static: 1
+  write_paths:
+  - README.md
+  - docs/demos.md
+  - docs/proof-artifacts.md
+  - pyproject.toml
+  read_paths: []
+  required_outputs:
+  - README opening
+  - anti-grep explanation
+  - bounded non-claims
+  verification:
+  - uv run python -m devtools verify doc-commands
+  - uv run python -m devtools verify public-claims --json
+  stop_condition: A cold reader can state the category, first proof, and non-claims without reading architecture
+    internals.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-72-05
+  horizon: 72h
+  priority: P1
+  title: Make the website open on evidence rather than infrastructure
+  repo: polylogue
+  prompt_file: fork-prompts/05-site-and-landing.md
+  beads:
+  - polylogue-3tl.8
+  depends_on:
+  - PLG-72-01
+  - PLG-72-04
+  resources:
+    docs-static: 1
+  write_paths:
+  - devtools/pages_
+  - docs/site/
+  - docs/findings/
+  read_paths: []
+  required_outputs:
+  - evidence-first landing page
+  - claims/findings routes
+  - local link proof
+  verification:
+  - uv run python -m devtools render all --check
+  - uv run python -m devtools verify doc-commands
+  stop_condition: The first viewport leads to a runnable receipt and every quantitative statement links to a bounded
+    proof artifact.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-72-06
+  horizon: 72h
+  priority: P1
+  title: Regenerate slow, inspectable public proof media
+  repo: polylogue
+  prompt_file: fork-prompts/06-proof-media.md
+  beads:
+  - polylogue-3tl.5
+  depends_on:
+  - PLG-72-01
+  - PLG-72-04
+  resources:
+    browser-vhs: 1
+  write_paths:
+  - docs/examples/demo-tour/
+  - devtools/visual_vhs.py
+  read_paths: []
+  required_outputs:
+  - GIF
+  - first frame
+  - VHS tape
+  - human and JSON reports
+  verification:
+  - uv run polylogue demo tour --output-dir /tmp/polylogue-tour-proof --recording-mode off
+  - uv run pytest tests/unit/devtools/test_visual_vhs.py
+  stop_condition: The recording is legible at normal speed, starts with the receipt, and its report states what
+    the demo does not prove.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: QA-72-01
+  horizon: 72h
+  priority: P1
+  title: Run cold-reader and adversarial-claims gates
+  repo: joint
+  prompt_file: fork-prompts/07-cold-reader-audit.md
+  beads:
+  - polylogue-3tl.9
+  - polylogue-3tl.16
+  depends_on:
+  - PLG-72-04
+  - PLG-72-05
+  - PLG-72-06
+  resources:
+    docs-static: 1
+  write_paths: []
+  read_paths:
+  - README.md
+  - docs/
+  - docs/public-claims.yaml
+  required_outputs:
+  - cold-reader answers
+  - claim attack log
+  - must-fix list
+  verification:
+  - python scripts/legibilityctl.py claims-copy --polylogue-repo <polylogue-repo> --sinex-repo <sinex-repo>
+  stop_condition: No public sentence implies provider completeness, general uplift, invoice accuracy, or implemented
+    Sinex-backed storage without matching proof.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: INT-72-01
+  horizon: 72h
+  priority: P1
+  title: Integrate and ship the presentability cut
+  repo: polylogue
+  prompt_file: fork-prompts/16-integration-conductor.md
+  beads:
+  - polylogue-3tl.10
+  depends_on:
+  - PLG-72-02
+  - PLG-72-03
+  - PLG-72-05
+  - PLG-72-06
+  - QA-72-01
+  resources:
+    integration-worktree: 1
+    full-verification: 1
+  write_paths:
+  - '*'
+  read_paths: []
+  required_outputs:
+  - integrated branch
+  - validation ledger
+  - release packet
+  verification:
+  - uv run python -m devtools release readiness --json
+  - uv run pytest -q
+  stop_condition: The integration worktree is green, generated surfaces are current, and every launch claim has
+    a resolvable receipt.
+  merge_mode: coordinator-owned
+  handoff_required: true
+- id: PLG-7D-01
+  horizon: 7d
+  priority: P1
+  title: Land the narrow semantic transcript renderer
+  repo: polylogue
+  prompt_file: fork-prompts/08-semantic-renderer.md
+  beads:
+  - polylogue-ap7
+  depends_on:
+  - INT-72-01
+  resources:
+    poly-python-heavy: 1
+  write_paths:
+  - polylogue/rendering/
+  - polylogue/cli/
+  - polylogue/daemon/
+  - tests/
+  read_paths: []
+  required_outputs:
+  - shell receipt card
+  - edit/diff card
+  - lineage/subagent card
+  - generic fallback
+  verification:
+  - uv run pytest -q tests -k "render and (shell or edit or lineage or subagent)"
+  stop_condition: CLI and web descriptors agree for shell, edit, and lineage evidence; unknown tools remain inspectable.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-7D-02
+  horizon: 7d
+  priority: P1
+  title: Prove Receipts on one real merged change
+  repo: polylogue
+  prompt_file: fork-prompts/09-real-pr-receipts.md
+  beads:
+  - polylogue-212.2
+  - polylogue-xyel
+  depends_on:
+  - INT-72-01
+  resources:
+    poly-python-heavy: 1
+  write_paths:
+  - docs/findings/
+  - docs/examples/field-proofs/
+  - devtools/
+  read_paths: []
+  required_outputs:
+  - redacted field packet
+  - independent Git/CI oracle
+  - negative control
+  - non-claims
+  verification:
+  - uv run python -m devtools verify public-claims --json
+  stop_condition: One merged change is reconstructed from transcript evidence and independently verified repository/CI
+    evidence without manual narrative substitution.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-7D-03
+  horizon: 7d
+  priority: P1
+  title: Implement Count It Once with a fresh-subagent control
+  repo: polylogue
+  prompt_file: fork-prompts/10-count-it-once.md
+  beads:
+  - polylogue-212
+  - polylogue-4ts
+  depends_on:
+  - INT-72-01
+  resources:
+    poly-python-heavy: 1
+  write_paths:
+  - polylogue/demo/
+  - polylogue/insights/
+  - polylogue/storage/
+  - tests/
+  - docs/examples/
+  read_paths: []
+  required_outputs:
+  - physical/logical accounting demo
+  - copied-prefix receipt
+  - fresh-subagent control
+  verification:
+  - uv run pytest -q tests -k "logical and (lineage or usage or count)"
+  stop_condition: The demo preserves every physical artifact, subtracts only copied prefixes, and leaves fresh subagent
+    work unique.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-7D-04
+  horizon: 7d
+  priority: P1
+  title: Publish a bounded findings shelf
+  repo: polylogue
+  prompt_file: fork-prompts/11-findings-shelf.md
+  beads:
+  - polylogue-3tl.4
+  depends_on:
+  - PLG-7D-02
+  - PLG-7D-03
+  resources:
+    docs-static: 1
+  write_paths:
+  - docs/findings/
+  - docs/public-claims.yaml
+  - devtools/pages_
+  read_paths: []
+  required_outputs:
+  - finding template
+  - field finding
+  - negative result
+  - method cards
+  verification:
+  - uv run python -m devtools verify public-claims --json
+  - uv run python -m devtools verify doc-commands
+  stop_condition: Every finding carries population, method, evidence class, caveats, falsifier, and exact artifact
+    refs.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-7D-05
+  horizon: 7d
+  priority: P1
+  title: Prove clean installation and package the release
+  repo: polylogue
+  prompt_file: fork-prompts/12-install-and-release.md
+  beads:
+  - polylogue-3tl.7
+  - polylogue-3tl.10
+  depends_on:
+  - INT-72-01
+  resources:
+    full-verification: 1
+  write_paths:
+  - docs/examples/install-proof/
+  - flake.nix
+  - pyproject.toml
+  - devtools/
+  read_paths: []
+  required_outputs:
+  - clean uvx proof
+  - artifact hashes
+  - installation matrix
+  verification:
+  - uvx --from . polylogue demo receipts --format json
+  stop_condition: A clean environment can execute the first proof without using the developer checkout or hidden
+    fixture paths.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: PLG-7D-06
+  horizon: 7d
+  priority: P1
+  title: Render timeout, partial, and stale states in the web reader
+  repo: polylogue
+  prompt_file: fork-prompts/13-web-degraded-states.md
+  beads:
+  - polylogue-bby.1
+  depends_on:
+  - PLG-72-02
+  - PLG-7D-01
+  resources:
+    browser-vhs: 1
+    poly-python-heavy: 1
+  write_paths:
+  - polylogue/daemon/
+  - polylogue/rendering/
+  - docs/examples/web/
+  - tests/
+  read_paths: []
+  required_outputs:
+  - degraded-state cards
+  - screenshots
+  - HTTP contract tests
+  verification:
+  - uv run pytest -q tests -k "http and (timeout or partial or readiness)"
+  stop_condition: A user can visually distinguish empty, unavailable, partial, stale, and complete results.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: INT-7D-01
+  horizon: 7d
+  priority: P1
+  title: Integrate the proof-and-product cut
+  repo: polylogue
+  prompt_file: fork-prompts/16-integration-conductor.md
+  beads:
+  - polylogue-3tl.10
+  depends_on:
+  - PLG-7D-01
+  - PLG-7D-02
+  - PLG-7D-03
+  - PLG-7D-04
+  - PLG-7D-05
+  - PLG-7D-06
+  resources:
+    integration-worktree: 1
+    full-verification: 1
+  write_paths:
+  - '*'
+  read_paths: []
+  required_outputs:
+  - seven-day release candidate
+  - scorecard
+  - proof packet
+  verification:
+  - uv run python -m devtools release readiness --json
+  - uv run pytest -q
+  stop_condition: The public arc is executable from a clean install and every degraded path is visibly honest.
+  merge_mode: coordinator-owned
+  handoff_required: true
+- id: SNX-30-01
+  horizon: 30d
+  priority: P1
+  title: Implement Missing Source as a real coverage proof
+  repo: sinex
+  prompt_file: fork-prompts/14-sinex-proof-demos.md
+  beads:
+  - sinex-cem.2
+  - sinex-jdp
+  - sinex-r6d
+  depends_on: []
+  resources:
+    sinex-rust-heavy: 1
+    postgres-nats-stack: 1
+  write_paths:
+  - crate/sinexd/
+  - crate/sinexctl/
+  - tests/
+  - docs/proofs/
+  read_paths: []
+  required_outputs:
+  - empty-vs-unobserved fixture
+  - coverage receipt
+  - operator rendering
+  verification:
+  - cargo nextest run -p sinexd -p sinexctl
+  stop_condition: The same query shape distinguishes a genuinely empty interval from an unavailable source using
+    independently declared source continuity.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: SNX-30-02
+  horizon: 30d
+  priority: P1
+  title: Implement Import It Twice and Changes Its Mind Honestly
+  repo: sinex
+  prompt_file: fork-prompts/14-sinex-proof-demos.md
+  beads:
+  - sinex-cem.13
+  - sinex-cem.14
+  - sinex-908
+  depends_on:
+  - SNX-30-01
+  resources:
+    sinex-rust-heavy: 1
+    postgres-nats-stack: 1
+  write_paths:
+  - crate/sinexd/
+  - crate/sinex-db/
+  - crate/sinex-primitives/
+  - tests/
+  - docs/proofs/
+  read_paths: []
+  required_outputs:
+  - occurrence-identity proof
+  - two-semantics replay proof
+  - promotion receipt
+  verification:
+  - cargo nextest run -p sinexd -p sinex-db
+  stop_condition: A repeated acquisition does not duplicate the occurrence, while a changed interpretation remains
+    historically visible and explicitly promoted.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: JNT-30-01
+  horizon: 30d
+  priority: P1
+  title: Land stable Polylogue identity over Sinex interpretation identity
+  repo: joint
+  prompt_file: fork-prompts/15-maximal-interop.md
+  beads:
+  - sinex-4j2.7
+  - polylogue-9e5.8
+  depends_on:
+  - INT-7D-01
+  resources:
+    sinex-rust-heavy: 1
+    poly-python-heavy: 1
+  write_paths:
+  - sinex:docs/interop/
+  - sinex:crate/
+  - polylogue:polylogue/
+  - polylogue:docs/sinex-interop.md
+  read_paths: []
+  required_outputs:
+  - identity ledger
+  - alias/reconciliation rules
+  - cross-resolution tests
+  verification:
+  - python scripts/legibilityctl.py contracts --sinex-repo <sinex-repo>
+  stop_condition: Stable Polylogue refs survive reparse, resegmentation, and new Sinex event UUIDs while retaining
+    exact material and interpretation history.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: JNT-30-02
+  horizon: 30d
+  priority: P1
+  title: Implement transcript revision manifests and settlement
+  repo: joint
+  prompt_file: fork-prompts/15-maximal-interop.md
+  beads:
+  - sinex-4j2.1
+  - sinex-r6d
+  depends_on:
+  - JNT-30-01
+  resources:
+    sinex-rust-heavy: 1
+    poly-python-heavy: 1
+    postgres-nats-stack: 1
+  write_paths:
+  - sinex:crate/
+  - polylogue:polylogue/
+  - sinex:docs/interop/
+  read_paths: []
+  required_outputs:
+  - immutable segment format
+  - revision manifest
+  - commit frontier
+  - partial-state test
+  verification:
+  - python scripts/legibilityctl.py contracts --sinex-repo <sinex-repo>
+  stop_condition: Readers see either the previous complete revision or the new complete revision, never an ordinary-looking
+    partial transcript.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: JNT-30-03
+  horizon: 30d
+  priority: P1
+  title: Prove full Polylogue SQLite rebuild from Sinex
+  repo: joint
+  prompt_file: fork-prompts/15-maximal-interop.md
+  beads:
+  - sinex-4j2.3
+  - sinex-4j2.6
+  depends_on:
+  - JNT-30-02
+  resources:
+    sinex-rust-heavy: 1
+    poly-python-heavy: 1
+    postgres-nats-stack: 1
+    full-verification: 1
+  write_paths:
+  - sinex:crate/
+  - polylogue:polylogue/storage/
+  - polylogue:polylogue/cli/
+  - docs/proofs/
+  read_paths: []
+  required_outputs:
+  - rebuild command
+  - parity report
+  - interruption/resume proof
+  verification:
+  - polylogue rebuild --from-sinex --verify-parity
+  stop_condition: All irreplaceable transcript and reviewed-memory state is reconstructable from Sinex; differences
+    are mechanically classified.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: JNT-30-04
+  horizon: 30d
+  priority: P1
+  title: Build World Around the Claim and Agent Work Packet
+  repo: joint
+  prompt_file: fork-prompts/15-maximal-interop.md
+  beads:
+  - sinex-4j2.2
+  - sinex-4j2.5
+  - sinex-a4w.3.9
+  depends_on:
+  - JNT-30-02
+  - SNX-30-01
+  resources:
+    sinex-rust-heavy: 1
+    poly-python-heavy: 1
+    postgres-nats-stack: 1
+  write_paths:
+  - sinex:crate/
+  - polylogue:polylogue/
+  - docs/proofs/
+  read_paths: []
+  required_outputs:
+  - cross-domain query
+  - agent work packet
+  - missing-leg caveats
+  verification:
+  - python incident-1432/verify_incident.py
+  stop_condition: Starting from one assistant claim, the packet resolves transcript, terminal, Git, Beads, verification,
+    and source-coverage evidence without collapsing their authorities.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: EXP-30-01
+  horizon: 30d
+  priority: P1
+  title: Run Resume Under Oath with stale-memory traps
+  repo: joint
+  prompt_file: fork-prompts/15-maximal-interop.md
+  beads:
+  - sinex-cem.7
+  - polylogue-37t
+  depends_on:
+  - JNT-30-04
+  resources:
+    poly-python-heavy: 1
+    full-verification: 1
+  write_paths:
+  - docs/experiments/
+  - polylogue:polylogue/context/
+  - sinex:crate/
+  read_paths: []
+  required_outputs:
+  - frozen checkpoints
+  - three-arm protocol
+  - scoring oracle
+  - negative result policy
+  verification:
+  - python scripts/legibilityctl.py demo-portfolio
+  stop_condition: The experiment can distinguish raw-reference, generated-summary, and reviewed-context arms against
+    an independent checkpoint oracle and publishes losses as well as wins.
+  merge_mode: patch-or-cherry-pick
+  handoff_required: true
+- id: INT-30-01
+  horizon: 30d
+  priority: P1
+  title: Integrate and publish the joint proof cut
+  repo: joint
+  prompt_file: fork-prompts/16-integration-conductor.md
+  beads:
+  - sinex-4j2
+  - polylogue-3tl.10
+  depends_on:
+  - SNX-30-02
+  - JNT-30-03
+  - JNT-30-04
+  - EXP-30-01
+  resources:
+    integration-worktree: 1
+    full-verification: 1
+    postgres-nats-stack: 1
+  write_paths:
+  - '*'
+  read_paths: []
+  required_outputs:
+  - joint proof release
+  - authority matrix
+  - rebuild packet
+  - experiment packet
+  verification:
+  - bash scripts/validate-all.sh
+  stop_condition: The joint release proves transcript-complete backend authority, rebuildability, coverage-aware
+    cross-domain evidence, and bounded memory claims.
+  merge_mode: coordinator-owned
+  handoff_required: true

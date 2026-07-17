@@ -121,7 +121,8 @@
             "correction.save",
             "correction.delete",
             "correction.clear",
-            "reset"
+            "reset",
+            "excise"
           ],
           "type": "string"
         },

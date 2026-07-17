@@ -10,7 +10,7 @@ hosts and CI shapes.
 2. ``search_session_hits`` must skip archive-scale FTS COUNT(*) probes
    when the daemon-maintained freshness ledger says the message FTS surface is
    ready, and must fall back to exact verification when that row is absent.
-3. ``get_provider_metrics_rows`` must read the per-session aggregates on
+3. ``get_origin_metrics_rows`` must read the per-session aggregates on
    ``sessions`` instead of scanning ``messages``.
 4. The hydration path (``get_messages*``) must not call pydantic
    ``model_copy`` per message — in-place attachment of content blocks
@@ -29,7 +29,7 @@ import pytest
 
 from polylogue.storage.insights.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
 from polylogue.storage.sqlite.queries.sessions_search import search_session_hits
-from polylogue.storage.sqlite.queries.stats import get_provider_metrics_rows
+from polylogue.storage.sqlite.queries.stats import get_origin_metrics_rows
 from tests.benchmarks.helpers import open_bench_store
 
 
@@ -133,8 +133,8 @@ def test_search_session_hits_falls_back_to_exact_freshness(tier_small_db: Path) 
 
 
 @pytest.mark.scale_small
-def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None:
-    """Provider metrics must source the per-session pre-aggregates from
+def test_origin_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None:
+    """Origin metrics must source the per-session pre-aggregates from
     ``sessions`` rather than scanning ``messages``.
     """
     with open_bench_store(tier_small_db) as store:
@@ -142,13 +142,13 @@ def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None
 
         async def _run() -> list[dict[str, object]]:
             async with backend.connection() as conn:
-                rows = await get_provider_metrics_rows(conn)
+                rows = await get_origin_metrics_rows(conn)
                 return [dict(row) for row in rows]
 
         with _capture_aiosqlite_sql() as statements:
             rows = store.run(_run())
 
-        assert rows, "scale_small fixture should produce at least one provider row"
+        assert rows, "scale_small fixture should produce at least one origin row"
         joined = "\n".join(statements).lower()
         assert "from sessions" in joined
         assert "session_stats" not in joined
@@ -157,7 +157,7 @@ def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None
         # Result envelope must keep the contract intact.
         first = rows[0]
         for key in (
-            "source_name",
+            "origin",
             "session_count",
             "message_count",
             "user_message_count",
@@ -169,7 +169,7 @@ def test_provider_metrics_reads_sessions_aggregates(tier_small_db: Path) -> None
             "sessions_with_tools",
             "sessions_with_thinking",
         ):
-            assert key in first, f"ProviderMetricsRow contract dropped {key!r}"
+            assert key in first, f"OriginMetricsRow contract dropped {key!r}"
 
 
 # ---------------------------------------------------------------------------

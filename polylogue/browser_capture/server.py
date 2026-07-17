@@ -2,42 +2,61 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
+import re
+import sqlite3
 import time
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
 
+from polylogue.browser_capture.actions import (
+    BrowserActionConflictError,
+    BrowserActionLeaseError,
+    BrowserActionQuotaError,
+    BrowserActionStateError,
+    browser_action_capabilities,
+    claim_action,
+    enqueue_action,
+    get_action,
+    list_actions,
+    read_action_attachment,
+    reconcile_action,
+    update_action,
+)
+from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for_receiver
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
+    BrowserActionCapabilitiesPayload,
+    BrowserActionListPayload,
+    BrowserActionPayload,
+    BrowserActionReconcileRequest,
+    BrowserActionRequest,
+    BrowserActionUpdateRequest,
+    BrowserBackfillCheckpointAcceptedPayload,
+    BrowserBackfillCheckpointPayload,
+    BrowserBackfillCheckpointRequest,
     BrowserCaptureAcceptedPayload,
+    BrowserCaptureCapabilitiesPayload,
     BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
-    BrowserPostAckPayload,
-    BrowserPostCommandAckRequest,
-    BrowserPostCommandListPayload,
-    BrowserPostCommandRequest,
-    BrowserPostEnqueuedPayload,
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
-    BrowserPostCommandConflictError,
-    BrowserPostCommandStateError,
-    BrowserPostDisabledError,
     SpoolQuotaExceededError,
-    ack_post_command,
-    browser_post_enabled,
     capture_response_id,
-    enqueue_post_command,
     existing_capture_state,
-    poll_post_commands,
+    read_backfill_checkpoint,
+    receiver_identity,
     receiver_status_payload,
+    write_backfill_checkpoint,
     write_capture_envelope,
 )
 from polylogue.core.json import dumps_bytes
@@ -47,6 +66,7 @@ from polylogue.logging import get_logger
 logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+_SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -149,6 +169,27 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_bytes(self, payload: bytes, *, content_type: str, filename: str) -> None:
+        if any(ord(character) < 32 or ord(character) == 127 for character in filename):
+            raise ValueError("download filename contains control characters")
+        safe_content_type = content_type if _SAFE_MEDIA_TYPE.fullmatch(content_type) else "application/octet-stream"
+        ascii_filename = filename.encode("ascii", "ignore").decode("ascii").replace('"', "").replace("\\", "")
+        ascii_filename = ascii_filename or "download"
+        origin = self.headers.get("Origin")
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("X-Request-ID", self._request_id())
+        self.send_header("Content-Type", safe_content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(
+            "Content-Disposition",
+            f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename, safe='')}",
+        )
+        if _origin_allowed(origin, self.server.config):
+            self.send_header("Access-Control-Allow-Origin", origin or "null")
+            self.send_header("Vary", "Origin")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _safe_error(self, status: HTTPStatus, message: str) -> None:
         """Send a safe error response — no absolute paths or stack traces."""
         self._send_json(status, BrowserCaptureErrorPayload(error=message).model_dump(mode="json"))
@@ -168,8 +209,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return False
         if _check_token(dict(self.headers), config):
             return False
+        # The daemon normally uses the lazy stdlib logger, whose plain handler
+        # does not render structured kwargs.  Keep this rejection forensic
+        # without emitting credentials or arbitrary request headers.
         logger.warning(
-            "browser_capture.token_rejected", request_id=self._request_id(), origin=self.headers.get("Origin")
+            "browser_capture.token_rejected request_id=%s path=%s origin=%s",
+            self._request_id(),
+            urlparse(self.path).path,
+            self.headers.get("Origin") or "-",
         )
         self._safe_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return True
@@ -186,9 +233,19 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT.value)
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Access-Control-Allow-Origin", origin or "null")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Request-ID, X-Polylogue-Client-Protocol",
+        )
         self.send_header("Access-Control-Max-Age", "600")
+        # Chrome's Private Network Access policy blocks an already-origin-approved
+        # extension fetch to this loopback receiver unless the preflight explicitly
+        # grants it (https://developer.chrome.com/blog/private-network-access-preflight).
+        # Without this the browser reports a bare "Failed to fetch" with no other
+        # signal, so the extension popup's health check hangs forever.
+        if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true":
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -198,6 +255,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if self._reject_origin() or self._reject_token():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/v1/browser-captures/capabilities":
+            self._send_json(HTTPStatus.OK, BrowserCaptureCapabilitiesPayload().model_dump(mode="json"))
+            return
         if parsed.path == "/v1/status":
             self._send_json(HTTPStatus.OK, receiver_status_payload(self.server.config))
             return
@@ -218,21 +278,123 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
-        if parsed.path == "/v1/post-commands":
+        if parsed.path == "/v1/browser-actions/capabilities":
+            self._send_json(
+                HTTPStatus.OK,
+                BrowserActionCapabilitiesPayload(providers=browser_action_capabilities()).model_dump(mode="json"),
+            )
+            return
+        if parsed.path == "/v1/browser-actions":
             params = parse_qs(parsed.query)
-            post_provider = params.get("provider", [""])[0] or None
+            claim_by = params.get("claim_by", [""])[0]
             try:
-                commands = poll_post_commands(provider=post_provider, spool_path=self.server.config.spool_path)
-            except OSError as exc:
-                logger.warning("browser_capture.post_poll_failed", request_id=self._request_id(), error=repr(exc))
+                actions = (
+                    [claimed]
+                    if claim_by
+                    and (claimed := claim_action(claim_by, spool_path=self.server.config.spool_path)) is not None
+                    else ([] if claim_by else list_actions(spool_path=self.server.config.spool_path))
+                )
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
+                logger.warning("browser_capture.action_list_failed", request_id=self._request_id(), error=repr(exc))
                 self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
+            self._send_json(HTTPStatus.OK, BrowserActionListPayload(actions=actions).model_dump(mode="json"))
+            return
+        if parsed.path.startswith("/v1/browser-actions/") and "/attachments/" in parsed.path:
+            prefix = "/v1/browser-actions/"
+            action_id, attachment_id = parsed.path[len(prefix) :].split("/attachments/", maxsplit=1)
+            try:
+                result = read_action_attachment(action_id, attachment_id, spool_path=self.server.config.spool_path)
+            except BrowserActionConflictError:
+                self._safe_error(HTTPStatus.CONFLICT, "browser_action_attachment_integrity_mismatch")
+                return
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
+                logger.warning(
+                    "browser_capture.action_attachment_failed", request_id=self._request_id(), error=repr(exc)
+                )
+                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
+            if result is None:
+                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action_attachment")
+                return
+            attachment, content = result
+            self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
+            return
+        if parsed.path.startswith("/v1/browser-actions/"):
+            action_id = parsed.path[len("/v1/browser-actions/") :]
+            try:
+                action = get_action(action_id, spool_path=self.server.config.spool_path)
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+                return
+            except (OSError, BrowserActionStateError) as exc:
+                logger.warning("browser_capture.action_read_failed", request_id=self._request_id(), error=repr(exc))
+                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+                return
+            if action is None:
+                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
+                return
+            self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
+            return
+        if parsed.path.startswith("/v1/capture-jobs/"):
+            job_id = parsed.path.removeprefix("/v1/capture-jobs/")
+            if not job_id or "/" in job_id:
+                self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
+                return
+            params = parse_qs(parsed.query)
+            try:
+                protocol = int(params.get("client_protocol", ["-1"])[0])
+            except ValueError:
+                protocol = -1
+            try:
+                registry = registry_for_receiver(
+                    self.server.config.spool_path,
+                    receiver_identity(self.server.config),
+                )
+                if job_id == "capabilities":
+                    capture_job_payload = registry.capabilities()
+                elif job_id == "orphans":
+                    capture_job_payload = registry.list_orphans(protocol)
+                else:
+                    capture_job_payload = registry.get(
+                        job_id,
+                        {
+                            "provider": params.get("provider", [""])[0],
+                            "account_scope": params.get("account_scope", [""])[0],
+                            "client_protocol": protocol,
+                        },
+                    )
+            except CaptureJobError as exc:
+                self._capture_job_error(exc)
+                return
+            except (sqlite3.Error, OSError) as exc:
+                self._capture_job_storage_error(exc)
+                return
+            self._send_json(HTTPStatus.OK, capture_job_payload)
+            return
+        if parsed.path == "/v1/backfill-checkpoint":
+            params = parse_qs(parsed.query)
+            instance_id = params.get("extension_instance_id", [""])[0]
+            if not instance_id:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
+                return
+            record = read_backfill_checkpoint(instance_id, spool_path=self.server.config.spool_path)
+            if record is None:
+                self._safe_error(HTTPStatus.NOT_FOUND, "checkpoint_not_found")
                 return
             self._send_json(
                 HTTPStatus.OK,
-                BrowserPostCommandListPayload(
-                    post_enabled=browser_post_enabled(),
-                    commands=commands,
-                ).model_dump(mode="json", exclude_none=True),
+                BrowserBackfillCheckpointPayload(
+                    extension_instance_id=record.extension_instance_id,
+                    checkpoint=record.checkpoint,
+                    stored_at=record.stored_at,
+                ).model_dump(mode="json"),
             )
             return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
@@ -250,24 +412,38 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_BROWSER_CAPTURE_BODY_BYTES:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
+        raw = self.rfile.read(length)
         try:
-            parsed: object = json.loads(self.rfile.read(length))
+            parsed: object = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("browser_capture.invalid_json", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             return None
+        self._request_content_hash = hashlib.sha256(raw).hexdigest()
         return parsed
 
     def _do_post(self) -> None:
         if self._reject_origin() or self._reject_token():
             return
         path = urlparse(self.path).path
-        if path == "/v1/post-commands":
-            self._post_command_enqueue()
+        if path == "/v1/browser-actions":
+            self._browser_action_enqueue()
             return
-        if path.startswith("/v1/post-commands/") and path.endswith("/ack"):
-            command_id = path[len("/v1/post-commands/") : -len("/ack")]
-            self._post_command_ack(command_id)
+        if path.startswith("/v1/browser-actions/") and path.endswith("/events"):
+            action_id = path[len("/v1/browser-actions/") : -len("/events")]
+            self._browser_action_update(action_id)
+            return
+        if path.startswith("/v1/browser-actions/") and path.endswith("/reconcile"):
+            action_id = path[len("/v1/browser-actions/") : -len("/reconcile")]
+            self._browser_action_reconcile(action_id)
+            return
+        if path in {"/v1/capture-jobs", "/v1/capture-jobs/discover"} or (
+            path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update"))
+        ):
+            self._capture_job_post(path)
+            return
+        if path == "/v1/backfill-checkpoint":
+            self._backfill_checkpoint_store()
             return
         if path != "/v1/browser-captures":
             self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
@@ -280,6 +456,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             logger.warning("browser_capture.invalid_payload", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
+            return
+        if envelope.provenance.extension_instance_id is None:
+            logger.warning("browser_capture.missing_instance_id", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
             return
         try:
             result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
@@ -299,6 +479,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             artifact_ref=result.artifact_ref,
             bytes_written=result.bytes_written,
             replaced=result.replaced,
+            deduplicated=result.deduplicated,
+            capture_instance_id=result.capture_instance_id,
         )
         self._send_json(
             HTTPStatus.ACCEPTED,
@@ -307,89 +489,214 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
+                content_hash=self._request_content_hash,
+                dedup_content_hash=result.dedup_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,
+                deduplicated=result.deduplicated,
+                capture_instance_id=result.capture_instance_id,
             ).model_dump(mode="json"),
         )
 
-    def _post_command_enqueue(self) -> None:
+    def do_PUT(self) -> None:
+        self._observe_request("PUT", self._do_put)
+
+    def _do_put(self) -> None:
+        if self._reject_origin() or self._reject_token():
+            return
+        path = urlparse(self.path).path
+        if path.startswith("/v1/capture-jobs/") and path.endswith("/checkpoint"):
+            self._capture_job_checkpoint(path)
+            return
+        self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
+
+    def _capture_job_body(self) -> dict[str, object] | None:
+        payload = self._read_json_body()
+        if not isinstance(payload, dict):
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job")
+            return None
+        if "client_protocol" not in payload:
+            raw_protocol = self.headers.get("X-Polylogue-Client-Protocol", "-1")
+            try:
+                payload["client_protocol"] = int(raw_protocol)
+            except ValueError:
+                payload["client_protocol"] = -1
+        return payload
+
+    def _capture_job_error(self, exc: CaptureJobError) -> None:
+        try:
+            status = HTTPStatus(exc.status)
+        except ValueError:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+        self._send_json(status, {"error": {"code": exc.code, "details": exc.details}})
+
+    def _capture_job_storage_error(self, exc: sqlite3.Error | OSError) -> None:
+        logger.warning("browser_capture.capture_job_registry_unavailable", error=repr(exc))
+        self._capture_job_error(CaptureJobError(500, "registry_unavailable"))
+
+    def _capture_job_post(self, path: str) -> None:
+        payload = self._capture_job_body()
+        if payload is None:
+            return
+        try:
+            registry = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            )
+            if path == "/v1/capture-jobs":
+                status, result = registry.create(payload)
+            elif path == "/v1/capture-jobs/discover":
+                status, result = HTTPStatus.OK, registry.discover(payload)
+            elif path.endswith("/update"):
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
+                status, result = HTTPStatus.OK, registry.update(job_id, payload)
+            else:
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
+                status, result = HTTPStatus.OK, registry.adopt(job_id, payload)
+        except CaptureJobError as exc:
+            self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
+            return
+        self._send_json(HTTPStatus(status), result)
+
+    def _capture_job_checkpoint(self, path: str) -> None:
+        payload = self._capture_job_body()
+        if payload is None:
+            return
+        job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/checkpoint")
+        try:
+            result = registry_for_receiver(
+                self.server.config.spool_path,
+                receiver_identity(self.server.config),
+            ).checkpoint(job_id, payload)
+        except CaptureJobError as exc:
+            self._capture_job_error(exc)
+            return
+        except (sqlite3.Error, OSError) as exc:
+            self._capture_job_storage_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _browser_action_enqueue(self) -> None:
         payload = self._read_json_body()
         if payload is None:
             return
         try:
-            request = BrowserPostCommandRequest.model_validate(payload)
+            request = BrowserActionRequest.model_validate(payload)
+            action = enqueue_action(
+                request,
+                receiver_id=receiver_identity(self.server.config),
+                spool_path=self.server.config.spool_path,
+            )
         except ValidationError:
-            logger.warning("browser_capture.invalid_post_command", request_id=self._request_id())
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_command")
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action")
+            return
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_conflict")
+            return
+        except BrowserActionQuotaError:
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "browser_action_quota_exceeded")
+            return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_attachment")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        self._send_json(HTTPStatus.ACCEPTED, BrowserActionPayload(action=action).model_dump(mode="json"))
+
+    def _browser_action_update(self, action_id: str) -> None:
+        payload = self._read_json_body()
+        if payload is None:
             return
         try:
-            command = enqueue_post_command(request, spool_path=self.server.config.spool_path)
-        except BrowserPostDisabledError:
-            logger.warning("browser_capture.post_disabled", request_id=self._request_id())
-            self._safe_error(HTTPStatus.FORBIDDEN, "post_disabled")
+            request = BrowserActionUpdateRequest.model_validate(payload)
+            action = update_action(action_id, request, spool_path=self.server.config.spool_path)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_update")
             return
-        except BrowserPostCommandConflictError:
-            logger.warning("browser_capture.post_command_conflict", request_id=self._request_id())
-            self._safe_error(HTTPStatus.CONFLICT, "duplicate_post_command")
+        except BrowserActionLeaseError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_lease_owner_mismatch")
             return
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_receipt_conflict")
+            return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_update_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        if action is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
+            return
+        self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
+
+    def _browser_action_reconcile(self, action_id: str) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserActionReconcileRequest.model_validate(payload)
+            action = reconcile_action(action_id, request, spool_path=self.server.config.spool_path)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_reconciliation")
+            return
+        except BrowserActionConflictError:
+            self._safe_error(HTTPStatus.CONFLICT, "browser_action_reconciliation_conflict")
+            return
+        except ValueError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
+            return
+        except (OSError, BrowserActionStateError) as exc:
+            logger.warning("browser_capture.action_reconcile_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        if action is None:
+            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action")
+            return
+        self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
+
+    def _backfill_checkpoint_store(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserBackfillCheckpointRequest.model_validate(payload)
+        except ValidationError:
+            logger.warning("browser_capture.invalid_backfill_checkpoint", request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_backfill_checkpoint")
+            return
+        try:
+            record = write_backfill_checkpoint(request, spool_path=self.server.config.spool_path)
         except SpoolQuotaExceededError as exc:
-            logger.warning("browser_capture.post_command_quota_exceeded", request_id=self._request_id(), error=str(exc))
-            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "post_command_quota_exceeded")
+            logger.warning(
+                "browser_capture.backfill_checkpoint_quota_exceeded", request_id=self._request_id(), error=str(exc)
+            )
+            self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "backfill_checkpoint_quota_exceeded")
             return
         except OSError as exc:
-            logger.warning("browser_capture.post_enqueue_failed", request_id=self._request_id(), error=repr(exc))
+            logger.warning(
+                "browser_capture.backfill_checkpoint_write_failed", request_id=self._request_id(), error=repr(exc)
+            )
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
             return
+        accepted = BrowserBackfillCheckpointAcceptedPayload(
+            extension_instance_id=record.extension_instance_id,
+            stored_at=record.stored_at,
+            bytes_written=len(_json_bytes(record.model_dump(mode="json"))),
+        )
         logger.debug(
-            "browser_capture.post_command_enqueued",
+            "browser_capture.backfill_checkpoint_stored",
             request_id=self._request_id(),
-            command_id=command.command_id,
-            provider=command.provider,
-            submit=command.submit,
+            extension_instance_id=record.extension_instance_id,
+            bytes_written=accepted.bytes_written,
         )
-        self._send_json(
-            HTTPStatus.ACCEPTED,
-            BrowserPostEnqueuedPayload(
-                command_id=command.command_id,
-                provider=command.provider,
-                status=command.status,
-                submit=command.submit,
-            ).model_dump(mode="json"),
-        )
-
-    def _post_command_ack(self, command_id: str) -> None:
-        payload = self._read_json_body()
-        if payload is None:
-            return
-        try:
-            ack = BrowserPostCommandAckRequest.model_validate(payload)
-        except ValidationError:
-            logger.warning("browser_capture.invalid_post_ack", request_id=self._request_id())
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_post_ack")
-            return
-        try:
-            command = ack_post_command(command_id, ack, spool_path=self.server.config.spool_path)
-        except BrowserPostCommandStateError:
-            logger.warning("browser_capture.post_ack_invalid_state", request_id=self._request_id())
-            self._safe_error(HTTPStatus.CONFLICT, "invalid_post_command_state")
-            return
-        except OSError as exc:
-            logger.warning("browser_capture.post_ack_failed", request_id=self._request_id(), error=repr(exc))
-            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-            return
-        if command is None:
-            self._safe_error(HTTPStatus.NOT_FOUND, "unknown_command")
-            return
-        logger.debug(
-            "browser_capture.post_command_acked",
-            request_id=self._request_id(),
-            command_id=command.command_id,
-            status=command.status,
-        )
-        self._send_json(
-            HTTPStatus.OK,
-            BrowserPostAckPayload(command_id=command.command_id, status=command.status).model_dump(mode="json"),
-        )
+        self._send_json(HTTPStatus.ACCEPTED, accepted.model_dump(mode="json"))
 
 
 def make_server(

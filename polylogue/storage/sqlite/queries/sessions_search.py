@@ -13,7 +13,7 @@ async def search_session_hits(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
 ) -> SessionSearchResult:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
 
@@ -28,7 +28,7 @@ async def search_session_hits(
     query_spec = build_ranked_session_search_query(
         query=query,
         limit=limit,
-        scope_names=providers,
+        scope_names=origins,
     )
     if query_spec is None:
         return SessionSearchResult(hits=[])
@@ -43,7 +43,7 @@ async def search_session_evidence_hits(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
     since: str | None = None,
 ) -> list[SessionSearchEvidenceRow]:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
@@ -57,7 +57,7 @@ async def search_session_evidence_hits(
     query_spec = build_ranked_session_search_query(
         query=query,
         limit=limit,
-        scope_names=providers,
+        scope_names=origins,
         since=since,
         include_snippet=True,
     )
@@ -92,16 +92,16 @@ async def search_sessions(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
 ) -> list[str]:
-    return (await search_session_hits(conn, query, limit, providers)).session_ids()
+    return (await search_session_hits(conn, query, limit, origins)).session_ids()
 
 
 async def search_action_session_hits(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
 ) -> SessionSearchResult:
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_async
     from polylogue.storage.search import build_ranked_action_search_query
@@ -112,7 +112,7 @@ async def search_action_session_hits(
     query_spec = build_ranked_action_search_query(
         query=query,
         limit=limit,
-        scope_names=providers,
+        scope_names=origins,
     )
     if query_spec is None:
         return SessionSearchResult(hits=[])
@@ -127,9 +127,9 @@ async def search_action_sessions(
     conn: aiosqlite.Connection,
     query: str,
     limit: int = 100,
-    providers: list[str] | None = None,
+    origins: list[str] | None = None,
 ) -> list[str]:
-    return (await search_action_session_hits(conn, query, limit, providers)).session_ids()
+    return (await search_action_session_hits(conn, query, limit, origins)).session_ids()
 
 
 __all__ = [

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cli.shared.types import AppEnv
-    from polylogue.protocols import SessionArchiveStatsStore
+    from polylogue.core.protocols import SessionArchiveStatsStore
 
 
 DATE_GROUP_DIMENSIONS = frozenset({"month", "year", "day"})
@@ -276,7 +276,7 @@ async def output_stats_sql(
         "words_approx": stats["words_approx"],
         "attachment_refs": stats["attachment_refs"],
         "distinct_attachments": stats["distinct_attachments"],
-        "origins": stats.get("origins") or stats.get("providers") or {},
+        "origins": stats["origins"],
         "date_range": None,
         "filtered": has_filters,
     }
@@ -322,8 +322,8 @@ async def output_stats_sql(
     if stats["words_approx"]:
         out(f"Words: ~{stats['words_approx']:,}")
 
-    raw_origins = stats.get("origins") or stats.get("providers")
-    origins = raw_origins if isinstance(raw_origins, Mapping) else None
+    raw_origins = stats["origins"]
+    origins = raw_origins
     if origins:
         origin_parts = [f"{name} ({count:,})" for name, count in origins.items()]
         out(f"Origins: {', '.join(origin_parts)}")

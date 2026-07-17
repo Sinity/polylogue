@@ -27,6 +27,8 @@ from click.shell_completion import (
     ZshComplete,
 )
 
+from polylogue.archive.query.completions import query_terminal_source_candidates
+from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_sources
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
 
@@ -34,18 +36,6 @@ SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
     ("zsh", ZshComplete),
     ("fish", FishComplete),
-)
-
-# Each entry is (completer_label, partial-cmdline-without-trailing-incomplete).
-# These pin the option/argument surface that wires each completer; if
-# the surface changes (e.g. --provider renamed), update both sides.
-STATIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
-    ("provider", ["--provider"]),
-    ("retrieval_lane", ["--retrieval-lane"]),
-    ("action", ["--action"]),
-    ("action_sequence", ["--action-sequence"]),
-    ("read_view", ["read", "--view"]),
-    ("read_format", ["read", "--format"]),
 )
 
 CONTRACT_COMPLETION_COMMANDS: dict[CompletionContext, list[str]] = {
@@ -137,28 +127,36 @@ def _run_completion_for_partial(
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
-@pytest.mark.parametrize("label,cwords", STATIC_COMPLETERS, ids=[label for label, _ in STATIC_COMPLETERS])
-def test_static_completers_per_shell(
+def test_terminal_completion_contract_is_generated_from_unit_descriptors(
     shell: str,
     comp_cls: type[ShellComplete],
-    label: str,
-    cwords: list[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Static completers (provider/lane/action/etc) return items on every shell.
+    """Every terminal-query unit declares completion metadata and shell output.
 
-    These do not depend on archive contents — they enumerate known
-    enum or registry values — so they must always produce results.
+    This is intentionally registry-driven: a new terminal-capable descriptor
+    with omitted description/example/fields cannot silently enter the grammar
+    without this contract failing.
     """
-    # Point at an isolated empty archive root so the test doesn't read
-    # the developer's real polylogue archive.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    items = _run_completion(shell, comp_cls, cwords)
-    assert items, f"static completer {label} produced no items on {shell}"
+    descriptors = query_unit_descriptors(terminal_supported=True)
+    assert descriptors
+    expected_sources = {source for descriptor in descriptors for source in descriptor.source_aliases}
+    assert expected_sources == set(terminal_query_sources())
+    assert {candidate.value for candidate in query_terminal_source_candidates("")} == expected_sources
+
+    for descriptor in descriptors:
+        assert descriptor.description, f"{descriptor.unit} missing completion description"
+        assert descriptor.example, f"{descriptor.unit} missing completion example"
+        assert descriptor.terminal_example, f"{descriptor.unit} missing terminal completion example"
+        assert descriptor.fields, f"{descriptor.unit} missing completion fields"
+        for source in descriptor.source_aliases:
+            values = {value for value, _ in _run_completion_for_partial(shell, comp_cls, ["find"], source)}
+            assert f"{source} where " in values, f"{source} missing from {shell} completion output"
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
@@ -818,7 +816,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    corpus_seeded_db: Callable[..., Path],
+    named_seeded_archive: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
@@ -830,11 +828,9 @@ def test_dynamic_completers_seeded_archive_per_shell(
     tool (which are always populated) to be non-empty, while still
     asserting the call itself succeeds for all completers.
     """
-    # ``corpus_seeded_db`` ingests through the archive pipeline and points
-    # ``POLYLOGUE_ARCHIVE_ROOT`` at the archive root that holds the seeded
-    # ``index.db`` — exactly the store ``active_index_db_path()`` resolves
-    # for the completers, so no extra staging is required.
-    corpus_seeded_db(providers=("chatgpt", "claude-ai"), count=3, seed=1271)
+    # The named workload is generated through the production pipeline then
+    # cloned into this test's configured archive root.
+    named_seeded_archive("completion")
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.

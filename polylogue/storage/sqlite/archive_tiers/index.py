@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import get_args
-
 from polylogue.core.enums import (
     BlockType,
     BranchType,
@@ -16,24 +14,17 @@ from polylogue.core.enums import (
     SessionKind,
     WebConstructType,
 )
-from polylogue.insights.run_projection import (
-    ContextBoundary,
-    ContextInheritanceMode,
-    ObservedDeliveryState,
-    ObservedEventKind,
-    RunHarness,
-    RunStatus,
-)
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.fts.sql import FTS_TRIGGER_DDL
+from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
     json_object_check,
-    literal_check,
     nullable_check,
 )
+from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-INDEX_SCHEMA_VERSION = 32
+INDEX_SCHEMA_VERSION = 38
 
 FTS_FRESHNESS_STATE_DDL = """
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
@@ -355,6 +346,25 @@ CREATE TABLE IF NOT EXISTS web_content_constructs (
 CREATE INDEX IF NOT EXISTS idx_web_constructs_session_type
 ON web_content_constructs(session_id, construct_type);
 
+-- polylogue-rgbj: the only messages(message_id) FK child table that lacked a
+-- leading index on its foreign key column. Every other referencing table
+-- (blocks, attachment_refs, paste_spans, session_events,
+-- session_agent_policies, session_provider_usage_events) already has one
+-- via its PRIMARY KEY or a dedicated index. Without this index, SQLite's FK
+-- `ON DELETE CASCADE` enforcement falls back to a full table scan of
+-- web_content_constructs for EVERY deleted message row (SQLite does not
+-- require a child-key index for FK enforcement, it just scans if one is
+-- missing). `_replace_full_session_messages_and_blocks`'s bare
+-- `DELETE FROM messages WHERE session_id = ?` therefore cost
+-- O(deleted_messages x web_content_constructs_rows): confirmed live at
+-- 132,796 web_content_constructs rows, `EXPLAIN QUERY PLAN` showed
+-- `SCAN web_content_constructs` before this index, `SEARCH ... USING INDEX`
+-- after. See tests/unit/storage/test_schema_safety.py and
+-- tests/benchmarks/test_full_session_replace.py for the query-plan and
+-- timing proof.
+CREATE INDEX IF NOT EXISTS idx_web_constructs_message
+ON web_content_constructs(message_id);
+
 CREATE INDEX IF NOT EXISTS idx_web_constructs_url
 ON web_content_constructs(url)
 WHERE url IS NOT NULL;
@@ -371,27 +381,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text,
     content='',
     contentless_delete=1,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS messages_fts_ai
-AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
-    INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_ad
-AFTER DELETE ON blocks WHEN old.search_text != '' BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.rowid;
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_au
-AFTER UPDATE ON blocks BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.rowid;
-    INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-    SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
-    WHERE new.search_text != '';
-END;
+-- FTS triggers for messages_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 -- ohbx: trigram-tokenized (not unicode61) so `detail LIKE '%pattern%'` gets
 -- SQLite's built-in trigram LIKE-acceleration for arbitrary substrings, not
@@ -454,6 +448,39 @@ END;
 
 {FTS_FRESHNESS_STATE_DDL}
 
+CREATE TABLE IF NOT EXISTS action_pairs (
+    tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
+    session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    tool_id                TEXT,
+    use_rank               INTEGER,
+    tool_name              TEXT,
+    semantic_type          TEXT,
+    tool_command           TEXT,
+    tool_path              TEXT,
+    tool_input             TEXT,
+    tool_result_block_id   TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
+    output_text            TEXT,
+    is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL),
+    exit_code              INTEGER,
+    FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_action_pairs_session_order
+ON action_pairs(session_id, message_id, tool_use_block_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_message
+ON action_pairs(message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_tool
+ON action_pairs(tool_name, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_semantic
+ON action_pairs(semantic_type, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_path
+ON action_pairs(tool_path, session_id, message_id)
+WHERE tool_path IS NOT NULL AND tool_path != '';
+CREATE INDEX IF NOT EXISTS idx_action_pairs_outcome
+ON action_pairs(is_error, exit_code, session_id, message_id)
+WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
+
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
 -- ids as 2 tool_use + 2 tool_result blocks at different positions, NOT
@@ -471,77 +498,11 @@ END;
 -- empty-string guard stops '' specifically from cross-joining as if it
 -- were a real shared id (parsers currently only ever emit NULL, not '').
 CREATE VIEW IF NOT EXISTS actions AS
-WITH ranked_uses AS (
-    SELECT
-        u.session_id,
-        u.message_id,
-        u.block_id AS tool_use_block_id,
-        u.tool_name,
-        u.semantic_type,
-        u.tool_command,
-        u.tool_path,
-        u.tool_input,
-        u.tool_id,
-        ROW_NUMBER() OVER (
-            PARTITION BY u.session_id, u.tool_id
-            ORDER BY um.position, um.variant_index, u.position
-        ) AS use_rank
-    FROM blocks u
-    JOIN messages um ON um.message_id = u.message_id
-    WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''
-),
-ranked_results AS (
-    SELECT
-        r.session_id,
-        r.tool_id,
-        r.block_id AS tool_result_block_id,
-        r.text AS output_text,
-        r.tool_result_is_error AS is_error,
-        r.tool_result_exit_code AS exit_code,
-        ROW_NUMBER() OVER (
-            PARTITION BY r.session_id, r.tool_id
-            ORDER BY rm.position, rm.variant_index, r.position
-        ) AS result_rank
-    FROM blocks r
-    JOIN messages rm ON rm.message_id = r.message_id
-    WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''
-)
 SELECT
-    ranked_uses.session_id,
-    ranked_uses.message_id,
-    ranked_uses.tool_use_block_id,
-    ranked_uses.tool_name,
-    ranked_uses.semantic_type,
-    ranked_uses.tool_command,
-    ranked_uses.tool_path,
-    ranked_uses.tool_input,
-    ranked_results.output_text,
-    ranked_results.is_error,
-    ranked_results.exit_code,
-    ranked_results.tool_result_block_id
-FROM ranked_uses
-LEFT JOIN ranked_results
-    ON ranked_results.session_id = ranked_uses.session_id
-   AND ranked_results.tool_id = ranked_uses.tool_id
-   AND ranked_results.result_rank = ranked_uses.use_rank
-
-UNION ALL
-
-SELECT
-    u.session_id,
-    u.message_id,
-    u.block_id AS tool_use_block_id,
-    u.tool_name,
-    u.semantic_type,
-    u.tool_command,
-    u.tool_path,
-    u.tool_input,
-    NULL AS output_text,
-    NULL AS is_error,
-    NULL AS exit_code,
-    NULL AS tool_result_block_id
-FROM blocks u
-WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = '');
+    session_id, message_id, tool_use_block_id, tool_name, semantic_type,
+    tool_command, tool_path, tool_input, output_text, is_error, exit_code,
+    tool_result_block_id
+FROM action_pairs;
 
 CREATE TABLE IF NOT EXISTS session_events (
     event_id                   TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
@@ -642,26 +603,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS threads_fts USING fts5(
     thread_id UNINDEXED,
     root_id UNINDEXED,
     text,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS threads_fts_ai
-AFTER INSERT ON threads BEGIN
-    INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, new.search_text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS threads_fts_ad
-AFTER DELETE ON threads BEGIN
-    DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS threads_fts_au
-AFTER UPDATE ON threads BEGIN
-    DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-    INSERT INTO threads_fts (thread_id, root_id, text)
-    VALUES (new.thread_id, new.thread_id, new.search_text);
-END;
+-- FTS triggers for threads_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 CREATE TABLE IF NOT EXISTS thread_sessions (
     thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
@@ -877,7 +823,7 @@ CREATE TABLE IF NOT EXISTS session_tags (
 CREATE TABLE IF NOT EXISTS insight_materialization (
     insight_type                 TEXT NOT NULL CHECK(insight_type IN (
                                     'session_profile', 'work_events', 'phases', 'latency', 'thread',
-                                    'runs', 'observed_events', 'context_snapshots')),
+                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage')),
     session_id                   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     materializer_version         INTEGER NOT NULL,
     materialized_at_ms           INTEGER NOT NULL,
@@ -922,14 +868,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
     session_id UNINDEXED,
     work_event_type UNINDEXED,
     text,
-    tokenize='unicode61'
+    tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ai
-AFTER INSERT ON session_work_events BEGIN
-    INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
-END;
+-- FTS triggers for session_work_events_fts table are now dynamically composed from sql.py
+-- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 CREATE TABLE IF NOT EXISTS session_phases (
     phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE,
@@ -952,18 +895,6 @@ CREATE TABLE IF NOT EXISTS session_phases (
 
 CREATE INDEX IF NOT EXISTS idx_session_phases_session
 ON session_phases(session_id, position);
-
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_ad
-AFTER DELETE ON session_work_events BEGIN
-    DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_work_events_fts_au
-AFTER UPDATE ON session_work_events BEGIN
-    DELETE FROM session_work_events_fts WHERE event_id = old.event_id;
-    INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-    VALUES (new.event_id, new.session_id, new.work_event_type, new.search_text);
-END;
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
     session_id                       TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -1091,61 +1022,405 @@ ON session_profiles(first_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_profiles_canonical_date
 ON session_profiles(canonical_session_date DESC);
 
--- 1vpm.1: a delegation is a parent-dispatched subagent edge -- a
--- session_links row with link_type='subagent' that ALSO has a parent-side
--- Task dispatch action (an `actions` row at the branch point, semantic_type
--- 'subagent'). Not every subagent link is a delegation: Codex async
--- subagents/sidechains with no parent Task action have no dispatch action to
--- join, so they surface with result_status='unknown' and stay OUT of any
--- ROI/yield denominator built on top of this view (never guessed). 100%
--- derivable from existing tables -- VIEW, not a table, matching the `actions`
--- precedent (derived tier, no convergence stage needed).
-CREATE VIEW IF NOT EXISTS delegations AS
+-- polylogue-y964: delegations is a versioned, recomputable read model spined
+-- on the PARENT's own dispatch actions, not on `session_links` plumbing. Two
+-- upstream facts drove a full rebuild rather than a column-alias fix:
+--
+--   1. `session_links` stores the CHILD in `src_session_id` and the PARENT in
+--      `resolved_dst_session_id` (see resolve_session_links_for_session,
+--      storage/sqlite/queries/session_links.py: `child_id =
+--      row["src_session_id"]`, and the resolved session is written into
+--      `sessions.parent_session_id`) -- never the reverse. The prior shipped
+--      view aliased these backwards, so every `orchestrator_*` column
+--      actually described the CHILD session and vice versa.
+--   2. `branch_point_message_id` is the last message the CHILD inherited from
+--      the PARENT's prefix for lineage composition (see the `session_links`
+--      DDL comment above) -- it is not the message that issued the Task
+--      dispatch, and for a spawned-fresh child it is NULL entirely. The
+--      prior view joined it against the (mislabeled) parent session as a
+--      dispatch pointer, which does not hold in general.
+--
+-- The spine is therefore every parent-side dispatch action (an `actions` row
+-- with semantic_type='subagent' -- a Task tool_use, optionally paired with
+-- its tool_result). Stable action-observed identity is
+-- (parent_session_id, instruction_tool_use_block_id): two Task calls in one
+-- assistant message keep two distinct rows, never a fanout. Every dispatch
+-- action gets exactly one row even when no child ever resolves
+-- (mapping_state='unresolved' -- a dispatch error, or a resolution still
+-- pending). A resolved session_links(subagent) edge with no discoverable
+-- parent-side dispatch action (e.g. a Codex async subagent) surfaces as
+-- mapping_state='edge_only', counted but never given a fabricated
+-- instruction. Dispatch actions are corroborated against resolved children
+-- by rank-pairing IN TRANSCRIPT ORDER within one parent session (the same
+-- "Nth query gets Nth result" idiom `actions` itself uses for tool_use/
+-- tool_result) -- but ONLY when a parent's dispatch count and resolved-child
+-- count agree; a mismatched count would mean guessing a winner, so those
+-- rows surface as mapping_state='ambiguous' with a real instruction but no
+-- fabricated child. Quarantined edges (cycle-break, #866/#1260) surface
+-- explicitly as mapping_state='quarantined' rather than silently vanishing.
+--
+-- Model identity is deliberately NOT collapsed into one "orchestrator model"
+-- column (polylogue-4c27): `dispatch_turn_model` is the model that authored
+-- the specific message containing the dispatch action (messages.model_name);
+-- `requested_model` is an explicit routing override read from the dispatch
+-- tool_input, honestly NULL when the provider recorded no such field;
+-- `parent_session_dominant_model`/`child_session_dominant_model` are the
+-- session-level dominant-model fallback (by assistant output-token share,
+-- see archive/session/runtime.py:_primary_model) -- explicitly named as a
+-- session-wide aggregate, excluded from turn-level dispatch claims. Use
+-- `archive.semantic.pricing.resolve_model_identity()` to derive
+-- vendor/model-line/pricing-source/confidence from any of these raw columns.
+--
+-- 100% derivable from existing tables -- VIEW, not a table, matching the
+-- `actions` precedent (derived tier, no convergence stage needed).
+CREATE TABLE IF NOT EXISTS delegation_facts (
+    delegation_id                         TEXT PRIMARY KEY,
+    parent_session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    child_session_id                      TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
+    mapping_state                         TEXT NOT NULL,
+    link_confidence                       REAL,
+    link_method                           TEXT,
+    inheritance                            TEXT,
+    branch_point_message_id               TEXT,
+    instruction_message_id               TEXT,
+    instruction_tool_use_block_id        TEXT,
+    instruction_payload                   TEXT,
+    dispatch_turn_model                  TEXT,
+    requested_model                      TEXT,
+    artifact_block_id                    TEXT,
+    artifact_text                        TEXT,
+    result_is_error                      INTEGER,
+    result_exit_code                     INTEGER,
+    result_status                        TEXT NOT NULL,
+    parent_origin                        TEXT NOT NULL,
+    parent_session_dominant_model        TEXT,
+    parent_session_dominant_model_family TEXT,
+    parent_terminal_state                TEXT,
+    child_session_dominant_model         TEXT,
+    child_session_dominant_model_family  TEXT,
+    child_cost_usd                       REAL,
+    child_cost_is_estimated              INTEGER,
+    child_tokens                         INTEGER,
+    child_wall_ms                        INTEGER,
+    child_terminal_state                 TEXT
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
+ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
+ON delegation_facts(mapping_state, parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
+ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant_model);
+
+CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
+    parent_session_id TEXT PRIMARY KEY
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS derived_refresh_guard (
+    guard_name TEXT PRIMARY KEY
+) STRICT;
+
+CREATE VIEW IF NOT EXISTS delegation_facts_source AS
+WITH dispatch_actions AS (
+    SELECT
+        a.session_id                           AS parent_session_id,
+        a.message_id                           AS instruction_message_id,
+        a.tool_use_block_id                    AS instruction_tool_use_block_id,
+        a.tool_input                           AS instruction_payload,
+        a.tool_result_block_id                 AS artifact_block_id,
+        a.output_text                          AS artifact_text,
+        a.is_error                             AS result_is_error,
+        a.exit_code                            AS result_exit_code,
+        m.model_name                           AS dispatch_turn_model,
+        json_extract(a.tool_input, '$.model')  AS requested_model,
+        ROW_NUMBER() OVER (
+            PARTITION BY a.session_id
+            ORDER BY a.message_id, a.tool_use_block_id
+        )                                       AS dispatch_rank
+    FROM actions a
+    JOIN messages m ON m.message_id = a.message_id
+    WHERE a.semantic_type = 'subagent'
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = a.session_id
+      )
+),
+resolved_children AS (
+    SELECT
+        l.resolved_dst_session_id              AS parent_session_id,
+        l.src_session_id                       AS child_session_id,
+        l.branch_point_message_id              AS branch_point_message_id,
+        l.confidence                           AS link_confidence,
+        l.method                               AS link_method,
+        l.inheritance                          AS inheritance,
+        ROW_NUMBER() OVER (
+            PARTITION BY l.resolved_dst_session_id
+            ORDER BY l.observed_at_ms, l.src_session_id
+        )                                       AS child_rank
+    FROM session_links l
+    WHERE l.link_type = 'subagent'
+      AND l.resolved_dst_session_id IS NOT NULL
+      AND (l.status IS NULL OR l.status != 'quarantined')
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
+),
+dispatch_counts AS (
+    SELECT parent_session_id, COUNT(*) AS n FROM dispatch_actions GROUP BY parent_session_id
+),
+child_counts AS (
+    SELECT parent_session_id, COUNT(*) AS n FROM resolved_children GROUP BY parent_session_id
+),
+pairable AS (
+    SELECT dc.parent_session_id
+    FROM dispatch_counts dc
+    JOIN child_counts cc ON cc.parent_session_id = dc.parent_session_id
+    WHERE dc.n = cc.n
+),
+resolved_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        c.child_session_id                     AS child_session_id,
+        'resolved'                              AS mapping_state,
+        c.link_confidence                      AS link_confidence,
+        c.link_method                          AS link_method,
+        c.inheritance                          AS inheritance,
+        c.branch_point_message_id              AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    JOIN pairable p ON p.parent_session_id = d.parent_session_id
+    JOIN resolved_children c
+      ON c.parent_session_id = d.parent_session_id
+     AND c.child_rank = d.dispatch_rank
+),
+unresolved_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        NULL                                    AS child_session_id,
+        'unresolved'                             AS mapping_state,
+        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    LEFT JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
+    WHERE cc.n IS NULL
+),
+ambiguous_rows AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        NULL                                    AS child_session_id,
+        'ambiguous'                              AS mapping_state,
+        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
+        d.instruction_message_id               AS instruction_message_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        d.instruction_payload                  AS instruction_payload,
+        d.dispatch_turn_model                  AS dispatch_turn_model,
+        d.requested_model                      AS requested_model,
+        d.artifact_block_id                    AS artifact_block_id,
+        d.artifact_text                        AS artifact_text,
+        d.result_is_error                      AS result_is_error,
+        d.result_exit_code                     AS result_exit_code
+    FROM dispatch_actions d
+    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id
+    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
+    WHERE dc.n != cc.n
+),
+edge_only_rows AS (
+    SELECT
+        c.parent_session_id                    AS parent_session_id,
+        c.child_session_id                     AS child_session_id,
+        'edge_only'                              AS mapping_state,
+        c.link_confidence                      AS link_confidence,
+        c.link_method                          AS link_method,
+        c.inheritance                          AS inheritance,
+        c.branch_point_message_id              AS branch_point_message_id,
+        NULL AS instruction_message_id, NULL AS instruction_tool_use_block_id, NULL AS instruction_payload,
+        NULL AS dispatch_turn_model, NULL AS requested_model,
+        NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
+    FROM resolved_children c
+    LEFT JOIN dispatch_counts dc ON dc.parent_session_id = c.parent_session_id
+    WHERE dc.n IS NULL
+),
+quarantined_rows AS (
+    SELECT
+        l.resolved_dst_session_id              AS parent_session_id,
+        l.src_session_id                       AS child_session_id,
+        'quarantined'                            AS mapping_state,
+        l.confidence                           AS link_confidence,
+        l.method                               AS link_method,
+        l.inheritance                          AS inheritance,
+        l.branch_point_message_id              AS branch_point_message_id,
+        NULL AS instruction_message_id, NULL AS instruction_tool_use_block_id, NULL AS instruction_payload,
+        NULL AS dispatch_turn_model, NULL AS requested_model,
+        NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
+    FROM session_links l
+    WHERE l.link_type = 'subagent'
+      AND l.status = 'quarantined'
+      AND l.resolved_dst_session_id IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
+),
+attempts AS (
+    SELECT * FROM resolved_rows
+    UNION ALL SELECT * FROM unresolved_rows
+    UNION ALL SELECT * FROM ambiguous_rows
+    UNION ALL SELECT * FROM edge_only_rows
+    UNION ALL SELECT * FROM quarantined_rows
+)
 SELECT
-    l.src_session_id                       AS parent_session_id,
-    l.resolved_dst_session_id              AS child_session_id,
-    l.branch_point_message_id              AS dispatch_message_id,
-    l.confidence                           AS link_confidence,
-    l.method                               AS link_method,
-    l.inheritance                          AS inheritance,
-    pp.primary_model_name                  AS orchestrator_model,
-    pp.primary_model_family                AS orchestrator_model_family,
-    p.origin                               AS orchestrator_origin,
-    -- repo_id intentionally omitted: session_profiles has no single-repo
-    -- column (a session can touch multiple repos via session_repos); repo
-    -- pushdown for `delegations where session.repo:X` composes through the
-    -- generic query-unit session join, not a raw column here.
-    pp.terminal_state                      AS parent_terminal_state,
-    cp.primary_model_name                  AS subagent_model,
-    cp.primary_model_family                AS subagent_model_family,
-    cp.total_cost_usd                      AS child_cost_usd,
-    cp.cost_is_estimated                   AS child_cost_is_estimated,
+    att.parent_session_id                      AS parent_session_id,
+    att.child_session_id                       AS child_session_id,
+    att.mapping_state                          AS mapping_state,
+    att.link_confidence                        AS link_confidence,
+    att.link_method                            AS link_method,
+    att.inheritance                            AS inheritance,
+    att.branch_point_message_id                AS branch_point_message_id,
+    att.instruction_message_id                 AS instruction_message_id,
+    att.instruction_tool_use_block_id          AS instruction_tool_use_block_id,
+    att.instruction_payload                    AS instruction_payload,
+    att.dispatch_turn_model                    AS dispatch_turn_model,
+    att.requested_model                        AS requested_model,
+    att.artifact_block_id                      AS artifact_block_id,
+    att.artifact_text                          AS artifact_text,
+    att.result_is_error                        AS result_is_error,
+    att.result_exit_code                       AS result_exit_code,
+    CASE
+        WHEN att.instruction_tool_use_block_id IS NULL THEN 'unknown'
+        WHEN att.result_is_error IS NULL               THEN 'unknown'
+        WHEN att.result_is_error = 1                   THEN 'error'
+        ELSE 'ok'
+    END                                          AS result_status,
+    p.origin                                    AS parent_origin,
+    pp.primary_model_name                       AS parent_session_dominant_model,
+    pp.primary_model_family                     AS parent_session_dominant_model_family,
+    pp.terminal_state                           AS parent_terminal_state,
+    cp.primary_model_name                       AS child_session_dominant_model,
+    cp.primary_model_family                     AS child_session_dominant_model_family,
+    cp.total_cost_usd                           AS child_cost_usd,
+    cp.cost_is_estimated                        AS child_cost_is_estimated,
     (COALESCE(cp.total_input_tokens, 0) + COALESCE(cp.total_output_tokens, 0)
        + COALESCE(cp.total_cache_read_tokens, 0) + COALESCE(cp.total_cache_write_tokens, 0)) AS child_tokens,
-    cp.wall_duration_ms                    AS child_wall_ms,
-    cp.terminal_state                      AS child_terminal_state,
-    a.tool_use_block_id                    AS instruction_block_id,
-    a.tool_input                           AS instruction_payload,
-    a.tool_result_block_id                 AS artifact_block_id,
-    a.output_text                          AS artifact_text,
-    a.is_error                             AS result_is_error,
-    a.exit_code                            AS result_exit_code,
-    CASE
-        WHEN a.tool_use_block_id IS NULL THEN 'unknown'
-        WHEN a.is_error IS NULL          THEN 'unknown'
-        WHEN a.is_error = 1              THEN 'error'
-        ELSE 'ok'
-    END                                    AS result_status
-FROM session_links l
-JOIN sessions p ON p.session_id = l.src_session_id
-LEFT JOIN session_profiles pp ON pp.session_id = l.src_session_id
-LEFT JOIN session_profiles cp ON cp.session_id = l.resolved_dst_session_id
-LEFT JOIN actions a
-       ON a.session_id = l.src_session_id
-      AND a.message_id = l.branch_point_message_id
-      AND a.semantic_type = 'subagent'
-WHERE l.link_type = 'subagent'
-  AND (l.status IS NULL OR l.status != 'quarantined');
+    cp.wall_duration_ms                         AS child_wall_ms,
+    cp.terminal_state                           AS child_terminal_state
+FROM attempts att
+JOIN sessions p ON p.session_id = att.parent_session_id
+LEFT JOIN session_profiles pp ON pp.session_id = att.parent_session_id
+LEFT JOIN session_profiles cp ON cp.session_id = att.child_session_id;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ai
+AFTER INSERT ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ad
+AFTER DELETE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = OLD.session_id;
+    {action_pairs_refresh_sql("OLD.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = OLD.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (OLD.session_id);
+    {delegation_facts_insert_sql("OLD.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_au
+AFTER UPDATE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_ai
+AFTER INSERT ON session_links
+WHEN NEW.resolved_dst_session_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.resolved_dst_session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.resolved_dst_session_id);
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_ai
+AFTER INSERT ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_au
+AFTER UPDATE ON session_links
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts
+    WHERE parent_session_id IN (OLD.resolved_dst_session_id, NEW.resolved_dst_session_id);
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM (
+        SELECT OLD.resolved_dst_session_id AS parent_session_id
+        UNION
+        SELECT NEW.resolved_dst_session_id
+    )
+    WHERE parent_session_id IS NOT NULL;
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_au
+AFTER UPDATE ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    -- A profile row may be the child-side evidence of many parent
+    -- delegations. Preserve those parent cohorts before replacing the stale
+    -- derived rows; refreshing only NEW.session_id leaves child model/cost
+    -- projections stale.
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM delegation_facts
+    WHERE child_session_id = NEW.session_id;
+    DELETE FROM delegation_facts
+    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE VIEW IF NOT EXISTS delegations AS
+SELECT
+    parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance,
+    branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload,
+    dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code,
+    result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family,
+    parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd,
+    child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state
+FROM delegation_facts;
 
 CREATE TABLE IF NOT EXISTS session_tag_rollups (
     tag                          TEXT NOT NULL,
@@ -1173,119 +1448,17 @@ ON session_tag_rollups(bucket_day DESC, source_name, tag);
 
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
 ON session_tag_rollups(source_name, tag);
-
-CREATE TABLE IF NOT EXISTS session_runs (
-    run_ref                  TEXT PRIMARY KEY,
-    session_id               TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position                 INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version     INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at          TEXT NOT NULL DEFAULT '',
-    source_updated_at        TEXT,
-    native_session_id        TEXT,
-    native_parent_session_id TEXT,
-    parent_run_ref           TEXT,
-    agent_ref                TEXT,
-    context_snapshot_ref     TEXT,
-    provider_origin          TEXT NOT NULL DEFAULT 'unknown',
-    harness                  TEXT NOT NULL CHECK({literal_check("harness", *get_args(RunHarness))}),
-    role                     TEXT NOT NULL CHECK({literal_check("role", "main", "subagent")}),
-    status                   TEXT NOT NULL CHECK({literal_check("status", *get_args(RunStatus))}),
-    confidence               TEXT NOT NULL CHECK({literal_check("confidence", "raw", "inferred")}),
-    title                    TEXT NOT NULL DEFAULT '',
-    cwd                      TEXT,
-    git_branch               TEXT,
-    lineage_refs_json        TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json       TEXT NOT NULL DEFAULT '[]',
-    transcript_ref           TEXT,
-    payload_json             TEXT NOT NULL DEFAULT '{{}}',
-    search_text              TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_session
-ON session_runs(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_harness
-ON session_runs(harness);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_status
-ON session_runs(status);
-
-CREATE INDEX IF NOT EXISTS idx_session_runs_role
-ON session_runs(role);
-
-CREATE TABLE IF NOT EXISTS session_observed_events (
-    event_ref            TEXT PRIMARY KEY,
-    session_id           TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    run_ref              TEXT NOT NULL,
-    position             INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at      TEXT NOT NULL DEFAULT '',
-    source_updated_at    TEXT,
-    kind                 TEXT NOT NULL CHECK({literal_check("kind", *get_args(ObservedEventKind))}),
-    summary              TEXT NOT NULL DEFAULT '',
-    delivery_state       TEXT NOT NULL CHECK({literal_check("delivery_state", *get_args(ObservedDeliveryState))}),
-    subject_ref          TEXT,
-    object_refs_json     TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json   TEXT NOT NULL DEFAULT '[]',
-    payload_json         TEXT NOT NULL DEFAULT '{{}}',
-    search_text          TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_session
-ON session_observed_events(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind
-ON session_observed_events(kind);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_run
-ON session_observed_events(run_ref);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_delivery
-ON session_observed_events(delivery_state);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_tool
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.tool_name'), ''), 'unknown')
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_handler
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.handler_kind'), ''), 'unknown')
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_observed_events_kind_status
-ON session_observed_events(
-    kind,
-    COALESCE(NULLIF(json_extract(payload_json, '$.status'), ''), 'unknown')
-);
-
-CREATE TABLE IF NOT EXISTS session_context_snapshots (
-    snapshot_ref         TEXT PRIMARY KEY,
-    session_id           TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    run_ref              TEXT NOT NULL,
-    position             INTEGER NOT NULL CHECK(position >= 0),
-    materializer_version INTEGER NOT NULL DEFAULT {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    materialized_at      TEXT NOT NULL DEFAULT '',
-    source_updated_at    TEXT,
-    boundary             TEXT NOT NULL CHECK({literal_check("boundary", *get_args(ContextBoundary))}),
-    inheritance_mode     TEXT NOT NULL CHECK({literal_check("inheritance_mode", *get_args(ContextInheritanceMode))}),
-    segment_refs_json    TEXT NOT NULL DEFAULT '[]',
-    evidence_refs_json   TEXT NOT NULL DEFAULT '[]',
-    metadata_json        TEXT NOT NULL DEFAULT '{{}}',
-    payload_json         TEXT NOT NULL DEFAULT '{{}}',
-    search_text          TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_session
-ON session_context_snapshots(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_boundary
-ON session_context_snapshots(boundary);
-
-CREATE INDEX IF NOT EXISTS idx_session_context_snapshots_run
-ON session_context_snapshots(run_ref);
 """
+
+# polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
+# storage/fts/sql.py as the single canonical source (also used by the
+# repair-path lifecycle in fts_lifecycle.py), but a fresh-database bootstrap
+# still needs them appended to the script it executescript()s -- without
+# this, a freshly created index.db has the messages_fts/threads_fts/
+# session_work_events_fts virtual tables but no triggers populating them,
+# so every insert silently produces an empty search index. Regression:
+# devtools render demo-corpus-datasheet started failing with "Search index
+# is incomplete" right after #2893 landed.
+INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
 
 __all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]

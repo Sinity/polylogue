@@ -1,0 +1,98 @@
+{
+  "domain": "labels",
+  "summary": "The label system has three healthy axes (area:* topic, spine/wave/size frontier-planning, refactor/decision kind) but all three are applied inconsistently. area:* has drifted to 31 open variants with clear duplicates (area:performance vs area:perf, area:sources vs area:ingest, area:usage vs area:analytics) and 6 near-dead singletons (config/quality/hooks/test/security at 1-2 beads each); 7 open beads carry no area:* label and 4 carry none at all. The `spine` tag is incoherent (only 2 of 6 backbone P1 epics carry it, while 34 leaf children do), and size/wave cover only ~7-10% of open beads with 4 ready-frontier P1 beads missing size; the `decision` label conflicts with issue_type on 11 beads (7 tasks mislabeled decision, 4 decision-typed beads unlabeled). Proposed canonical set: 23 area:* labels (closed), spine=backbone-epics-only, wave/size required on P0/P1 + ready-frontier P2, drop the vestigial campaign/enabler/correctness/research kind tags and the redundant decision/chore labels in favor of issue_type.",
+  "underspecified": [],
+  "gaps": [],
+  "inconsistencies": [
+    {
+      "id": "polylogue-6wnh,polylogue-ma2",
+      "kind": "label",
+      "evidence": "Two labels denote the same axis: area:perf (23 open beads) and area:performance (2 open beads: 6wnh 'Bound thread refresh cost for large Codex appends', ma2 'Add FK-supporting index for web_content_constructs'). Pure spelling fork of one concept.",
+      "fix": "Canonicalize on area:perf. Relabel both beads area:performance -> area:perf and retire area:performance from the vocabulary."
+    },
+    {
+      "id": "polylogue-2qx,polylogue-da1,polylogue-0cg,polylogue-ox0,polylogue-t0p",
+      "kind": "label",
+      "evidence": "area:sources (5 open) is the provider-detection/parser subset of area:ingest (25 open). ox0 and t0p already carry BOTH area:ingest and area:sources, proving the split is not load-bearing; 2qx 'OriginSpec: one package per origin', da1 'format-drift sentinel', 0cg 'OTel GenAI ingest' are all ingest-pipeline work.",
+      "fix": "Merge area:sources -> area:ingest. Drop area:sources from ox0/t0p (already have ingest); relabel 2qx/da1/0cg area:sources -> area:ingest. Retire area:sources."
+    },
+    {
+      "id": "polylogue-5hf,polylogue-xy95,polylogue-ivsc,polylogue-212.3,polylogue-9l5.4",
+      "kind": "label",
+      "evidence": "area:usage (5 open: token/cost accounting) overlaps area:analytics (27 open). 9l5.4 'Token-economy analytics' carries both; 212.3 'Where did the money actually go' is a cost-analytics demo. Token/cost/usage accounting is the analytics domain; the split creates two homes for the same cost-reporting work.",
+      "fix": "Merge area:usage -> area:analytics (cost/usage semantics live under analytics). Drop usage from 9l5.4 (already analytics); relabel 5hf/xy95/ivsc/212.3 area:usage -> area:analytics. Retire area:usage."
+    },
+    {
+      "id": "polylogue-jnj.9,polylogue-38x,polylogue-yeq,polylogue-th0,polylogue-jnj.5,polylogue-jsy",
+      "kind": "label",
+      "evidence": "Near-dead singleton area labels each on 1-2 open beads: area:config(1: jnj.9), area:quality(1: 38x, already also area:audit), area:test(2: yeq/th0), area:security(2: jnj.5 'route ops reset', jsy 'harden blob hash validation'). Each duplicates a larger established area.",
+      "fix": "Fold: area:config -> area:ops (runtime/deployment config); area:quality -> area:audit (already present on 38x, just drop); area:test -> area:devtools (test harnesses/verification lanes); area:security -> area:ops (secret hygiene / reset routing). Retire all four."
+    },
+    {
+      "id": "polylogue-s7ae.2,polylogue-s7ae.3",
+      "kind": "label",
+      "evidence": "area:hooks (2 open: s7ae.2, s7ae.3) is a capture mechanism already covered by area:ingest; both beads are MCP/hook coordination and also carry area:coordination + area:mcp, so area:hooks adds no filtering value.",
+      "fix": "Merge area:hooks -> area:ingest (hooks are a capture/ingest surface). Retire area:hooks."
+    },
+    {
+      "id": "polylogue-0ns,polylogue-k8k,polylogue-x7d,polylogue-6l6,polylogue-1a9,polylogue-t46.1,polylogue-t46",
+      "kind": "label",
+      "evidence": "7 open beads carry NO area:* label (4 carry no labels at all): 0ns 'Bound archive embedding work', k8k 'Sinnix scope wrapper latency', x7d 'Unify root query row rendering', 6l6 'Docs/theming/release-proof polish', 1a9 'Remove dead session-commit stubs', t46.1 'Replace showcase QA with demo-driven CLI', t46 'Contracts own surfaces'. An area label is the primary backlog-navigation facet; unlabeled beads are invisible to area filters.",
+      "fix": "Assign area labels (see reorg relabels): 0ns->area:embeddings+area:perf, k8k->area:perf+area:devloop, x7d->area:query+area:surface, 6l6->area:legibility, 1a9->area:substrate, t46->area:surface, t46.1->area:demos+area:devtools."
+    },
+    {
+      "id": "polylogue-3tl,polylogue-1xc,polylogue-4ts,polylogue-83u,polylogue-cfk,polylogue-4smp,polylogue-s7ae",
+      "kind": "label",
+      "evidence": "`spine` is applied by two conflicting conventions. Only 2 of the 6 P1 backbone epics carry it (4smp, s7ae=Y; but peers 3tl 'External legibility', 1xc 'Scale-hardening', 4ts 'Session lineage truth', 83u 'Attachment integrity' = no spine), while 34 leaf children AND a live task (cfk) carry it. Either spine means 'backbone epic' (then it is missing on 4 P1 epics) or 'load-bearing bead' (then it is noise scattered across leaves).",
+      "fix": "Pick one convention. Recommended: spine = the closed set of backbone/roadmap epics only. Add spine to 3tl/1xc/4ts/83u; strip spine from the 34 leaf children and from cfk (top-of-frame is expressed by priority + wave, not spine). If instead spine stays on leaves, define its meaning explicitly in the tracker doc so it stops meaning 'important'."
+    },
+    {
+      "id": "polylogue-ahqd,polylogue-bby.11,polylogue-d1y,polylogue-pj8",
+      "kind": "label",
+      "evidence": "size:* covers only 19/268 open beads and wave:* only 27/268. 4 ready-frontier P1 beads lack a size estimate: ahqd 'Observe MCP write adoption', bby.11 'Webui architecture v2', d1y 'polylogue hooks install', pj8 'Agent query cookbook'. Frontier planning labels are useless if the frontier itself is unlabeled.",
+      "fix": "Make size + wave REQUIRED on P0/P1 and ready-frontier P2 (deep P3 exempt). Add size:* to the 4 P1 beads above (bby.11=size:L, d1y=size:M, pj8=size:M, ahqd=size:S per their scope)."
+    },
+    {
+      "id": "polylogue-hiu,polylogue-ze5,polylogue-ca4,polylogue-4p1,polylogue-dx1,polylogue-fie,polylogue-c36,polylogue-jgp,polylogue-6mv,polylogue-lnd,polylogue-f94",
+      "kind": "label",
+      "evidence": "The `decision` LABEL contradicts the `decision` issue_type. 7 beads carry label=decision but issue_type=task (hiu, ze5, ca4, 4p1, dx1, fie, c36 - most titled 'Decision: ...'); 4 beads have issue_type=decision but NO decision label (jgp, 6mv, lnd, f94). The kind is carried by both a label and a type, and neither agrees. Same redundancy for `chore` label(2) vs issue_type=chore(8).",
+      "fix": "Make issue_type the single source of truth for decision/chore. Retire the `decision` and `chore` LABELS; set issue_type=decision on the 7 mislabeled 'Decision:' tasks. Keep `refactor` as a label (no issue_type equivalent; a legitimate cross-cut on 33 beads)."
+    },
+    {
+      "id": "campaign,enabler,correctness,research",
+      "kind": "label",
+      "evidence": "Vestigial kind tags nearly extinct in the open backlog: campaign(1 open, was for the CLOSED proof epics sru/tf2/jxe), enabler(0 open), correctness(0 open), research(1 open). They survive mainly on closed beads and no longer partition live work.",
+      "fix": "Deprecate campaign/enabler/correctness/research from the active vocabulary (leave on closed beads as history). Priority + area + spine already express what these tried to."
+    }
+  ],
+  "dep_priority": [],
+  "reorg": [
+    {"id": "polylogue-6wnh", "change": "relabel", "from": "area:performance", "to": "area:perf", "rationale": "Merge spelling-fork duplicate area:performance into canonical area:perf."},
+    {"id": "polylogue-ma2", "change": "relabel", "from": "area:performance", "to": "area:perf", "rationale": "Merge area:performance -> area:perf."},
+    {"id": "polylogue-2qx", "change": "relabel", "from": "area:sources", "to": "area:ingest", "rationale": "area:sources is the parser subset of ingest; consolidate."},
+    {"id": "polylogue-da1", "change": "relabel", "from": "area:sources", "to": "area:ingest", "rationale": "Format-drift sentinel is ingest-pipeline work."},
+    {"id": "polylogue-0cg", "change": "relabel", "from": "area:sources", "to": "area:ingest", "rationale": "OTel GenAI ingest is ingest work."},
+    {"id": "polylogue-ox0", "change": "relabel", "from": "area:sources", "to": "(drop; already area:ingest)", "rationale": "Already carries area:ingest; area:sources is redundant."},
+    {"id": "polylogue-t0p", "change": "relabel", "from": "area:sources", "to": "(drop; already area:ingest)", "rationale": "Already carries area:ingest; drop redundant area:sources."},
+    {"id": "polylogue-5hf", "change": "relabel", "from": "area:usage", "to": "area:analytics", "rationale": "Token accounting is the analytics domain; merge usage->analytics."},
+    {"id": "polylogue-xy95", "change": "relabel", "from": "area:usage", "to": "area:analytics", "rationale": "Provider-usage diagnostic is analytics."},
+    {"id": "polylogue-ivsc", "change": "relabel", "from": "area:usage", "to": "area:analytics", "rationale": "Token-drift classification is analytics."},
+    {"id": "polylogue-212.3", "change": "relabel", "from": "area:usage", "to": "area:analytics", "rationale": "Cost demo is analytics."},
+    {"id": "polylogue-9l5.4", "change": "relabel", "from": "area:usage", "to": "(drop; already area:analytics)", "rationale": "Already analytics; drop redundant usage."},
+    {"id": "polylogue-jnj.9", "change": "relabel", "from": "area:config", "to": "area:ops", "rationale": "Runtime/deployment config folds into ops."},
+    {"id": "polylogue-38x", "change": "relabel", "from": "area:quality", "to": "(drop; already area:audit)", "rationale": "Audit-residue reconciliation; area:quality singleton, already area:audit."},
+    {"id": "polylogue-yeq", "change": "relabel", "from": "area:test", "to": "area:devtools", "rationale": "Verification lanes/test harness = devtools."},
+    {"id": "polylogue-th0", "change": "relabel", "from": "area:test", "to": "area:devtools", "rationale": "Interactive-surface test harness = devtools."},
+    {"id": "polylogue-jnj.5", "change": "relabel", "from": "area:security", "to": "area:ops", "rationale": "ops reset routing is ops; fold security singleton."},
+    {"id": "polylogue-jsy", "change": "relabel", "from": "area:security", "to": "area:ops", "rationale": "Blob-hash hardening/secret hygiene folds into ops."},
+    {"id": "polylogue-s7ae.2", "change": "relabel", "from": "area:hooks", "to": "(drop; add area:ingest)", "rationale": "Hooks are a capture/ingest surface; drop singleton area:hooks."},
+    {"id": "polylogue-s7ae.3", "change": "relabel", "from": "area:hooks", "to": "(drop; add area:ingest)", "rationale": "Hooks are a capture/ingest surface; drop singleton area:hooks."},
+    {"id": "polylogue-0ns", "change": "relabel", "from": "(none)", "to": "area:embeddings,area:perf", "rationale": "Unlabeled bead 'Bound archive embedding work within large sessions' — assign area labels for navigability."},
+    {"id": "polylogue-k8k", "change": "relabel", "from": "(none)", "to": "area:perf,area:devloop", "rationale": "Unlabeled bug about scope-wrapper latency."},
+    {"id": "polylogue-x7d", "change": "relabel", "from": "(none)", "to": "area:query,area:surface", "rationale": "Unlabeled 'Unify root query row rendering contracts'."},
+    {"id": "polylogue-6l6", "change": "relabel", "from": "(none)", "to": "area:legibility", "rationale": "Unlabeled docs/theming/control-plane polish."},
+    {"id": "polylogue-1a9", "change": "relabel", "from": "(none)", "to": "area:substrate", "rationale": "'Remove dead session-commit stubs + unused web-construct' is substrate cleanup."},
+    {"id": "polylogue-t46", "change": "relabel", "from": "(none)", "to": "area:surface", "rationale": "Epic 'Contracts own surfaces' is surface-layer; has only refactor label."},
+    {"id": "polylogue-t46.1", "change": "relabel", "from": "(none)", "to": "area:demos,area:devtools", "rationale": "'Replace showcase QA with demo-driven CLI/visual tests' is demos+devtools."}
+  ]
+}

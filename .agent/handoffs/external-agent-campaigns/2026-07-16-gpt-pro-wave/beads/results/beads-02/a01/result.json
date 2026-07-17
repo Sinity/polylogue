@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-02",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "subsumed_foundation_retained",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "53138d8a95f6e6f05ad01e9bdda1af5c7902352da49357b5ded6c23a0461a8c0",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "PATCH.diff",
+      "sha256": "59d40d9e39f4cd97b35ef7c3e47f9efa9a0153c4766e091a7609091ba4397592",
+      "size_bytes": 781283,
+      "custody_path": "beads/results/beads-02/a01/raw/PATCH.diff",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "current-master reconciliation found the recovered standalone diff is the same MCP declaration/registration foundation that PR #3004 landed; it no longer applies because it overlaps that implementation",
+  "beads": [
+    "polylogue-t46.8",
+    "polylogue-t46.8.2"
+  ],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [
+    "ed44be18f448c31f9fa5b9289c75da7eee99b131"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
+  "verification_receipts": [
+    "fresh origin/master at e673da994: recovered beads-02 diff conflicts on existing declaration, adapter, generated-equivalence, and registration paths already supplied by PR #3004"
+  ],
+  "notes": "The missing cohesive package remains a delivery limitation, but the standalone diff is retained as positive historical/proof input. Its declaration/registration foundation is materially subsumed by PR #3004 / ed44be18f. Do not repeat the obsolete kernel or claim it completed the requested 10-15 tool default surface, semantic read-tool retirement, cold-model discovery, URI resources/prompts, or bounded shared transaction adoption; those remain under polylogue-t46.8.2."
+}

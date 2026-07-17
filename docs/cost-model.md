@@ -82,6 +82,55 @@ raw rows, or rollups disagree, move the stale index tier aside and rebuild
 `index.db` from `source.db`/raw archives. Do not patch a live archive manually to
 make usage totals line up.
 
+`session_model_usage` self-heals like every other session insight
+(`session_profiles`, `session_latency_profiles`, ...): it carries an
+`insight_materialization('provider_usage')` stamp keyed on
+`SESSION_INSIGHT_MATERIALIZER_VERSION`, and the same session-insight rebuild
+path that repairs a stale/missing `session_profile` also re-derives
+`session_model_usage` from `session_provider_usage_events`/`messages`
+whenever that stamp is stale or missing. This runs automatically on the
+daemon's periodic session-insight drain, hot-source convergence, and
+convergence-debt retry — a manual `polylogue ops reset --index` is no longer
+required to pick up a provider-usage materializer fix or a zero-token bug fix
+for existing sessions; it remains available as a fallback for a full rebuild.
+
+### Dual cost view on the usage ledger
+
+`polylogue analyze usage` / the `provider_usage` MCP tool / `ProviderUsageReport`
+(`polylogue/storage/usage.py`) report **two independent cost bases** per
+pricing lane, matching the [Basis Taxonomy](#basis-taxonomy) split used
+elsewhere:
+
+* `catalog_api_equivalent_usd` — API list-price equivalent, computed through
+  the single LiteLLM-backed catalog (`PRICING` in
+  `polylogue/archive/semantic/pricing.py`).
+* `subscription_credit_usd` — what the same usage would cost against the
+  curated Claude Code Pro-tier subscription credit model
+  (`polylogue/archive/semantic/subscription_pricing.py`): cache reads are
+  free, cache writes bill at the input rate, and output bills at 5x input
+  (matching Anthropic's API rate ratio — a `MODEL_CREDIT_RATES` entry with
+  `output_credits == input_credits` was a bug, fixed and regression-tested in
+  `tests/unit/storage/test_cost_queries.py`). It is `0.0` for models without
+  a declared credit rate (non-Claude models) — never a fabricated figure.
+
+Catalog coverage is explicit. When any model row lacks a catalog price, the
+complete `catalog_api_equivalent_usd` is `null` and its evidence value is
+`unknown`; exact token evidence remains `known`.
+`catalog_priced_subtotal_usd` retains the numeric subtotal for matched rows,
+with the unmatched row count and coverage exclusion explaining why it is not
+the complete total. Empty usage frames are unknown rather than a measured
+zero. The same contract is carried by each lane and the physical/logical
+archive totals through `exact_total_tokens_evidence` and
+`catalog_api_equivalent_evidence`.
+
+The two bases are always reported separately and never summed; a
+cache-heavy Claude session's `subscription_credit_usd` is strictly below its
+`catalog_api_equivalent_usd` for the same lane. Both draw from the shared
+`credits_to_usd()` conversion (`credit_cost / tier.credit_pool *
+tier.monthly_fee_usd`, default the Pro tier) so every surface reporting a
+subscription-equivalent dollar figure uses the same tier assumption; see the
+[Caveats](#caveats) below — this is not vendor-authoritative billing.
+
 ### Codex disjoint billing lanes
 
 Codex (OpenAI) `token_count` events report **overlapping** token counts:

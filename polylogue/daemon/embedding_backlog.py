@@ -7,15 +7,22 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+if TYPE_CHECKING:
+    from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
+
 logger = get_logger(__name__)
 
 EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS = 60
+EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS = 900
+EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT = 500
+EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS = 5 * 60 * 1000
 
 
 async def periodic_embedding_backlog_check(
@@ -63,17 +70,94 @@ def drain_embedding_backlog_once(db_path: Path) -> int:
     return _drain_archive_embedding_backlog_once(index_db)
 
 
-def _active_archive_index_path(db_path: Path) -> Path | None:
+async def periodic_embedding_orphan_reconcile_check(
+    *,
+    catch_up_complete: asyncio.Event | None = None,
+) -> None:
+    """Periodically reconcile one bounded batch of orphan embedding rows.
+
+    An index rebuild (full re-ingest, ``ops reset --index``, a provider
+    full-replace parse) can leave ``embeddings.db`` rows pointing at
+    message/session identities that no longer exist in the rebuilt
+    ``index.db`` (polylogue-1dk1). This drains that debt in the background,
+    the same way :func:`periodic_embedding_backlog_check` drains pending
+    embed work; manual CLI (``polylogue maintenance embedding-orphan-reconcile``)
+    remains the break-glass inspect/apply path.
+    """
     from polylogue.paths import active_index_db_path
 
+    db = active_index_db_path()
+    if catch_up_complete is not None:
+        await catch_up_complete.wait()
+    while True:
+        await asyncio.sleep(EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS)
+        try:
+            from polylogue.daemon.write_coordinator import daemon_write_coordinator
+
+            report = await daemon_write_coordinator().run_sync(
+                "maintenance.embedding_orphan_reconcile",
+                reconcile_embedding_orphans_once,
+                db,
+            )
+            if report is not None and (report.removed_message_rows or report.removed_status_rows):
+                logger.info(
+                    "embed: reconciled %d orphan message row(s), %d orphan status row(s) more_pending=%s",
+                    report.removed_message_rows,
+                    report.removed_status_rows,
+                    report.more_pending,
+                )
+        except sqlite3.OperationalError as exc:
+            if is_transient_sqlite_lock(exc):
+                logger.info("embed: archive busy; retrying orphan reconcile on next tick: %s", exc)
+                continue
+            logger.warning("embed: orphan reconcile check failed", exc_info=True)
+        except Exception:
+            logger.warning("embed: orphan reconcile check failed", exc_info=True)
+
+
+def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileReport | None:
+    """Run one bounded daemon orphan-reconciliation pass, or ``None`` if inapplicable."""
+
+    from polylogue.daemon.convergence_stages import _embedding_config_enabled
+
+    if not _embedding_config_enabled():
+        return None
+
+    index_db = _active_archive_index_path(db_path)
+    if index_db is None:
+        return None
+    embeddings_db = index_db.with_name("embeddings.db")
+    if not embeddings_db.exists():
+        return None
+
+    from polylogue.storage.embeddings.reconcile import reconcile_embedding_orphans
+
+    return reconcile_embedding_orphans(
+        index_db,
+        embeddings_db,
+        dry_run=False,
+        max_count=EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT,
+        quiet_window_ms=EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS,
+        mutation_authority="daemon-coordinator",
+    )
+
+
+def _active_archive_index_path(db_path: Path) -> Path | None:
+    from polylogue.paths import active_index_db_path, sibling_index_db
+
+    # Build candidates: active_db, then sibling_index_db resolution
     candidates = []
     active_db = active_index_db_path()
-    if active_db.name == "index.db":
+    if active_db.name == "index.db" and active_db.exists():
         candidates.append(active_db)
-    if db_path.name == "index.db":
-        candidates.append(db_path)
-    candidates.append(db_path.with_name("index.db"))
-    index_db = next((candidate for candidate in dict.fromkeys(candidates) if candidate.exists()), None)
+
+    # Use sibling_index_db to get the primary candidate
+    sibling_db = sibling_index_db(db_path, require_exists=True)
+    if sibling_db is not None:
+        candidates.append(sibling_db)
+
+    # Use the first existing candidate and check for sessions table
+    index_db = next((candidate for candidate in dict.fromkeys(candidates)), None)
     if index_db is None:
         return None
     try:
@@ -311,7 +395,12 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 __all__ = [
     "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS",
+    "EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS",
+    "EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT",
+    "EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS",
     "drain_embedding_backlog_once",
     "embedding_catchup_estimated_cost_this_month",
     "periodic_embedding_backlog_check",
+    "periodic_embedding_orphan_reconcile_check",
+    "reconcile_embedding_orphans_once",
 ]

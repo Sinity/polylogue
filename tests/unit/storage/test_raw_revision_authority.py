@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import pytest
 
 from polylogue.archive.revision_authority import (
     HistoricalRawRevision,
+    HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
+    classify_historical_full_revision_streams,
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
@@ -49,6 +54,36 @@ def test_historical_full_classifier_proves_unique_prefix_chain_independent_of_or
     )
 
 
+def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_payloads() -> None:
+    payloads = {
+        "oldest": b"one\n",
+        "middle": b"one\ntwo\n",
+        "newest": b"one\ntwo\nthree\n",
+    }
+    opened: list[str] = []
+
+    def opener(raw_id: str) -> Callable[[], BinaryIO]:
+        def open_payload() -> BinaryIO:
+            opened.append(raw_id)
+            from io import BytesIO
+
+            return BytesIO(payloads[raw_id])
+
+        return open_payload
+
+    streamed = classify_historical_full_revision_streams(
+        [HistoricalRawRevisionStream(raw_id, len(payload), opener(raw_id)) for raw_id, payload in payloads.items()]
+    )
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(raw_id, payload) for raw_id, payload in payloads.items()]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
+    assert len(opened) == 7  # three size passes plus two adjacent prefix comparisons
+
+
 @pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
 def test_historical_classifier_quarantines_unprovable_authority(payloads: list[bytes]) -> None:
     decisions = classify_historical_full_revisions(
@@ -56,6 +91,27 @@ def test_historical_classifier_quarantines_unprovable_authority(payloads: list[b
     )
     assert decisions
     assert {decision.authority for decision in decisions} == {RawRevisionAuthority.QUARANTINED}
+
+
+@pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
+def test_streamed_historical_classifier_matches_eager_ambiguous_authority(payloads: list[bytes]) -> None:
+    def stream_revision(index: int, payload: bytes) -> HistoricalRawRevisionStream:
+        return HistoricalRawRevisionStream(
+            raw_id=f"raw-{index}",
+            payload_size=len(payload),
+            open_payload=lambda: BytesIO(payload),
+        )
+
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(f"raw-{index}", payload) for index, payload in enumerate(payloads)]
+    )
+    streamed = classify_historical_full_revision_streams(
+        [stream_revision(index, payload) for index, payload in enumerate(payloads)]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
 
 
 def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:
@@ -153,7 +209,23 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
     ).fetchone() == ("unknown", "quarantined")
 
 
-def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> None:
+def test_raw_revision_material_preserves_capture_mode(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"chunkedPrompt":{"chunks":[]}}'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.DRIVE,
+            payload=payload,
+            source_path="/captures/live-drive.json",
+            acquired_at_ms=1,
+        )
+        provider, observed_payload, _source_path, _kind = archive.raw_revision_material(raw_id)
+
+    assert provider is Provider.DRIVE
+    assert observed_payload == payload
+
+
+def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SOURCE_DDL)
     raw_id = write_source_raw_session(
@@ -167,17 +239,134 @@ def test_revision_binding_is_idempotent_but_rejects_conflicting_identity() -> No
     first = RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 0)
     bind_source_raw_revision(conn, raw_id, first)
 
-    bind_source_raw_revision(
-        conn,
-        raw_id,
-        RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
-    )
+    bind_source_raw_revision(conn, raw_id, first)
+    with pytest.raises(ValueError, match="already authoritative"):
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
+        )
     with pytest.raises(ValueError, match="already authoritative"):
         bind_source_raw_revision(
             conn,
             raw_id,
             RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "different", 1),
         )
+    with pytest.raises(ValueError, match="already authoritative or missing"):
+        bind_source_raw_revision(conn, "missing", first)
+
+
+def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SOURCE_DDL)
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/capture/session.jsonl",
+        source_index=0,
+        payload=b"raw",
+        acquired_at_ms=10,
+    )
+    provisional = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-1",
+        0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    bind_source_raw_revision(conn, raw_id, provisional)
+    conn.execute(
+        """UPDATE raw_sessions
+           SET revision_authority = 'byte_proven', predecessor_raw_id = ?,
+               baseline_raw_id = ?, acquisition_generation = 4
+           WHERE raw_id = ?""",
+        ("older-full", "older-full", raw_id),
+    )
+
+    bind_source_raw_revision(conn, raw_id, provisional)
+
+    assert conn.execute(
+        """SELECT logical_source_key, revision_kind, source_revision,
+                  predecessor_raw_id, baseline_raw_id, acquisition_generation,
+                  revision_authority
+           FROM raw_sessions WHERE raw_id = ?""",
+        (raw_id,),
+    ).fetchone() == (
+        "codex:session-1",
+        "full",
+        "revision-1",
+        "older-full",
+        "older-full",
+        4,
+        "byte_proven",
+    )
+    with pytest.raises(ValueError, match="already authoritative"):
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope(
+                "codex:session-1",
+                RawRevisionKind.FULL,
+                "different-revision",
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+
+@pytest.mark.parametrize("write_mode", ["payload", "blob-ref"])
+def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
+    tmp_path: Path,
+    write_mode: str,
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"session-1"}}\n'
+    first = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-1",
+        0,
+        authority=RawRevisionAuthority.BYTE_PROVEN,
+    )
+    conflicting = RawRevisionEnvelope(
+        "codex:session-1",
+        RawRevisionKind.FULL,
+        "revision-2",
+        99,
+        authority=RawRevisionAuthority.BYTE_PROVEN,
+    )
+
+    def acquire(archive: ArchiveStore, acquired_at_ms: int) -> str:
+        if write_mode == "payload":
+            return archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(tmp_path / "session.jsonl"),
+                acquired_at_ms=acquired_at_ms,
+            )
+        return archive.write_raw_blob_ref(
+            provider=Provider.CODEX,
+            blob_hash_hex=sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=str(tmp_path / "session.jsonl"),
+            acquired_at_ms=acquired_at_ms,
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = acquire(archive, 1)
+        archive.bind_raw_revision(raw_id, first)
+
+        reacquired_raw_id = acquire(archive, 2)
+        assert reacquired_raw_id == raw_id
+        with pytest.raises(ValueError, match="already authoritative"):
+            archive.bind_raw_revision(raw_id, conflicting)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """SELECT source_revision, acquisition_generation, revision_authority
+               FROM raw_sessions WHERE raw_id = ?""",
+            (raw_id,),
+        ).fetchone() == ("revision-1", 0, "byte_proven")
 
 
 def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(tmp_path: Path) -> None:

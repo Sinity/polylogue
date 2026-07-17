@@ -61,7 +61,7 @@ def test_bench_reader_list_with_provider(
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.list_summaries(provider="claude-code"),
+        lambda store: store.repository.list_summaries(origin="claude-code-session"),
     )
 
 
@@ -182,5 +182,5 @@ def test_bench_reader_cost_rollup(
     benchmark_store_call(
         benchmark,
         bench_db_5k,
-        lambda store: store.repository.get_stats_by("provider"),
+        lambda store: store.repository.get_stats_by("origin"),
     )

@@ -1,0 +1,127 @@
+{
+  "session_id": "fixture:codex-search",
+  "provider_family": "codex",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "origin": "codex-session",
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "search",
+          "tool_id": "search-1",
+          "semantic_type": "search",
+          "tool_input": {
+            "query": "semantic_entries",
+            "path": "polylogue"
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "origin": "codex-session",
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "search-1",
+          "text": "polylogue/daemon/http.py: semantic_entries",
+          "tool_result_exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "search"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "search",
+      "title": "Search",
+      "source": {
+        "session_id": "fixture:codex-search",
+        "provider_family": "codex",
+        "origin": "codex-session",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "search",
+        "tool_id": "search-1",
+        "material_origin": "unknown",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "search"
+        },
+        {
+          "label": "semantic family",
+          "value": "search"
+        },
+        {
+          "label": "classification",
+          "value": "persisted_semantic_type"
+        },
+        {
+          "label": "query",
+          "value": "semantic_entries"
+        },
+        {
+          "label": "scope",
+          "value": "polylogue"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "matches",
+          "text": "polylogue/daemon/http.py: semantic_entries",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "semantic_entries",
+      "outcome": {
+        "state": "succeeded",
+        "exit_code": 0
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "query": "semantic_entries",
+          "path": "polylogue"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "polylogue/daemon/http.py: semantic_entries",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

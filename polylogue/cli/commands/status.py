@@ -14,9 +14,21 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.logging import get_logger
+from polylogue.readiness.capability import (
+    normalize_raw_frontier_status_payload,
+    raw_frontier_integrity_is_proven_healthy,
+    raw_frontier_integrity_projection,
+    raw_frontier_integrity_summary,
+    status_snapshot_has_fresh_provenance,
+)
+from polylogue.readiness.claim_guard import derive_claim_guard
+from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+logger = get_logger(__name__)
 
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 # Bare `polylogue` uses this as a quick probe before falling back to SQLite.
@@ -196,8 +208,13 @@ def _view_exists(conn: Any, view_name: str) -> bool:
 
 
 def _archive_index_path(db: Any) -> Any | None:
-    index_db = db if getattr(db, "name", None) == "index.db" else db.with_name("index.db")
-    return index_db if index_db.exists() else None
+    from polylogue.paths import sibling_index_db
+
+    if not isinstance(db, Path):
+        # Fallback for non-Path objects (shouldn't happen in practice)
+        index_db = db if getattr(db, "name", None) == "index.db" else db.with_name("index.db")
+        return index_db if index_db.exists() else None
+    return sibling_index_db(db, require_exists=True)
 
 
 def _active_status_db(db: Any) -> Any | None:
@@ -208,8 +225,13 @@ def _active_status_db(db: Any) -> Any | None:
             active_db = active_index_db_path()
             if active_db.exists():
                 return active_db
-        except Exception:
-            pass
+        except Exception as exc:
+            # An unreadable active pointer is not the same as an absent one:
+            # falling back to a sibling index.db may read a different archive
+            # generation, so say which happened.
+            logger.warning(
+                "active archive pointer unreadable (%s: %s); falling back to sibling index.db", type(exc).__name__, exc
+            )
     index_db = _archive_index_path(db)
     if index_db is not None:
         return index_db
@@ -248,7 +270,13 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "insight_materialization",
     ),
     "embeddings": ("message_embeddings_meta", "embedding_status"),
-    "user": ("assertions",),
+    "user": (
+        "assertions",
+        "annotation_schemas",
+        "annotation_batches",
+        "user_settings",
+        "context_deliveries",
+    ),
     "ops": (
         "ingest_cursor",
         "ingest_attempts",
@@ -429,6 +457,37 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "archive_routed",
         "index",
         "summarizes workflow-shape profiles from index.db",
+    ),
+    "capture_assertion_candidate": (
+        "archive_routed",
+        "user",
+        "writes a terminal candidate assertion through user.db",
+    ),
+    "correlate_hermes_context_deliveries": (
+        "archive_routed",
+        "user",
+        "correlates Hermes lifecycle events with delivery receipts from user.db",
+    ),
+    "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "import_annotation_batch": (
+        "archive_routed",
+        "user",
+        "imports bounded, provenance-stamped annotation candidates through user.db",
+    ),
+    "join_typed_annotations": (
+        "archive_routed",
+        "user",
+        "joins typed annotations to structural targets from user.db",
+    ),
+    "judge_assertion_candidates": (
+        "archive_routed",
+        "user",
+        "writes a batch of candidate assertion judgments through user.db",
+    ),
+    "reconcile_hermes_session_lifecycle": (
+        "archive_routed",
+        "source",
+        "reconciles Hermes lifecycle events against the durable source.db spool",
     ),
 }
 
@@ -1045,7 +1104,8 @@ def _archive_source_raw_count(conn: Any) -> int:
         return _fast_count(conn, "SELECT COUNT(*) FROM raw_sessions")
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
-    except Exception:
+    except Exception as exc:
+        logger.warning("raw-record count unavailable (database_list probe failed: %s); reporting 0", exc)
         return 0
     if row is None or len(row) < 3 or not row[2]:
         return 0
@@ -1243,6 +1303,18 @@ def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str
     default=False,
     help="Run expensive exact archive-readiness probes in direct SQLite fallback.",
 )
+@click.option(
+    "--source",
+    "source_path",
+    type=click.Path(path_type=Path),
+    help="Inspect one exact source path from cursor evidence through searchability.",
+)
+@click.option(
+    "--strict-source",
+    is_flag=True,
+    default=False,
+    help="Fail when --source is degraded, incomplete, or has unsafe evidence reads.",
+)
 @click.pass_obj
 def status_command(
     env: AppEnv,
@@ -1251,6 +1323,8 @@ def status_command(
     json_alias: bool,
     full_payload: bool,
     exact_archive_readiness: bool,
+    source_path: Path | None = None,
+    strict_source: bool = False,
 ) -> None:
     """Show daemon and archive health.
 
@@ -1262,6 +1336,43 @@ def status_command(
     """
     if json_alias and output_format is None:
         output_format = "json"
+    if source_path is not None:
+        # A named-source status call is intentionally direct and bounded. Do
+        # not ask the daemon for aggregate status first: the incident was an
+        # excluded path hidden by aggregate coverage.
+        from polylogue.archive.query.source_freshness import (
+            NamedSourceOperationalState,
+            NamedSourceStage,
+            project_named_source_freshness,
+        )
+        from polylogue.archive.query.source_freshness_surfaces import (
+            render_source_freshness_status,
+        )
+        from polylogue.cli.shared.helpers import load_effective_config
+        from polylogue.paths import archive_file_set_root_for_paths
+
+        if not source_path.is_absolute():
+            raise click.UsageError("--source must be an absolute exact source path")
+        config = load_effective_config(env)
+        archive_root = archive_file_set_root_for_paths(
+            archive_root_path=config.archive_root,
+            db_anchor=config.db_path,
+        )
+        freshness = project_named_source_freshness(archive_root, source_path)
+        if output_format == "json":
+            click.echo(json.dumps(freshness.to_dict(), sort_keys=True))
+        else:
+            click.echo(render_source_freshness_status(freshness))
+        unsafe = bool(freshness.receipt.unsafe_scan_rejections or freshness.errors)
+        incomplete = (
+            freshness.operational_state is NamedSourceOperationalState.DEGRADED
+            or freshness.stage is not NamedSourceStage.SEARCHABLE
+        )
+        if unsafe:
+            raise click.exceptions.Exit(3)
+        if strict_source and incomplete:
+            raise click.exceptions.Exit(2)
+        return
     candidate_urls = _candidate_daemon_urls(daemon_url)
     for candidate_url in candidate_urls:
         try:
@@ -1324,9 +1435,11 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> None:
     """Render daemon status from the real DaemonStatus payload."""
+    status = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
     liveness = status.get("daemon_liveness", False)
-    liveness_color = "green" if liveness else "yellow"
-    liveness_text = "running" if liveness else "degraded"
+    overall_ok = _status_ok(status, require_fresh_snapshot=True)
+    liveness_color = "green" if liveness and overall_ok else "yellow"
+    liveness_text = "running" if liveness and overall_ok else "running; status degraded" if liveness else "degraded"
     env.ui.console.print(f"\n[bold {liveness_color}]Daemon: {liveness_text}[/bold {liveness_color}]")
 
     # Component state
@@ -1373,6 +1486,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
         fts_color = "green" if fts.get("messages_ready") else "yellow"
         env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
+    raw_frontier = status.get("raw_frontier_integrity")
+    if isinstance(raw_frontier, dict):
+        _render_raw_frontier_integrity(env, raw_frontier)
+
     # Sizes
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
@@ -1403,14 +1520,20 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
 
 def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> None:
     """Machine-readable JSON status output."""
-    payload = status if full else _compact_status_payload(status, source="daemon")
+    normalized = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
+    payload = normalized if full else _compact_status_payload(normalized, source="daemon")
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
 
 
 def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Return the operator-facing status JSON without debug-heavy subtrees."""
+    status = normalize_raw_frontier_status_payload(
+        status,
+        snapshot_state="live" if source == "direct" else None,
+        require_fresh_snapshot=source == "daemon",
+    )
     payload: dict[str, Any] = {
-        "ok": status.get("ok", bool(status.get("daemon_liveness"))),
+        "ok": _status_ok(status),
         "source": source,
         "daemon_liveness": bool(status.get("daemon_liveness", False)),
         "full_status_command": "polylogue ops status --json --full",
@@ -1440,6 +1563,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if isinstance(component_readiness, dict):
         payload["component_readiness"] = component_readiness
 
+    claim_guard = status.get("claim_guard")
+    if isinstance(claim_guard, dict):
+        payload["claim_guard"] = claim_guard
+
     archive_tiers = status.get("archive_tiers")
     if isinstance(archive_tiers, dict):
         payload["archive_tiers"] = archive_tiers
@@ -1467,6 +1594,18 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if raw_materialization:
         payload["raw_materialization_readiness"] = raw_materialization
 
+    raw_frontier_integrity = _compact_mapping_without(
+        status.get("raw_frontier_integrity"),
+        {
+            "broken_head_samples",
+            "missing_source_raw_samples",
+            "cursor_ahead_samples",
+            "cursor_authority_gap_samples",
+        },
+    )
+    if raw_frontier_integrity:
+        payload["raw_frontier_integrity"] = raw_frontier_integrity
+
     raw_replay_backlog = _compact_mapping_without(
         status.get("raw_replay_backlog"),
         {"source_path_summary"},
@@ -1489,6 +1628,26 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
         payload["diagnostic"] = status["diagnostic"]
 
     return payload
+
+
+def _status_ok(status: dict[str, Any], *, require_fresh_snapshot: bool = False) -> bool:
+    """Preserve existing status health while requiring proven raw authority."""
+
+    ok = bool(status.get("ok", status.get("daemon_liveness")))
+    snapshot = status.get("status_snapshot")
+    if require_fresh_snapshot and not status_snapshot_has_fresh_provenance(status):
+        return False
+    if isinstance(snapshot, dict) and snapshot.get("state") not in {None, "fresh"}:
+        return False
+    return ok and raw_frontier_integrity_is_proven_healthy(status.get("raw_frontier_integrity"))
+
+
+def _render_raw_frontier_integrity(env: AppEnv, integrity: dict[str, Any]) -> None:
+    overall = str(integrity.get("overall_status") or "unknown")
+    color = {"healthy": "green", "violated": "red", "unknown": "yellow"}.get(overall, "yellow")
+    summary = raw_frontier_integrity_summary(integrity)
+    detail = "" if summary == "ready" else f" — {summary}"
+    env.ui.console.print(f"  Raw frontier: [{color}]{overall}[/{color}]{detail}")
 
 
 def _compact_mapping_without(value: Any, heavy_keys: set[str]) -> dict[str, Any]:
@@ -1643,12 +1802,16 @@ def _show_direct_json(
         include_archive_readiness=include_archive_readiness,
     )
     raw_materialization_readiness = _direct_raw_materialization_readiness(active_root)
+    raw_frontier_integrity = _direct_raw_frontier_integrity(active_root, raw_materialization_readiness)
     component_readiness = _direct_component_readiness(
         env,
         active_root=active_root,
         archive_readiness=archive_readiness,
         raw_materialization_readiness=raw_materialization_readiness,
+        raw_frontier_integrity=raw_frontier_integrity,
     )
+    archive_tiers = _archive_tier_status(active_root)
+    ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness),
         "daemon_liveness": False,
@@ -1659,16 +1822,24 @@ def _show_direct_json(
         "active_db_path": None,
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
-        "archive_tiers": _archive_tier_status(active_root),
+        "archive_tiers": archive_tiers,
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
-        "ingest_workload": _ops_workload_status(active_root, now_ms=int(time.time() * 1000)),
+        "ingest_workload": ingest_workload,
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "archive_facade_routes": _archive_facade_route_status(),
         "archive_cli_routes": _archive_cli_route_status(),
         "archive_runtime_paths": _archive_runtime_path_status(),
         "raw_materialization_readiness": raw_materialization_readiness,
+        "raw_frontier_integrity": raw_frontier_integrity,
         "component_readiness": component_readiness,
+        "claim_guard": _direct_claim_guard(
+            archive_tiers=archive_tiers,
+            raw_materialization_readiness=raw_materialization_readiness,
+            raw_frontier_integrity=raw_frontier_integrity,
+            component_readiness=component_readiness,
+            ingest_workload=ingest_workload,
+        ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
@@ -1685,8 +1856,33 @@ def _show_direct_json(
                 conn.close()
         except Exception as exc:
             payload["error"] = str(exc)
-    output = payload if full or include_archive_readiness else _compact_status_payload(payload, source="direct")
+    normalized_payload = normalize_raw_frontier_status_payload(payload, snapshot_state="live")
+    output = (
+        normalized_payload
+        if full or include_archive_readiness
+        else _compact_status_payload(normalized_payload, source="direct")
+    )
     env.ui.console.print(json.dumps(output, indent=2, default=str))
+
+
+def _component_computation_failure(component: str, exc: Exception, *, scope: str = "archive") -> dict[str, Any]:
+    """Explicit unknown-state entry for a component whose readiness computation failed.
+
+    A component that cannot be computed must stay visible as unknown; silently
+    omitting it is indistinguishable from not-applicable (polylogue-feqr).
+    """
+    from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+
+    return dict(
+        ComponentReadiness(
+            component=component,
+            scope=scope,
+            state=CapabilityReadinessState.UNKNOWN,
+            summary=f"status computation failed: {type(exc).__name__}: {exc}",
+            caveats=("component readiness could not be computed; unknown is not healthy",),
+            metadata={"computation_failed": True},
+        ).to_dict()
+    )
 
 
 def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
@@ -1700,11 +1896,25 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         "transforms",
         "assertions",
     }
+    required_known_components = {"raw_frontier_integrity"}
+    if any(not isinstance(component_readiness.get(component), dict) for component in required_known_components):
+        return False
     for component, readiness in component_readiness.items():
         if not isinstance(readiness, dict):
             continue
+        metadata = readiness.get("metadata")
+        if (
+            component in required_known_components | required_missing_components
+            and isinstance(metadata, dict)
+            and metadata.get("computation_failed")
+        ):
+            # A required component whose readiness could not even be computed
+            # must not read as healthy (polylogue-feqr review follow-up).
+            return False
         state = str(readiness.get("state") or "unknown")
         if state in hard_failure_states:
+            return False
+        if state == "unknown" and component in required_known_components:
             return False
         if state == "missing" and component in required_missing_components:
             return False
@@ -1717,6 +1927,7 @@ def _direct_component_readiness(
     active_root: Path,
     archive_readiness: dict[str, Any] | None = None,
     raw_materialization_readiness: dict[str, Any] | None = None,
+    raw_frontier_integrity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return additive component readiness for direct status JSON."""
     components: dict[str, Any] = {}
@@ -1737,13 +1948,19 @@ def _direct_component_readiness(
                         repair_hint=_ARCHIVE_COMPONENT_REPAIR_HINTS.get(component),
                     )
                     components[readiness.component] = readiness.to_dict()
-        except Exception:
-            pass
+        except Exception as exc:
+            components["archive_surfaces"] = _component_computation_failure("archive_surfaces", exc)
     try:
         raw_component = _direct_raw_materialization_component(raw_materialization_readiness)
         components[raw_component["component"]] = raw_component
-    except Exception:
-        pass
+    except Exception as exc:
+        components["raw_materialization"] = _component_computation_failure("raw_materialization", exc)
+    if raw_frontier_integrity is not None:
+        try:
+            frontier_component = _direct_raw_frontier_integrity_component(raw_frontier_integrity)
+            components[frontier_component["component"]] = frontier_component
+        except Exception as exc:
+            components["raw_frontier_integrity"] = _component_computation_failure("raw_frontier_integrity", exc)
     try:
         from polylogue.readiness.capability import component_from_embedding_payload
         from polylogue.storage.embeddings.status_payload import embedding_status_payload
@@ -1751,19 +1968,71 @@ def _direct_component_readiness(
         embedding_payload = embedding_status_payload(env, include_retrieval_bands=False)
         embedding = component_from_embedding_payload(embedding_payload)
         components[embedding.component] = embedding.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        components["embeddings"] = _component_computation_failure("embeddings", exc, scope="semantic")
     try:
         assertions = _direct_assertion_component(active_root)
         components[assertions["component"]] = assertions
-    except Exception:
-        pass
+    except Exception as exc:
+        components["assertions"] = _component_computation_failure("assertions", exc, scope="user")
     try:
         transforms = _direct_transform_component(archive_readiness)
         components[transforms["component"]] = transforms
-    except Exception:
-        pass
+    except Exception as exc:
+        components["transforms"] = _component_computation_failure("transforms", exc, scope="session-analysis")
     return components
+
+
+def _direct_claim_guard(
+    *,
+    archive_tiers: dict[str, dict[str, Any]],
+    raw_materialization_readiness: dict[str, Any],
+    raw_frontier_integrity: dict[str, Any],
+    component_readiness: dict[str, Any],
+    ingest_workload: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive the claim-guard block for the no-daemon direct SQLite fallback."""
+    missing_tiers = [tier for tier, info in archive_tiers.items() if not info.get("exists")]
+    schema_mismatches = [
+        tier for tier, info in archive_tiers.items() if info.get("exists") and info.get("version_status") != "ok"
+    ]
+    archive_schema_ready = not missing_tiers and not schema_mismatches
+
+    raw_component = component_readiness.get("raw_materialization")
+    raw_summary = str(raw_component.get("summary", "")) if isinstance(raw_component, dict) else ""
+
+    frontier_component = component_readiness.get("raw_frontier_integrity")
+    frontier_ready = isinstance(frontier_component, dict) and frontier_component.get("state") == "ready"
+    frontier_summary = raw_frontier_integrity_summary(raw_frontier_integrity)
+
+    search_component = component_readiness.get("search")
+    search_ready = isinstance(search_component, dict) and search_component.get("state") == "ready"
+    search_summary = str(search_component.get("summary", "")) if isinstance(search_component, dict) else "unknown"
+
+    if not ingest_workload.get("available"):
+        # An unreadable/missing ops-workload tier cannot establish the
+        # *absence* of a concurrent writer — treat it as blocking the
+        # perf-measurable claim, not as a clean "no writer" signal.
+        active_writer = True
+        active_writer_summary = "ingest workload inspection unavailable; cannot rule out a concurrent archive writer"
+    else:
+        running_count = int(ingest_workload.get("running_count") or 0)
+        active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
+        active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
+
+    return derive_claim_guard(
+        archive_schema_ready=archive_schema_ready,
+        schema_mismatches=schema_mismatches,
+        missing_tiers=missing_tiers,
+        raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
+        raw_materialization_summary=raw_summary,
+        raw_frontier_integrity_ready=bool(frontier_ready),
+        raw_frontier_integrity_summary=frontier_summary,
+        search_ready=bool(search_ready),
+        search_summary=search_summary,
+        active_writer=active_writer,
+        active_writer_summary=active_writer_summary,
+    ).to_dict()
 
 
 def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
@@ -1776,6 +2045,21 @@ def _direct_raw_materialization_component(readiness: dict[str, Any] | None) -> d
     from polylogue.readiness.capability import component_from_raw_materialization_readiness
 
     return component_from_raw_materialization_readiness(readiness).to_dict()
+
+
+def _direct_raw_frontier_integrity(
+    active_root: Path,
+    raw_materialization_readiness: dict[str, Any],
+) -> dict[str, Any]:
+    """Direct fallback consuming the same canonical projection as the daemon."""
+
+    return raw_frontier_integrity_projection(active_root, raw_materialization_readiness).to_dict()
+
+
+def _direct_raw_frontier_integrity_component(integrity: dict[str, Any] | None) -> dict[str, Any]:
+    from polylogue.readiness.capability import component_from_raw_frontier_integrity
+
+    return component_from_raw_frontier_integrity(integrity).to_dict()
 
 
 def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
@@ -2093,6 +2377,10 @@ def _show_direct_status(
                         f"{_safe_int(materialization.get('warning'))} warning, "
                         f"{_safe_int(materialization.get('blocked'))} blocked"
                     )
+            _render_raw_frontier_integrity(
+                env,
+                _direct_raw_frontier_integrity(active_root, materialization),
+            )
             _render_archive_facade_routes(env, _archive_facade_route_status())
             _render_archive_cli_routes(env, _archive_cli_route_status())
             _render_archive_runtime_paths(env, _archive_runtime_path_status())
@@ -2111,8 +2399,8 @@ def _show_direct_status(
 
             ep = embedding_status_payload(env, include_retrieval_bands=False)
             _render_direct_embedding_status(env, dict(ep))
-        except Exception:
-            pass
+        except Exception as exc:
+            env.ui.console.print(f"  Embeddings: [yellow]status unavailable ({type(exc).__name__})[/yellow]")
         # When the archive is empty (no ingest has run yet), surface the
         # most relevant first-run diagnostic so the operator knows what to
         # do next — typically `no_sources` or `no_daemon` (#1263).
@@ -2126,8 +2414,14 @@ def _show_direct_status(
 
         if not compact and not actively_ingesting:
             env.ui.console.print("\n  [dim]Run [bold]polylogued run[/bold] to start the daemon.[/dim]")
-    except Exception:
-        env.ui.console.print(f"\n[yellow]Archive exists at {archive_root()} but could not be queried.[/yellow]")
+    except Exception as exc:
+        # markup=False: raw exception text may contain [brackets] Rich would
+        # otherwise parse as style tags and crash on, hiding the error.
+        env.ui.console.print(
+            f"\nArchive exists at {archive_root()} but could not be queried ({type(exc).__name__}: {exc}).",
+            style="yellow",
+            markup=False,
+        )
 
 
 def _render_archive_readiness(env: AppEnv, readiness: dict[str, Any]) -> None:

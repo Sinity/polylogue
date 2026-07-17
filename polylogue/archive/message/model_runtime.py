@@ -10,7 +10,7 @@ from functools import cached_property
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import MaterialOrigin, Provider
+from polylogue.core.enums import MaterialOrigin, Origin
 
 
 def _block_texts(blocks: Iterable[Mapping[str, object]], *, block_type: str) -> list[str]:
@@ -38,7 +38,7 @@ class MessageRuntimeMixin:
     role: Role
     text: str | None
     timestamp: datetime | None
-    provider: Provider | None
+    origin: Origin | None
     attachments: list[Attachment]
     blocks: list[dict[str, object]]
     message_type: MessageType

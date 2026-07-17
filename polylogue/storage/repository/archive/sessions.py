@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.core.sources import provider_from_origin
 from polylogue.storage.archive_views import SessionRenderProjection
 from polylogue.storage.hydrators import (
     message_from_record,
@@ -21,9 +20,9 @@ from polylogue.storage.repository.repository_contracts import RepositoryBackendP
 from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
 
 if TYPE_CHECKING:
+    from polylogue.core.types import SessionId
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
-    from polylogue.types import SessionId
 
 
 class RepositoryArchiveSessionMixin:
@@ -65,7 +64,7 @@ class RepositoryArchiveSessionMixin:
 
     async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None:
         resolved = await self.queries.resolve_id(id_prefix, strict=strict)
-        from polylogue.types import SessionId
+        from polylogue.core.types import SessionId
 
         return SessionId(resolved) if resolved else None
 
@@ -124,7 +123,7 @@ class RepositoryArchiveSessionMixin:
         offset: int = 0,
     ) -> tuple[list[Message], int]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = provider_from_origin(conv_record.origin).value if conv_record else None
+        origin = conv_record.origin if conv_record else None
         records, total = await self.queries.get_messages_paginated(
             session_id,
             message_role=message_role,
@@ -132,7 +131,7 @@ class RepositoryArchiveSessionMixin:
             limit=limit,
             offset=offset,
         )
-        messages = [message_from_record(r, attachments=[], provider=source_name) for r in records]
+        messages = [message_from_record(r, attachments=[], origin=origin) for r in records]
         return messages, total
 
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
@@ -244,13 +243,13 @@ class RepositoryArchiveSessionMixin:
         limit: int | None = None,
     ) -> AsyncIterator[Message]:
         conv_record = await self.queries.get_session(session_id)
-        source_name = provider_from_origin(conv_record.origin).value if conv_record else None
+        origin = conv_record.origin if conv_record else None
         async for record in self.queries.iter_messages(
             session_id,
             message_roles=message_roles,
             limit=limit,
         ):
-            yield message_from_record(record, attachments=[], provider=source_name)
+            yield message_from_record(record, attachments=[], origin=origin)
 
     async def aggregate_facet_families(
         self,

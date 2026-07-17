@@ -54,7 +54,7 @@ _UNTIL = datetime(2026, 2, 1, tzinfo=timezone.utc)
 def _canonical_filter() -> MaintenanceScopeFilter:
     return MaintenanceScopeFilter(
         session_ids=("c1", "c2"),
-        provider="claude-code",
+        origin="claude-code-session",
         source_family="claude-code-session",
         source_root=Path("/data/claude"),
         time_range=(_SINCE, _UNTIL),
@@ -113,9 +113,9 @@ def _invoke_cli_plan(operation: BackfillOperation, tmp_path: Path) -> tuple[dict
     config_obj = Config(archive_root=archive, render_root=render, sources=[])
 
     with (
-        patch("polylogue.cli.commands.maintenance.preview_backfill", side_effect=_capture),
-        patch("polylogue.cli.commands.maintenance.archive_root", return_value=archive),
-        patch("polylogue.cli.commands.maintenance.render_root", return_value=render),
+        patch("polylogue.cli.commands.maintenance._plan.preview_backfill", side_effect=_capture),
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=render),
     ):
         result = runner.invoke(
             maintenance_group,
@@ -244,7 +244,7 @@ class TestDaemonBodyBuildsScopeFilter:
         body = {
             "targets": ["session_insights"],
             "session_ids": ["c1", "c2"],
-            "provider": "claude-code",
+            "origin": "claude-code-session",
             "source_family": "claude-code-session",
             "source_root": "/data/claude",
             "time_range": [

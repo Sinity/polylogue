@@ -27,22 +27,22 @@ def _measure(db_path: Path, record_limit: int | None) -> float:
 
 
 @pytest.mark.scale_small
-def test_schema_check_completes_quickly(corpus_seeded_db: Callable[..., Path]) -> None:
+def test_schema_check_completes_quickly(named_seeded_archive: Callable[[str], Path]) -> None:
     """Smoke: verify_raw_corpus finishes and returns a valid report."""
-    db = corpus_seeded_db(providers=("chatgpt",), count=10)
+    db = named_seeded_archive("schema-small")
     ms = _measure(db, record_limit=None)
     assert ms < 30_000, f"10-record corpus took {ms:.0f} ms; expected <30s"
 
 
 @pytest.mark.scale_medium
-def test_schema_check_linear_scaling(corpus_seeded_db: Callable[..., Path]) -> None:
+def test_schema_check_linear_scaling(named_seeded_archive: Callable[[str], Path]) -> None:
     """Wall time must grow sub-quadratically across record limits.
 
     Uses a single seeded DB with 50 records and compares verify_raw_corpus
     runtime at record_limit=5 vs record_limit=50.
     O(n) would give ~10× growth; O(n²) would give ~100×.  50× is a safe fence.
     """
-    db = corpus_seeded_db(providers=("chatgpt",), count=50)
+    db = named_seeded_archive("schema-medium")
     ms_5 = _measure(db, record_limit=5)
     ms_50 = _measure(db, record_limit=50)
     ratio = ms_50 / ms_5 if ms_5 > 0 else float("inf")

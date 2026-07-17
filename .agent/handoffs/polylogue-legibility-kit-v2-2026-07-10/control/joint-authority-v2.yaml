@@ -1,0 +1,36 @@
+schema: polylogue-sinex-authority/v2
+profiles:
+  standalone:
+    durable_authority: Polylogue SQLite tiers and blob store
+    sinex_required: false
+  sinex-backed:
+    durable_authority: Sinex material plane plus admitted Polylogue-domain history
+    polylogue_sqlite: offline replica, local projection, FTS/vector acceleration, UI state, and durable outbox
+    sinex_required: true
+domain_authority:
+  provider-native bytes: Sinex material plane in backed mode
+  normalized transcript segments: Sinex material plane; format and semantics owned by Polylogue
+  stable session/message/block/assertion identity: Polylogue identity ledger durably stored in Sinex
+  interpretation event identity: Sinex event engine
+  logical lineage and composition: Polylogue domain semantics
+  reviewed assertions and context policy: Sinex-backed durable history exposed through Polylogue
+  current projections: rebuildable PostgreSQL and SQLite projections
+  task intent and dependency state: Beads
+  local UI state: Polylogue SQLite
+forbidden_shortcuts:
+- Do not use a content hash or Sinex event UUID as stable Polylogue object identity.
+- Do not encode Polylogue fork/subagent/compaction topology as Sinex derivation provenance.
+- Do not publish raw transcript bodies in generic NATS event payloads.
+- Do not leave irreplaceable reviewed state only in SQLite in backed mode.
+- Do not expose a partially settled transcript revision as complete.
+- Do not treat the metadata-thin bridge as the ultimate storage boundary.
+beads_delta:
+  supersede:
+  - polylogue-6mv
+  rescope:
+  - polylogue-fs1.9
+  execute:
+  - sinex-4j2.1
+  - sinex-4j2.3
+  - sinex-4j2.6
+  - sinex-4j2.7

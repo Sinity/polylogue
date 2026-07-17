@@ -377,13 +377,15 @@ class TestSessionFilterSQL:
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
-    def test_build_filters_with_empty_provider(self) -> None:
-        """Empty provider should still produce valid SQL."""
+    def test_build_filters_with_empty_origin(self) -> None:
+        """Empty origin should resolve to the safe unknown-origin filter."""
         from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
-        where_clause, params = _build_session_filters(provider="")
+        where_clause, params = _build_session_filters(origin="")
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
+        assert "origin = ?" in where_clause
+        assert params == ["unknown-export"]
 
     def test_build_filters_with_no_args(self) -> None:
         """No filters should produce empty/trivial WHERE clause."""
@@ -555,8 +557,18 @@ class TestAnalyticsQueryPlan:
         finally:
             conn.close()
 
-    def test_observed_event_tool_outcome_grouping_uses_expression_index(self, tmp_path: Path) -> None:
-        """Tool outcome GROUP BY should use the matching observed-event expression index."""
+    def test_observed_event_tool_outcome_grouping_scans_blocks_via_type_index(self, tmp_path: Path) -> None:
+        """Tool outcome rollups (canonical blocks, polylogue-dab) at least seek via idx_blocks_type_tool.
+
+        Pre-dab, this grouping read a materialized table through a dedicated
+        expression index with no temp B-tree. Source-derived rollups
+        (archive.py's list_tool_observed_event_count_rows) group by
+        (origin, normalized_tool_name, action_kind) across two tables, which
+        SQLite currently satisfies with a temp B-tree for GROUP BY/ORDER BY --
+        a real, tracked regression (polylogue-dab follow-up), not something
+        this test should paper over. It only asserts the tool_use/tool_result
+        join still seeks through blocks indexes instead of scanning the table.
+        """
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         try:
@@ -564,21 +576,21 @@ class TestAnalyticsQueryPlan:
             cursor = conn.execute(
                 """
                 EXPLAIN QUERY PLAN
-                SELECT COALESCE(NULLIF(json_extract(e.payload_json, '$.handler_kind'), ''), 'unknown') AS group_key,
-                       COUNT(*) AS count
-                FROM session_observed_events e
-                JOIN sessions s ON s.session_id = e.session_id
-                WHERE e.kind = 'tool_finished'
-                GROUP BY group_key
-                ORDER BY count DESC, group_key DESC
+                SELECT s.origin AS origin,
+                       COALESCE(NULLIF(LOWER(u.tool_name), ''), 'unknown') AS normalized_tool_name,
+                       COUNT(*) AS call_count
+                FROM blocks u
+                JOIN blocks r ON r.session_id = u.session_id AND r.tool_id = u.tool_id AND r.block_type = 'tool_result'
+                JOIN sessions s ON s.session_id = u.session_id
+                WHERE u.block_type = 'tool_use' AND r.rowid IS NOT NULL
+                GROUP BY s.origin, normalized_tool_name
+                ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
                 LIMIT 20 OFFSET 0
                 """
             )
             plan = " | ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
-            assert "idx_session_observed_events_kind_handler" in plan, (
-                f"Expected observed-event handler expression index, got: {plan}"
-            )
-            assert "TEMP B-TREE FOR GROUP BY" not in plan.upper(), f"Unexpected temp GROUP BY plan: {plan}"
+            assert "idx_blocks_type" in plan, f"Expected a blocks type-based index seek, got: {plan}"
+            assert "SCAN u" not in plan.upper(), f"Expected u to be sought via index, not scanned: {plan}"
         finally:
             conn.close()
 

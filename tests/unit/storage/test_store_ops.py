@@ -24,6 +24,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import (
@@ -36,7 +37,6 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.types import AttachmentId, ContentHash, MessageId, SessionId
 from tests.infra.storage_records import (
     _prune_attachment_refs,
     make_attachment,
@@ -60,7 +60,7 @@ from tests.infra.strategies.storage import (
 
 
 class RecordQueryKwargs(TypedDict, total=False):
-    provider: str
+    origin: str
     referenced_path: tuple[str, ...]
     action_terms: tuple[str, ...]
     excluded_action_terms: tuple[str, ...]
@@ -351,9 +351,10 @@ def _aggregate_message_stats_native(db_path: Path, session_ids: list[str] | None
 
 
 def _origin_to_provider(origin: str) -> str:
-    from polylogue.api.archive import _provider_for_archive_origin
+    from polylogue.core.enums import Origin
+    from polylogue.core.sources import provider_from_origin
 
-    return _provider_for_archive_origin(origin).value
+    return provider_from_origin(Origin.from_string(origin)).value
 
 
 @pytest.mark.asyncio
@@ -490,7 +491,7 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
     backend = SQLiteBackend(db_path=db_path)
     repo = SessionRepository(backend=backend)
     try:
-        summaries = await repo.list_summaries_by_query(_record_query(provider="codex", limit=1))
+        summaries = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=1))
         assert len(summaries) == 1
         summary = summaries[0]
         assert str(summary.id) == "codex-session:conv-large-meta"

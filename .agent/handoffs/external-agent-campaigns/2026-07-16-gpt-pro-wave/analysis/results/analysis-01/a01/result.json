@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "analysis",
+  "job_id": "analysis-01",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "adjudicated_mixed_snapshot",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "fad8c3cc22b823321a70eb4cafa50dcfefcd50c5b171dbefa38cdd24b383bee9",
+  "snapshot_identity": null,
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "analysis-01-bead-overlap-contradictions-r01.zip",
+      "sha256": "833d16be7bd83ba6000c069b112a0b0a2436f3f324fc7938051149982fe3e74a",
+      "size_bytes": 101167,
+      "custody_path": "analysis/results/analysis-01/a01/raw/analysis-01-bead-overlap-contradictions-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "Current-master adjudication retained status/query/raw-chain/synchronization evidence but rejected stale ownership proposals, especially superseding polylogue-t46.9; no source patch admitted."
+}

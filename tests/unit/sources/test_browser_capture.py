@@ -13,6 +13,7 @@ from polylogue.config import Source, get_config
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.browser_capture import (
+    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -77,12 +78,24 @@ def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> Non
     assert session.source_name is Provider.CHATGPT
     assert session.provider_session_id == "conv-123"
     assert session.title == "Work plan"
+    assert session.updated_at == "2026-04-24T00:00:01+00:00"
     assert [message.provider_message_id for message in session.messages] == ["u1", "a1"]
     assert len(session.attachments) == 1
     assert session.attachments[0].message_provider_id == "a1"
     assert session.attachments[0].source_url == "https://chatgpt.com/attachment/1"
     assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
+
+
+def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    del session_payload["updated_at"]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert parsed[0].updated_at is None
 
 
 def test_browser_capture_embedded_attachment_payloads_become_inline_bytes() -> None:
@@ -179,6 +192,35 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
 
 
+def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_meta"] = {"capture_fidelity": "native_compact"}
+    payload["provider_meta"] = {"capture_fidelity": "native_compact"}
+    payload["raw_provider_payload"] = {
+        "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+        "mapping": {
+            "untrusted-native-shape": {
+                "id": "untrusted-native-shape",
+                "message": {
+                    "id": "wrong-native-message",
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["must not override envelope turns"]},
+                },
+            }
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+
+    assert [message.provider_message_id for message in parsed.messages] == ["u1", "a1"]
+    assert [message.text for message in parsed.messages] == ["Draft the plan", "Here is the plan"]
+    assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in parsed.ingest_flags
+    assert DOM_FALLBACK_INGEST_FLAG not in parsed.ingest_flags
+
+
 def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:
     raw_payload = {
         "conversation_id": "native-conv",
@@ -227,6 +269,122 @@ def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() ->
         == [message.provider_message_id for message in direct_session.messages]
         == ["native-u1", "native-a1"]
     )
+
+
+def test_browser_capture_preserves_live_and_native_generation_measurements() -> None:
+    """Browser parsing keeps three duration meanings; collapsing them or naming compute fails."""
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    session_payload["provider_meta"] = {
+        "generation_observations": [
+            {
+                "observation_id": "conv-123:a1:started:1",
+                "state": "started",
+                "observed_at": "2026-07-16T00:00:00Z",
+                "evidence_source": "dom_control",
+                "fidelity": "observed",
+                "duration_semantics": "dom_observed_wall",
+                "turn_provider_id": "native-a1",
+                "wall_elapsed_ms": 0,
+                "trigger": "initial_scan",
+            },
+            {
+                "observation_id": "conv-123:a1:completed:worked-for",
+                "state": "completed",
+                "observed_at": "2026-07-16T01:26:30Z",
+                "evidence_source": "dom_duration_control",
+                "fidelity": "observed",
+                "duration_semantics": "provider_ui_elapsed",
+                "turn_provider_id": "native-a1",
+                "displayed_elapsed_ms": 5_190_000,
+                "raw_label": "Worked for 86m 30s",
+                "trigger": "dom_mutation",
+            },
+        ]
+    }
+    payload["raw_provider_payload"] = {
+        "conversation_id": "conv-123",
+        "title": "Native ChatGPT title",
+        "current_node": "assistant-node",
+        "mapping": {
+            "user-node": {
+                "id": "user-node",
+                "parent": None,
+                "children": ["assistant-node"],
+                "message": {
+                    "id": "native-u1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["Do the work"]},
+                    "metadata": {},
+                },
+            },
+            "assistant-node": {
+                "id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "message": {
+                    "id": "native-a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "reasoning_recap", "parts": ["Done"]},
+                    "metadata": {
+                        "reasoning_start_time": 1784164541.690012,
+                        "reasoning_end_time": 1784169732.588194,
+                        "finished_duration_sec": 5190,
+                    },
+                },
+            },
+        },
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+    lifecycle = [event for event in parsed.session_events if event.event_type == "generation_lifecycle"]
+
+    assert [event.payload["evidence_source"] for event in lifecycle] == [
+        "provider_native",
+        "dom_control",
+        "dom_duration_control",
+    ]
+    assert [event.payload["duration_semantics"] for event in lifecycle] == [
+        "provider_reported_elapsed",
+        "dom_observed_wall",
+        "provider_ui_elapsed",
+    ]
+    assert all(event.payload["duration_semantics"] != "model_compute" for event in lifecycle)
+    assert lifecycle[0].payload["elapsed_duration_ms"] == 5_190_000
+    assert lifecycle[1].payload["wall_elapsed_ms"] == 0
+    assert lifecycle[2].payload["displayed_elapsed_ms"] == 5_190_000
+    assert parsed.reported_duration_ms == 5_190_000
+
+
+def test_browser_capture_rejects_malformed_or_duplicate_generation_observations() -> None:
+    payload = _capture_payload()
+    session_payload = payload["session"]
+    assert isinstance(session_payload, dict)
+    valid = {
+        "observation_id": "conv-123:a1:started:1",
+        "state": "started",
+        "observed_at": "2026-07-16T00:00:00Z",
+        "evidence_source": "dom_control",
+        "fidelity": "observed",
+        "duration_semantics": "dom_observed_wall",
+        "wall_elapsed_ms": 0,
+    }
+    session_payload["provider_meta"] = {
+        "generation_observations": [
+            valid,
+            valid,
+            {**valid, "observation_id": "negative", "wall_elapsed_ms": -1},
+            {**valid, "observation_id": "bad-time", "observed_at": "not-a-timestamp"},
+            {**valid, "observation_id": "bad-state", "state": "thinking-ish"},
+        ]
+    }
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+    lifecycle = [event for event in parsed.session_events if event.event_type == "generation_lifecycle"]
+
+    assert len(lifecycle) == 1
+    assert lifecycle[0].payload["observation_id"] == valid["observation_id"]
 
 
 def test_browser_capture_raw_chatgpt_without_id_uses_envelope_session_id() -> None:

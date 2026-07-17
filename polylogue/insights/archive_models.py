@@ -5,13 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
+from polylogue.insights.temporal_source import TimeConfidence
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 9
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 10
 
 
 class ArchiveInsightModel(BaseModel):
@@ -20,6 +22,13 @@ class ArchiveInsightModel(BaseModel):
     # Materialized insight records are sparse across materializer versions;
     # readers ignore unknown payload keys and consume the typed fields below.
     model_config = ConfigDict(extra="ignore", frozen=True, protected_namespaces=())
+
+    @field_validator("origin", mode="before", check_fields=False)
+    @classmethod
+    def normalize_origin(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return source_name_to_origin(value)
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return self.model_dump_json(indent=2, exclude_none=exclude_none)
@@ -30,6 +39,9 @@ class ArchiveInsightProvenance(ArchiveInsightModel):
     materialized_at: str
     source_updated_at: str | None = None
     source_sort_key: float | None = None
+    input_high_water_mark: str | None = None
+    input_high_water_mark_source: str | None = None
+    time_confidence: TimeConfidence = "unknown"
 
 
 class ArchiveInferenceProvenance(ArchiveInsightProvenance):
@@ -270,19 +282,6 @@ class ThreadPayload(ArchiveInsightModel):
     support_signals: tuple[str, ...] = ()
     member_evidence: tuple[ThreadMemberEvidencePayload, ...] = ()
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_provider_breakdown(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origin_breakdown" not in data and "provider_breakdown" in data:
-            updated = dict(data)
-            updated["origin_breakdown"] = updated["provider_breakdown"]
-            return updated
-        return data
-
-    @property
-    def provider_breakdown(self) -> dict[str, int]:
-        return self.origin_breakdown
-
 
 class DaySessionSummaryPayload(ArchiveInsightModel):
     date: str
@@ -297,19 +296,6 @@ class DaySessionSummaryPayload(ArchiveInsightModel):
     work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
     origins: dict[str, int] = Field(default_factory=dict)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_providers(cls, data: object) -> object:
-        if isinstance(data, Mapping) and "origins" not in data and "providers" in data:
-            updated = dict(data)
-            updated["origins"] = updated["providers"]
-            return updated
-        return data
-
-    @property
-    def providers(self) -> dict[str, int]:
-        return self.origins
 
 
 class WeekSessionSummaryPayload(ArchiveInsightModel):

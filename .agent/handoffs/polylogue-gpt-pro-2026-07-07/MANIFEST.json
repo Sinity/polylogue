@@ -1,0 +1,19 @@
+{
+  "created_at": "2026-07-07T14:09:25+02:00",
+  "method": "ChatGPT shared-page React Router stream decode; not DOM scrape",
+  "entries": [
+    {
+      "source_url": "https://chatgpt.com/share/6a4cec67-a148-83eb-9a0a-85d09b2d17e5",
+      "shared_conversation_id": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5",
+      "conversation_id": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5",
+      "title": "Bead Execution Process",
+      "default_model_slug": "gpt-5-5-pro",
+      "message_count": 811,
+      "mapping_node_count": 812,
+      "markdown": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5.md",
+      "messages_json": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5.messages.json",
+      "raw_router_stream": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5.router-stream.js",
+      "raw_html": "6a4cec67-a148-83eb-9a0a-85d09b2d17e5.html"
+    }
+  ]
+}

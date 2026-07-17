@@ -445,7 +445,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("session-digest-transform-loop",),
         code_refs=(
             "polylogue.insights.transforms.compile_session_digest",
-            "polylogue.api.archive.PolylogueArchive._session_digest",
+            "polylogue.api.archive.PolylogueArchiveMixin._session_digest",
             "polylogue.cli.query_verbs.continue_verb",
         ),
         surfaces=("cli", "report"),
@@ -507,7 +507,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("schema-list-query-loop",),
         code_refs=(
             "polylogue.schemas.operator.inference.list_schemas",
-            "polylogue.cli.commands.schema.schema_list",
+            "polylogue.cli.shared.schema_rendering_results.render_schema_list_result",
         ),
         surfaces=("schema", "cli"),
         previewable=True,
@@ -522,7 +522,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("schema-explain-query-loop",),
         code_refs=(
             "polylogue.schemas.operator.resolution.explain_schema",
-            "polylogue.cli.commands.schema.schema_explain",
+            "polylogue.cli.shared.schema_rendering_explain.render_schema_explain_result",
         ),
         surfaces=("schema", "cli"),
         previewable=True,
@@ -587,7 +587,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         code_refs=(
             "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.update_metadata",
             "polylogue.api.archive.PolylogueArchiveMixin.update_metadata",
-            "polylogue.mcp.server_mutation_tools.set_metadata",
+            "polylogue.mcp.server_personal_state_tools.set_metadata",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
@@ -602,7 +602,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         consumes=("sessions", "assertions"),
         produces=("assertions",),
         path_targets=("metadata-mutation-loop",),
-        code_refs=("polylogue.mcp.server_mutation_tools.delete_metadata",),
+        code_refs=("polylogue.mcp.server_personal_state_tools.delete_metadata",),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -679,7 +679,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Build a deterministic demo archive from seeded fixtures through the public demo command.",
         code_refs=(
             "polylogue.cli.commands.demo.seed_demo_archive",
-            "polylogue.demo.seed_archive.build_demo_archive",
+            "polylogue.demo.seed.seed_demo_archive",
             "tests.unit.cli.test_demo_command",
             "tests.unit.demo.test_demo_seed_verify",
         ),
@@ -694,7 +694,7 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description="Verify a seeded demo archive exposes the expected query, assertion, and session evidence.",
         code_refs=(
             "polylogue.cli.commands.demo.verify_demo_archive",
-            "polylogue.demo.verify_archive.verify_demo_archive",
+            "polylogue.demo.verify.verify_demo_archive",
             "tests.unit.cli.test_demo_command",
             "tests.unit.demo.test_demo_seed_verify",
         ),

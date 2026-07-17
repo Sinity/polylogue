@@ -14,7 +14,7 @@ one claim-versus-receipt contradiction, a structural aggregate, copied-lineage c
 - The query surface can aggregate failed actions from structured fields rather than keyword matching assistant prose.
 - A fork can be read as a logical chronicle while inherited messages keep their original refs.
 - One deterministic archive can expose multiple provider origins through the same read and analysis surfaces.
-- The fixture verifier found 34/34 declared constructs and no absolute-path leaks.
+- The fixture verifier found 37/37 declared constructs and no absolute-path leaks.
 
 ## What this tour does not prove
 
@@ -40,25 +40,25 @@ The semantic fixture verifier runs before the narrated commands and checks plant
 
 ## Timings
 
-- First evidence result: 5.177s (budget 30s)
-- Full tour: 11.026s (budget 420s)
+- First evidence result: 5.583s (budget 30s)
+- Full tour: 11.414s (budget 420s)
 
 ## Archive
 
 - Archive root: `archive`
-- Sessions: 13
-- Messages: 55
+- Sessions: 15
+- Messages: 62
 - User overlays: present
-- Declared fixture constructs: 34/34 satisfied
+- Declared fixture constructs: 37/37 satisfied
 
 ## Steps
 
 | Step | Exit | Duration | Bytes | Output |
 | --- | ---: | ---: | ---: | --- |
-| claim versus receipt | 0 | 1.662s | 1105 | `command-output/01-claim-versus-receipt.txt` |
-| failed actions aggregate | 0 | 1.933s | 44 | `command-output/02-failed-actions-aggregate.txt` |
-| composed lineage | 0 | 2.035s | 936 | `command-output/03-composed-lineage.txt` |
-| archive facets | 0 | 1.881s | 1426 | `command-output/04-archive-facets.txt` |
+| claim versus receipt | 0 | 1.661s | 1399 | `command-output/01-claim-versus-receipt.txt` |
+| failed actions aggregate | 0 | 1.938s | 62 | `command-output/02-failed-actions-aggregate.txt` |
+| composed lineage | 0 | 1.985s | 936 | `command-output/03-composed-lineage.txt` |
+| archive facets | 0 | 1.909s | 1426 | `command-output/04-archive-facets.txt` |
 
 ## Problems
 

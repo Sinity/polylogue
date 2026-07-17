@@ -125,6 +125,12 @@ def _extract_functions(source: str, names: list[str]) -> str:
     return "\n".join(_extract_function(source, name) for name in names)
 
 
+def _extract_var_block(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker)
+    end = source.index(end_marker, start) + len(end_marker)
+    return source[start:end]
+
+
 _DOM_HARNESS_PRELUDE = r"""
 var API = '';
 var elements = {};
@@ -148,12 +154,17 @@ function makeElement(id) {
   };
 }
 var document = {
+  documentElement: { dataset: {} },
   getElementById: function(id) { if (!elements[id]) elements[id] = makeElement(id); return elements[id]; },
   querySelector: function() { return null; },
   querySelectorAll: function() { return []; },
   addEventListener: function() {}
 };
-var window = { performance: { now: function() { return Date.now(); } } };
+var window = {
+  performance: { now: function() { return Date.now(); } },
+  dispatchEvent: function() {}
+};
+function CustomEvent(name, init) { this.type = name; this.detail = init && init.detail; }
 """
 
 _LANDING_FUNCS = [
@@ -165,6 +176,74 @@ _LANDING_FUNCS = [
     "readinessLabel",
     "renderLandingView",
 ]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_session_retry_preserves_id_and_more_messages_append(tmp_path: Path) -> None:
+    """The bounded reader must retain both retry identity and transcript access."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, ["loadSessionFromError", "loadMoreSessionMessages"])
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var retried = null, renderCalls = 0;
+function loadSession(id) {{ retried = id; }}
+function renderMain() {{ renderCalls += 1; }}
+function routeErrorDetails() {{ return {{route: 'error'}}; }}
+function fetchJSON(route) {{ return Promise.resolve({{messages: [{{id: 'm2'}}], total: 2, limit: 100, offset: 1}}); }}
+var state = {{routeStates: {{sessionDetail: {{route: '/api/sessions/codex-session%3Ac1?shape=summary'}}}}, selected: {{id: 'codex-session:c1', messages: [{{id: 'm1'}}], total: 2}}}};
+{functions_src}
+(async function() {{
+  loadSessionFromError();
+  await loadMoreSessionMessages();
+  console.log(JSON.stringify({{retried: retried, ids: state.selected.messages.map(function(m) {{ return m.id; }}), renders: renderCalls}}));
+}})();
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert result["retried"] == "codex-session:c1"
+    assert result["ids"] == ["m1", "m2"]
+    assert result["renders"] >= 2
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_session_load_uses_composed_message_total_for_header_count(tmp_path: Path) -> None:
+    """A prefix-sharing summary can retain only its divergent-tail count,
+    while the bounded message route recomposes the logical transcript. The
+    production loader must make the reader header use that composed total."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, ["loadSession"])
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+function pushSingleURL() {{}}
+function setRouteState() {{}}
+function renderMain() {{}}
+function renderInspector() {{}}
+function renderSessions() {{}}
+function routeErrorDetails() {{ return {{route: 'error'}}; }}
+function fetchJSON(route) {{
+  if (route.indexOf('/messages?') !== -1) return Promise.resolve({{messages: [{{id: 'm1'}}], total: 3, limit: 100, offset: 0}});
+  return Promise.resolve({{id: 'child', message_count: 1, title: 'prefix-sharing child'}});
+}}
+var state = {{routeStates: {{}}}};
+{functions_src}
+(async function() {{
+  await loadSession('child', false);
+  console.log(JSON.stringify({{messageCount: state.selected.message_count, total: state.selected.total}}));
+}})();
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert result == {"messageCount": 3, "total": 3}
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
@@ -209,14 +288,51 @@ console.log(JSON.stringify({{html: renderLandingView()}}));
     assert "setActiveView(&#39;remember&#39;)" in html or "setActiveView('remember')" in html
 
 
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_landing_view_labels_stale_overview_truthfully(tmp_path: Path) -> None:
+    """A stale overview cannot look current: the shell must expose the
+    aggregate snapshot state, age, and refresh failure returned by its
+    production overview contract."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _LANDING_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var state = {{
+  overview: {{
+    totals: {{sessions: 42, messages: 1337}},
+    readiness: {{}}, recent: [],
+    status_snapshot: {{state: 'stale', age_s: 91.2, refresh_error: 'daemon busy'}}
+  }},
+  routeStates: {{}}
+}};
+{functions_src}
+console.log(JSON.stringify({{html: renderLandingView()}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    html = json.loads(proc.stdout)["html"]
+
+    assert 'data-overview-snapshot-state="stale"' in html
+    assert "Overview readiness is stale" in html
+    assert "91s old" in html
+    assert "daemon busy" in html
+
+
 _EVIDENCE_STRIP_FUNCS = [
     "esc",
     "escAttr",
     "escJsAttr",
+    "fallbackCommand",
+    "debugDisclosure",
+    "renderInlineRouteFailure",
     "formatUsd",
     "evidenceStripToolCounts",
     "renderTopologyBranchChip",
     "renderEvidenceStrip",
+    "retryEvidenceSummary",
 ]
 
 
@@ -293,6 +409,73 @@ console.log(JSON.stringify({{html: renderEvidenceStrip({{id: 's1'}})}}));
 
     assert "no work events" in html
     assert "q-missing" in html
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+def test_evidence_strip_uses_bounded_lineage_refs(tmp_path: Path) -> None:
+    """The summary route's capped lineage refs are rendered directly in the
+    header; deleting that consumption must fail without relying on a broad
+    topology fetch."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _EVIDENCE_STRIP_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var state = {{
+  evidenceSummaries: {{'s1': {{tool_calls: 0, outcomes: {{}}, cost: {{}}, lineage_refs: [
+    {{session_id: 'parent', kind: 'continuation', status: 'resolved'}},
+    {{session_id: 'sibling', kind: 'fork', status: 'resolved'}}
+  ]}}}},
+  insightsPanels: {{}}, costPanels: {{}}, lineage: {{}}
+}};
+{functions_src}
+console.log(JSON.stringify({{html: renderEvidenceStrip({{id: 's1'}})}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    html = json.loads(proc.stdout)["html"]
+
+    assert "2 lineage refs" in html
+    assert "Bounded structural lineage references" in html
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not on PATH (not a declared flake dependency)")
+@pytest.mark.parametrize("status", ["401", "409", "503"])
+def test_evidence_strip_surfaces_failed_aggregate_and_retries(tmp_path: Path, status: str) -> None:
+    """A failed evidence aggregate must retain its HTTP problem details and
+    offer a retry that evicts the production cache entry before reloading."""
+    assert _NODE is not None
+    from polylogue.daemon.web_shell import WEB_SHELL_HTML
+
+    functions_src = _extract_functions(WEB_SHELL_HTML, _EVIDENCE_STRIP_FUNCS)
+    harness = f"""
+{_DOM_HARNESS_PRELUDE}
+var requested = null, renders = 0;
+function loadEvidenceSummary(id) {{ requested = id; }}
+function renderMain() {{ renders += 1; }}
+var state = {{
+  evidenceSummaries: {{'s1': {{error: true, details: {{route: '/api/sessions/s1/evidence-summary', status: '{status}', error: 'archive unavailable'}}}}}},
+  selected: {{id: 's1'}}, insightsPanels: {{}}, costPanels: {{}}, lineage: {{}}
+}};
+{functions_src}
+var html = renderEvidenceStrip({{id: 's1'}});
+retryEvidenceSummary('s1');
+console.log(JSON.stringify({{html: html, requested: requested, cacheMiss: state.evidenceSummaries.s1 === undefined, renders: renders}}));
+"""
+    (tmp_path / "harness.js").write_text(harness, encoding="utf-8")
+    proc = subprocess.run([_NODE, str(tmp_path / "harness.js")], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"node harness failed: {proc.stderr}"
+    result = json.loads(proc.stdout)
+
+    assert "Evidence summary unavailable" in result["html"]
+    assert "/api/sessions/s1/evidence-summary" in result["html"]
+    assert status in result["html"]
+    assert "retryEvidenceSummary(&#39;s1&#39;)" in result["html"]
+    assert result["requested"] == "s1"
+    assert result["cacheMiss"] is True
+    assert result["renders"] == 1
 
 
 _NAV_FUNCS = ["esc", "escAttr", "escJsAttr", "syncVerbNavButtons", "setActiveView"]
@@ -424,6 +607,9 @@ _ANALYZE_FUNCS = [
     "summarizeApiBody",
     "renderApiDebugChip",
     "rememberApiDebug",
+    "setWebAuthState",
+    "bootstrapWebCredential",
+    "ensureWebCredential",
     "requestJSON",
     "fetchJSON",
     "fallbackCommand",
@@ -448,11 +634,25 @@ def test_analyze_panel_failure_is_terminal_not_a_retry_loop(tmp_path: Path) -> N
     from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
     functions_src = _extract_functions(WEB_SHELL_HTML, _ANALYZE_FUNCS)
+    web_auth_failures_src = _extract_var_block(WEB_SHELL_HTML, "var WEB_AUTH_FAILURES", "];")
     harness = f"""
 {_DOM_HARNESS_PRELUDE}
-var state = {{activeView: 'analyze', apiDebug: {{counter: 0, last: null}}, analyzePanel: undefined}};
+{web_auth_failures_src}
+var state = {{
+  activeView: 'analyze', apiDebug: {{counter: 0, last: null}}, analyzePanel: undefined,
+  webAuth: {{state: 'unknown', expiresAt: null, bootstrapPromise: null, lastFailure: null}}
+}};
 var fetchCallCount = 0;
-global.fetch = function() {{ fetchCallCount += 1; return Promise.reject(new TypeError('fetch failed')); }};
+global.fetch = function(url) {{
+  if (url === '/api/web-auth/session') {{
+    return Promise.resolve({{
+      ok: true, status: 200,
+      json: function() {{ return Promise.resolve({{credential: {{state: 'ready'}}}}); }}
+    }});
+  }}
+  fetchCallCount += 1;
+  return Promise.reject(new TypeError('fetch failed'));
+}};
 function renderMain() {{}}
 {functions_src}
 

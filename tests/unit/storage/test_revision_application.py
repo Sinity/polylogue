@@ -9,6 +9,7 @@ import pytest
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
     assert_session_fts_exact_sync,
     record_revision_application_sync,
@@ -47,6 +48,26 @@ def test_application_receipt_is_idempotent_and_rejects_older_head() -> None:
     record_revision_application_sync(conn, _receipt(generation=2, revision="revision-2"), decided_at_ms=30)
     with pytest.raises(RuntimeError, match="older accepted frontier"):
         record_revision_application_sync(conn, _receipt(generation=1, revision="revision-old"), decided_at_ms=40)
+
+
+def test_equivalent_accepted_raw_reuses_semantic_receipt_identity() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = replace(
+        _receipt(),
+        decision=ApplicationDecision.SUPERSEDED,
+        accepted_raw_id="representative-b",
+        accepted_source_revision="semantic-revision",
+    )
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+
+    equivalent_representative = replace(receipt, accepted_raw_id="representative-a")
+    assert equivalent_representative.decision_id != receipt.decision_id
+    record_revision_application_sync(conn, equivalent_representative, decided_at_ms=20)
+
+    assert conn.execute(
+        "SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash FROM raw_revision_applications"
+    ).fetchall() == [("representative-b", "semantic-revision", receipt.accepted_content_hash)]
 
 
 def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
@@ -137,3 +158,46 @@ def test_equal_frontier_full_can_replace_equivalent_append_representation() -> N
         "full-1",
         None,
     )
+
+
+def test_equal_frontier_fold_authorization_is_bound_to_one_exact_head() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    append_head = replace(
+        _receipt(generation=2, revision="append-2", frontier=180),
+        decision=ApplicationDecision.APPLIED_APPEND,
+        append_end_offset=180,
+    )
+    record_revision_application_sync(conn, append_head, decided_at_ms=10)
+    authorization = FullSnapshotFoldAuthorization(
+        logical_source_key="codex:session",
+        session_id="codex-session:session",
+        accepted_append_raw_id="raw-2",
+        accepted_append_source_revision="append-2",
+        accepted_append_content_hash=bytes([2]) * 32,
+        frontier=180,
+        full_raw_id="full",
+        full_source_revision="full-revision",
+    )
+    full = replace(
+        _receipt(generation=3, revision="full-revision", frontier=180),
+        raw_id="full",
+        accepted_raw_id="full",
+        accepted_source_revision="full-revision",
+        accepted_content_hash=b"different-normalized-hash-123456"[:32],
+        append_end_offset=None,
+        fold_authorization=authorization,
+    )
+    record_revision_application_sync(conn, full, decided_at_ms=20)
+    assert conn.execute("SELECT accepted_raw_id FROM raw_revision_heads").fetchone() == ("full",)
+    with pytest.raises(RuntimeError, match="conflicting accepted head"):
+        record_revision_application_sync(
+            conn,
+            replace(
+                full,
+                raw_id="other",
+                accepted_raw_id="other",
+                accepted_content_hash=b"other-normalized-content-hash-123"[:32],
+            ),
+            decided_at_ms=30,
+        )

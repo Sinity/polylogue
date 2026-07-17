@@ -24,6 +24,7 @@ from polylogue.archive.viewport.viewports import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document, json_document_list
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_timestamp
 
 from .claude_code_models import ClaudeCodeMessageContent, ClaudeCodeUsage, ClaudeCodeUserMessage
@@ -181,7 +182,7 @@ class ClaudeCodeRecord(BaseModel):
             tokens=tokens,
             cost=cost,
             duration_ms=self.durationMs,
-            provider=Provider.CLAUDE_CODE,
+            origin=origin_from_provider(Provider.CLAUDE_CODE),
         )
 
     @property

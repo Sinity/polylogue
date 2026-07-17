@@ -18,21 +18,29 @@ import sqlite3
 import stat as stat_module
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
+from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    cursor_ctime_ns,
+    cursor_prefix_hash,
+    cursor_tail_hash,
+    encode_cursor_hash_authority,
+    sha256_range_from_path,
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
@@ -45,8 +53,21 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
-_PERIODIC_CATCH_UP_INTERVAL_S = 15.0
+# Filesystem notifications are the real-time delivery path.  This sweep is a
+# recovery mechanism for notifications missed while the daemon was unavailable
+# or a watch backend was briefly unhealthy.  Keeping it at the watch cadence
+# made a large, otherwise-idle archive continuously rescan itself.
+_PERIODIC_CATCH_UP_INTERVAL_S = 5.0 * 60.0
+_PERIODIC_CATCH_UP_MAX_INTERVAL_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
+
+
+class _ArchivedCursorReconciliation(str, Enum):
+    """Whether archive evidence can safely restore a live cursor."""
+
+    RECONCILED = "reconciled"
+    UNAVAILABLE = "unavailable"
+    INCOMPATIBLE = "incompatible"
 
 
 def _stage_timing_summary(stage_timings_s: dict[str, float], *, limit: int = 8) -> str:
@@ -95,6 +116,7 @@ class WatchSource:
     name: str
     root: Path
     suffixes: tuple[str, ...] = (".jsonl",)
+    ignored_dir_names: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -102,6 +124,10 @@ class WatchSource:
     def accepts(self, path: Path) -> bool:
         name = path.name.lower()
         return any(name.endswith(suffix) for suffix in self.suffixes)
+
+    def ignores_directory(self, path: Path) -> bool:
+        """Return whether a subtree cannot contain a live source artifact."""
+        return path.name in self.ignored_dir_names
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,14 +223,23 @@ class LiveWatcher:
         return self._catch_up_complete
 
     async def run(self) -> None:
-        from watchfiles import Change, awatch
-
+        # Hook commands create their first pending envelope lazily.  Ensure the
+        # nested root exists before ``awatch`` snapshots its roots, otherwise a
+        # daemon that starts before the first hook event never sees that file.
+        for source in self._sources:
+            if source.name == "hooks":
+                source.root.mkdir(parents=True, exist_ok=True)
         roots = [s.root for s in self._sources if s.exists()]
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
             self._catch_up_complete.set()
             return
 
+        # Register the filesystem watch before catch-up.  Starting it only
+        # after catch-up left a blind interval where a writer could append
+        # after its file was scanned but before ``awatch`` took its snapshot.
+        watch_task = asyncio.create_task(self._watch_changes(roots))
+        await asyncio.sleep(0)
         try:
             try:
                 await self._catch_up(roots)
@@ -215,18 +250,35 @@ class LiveWatcher:
             self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
 
             logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
-            async for changes in awatch(*roots, watch_filter=self._watch_filter, stop_event=self._stop, recursive=True):
-                for change, raw_path in changes:
-                    if change is Change.deleted:
-                        continue
-                    path = self._canonical_watch_path(Path(raw_path))
-                    if path is None:
-                        continue
-                    if not self._source_accepts(path):
-                        continue
-                    self._enqueue(path)
+            await watch_task
         finally:
+            if not watch_task.done():
+                watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watch_task
             self._cancel_periodic_catch_up()
+
+    async def _watch_changes(self, roots: list[Path]) -> None:
+        from watchfiles import Change, awatch
+
+        async for changes in awatch(
+            *roots,
+            watch_filter=self._watch_filter,
+            stop_event=self._stop,
+            recursive=True,
+        ):
+            for change, raw_path in changes:
+                if change is Change.deleted:
+                    continue
+                path = self._canonical_watch_path(Path(raw_path))
+                if path is None:
+                    continue
+                if not self._source_accepts(path):
+                    continue
+                if self._is_hook_spool_path(path):
+                    await self._drain_hook_spool()
+                    continue
+                self._enqueue(path)
 
     def stop(self) -> None:
         self._stop.set()
@@ -243,8 +295,9 @@ class LiveWatcher:
         self._cancel_periodic_catch_up()
 
     async def _periodic_catch_up(self, roots: list[Path]) -> None:
+        delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
         while not self._stop.is_set():
-            await asyncio.sleep(_PERIODIC_CATCH_UP_INTERVAL_S)
+            await asyncio.sleep(delay_s)
             if self._stop.is_set():
                 return
             try:
@@ -253,6 +306,11 @@ class LiveWatcher:
                 if not _is_database_locked(exc):
                     raise
                 logger.warning("live.watcher: archive busy during periodic catch-up; will retry")
+            # A periodic pass is deliberately a low-duty-cycle safety net.
+            # Event-driven batches and explicit failed-file retry wakeups keep
+            # normal writes and known failures prompt; repeatedly walking every
+            # source tree does neither.
+            delay_s = min(delay_s * 2, _PERIODIC_CATCH_UP_MAX_INTERVAL_S)
 
     def _cancel_periodic_catch_up(self) -> None:
         task = self._periodic_catch_up_task
@@ -276,9 +334,10 @@ class LiveWatcher:
             plan_holder.append(self._plan_catch_up(candidates))
 
         await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
-        if not plan_holder:
-            return
-        plan = plan_holder[0]
+        if plan_holder:
+            plan = plan_holder[0]
+        else:
+            plan = CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
 
         if plan.needed:
             candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
@@ -323,6 +382,24 @@ class LiveWatcher:
 
                 await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
             self._schedule_failed_retry_scan()
+        await self._drain_hook_spool()
+
+    async def _drain_hook_spool(self) -> None:
+        """Acknowledge hook envelopes only after their source-tier write commits."""
+
+        result = await self._run_writer_sync(
+            "watcher.hook_spool.drain",
+            drain_hook_event_spool,
+            Path(self._polylogue.archive_root),
+            root=self._hook_spool_root(),
+        )
+        if result.failed:
+            logger.warning(
+                "live.watcher: hook spool drain left %d event(s) pending",
+                result.failed,
+            )
+        elif result.acknowledged:
+            logger.info("live.watcher: acknowledged %d hook spool event(s)", result.acknowledged)
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
@@ -330,8 +407,16 @@ class LiveWatcher:
         for source in self._sources:
             if not source.exists() or source.root.resolve() not in root_set:
                 continue
-            for suffix in source.suffixes:
-                for path in source.root.rglob(f"*{suffix}"):
+            if source.name == "hooks":
+                continue
+            for directory, dirnames, filenames in os.walk(source.root, followlinks=False):
+                dirnames[:] = [
+                    dirname for dirname in dirnames if not source.ignores_directory(Path(directory) / dirname)
+                ]
+                for filename in filenames:
+                    path = Path(directory) / filename
+                    if not source.accepts(path):
+                        continue
                     try:
                         stat = path.stat()
                     except FileNotFoundError:
@@ -342,7 +427,7 @@ class LiveWatcher:
                         CandidateSourceFile(
                             path=path,
                             source_name=source.name,
-                            suffix=suffix,
+                            suffix=path.suffix,
                             stat=stat,
                         )
                     )
@@ -353,6 +438,7 @@ class LiveWatcher:
             return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0)
         cursor_records = self._cursor.get_records(candidate.path for candidate in candidates)
         needed: list[Path] = []
+        rebases: list[CursorObservationRebase] = []
         skipped = 0
         needed_bytes = 0
         for candidate in candidates:
@@ -362,11 +448,14 @@ class LiveWatcher:
                 candidate.path,
                 stat=candidate.stat,
                 cursor=cursor_records.get(candidate.path),
+                rebase_queue=rebases,
             ):
                 needed.append(candidate.path)
                 needed_bytes += candidate.stat.st_size
             else:
                 skipped += 1
+        if rebases:
+            self._cursor.rebase_authoritative_observations(rebases)
         return CatchUpPlan(
             candidates=candidates,
             needed=tuple(needed),
@@ -418,7 +507,7 @@ class LiveWatcher:
             return
         due_paths: list[Path] = []
         next_retry_at: datetime | None = None
-        for record in self._cursor.list_failed_records():
+        for record in self._cursor.list_retry_records():
             path = Path(record.source_path)
             if not self._source_accepts(path):
                 continue
@@ -580,7 +669,14 @@ class LiveWatcher:
         cursor = self._cursor.get_record(path)
         return self._needs_work_from_state(path, stat=stat, cursor=cursor)
 
-    def _needs_work_from_state(self, path: Path, *, stat: os.stat_result, cursor: CursorRecord | None) -> bool:
+    def _needs_work_from_state(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        cursor: CursorRecord | None,
+        rebase_queue: list[CursorObservationRebase] | None = None,
+    ) -> bool:
         size = stat.st_size
         if cursor is None:
             if not self._reconcile_archived_cursor(path, stat=stat):
@@ -588,7 +684,33 @@ class LiveWatcher:
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
         if cursor.excluded:
-            return False
+            if (
+                cursor.byte_size,
+                cursor.st_dev,
+                cursor.st_ino,
+                cursor.mtime_ns,
+            ) == (size, stat.st_dev, stat.st_ino, stat.st_mtime_ns):
+                return False
+            self._cursor.revive_replaced_exclusion(
+                path,
+                byte_size=size,
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            return True
+        if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
+            if not _retry_due(cursor.next_retry_at):
+                return False
+            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat)
+            if reconciliation is _ArchivedCursorReconciliation.RECONCILED:
+                reconciled = self._cursor.get_record(path)
+                return reconciled is not None and size > reconciled.byte_offset
+            if reconciliation is _ArchivedCursorReconciliation.UNAVAILABLE:
+                self._cursor.defer_full_cursor_reconciliation(path)
+                return False
+            self._invalidate_deferred_full_cursor(path, stat=stat)
+            return True
         if cursor.failure_count > 0:
             if self._reconcile_archived_cursor(path, stat=stat):
                 cursor = self._cursor.get_record(path)
@@ -600,20 +722,61 @@ class LiveWatcher:
         if self._is_hermes_database(path):
             return cursor.tail_hash != sqlite_source_revision(path)
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
-            # Stable path + size + recorded content fingerprint is the hot
-            # catch-up skip path. Device/inode churn across bind mounts,
-            # restored homes, or filesystem rebuilds must not force a full
-            # content rehash of every historical session file.
+            # Only an exact recorded observation authorizes the hot skip.
+            # A bounded tail cannot prove that an earlier same-size prefix was
+            # not rewritten, so any changed observation with modern tail
+            # authority must return to the full route.
             if _cursor_stat_matches(cursor, stat):
                 return False
-            if cursor.tail_hash is None:
-                return False
+            prefix_hash = cursor_prefix_hash(cursor.tail_hash)
+            if prefix_hash is None:
+                if self._reconcile_archived_cursor(path, stat=stat):
+                    reconciled = self._cursor.get_record(path)
+                    return reconciled is None or size > reconciled.byte_offset
+                return True
             try:
-                current_tail_hash, _bytes_read = tail_hash_from_path(path, size)
-            except FileNotFoundError:
-                return False
-            return current_tail_hash != cursor.tail_hash
+                current_prefix_hash, _bytes_read = sha256_range_from_path(
+                    path,
+                    start_offset=0,
+                    end_offset=cursor.byte_offset,
+                )
+                final_stat = path.stat()
+            except (EOFError, OSError):
+                return True
+            observation_changed = (
+                final_stat.st_dev,
+                final_stat.st_ino,
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+                final_stat.st_ctime_ns,
+            ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if current_prefix_hash != prefix_hash or observation_changed:
+                return True
+            tail_hash = cursor_tail_hash(cursor.tail_hash)
+            if tail_hash is None:
+                return True
+            rebase = CursorObservationRebase(
+                path=path,
+                expected=cursor,
+                st_dev=final_stat.st_dev,
+                st_ino=final_stat.st_ino,
+                mtime_ns=final_stat.st_mtime_ns,
+                tail_hash=encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=final_stat.st_ctime_ns),
+            )
+            if rebase_queue is None:
+                self._cursor.rebase_authoritative_observations((rebase,))
+            else:
+                rebase_queue.append(rebase)
+            return False
         if size > cursor.byte_offset:
+            # A previous incomplete-tail probe recorded this exact filesystem
+            # state.  The next useful observation is a write notification (or
+            # a periodic scan that sees different stat evidence), not another
+            # probe of the same unfinished record.  In particular, a single
+            # oversized JSONL record must not make the 15-second safety scan
+            # reread its first 64 MiB forever.
+            if _cursor_stat_matches(cursor, stat):
+                return False
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
             return True
@@ -652,8 +815,10 @@ class LiveWatcher:
             return True
         if b"\n" in payload:
             return False
-        if bytes_to_probe < remaining_bytes:
-            return False
+        # The bounded probe can prove that no complete record begins at the
+        # cursor, even when the unfinished record exceeds the probe budget.
+        # Record this observed state so unchanged periodic catch-up scans skip
+        # it; a subsequent append changes stat evidence and reopens the probe.
         record_deferred_append_cursor(
             self._cursor,
             path,
@@ -663,7 +828,40 @@ class LiveWatcher:
         )
         return True
 
+    def _invalidate_deferred_full_cursor(self, path: Path, *, stat: os.stat_result) -> None:
+        """Clear a busy-handoff defer when current bytes reject archive authority."""
+
+        updated = self._cursor.set(
+            path,
+            stat.st_size,
+            byte_offset=0,
+            last_complete_newline=0,
+            parser_fingerprint=_PARSER_FINGERPRINT,
+            content_fingerprint=None,
+            tail_hash=None,
+            source_name=self._source_name_for(path),
+            st_dev=stat.st_dev,
+            st_ino=stat.st_ino,
+            mtime_ns=stat.st_mtime_ns,
+            failure_count=0,
+            next_retry_at=None,
+            excluded=False,
+            allow_backward=True,
+        )
+        if not updated:
+            raise sqlite3.OperationalError(f"failed to invalidate deferred cursor for {path}")
+
     def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+        """Restore a missing/stale cursor from proven archive raw state."""
+
+        return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
+
+    def _reconcile_archived_cursor_outcome(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result,
+    ) -> _ArchivedCursorReconciliation:
         """Restore a missing/stale cursor from proven archive raw state.
 
         A daemon interruption can leave the archive source tier populated but
@@ -678,9 +876,9 @@ class LiveWatcher:
         source_db = archive_root / "source.db"
         index_db = archive_root / "index.db"
         if not source_db.exists() or not index_db.exists():
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         try:
-            with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0) as conn:
+            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as conn:
                 rows = conn.execute(
                     """
                     SELECT raw_id, origin, blob_hash, blob_size
@@ -693,7 +891,7 @@ class LiveWatcher:
                     """,
                     (str(path),),
                 ).fetchall()
-            with sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0) as conn:
+            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as conn:
                 row = next(
                     (
                         candidate
@@ -707,23 +905,30 @@ class LiveWatcher:
                     None,
                 )
         except sqlite3.Error:
-            return False
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         _raw_id, origin, blob_hash, blob_size = row
         archived_size = int(blob_size or 0)
         current_size = int(stat.st_size)
         if archived_size <= 0 or archived_size > current_size:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         if isinstance(blob_hash, bytes):
             content_fingerprint = blob_hash.hex()
         elif isinstance(blob_hash, str):
             content_fingerprint = blob_hash.lower()
         else:
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         if not _archive_blob_exists(archive_root, content_fingerprint):
-            return False
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         try:
+            current_fingerprint, _fingerprint_bytes = sha256_range_from_path(
+                path,
+                start_offset=0,
+                end_offset=archived_size,
+            )
+            if current_fingerprint != content_fingerprint:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
             if archived_size == current_size:
                 tail_hash, last_complete_newline, _bytes_read = tail_hash_and_last_complete_newline_from_path(
                     path, current_size
@@ -733,8 +938,17 @@ class LiveWatcher:
             else:
                 tail_hash, _bytes_read = tail_hash_from_path(path, archived_size)
                 last_complete_newline = archived_size
-        except FileNotFoundError:
-            return False
+            post_read_stat = path.stat()
+        except OSError:
+            return _ArchivedCursorReconciliation.UNAVAILABLE
+        if (
+            post_read_stat.st_dev,
+            post_read_stat.st_ino,
+            post_read_stat.st_size,
+            post_read_stat.st_mtime_ns,
+            post_read_stat.st_ctime_ns,
+        ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         self._cursor.set(
             path,
             archived_size,
@@ -742,7 +956,11 @@ class LiveWatcher:
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
+            tail_hash=encode_cursor_hash_authority(
+                content_fingerprint,
+                tail_hash,
+                ctime_ns=stat.st_ctime_ns,
+            ),
             source_name=provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
             else self._source_name_for(path),
@@ -752,7 +970,7 @@ class LiveWatcher:
         )
         self._cursor.reset_failures(path)
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
-        return True
+        return _ArchivedCursorReconciliation.RECONCILED
 
     async def _ingest_files(
         self,
@@ -802,6 +1020,24 @@ class LiveWatcher:
             except OSError:
                 continue
         return path.suffix == ".jsonl"
+
+    def _is_hook_spool_path(self, path: Path) -> bool:
+        for source in self._sources:
+            if source.name != "hooks":
+                continue
+            try:
+                return path.resolve().is_relative_to(source.root.resolve())
+            except OSError:
+                return False
+        return False
+
+    def _hook_spool_root(self) -> Path:
+        """Return the root paired with this watcher's hook source."""
+
+        for source in self._sources:
+            if source.name == "hooks":
+                return source.root.parent
+        return hook_spool_root()
 
     def _is_hermes_database(self, path: Path) -> bool:
         resolved = path.resolve()
@@ -877,7 +1113,6 @@ def default_sources() -> tuple[WatchSource, ...]:
         codex_path,
         gemini_cli_path,
         hermes_sessions_path,
-        hooks_sidecar_dir,
     )
 
     return (
@@ -890,7 +1125,7 @@ def default_sources() -> tuple[WatchSource, ...]:
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        WatchSource(name="hooks", root=hooks_sidecar_dir()),
+        WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
     )
 
 
@@ -931,7 +1166,12 @@ def _parse_retry_at(next_retry_at: str | None) -> datetime | None:
 def _cursor_stat_matches(cursor: CursorRecord, stat: os.stat_result) -> bool:
     """Return True when the cursor was written for this exact file state."""
 
-    return cursor.st_dev == stat.st_dev and cursor.st_ino == stat.st_ino and cursor.mtime_ns == stat.st_mtime_ns
+    return (
+        cursor.st_dev == stat.st_dev
+        and cursor.st_ino == stat.st_ino
+        and cursor.mtime_ns == stat.st_mtime_ns
+        and cursor_ctime_ns(cursor.tail_hash) == stat.st_ctime_ns
+    )
 
 
 __all__ = ["LiveWatcher", "WatchSource", "default_sources"]
