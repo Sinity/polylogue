@@ -1,0 +1,4143 @@
+diff --git a/docs/generated/mcp-context-assertion-equivalence.json b/docs/generated/mcp-context-assertion-equivalence.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..98faa762135da1de5655efa1077daeb09a39f228
+--- /dev/null
++++ b/docs/generated/mcp-context-assertion-equivalence.json
+@@ -0,0 +1,1544 @@
++{
++  "counts_by_family": {
++    "assertion": 3,
++    "context": 3,
++    "correction": 3,
++    "judgment": 2,
++    "maintenance": 7,
++    "personal_state": 23
++  },
++  "counts_by_required_role": {
++    "admin": 7,
++    "read": 3,
++    "review": 2,
++    "write": 29
++  },
++  "declarations": [
++    {
++      "canonical_owner": "polylogue.api.Polylogue.get_context_delivery",
++      "canonical_plan": "polylogue.api.Polylogue.get_context_delivery",
++      "compatibility_route": "get_context_delivery",
++      "confirmation_policy": "none",
++      "continuation": [
++        "snapshot_ref",
++        "recipient_ref"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "context receipt",
++        "recipient-scoped exact bytes"
++      ],
++      "family": "context",
++      "injection_policy": "never_inject",
++      "lifecycle": [
++        "read_receipt"
++      ],
++      "minimal_invocation": {
++        "recipient_ref": "session:example",
++        "snapshot_ref": "context-snapshot:session:example:explicit-recall"
++      },
++      "module": "polylogue.mcp.server_context_tools",
++      "name": "get_context_delivery",
++      "object_kind": "context_delivery_receipt",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "snapshot_ref",
++        "recipient_ref",
++        "context_image_sha256"
++      ],
++      "required_role": "read",
++      "resource_alternative": null,
++      "result_semantics": "receipt",
++      "telemetry_key": "mcp.tool.get_context_delivery",
++      "verb": "context",
++      "workflow_coverage": [
++        "context receipt audit",
++        "recipient mismatch privacy"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.context_image_payload",
++      "canonical_plan": "polylogue.api.Polylogue.context_image_payload",
++      "compatibility_route": "build_context_image",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "bounded context",
++        "query-selected sessions",
++        "token omissions"
++      ],
++      "family": "context",
++      "injection_policy": "never_inject",
++      "lifecycle": [
++        "select",
++        "compile",
++        "return"
++      ],
++      "minimal_invocation": {
++        "detail_level": "compact",
++        "max_sessions": 5,
++        "project_repo": "polylogue"
++      },
++      "module": "polylogue.mcp.server_context_tools",
++      "name": "build_context_image",
++      "object_kind": "context_image",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "selected session refs",
++        "context spec",
++        "omission reasons"
++      ],
++      "required_role": "read",
++      "resource_alternative": null,
++      "result_semantics": "bounded_context",
++      "telemetry_key": "mcp.tool.build_context_image",
++      "verb": "context",
++      "workflow_coverage": [
++        "continuity recall",
++        "bounded evidence assembly"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.context.preamble.build_context_preamble_payload",
++      "canonical_plan": "polylogue.context.preamble.build_context_preamble_payload",
++      "compatibility_route": "compose_context_preamble",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "SessionStart preamble",
++        "lineage",
++        "related sessions"
++      ],
++      "family": "context",
++      "injection_policy": "operator_judgment",
++      "lifecycle": [
++        "compose",
++        "return"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_context_tools",
++      "name": "compose_context_preamble",
++      "object_kind": "context_preamble",
++      "prompt_alternative": "resume_context",
++      "provenance_contract": [
++        "source_tool_calls",
++        "successor_session_id"
++      ],
++      "required_role": "read",
++      "resource_alternative": null,
++      "result_semantics": "bounded_context",
++      "telemetry_key": "mcp.tool.compose_context_preamble",
++      "verb": "context",
++      "workflow_coverage": [
++        "session start continuity"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.capture_assertion_candidate",
++      "canonical_plan": "polylogue.api.Polylogue.capture_assertion_candidate",
++      "compatibility_route": "capture_assertion_candidate",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "agent-authored candidate",
++        "pending review",
++        "non-injected"
++      ],
++      "family": "assertion",
++      "injection_policy": "candidate_only",
++      "lifecycle": [
++        "capture",
++        "candidate",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "author_ref": "agent:session:example",
++        "body_text": "candidate claim"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "capture_assertion_candidate",
++      "object_kind": "assertion_candidate",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "author_ref",
++        "author_kind=agent",
++        "evidence_refs",
++        "scope_refs"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.capture_assertion_candidate",
++      "verb": "write",
++      "workflow_coverage": [
++        "candidate capture",
++        "later operator judgment"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.annotations.importer.import_annotation_batch",
++      "canonical_plan": "polylogue.annotations.importer.import_annotation_batch",
++      "compatibility_route": "import_annotation_batch",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "typed JSONL annotations",
++        "immutable schema",
++        "batch provenance"
++      ],
++      "family": "assertion",
++      "injection_policy": "candidate_only",
++      "lifecycle": [
++        "validate_schema",
++        "validate_refs",
++        "persist_batch",
++        "persist_candidates",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "actor_ref": "agent:example",
++        "batch_id": "batch-example",
++        "jsonl": "{\"row_key\":\"r1\",\"value\":{},\"evidence_refs\":[]}",
++        "model_ref": "agent:model",
++        "prompt_ref": "block:example:0",
++        "schema_id": "delegation.discourse",
++        "schema_version": 1,
++        "source_result_ref": "result-set:example",
++        "target_ref": "delegation:example"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "import_annotation_batch",
++      "object_kind": "annotation_batch",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "batch_id",
++        "schema_id",
++        "schema_version",
++        "source_result_ref",
++        "actor_ref",
++        "model_ref",
++        "prompt_ref"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.import_annotation_batch",
++      "verb": "write",
++      "workflow_coverage": [
++        "annotation import",
++        "candidate adjudication"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.post_blackboard_note",
++      "canonical_plan": "polylogue.api.Polylogue.post_blackboard_note",
++      "compatibility_route": "blackboard_post",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "persistent agent blackboard",
++        "scoped note"
++      ],
++      "family": "assertion",
++      "injection_policy": "candidate_only",
++      "lifecycle": [
++        "validate",
++        "persist",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "content": "Evidence-backed note",
++        "kind": "finding",
++        "title": "Finding"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "blackboard_post",
++      "object_kind": "blackboard_note",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "author_ref",
++        "author_kind",
++        "evidence_refs",
++        "scope"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.blackboard_post",
++      "verb": "write",
++      "workflow_coverage": [
++        "coordination handoff",
++        "candidate note"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.add_tag",
++      "canonical_plan": "polylogue.api.Polylogue.add_tag",
++      "compatibility_route": "add_tag",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "add session tag",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "resolve",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "session_id": "session:example",
++        "tag": "review"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "add_tag",
++      "object_kind": "session_tag",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "session_id",
++        "tag",
++        "author_ref",
++        "author_kind"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.add_tag",
++      "verb": "write",
++      "workflow_coverage": [
++        "triage"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.remove_tag",
++      "canonical_plan": "polylogue.api.Polylogue.remove_tag",
++      "compatibility_route": "remove_tag",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "remove session tag",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "resolve",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "session_id": "session:example",
++        "tag": "review"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "remove_tag",
++      "object_kind": "session_tag",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.remove_tag",
++      "verb": "write",
++      "workflow_coverage": [
++        "triage correction"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.bulk_tag_sessions",
++      "canonical_plan": "polylogue.api.Polylogue.bulk_tag_sessions",
++      "compatibility_route": "bulk_tag_sessions",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "bulk tag",
++        "affected/skipped counts"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "validate",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "session_ids": [
++          "session:example"
++        ],
++        "tags": [
++          "review"
++        ]
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "bulk_tag_sessions",
++      "object_kind": "session_tag_batch",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.bulk_tag_sessions",
++      "verb": "write",
++      "workflow_coverage": [
++        "bulk triage"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_tags",
++      "canonical_plan": "polylogue.api.Polylogue.list_tags",
++      "compatibility_route": "list_tags",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "user-tier tags",
++        "counts"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "list_tags",
++      "object_kind": "tag_counts",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_tags",
++      "verb": "write",
++      "workflow_coverage": [
++        "triage readback"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_marks",
++      "canonical_plan": "polylogue.api.Polylogue.list_marks",
++      "compatibility_route": "list_marks",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "star/pin/hide marks"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "list_marks",
++      "object_kind": "user_mark",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_marks",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader state readback"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.add_mark",
++      "canonical_plan": "polylogue.api.Polylogue.add_mark",
++      "compatibility_route": "add_mark",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "add user mark",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "resolve",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "mark_type": "star",
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "add_mark",
++      "object_kind": "user_mark",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.add_mark",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader state"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.remove_mark",
++      "canonical_plan": "polylogue.api.Polylogue.remove_mark",
++      "compatibility_route": "remove_mark",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "remove user mark",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "resolve",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "mark_type": "star",
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "remove_mark",
++      "object_kind": "user_mark",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.remove_mark",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader state correction"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_annotations",
++      "canonical_plan": "polylogue.api.Polylogue.list_annotations",
++      "compatibility_route": "list_annotations",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "private annotation readback"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "list_annotations",
++      "object_kind": "user_annotation",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_annotations",
++      "verb": "write",
++      "workflow_coverage": [
++        "annotation workflow"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.save_annotation",
++      "canonical_plan": "polylogue.api.Polylogue.save_annotation",
++      "compatibility_route": "save_annotation",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "save private annotation",
++        "upsert"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "resolve",
++        "upsert",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "annotation_id": "ann-example",
++        "note_text": "note",
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "save_annotation",
++      "object_kind": "user_annotation",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "annotation_id",
++        "session_id",
++        "target"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.save_annotation",
++      "verb": "write",
++      "workflow_coverage": [
++        "annotation workflow"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_annotation",
++      "canonical_plan": "polylogue.api.Polylogue.delete_annotation",
++      "compatibility_route": "delete_annotation",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete private annotation",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "annotation_id": "ann-example",
++        "confirm": true
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "delete_annotation",
++      "object_kind": "user_annotation",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_annotation",
++      "verb": "write",
++      "workflow_coverage": [
++        "annotation cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_views",
++      "canonical_plan": "polylogue.api.Polylogue.list_views",
++      "compatibility_route": "list_saved_views",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "saved query views"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "list_saved_views",
++      "object_kind": "saved_view",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_saved_views",
++      "verb": "write",
++      "workflow_coverage": [
++        "saved query"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.save_view",
++      "canonical_plan": "polylogue.api.Polylogue.save_view",
++      "compatibility_route": "save_saved_view",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "save query view",
++        "validated query spec"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "validate",
++        "upsert",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "name": "Review",
++        "query_json": "{}"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "save_saved_view",
++      "object_kind": "saved_view",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.save_saved_view",
++      "verb": "write",
++      "workflow_coverage": [
++        "saved query"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_view",
++      "canonical_plan": "polylogue.api.Polylogue.delete_view",
++      "compatibility_route": "delete_saved_view",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete saved view",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "view_id": "view-example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "delete_saved_view",
++      "object_kind": "saved_view",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_saved_view",
++      "verb": "write",
++      "workflow_coverage": [
++        "saved query cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_recall_packs",
++      "canonical_plan": "polylogue.api.Polylogue.list_recall_packs",
++      "compatibility_route": "list_recall_packs",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "recall pack readback"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "list_recall_packs",
++      "object_kind": "recall_pack",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_recall_packs",
++      "verb": "write",
++      "workflow_coverage": [
++        "continuity recall"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.create_recall_pack",
++      "canonical_plan": "polylogue.api.Polylogue.create_recall_pack",
++      "compatibility_route": "save_recall_pack",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "save recall pack",
++        "typed items"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "validate",
++        "upsert",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "label": "Example",
++        "pack_id": "pack-example",
++        "payload_json": "{\"items\":[]}"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "save_recall_pack",
++      "object_kind": "recall_pack",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.save_recall_pack",
++      "verb": "write",
++      "workflow_coverage": [
++        "continuity recall"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_recall_pack",
++      "canonical_plan": "polylogue.api.Polylogue.delete_recall_pack",
++      "compatibility_route": "delete_recall_pack",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete recall pack",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "pack_id": "pack-example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "delete_recall_pack",
++      "object_kind": "recall_pack",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_recall_pack",
++      "verb": "write",
++      "workflow_coverage": [
++        "continuity cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_workspaces",
++      "canonical_plan": "polylogue.api.Polylogue.list_workspaces",
++      "compatibility_route": "list_workspaces",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "reader workspace readback"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "list_workspaces",
++      "object_kind": "reader_workspace",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_workspaces",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader workspace"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.save_workspace",
++      "canonical_plan": "polylogue.api.Polylogue.save_workspace",
++      "compatibility_route": "save_workspace",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "save reader workspace"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "validate",
++        "upsert",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "name": "Example",
++        "workspace_id": "workspace-example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "save_workspace",
++      "object_kind": "reader_workspace",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.save_workspace",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader workspace"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_workspace",
++      "canonical_plan": "polylogue.api.Polylogue.delete_workspace",
++      "compatibility_route": "delete_workspace",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete reader workspace",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "workspace_id": "workspace-example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "delete_workspace",
++      "object_kind": "reader_workspace",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_workspace",
++      "verb": "write",
++      "workflow_coverage": [
++        "reader workspace cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.get_metadata",
++      "canonical_plan": "polylogue.api.Polylogue.get_metadata",
++      "compatibility_route": "get_metadata",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "session metadata readback"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "get_metadata",
++      "object_kind": "session_metadata",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "receipt",
++      "telemetry_key": "mcp.tool.get_metadata",
++      "verb": "write",
++      "workflow_coverage": [
++        "metadata workflow"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.set_metadata",
++      "canonical_plan": "polylogue.api.Polylogue.set_metadata",
++      "compatibility_route": "set_metadata",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "set metadata key",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "validate",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "key": "note",
++        "session_id": "session:example",
++        "value": "value"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "set_metadata",
++      "object_kind": "session_metadata",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.set_metadata",
++      "verb": "write",
++      "workflow_coverage": [
++        "metadata workflow"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_metadata",
++      "canonical_plan": "polylogue.api.Polylogue.delete_metadata",
++      "compatibility_route": "delete_metadata",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete metadata key",
++        "idempotent"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "validate",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "key": "note",
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "delete_metadata",
++      "object_kind": "session_metadata",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_metadata",
++      "verb": "write",
++      "workflow_coverage": [
++        "metadata cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.delete_session_safe",
++      "canonical_plan": "polylogue.api.Polylogue.delete_session_safe",
++      "compatibility_route": "delete_session",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "delete session",
++        "destructive"
++      ],
++      "family": "personal_state",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true,
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "delete_session",
++      "object_kind": "session",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.delete_session",
++      "verb": "write",
++      "workflow_coverage": [
++        "session deletion"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.record_correction",
++      "canonical_plan": "polylogue.api.Polylogue.record_correction",
++      "compatibility_route": "record_correction",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "record derived-insight correction"
++      ],
++      "family": "correction",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "resolve",
++        "validate",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "kind": "phase_boundary",
++        "payload": {},
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "record_correction",
++      "object_kind": "insight_correction",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "session_id",
++        "kind",
++        "author_ref",
++        "author_kind"
++      ],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.record_correction",
++      "verb": "write",
++      "workflow_coverage": [
++        "learning correction"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.list_corrections",
++      "canonical_plan": "polylogue.api.Polylogue.list_corrections",
++      "compatibility_route": "list_corrections",
++      "confirmation_policy": "none",
++      "continuation": [
++        "offset",
++        "limit"
++      ],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "correction readback"
++      ],
++      "family": "correction",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "list_corrections",
++      "object_kind": "insight_correction",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "exhaustive_page",
++      "telemetry_key": "mcp.tool.list_corrections",
++      "verb": "write",
++      "workflow_coverage": [
++        "learning correction"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.clear_corrections",
++      "canonical_plan": "polylogue.api.Polylogue.clear_corrections",
++      "compatibility_route": "clear_corrections",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "clear correction records"
++      ],
++      "family": "correction",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "resolve",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "session_id": "session:example"
++      },
++      "module": "polylogue.mcp.server_personal_state_tools",
++      "name": "clear_corrections",
++      "object_kind": "insight_correction",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "write",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.clear_corrections",
++      "verb": "write",
++      "workflow_coverage": [
++        "learning correction cleanup"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.judge_assertion_candidates",
++      "canonical_plan": "polylogue.api.Polylogue.judge_assertion_candidates",
++      "compatibility_route": "judge_assertion_candidate",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "operator judgment",
++        "accept/reject/defer/supersede"
++      ],
++      "family": "judgment",
++      "injection_policy": "operator_judgment",
++      "lifecycle": [
++        "authorize",
++        "judge",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "actor_ref": "user:local",
++        "candidate_ref": "assertion:candidate",
++        "decision": "accept"
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "judge_assertion_candidate",
++      "object_kind": "assertion_candidate",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "candidate_ref",
++        "actor_ref",
++        "decision",
++        "reason"
++      ],
++      "required_role": "review",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.judge_assertion_candidate",
++      "verb": "judge",
++      "workflow_coverage": [
++        "candidate adjudication"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.judge_assertion_candidates",
++      "canonical_plan": "polylogue.api.Polylogue.judge_assertion_candidates",
++      "compatibility_route": "judge_assertion_candidates",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "bulk operator judgment",
++        "partial success"
++      ],
++      "family": "judgment",
++      "injection_policy": "operator_judgment",
++      "lifecycle": [
++        "authorize",
++        "validate_each",
++        "judge_each",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "actor_ref": "user:local",
++        "items": [
++          {
++            "candidate_ref": "assertion:candidate",
++            "decision": "accept"
++          }
++        ]
++      },
++      "module": "polylogue.mcp.server_mutation_tools",
++      "name": "judge_assertion_candidates",
++      "object_kind": "assertion_judgment_batch",
++      "prompt_alternative": null,
++      "provenance_contract": [
++        "candidate_ref",
++        "actor_ref",
++        "decision",
++        "reason"
++      ],
++      "required_role": "review",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.judge_assertion_candidates",
++      "verb": "judge",
++      "workflow_coverage": [
++        "candidate adjudication"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.maintenance.planner.preview_backfill",
++      "canonical_plan": "polylogue.maintenance.planner.preview_backfill",
++      "compatibility_route": "maintenance_preview",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "maintenance dry-run",
++        "exact scope"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "preview",
++        "receipt"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "maintenance_preview",
++      "object_kind": "maintenance_plan",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "maintenance_preview",
++      "telemetry_key": "mcp.tool.maintenance_preview",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "maintenance plan"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.maintenance.planner.execute_backfill",
++      "canonical_plan": "polylogue.maintenance.planner.execute_backfill",
++      "compatibility_route": "maintenance_execute",
++      "confirmation_policy": "dry_run_or_explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "maintenance execute",
++        "dry-run or explicit confirmation"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "preview_or_confirm",
++        "apply",
++        "receipt",
++        "status"
++      ],
++      "minimal_invocation": {
++        "dry_run": true
++      },
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "maintenance_execute",
++      "object_kind": "maintenance_operation",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "maintenance_execute",
++      "telemetry_key": "mcp.tool.maintenance_execute",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "maintenance apply"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.maintenance.registry.MaintenanceOperationRegistry.get_operation",
++      "canonical_plan": "polylogue.maintenance.registry.MaintenanceOperationRegistry.get_operation",
++      "compatibility_route": "maintenance_status",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "maintenance status",
++        "persisted receipt"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read_status"
++      ],
++      "minimal_invocation": {
++        "operation_id": "operation-example"
++      },
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "maintenance_status",
++      "object_kind": "maintenance_operation",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "maintenance_status",
++      "telemetry_key": "mcp.tool.maintenance_status",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "maintenance recovery"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.maintenance.registry.MaintenanceOperationRegistry.list_operations",
++      "canonical_plan": "polylogue.maintenance.registry.MaintenanceOperationRegistry.list_operations",
++      "compatibility_route": "maintenance_list",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "maintenance operation list"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "read_status"
++      ],
++      "minimal_invocation": {},
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "maintenance_list",
++      "object_kind": "maintenance_operation",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "maintenance_status",
++      "telemetry_key": "mcp.tool.maintenance_list",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "maintenance recovery"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.rebuild_index",
++      "canonical_plan": "polylogue.api.Polylogue.rebuild_index",
++      "compatibility_route": "rebuild_index",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "full index rebuild"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true
++      },
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "rebuild_index",
++      "object_kind": "search_index",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.rebuild_index",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "index repair"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.update_index",
++      "canonical_plan": "polylogue.api.Polylogue.update_index",
++      "compatibility_route": "update_index",
++      "confirmation_policy": "none",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "incremental index update"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "session_ids": [
++          "session:example"
++        ]
++      },
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "update_index",
++      "object_kind": "search_index",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.update_index",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "index catch-up"
++      ]
++    },
++    {
++      "canonical_owner": "polylogue.api.Polylogue.rebuild_insights",
++      "canonical_plan": "polylogue.api.Polylogue.rebuild_insights",
++      "compatibility_route": "rebuild_session_insights",
++      "confirmation_policy": "explicit_confirm",
++      "continuation": [],
++      "deprecation_state": "retained_compatibility",
++      "discovery": [
++        "derived insight rebuild"
++      ],
++      "family": "maintenance",
++      "injection_policy": "not_applicable",
++      "lifecycle": [
++        "confirm",
++        "apply",
++        "receipt"
++      ],
++      "minimal_invocation": {
++        "confirm": true
++      },
++      "module": "polylogue.mcp.server_maintenance_tools",
++      "name": "rebuild_session_insights",
++      "object_kind": "session_insights",
++      "prompt_alternative": null,
++      "provenance_contract": [],
++      "required_role": "admin",
++      "resource_alternative": null,
++      "result_semantics": "mutation",
++      "telemetry_key": "mcp.tool.rebuild_session_insights",
++      "verb": "maintenance",
++      "workflow_coverage": [
++        "derived repair"
++      ]
++    }
++  ],
++  "dependency": "polylogue-t46.8.1",
++  "migration_owner": "polylogue-t46.8.3",
++  "schema_version": "polylogue.mcp.context-assertion-equivalence.v1",
++  "tool_count": 41
++}
+diff --git a/docs/plans/topology-target.yaml b/docs/plans/topology-target.yaml
+index f7f9c974216bc0c67829c306b658e87429bb1728..b6087bae195a621a3355ea5d094b0890a7265ddf 100644
+--- a/docs/plans/topology-target.yaml
++++ b/docs/plans/topology-target.yaml
+@@ -2040,6 +2040,22 @@ files:
+     loc: 34
+     target: polylogue/mcp/cli.py
+     owner: stable
++  - path: polylogue/mcp/declarations/__init__.py
++    loc: 31
++    target: polylogue/mcp/declarations/__init__.py
++    owner: stable
++  - path: polylogue/mcp/declarations/models.py
++    loc: 121
++    target: polylogue/mcp/declarations/models.py
++    owner: stable
++  - path: polylogue/mcp/declarations/registration.py
++    loc: 114
++    target: polylogue/mcp/declarations/registration.py
++    owner: stable
++  - path: polylogue/mcp/declarations/registry.py
++    loc: 868
++    target: polylogue/mcp/declarations/registry.py
++    owner: stable
+   - path: polylogue/mcp/insight_tool_contracts.py
+     loc: 102
+     target: polylogue/mcp/insight_tool_contracts.py
+@@ -2069,15 +2085,15 @@ files:
+     target: polylogue/mcp/server_insight_tools.py
+     owner: stable
+   - path: polylogue/mcp/server_maintenance_tools.py
+-    loc: 304
++    loc: 322
+     target: polylogue/mcp/server_maintenance_tools.py
+     owner: stable
+   - path: polylogue/mcp/server_mutation_tools.py
+-    loc: 497
++    loc: 510
+     target: polylogue/mcp/server_mutation_tools.py
+     owner: stable
+   - path: polylogue/mcp/server_personal_state_tools.py
+-    loc: 675
++    loc: 700
+     target: polylogue/mcp/server_personal_state_tools.py
+     owner: stable
+   - path: polylogue/mcp/server_prompts.py
+@@ -2093,7 +2109,7 @@ files:
+     target: polylogue/mcp/server_support.py
+     owner: stable
+   - path: polylogue/mcp/server_tools.py
+-    loc: 1325
++    loc: 1324
+     target: polylogue/mcp/server_tools.py
+     owner: stable
+   - path: polylogue/operations/__init__.py
+@@ -3240,7 +3256,7 @@ files:
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_readiness.py
+-    loc: 818
++    loc: 830
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/archive_views.py
+@@ -3525,7 +3541,7 @@ files:
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_reconciler.py
+-    loc: 1411
++    loc: 1422
+     target: TBD
+     owner: storage-domain
+   - path: polylogue/storage/raw_retention.py
+diff --git a/docs/topology-status.md b/docs/topology-status.md
+index d8e0e49740260b6a6a23dd76a91192d6d66d485e..a868467a68e339e778a8083e086124f98800452f 100644
+--- a/docs/topology-status.md
++++ b/docs/topology-status.md
+@@ -28,12 +28,12 @@ Generated by `devtools render topology-status`. Reads `docs/plans/topology-targe
+ 
+ ### Summary
+ 
+-- **Stable** (no move scoped): 843
++- **Stable** (no move scoped): 847
+ - **Kernel** (polylogue/ root): 7
+ - **Primitives** (storage-root): 18
+ - **TBD** (cell needs explicit assignment): 9
+-- **Total declared**: 1007
+-- **Realized polylogue/**/*.py**: 1007 files declared
++- **Total declared**: 1011
++- **Realized polylogue/**/*.py**: 1011 files declared
+ 
+ ### TBD cells (require explicit routing)
+ 
+diff --git a/polylogue/mcp/declarations/__init__.py b/polylogue/mcp/declarations/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..838cb371bf1ff7ed33e1b2a9547f09bc85ed09cc
+--- /dev/null
++++ b/polylogue/mcp/declarations/__init__.py
+@@ -0,0 +1,31 @@
++"""Executable MCP declaration and registration kernel."""
++
++from polylogue.mcp.declarations.models import MCPToolDeclaration
++from polylogue.mcp.declarations.registration import (
++    MCPDeclarationRegistrar,
++    MCPDeclarationRegistrationError,
++)
++from polylogue.mcp.declarations.registry import (
++    MCP_CONTEXT_ASSERTION_DECLARATIONS,
++    MCP_CONTEXT_ASSERTION_REGISTRY,
++    MCP_CONTEXT_ASSERTION_TOOL_NAMES,
++    declaration_for,
++    declarations_for_role,
++    equivalence_document,
++    render_equivalence_json,
++    validate_registry,
++)
++
++__all__ = [
++    "MCP_CONTEXT_ASSERTION_DECLARATIONS",
++    "MCP_CONTEXT_ASSERTION_REGISTRY",
++    "MCP_CONTEXT_ASSERTION_TOOL_NAMES",
++    "MCPDeclarationRegistrar",
++    "MCPDeclarationRegistrationError",
++    "MCPToolDeclaration",
++    "declaration_for",
++    "declarations_for_role",
++    "equivalence_document",
++    "render_equivalence_json",
++    "validate_registry",
++]
+diff --git a/polylogue/mcp/declarations/models.py b/polylogue/mcp/declarations/models.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7bbe70303eb4a43b6a7c41cfde2b9c3b40d87b1a
+--- /dev/null
++++ b/polylogue/mcp/declarations/models.py
+@@ -0,0 +1,121 @@
++"""Typed MCP declaration records for protocol-facing tool adapters.
++
++The declarations own discovery and compatibility metadata. They do not execute
++queries or mutations: production handlers remain thin adapters over the typed
++substrate/facade owners named by each declaration.
++"""
++
++from __future__ import annotations
++
++import json
++from dataclasses import dataclass
++from typing import Literal, cast
++
++from polylogue.mcp.server_support import MCPRole
++
++MCPDeclarationFamily = Literal[
++    "context",
++    "assertion",
++    "personal_state",
++    "correction",
++    "judgment",
++    "maintenance",
++]
++MCPVerb = Literal["context", "write", "judge", "maintenance"]
++MCPResultSemantics = Literal[
++    "bounded_context",
++    "receipt",
++    "exhaustive_page",
++    "mutation",
++    "maintenance_preview",
++    "maintenance_execute",
++    "maintenance_status",
++]
++MCPInjectionPolicy = Literal[
++    "not_applicable",
++    "candidate_only",
++    "operator_judgment",
++    "never_inject",
++]
++MCPConfirmationPolicy = Literal["none", "explicit_confirm", "dry_run_or_explicit_confirm"]
++MCPDeprecationState = Literal["retained_compatibility"]
++
++
++@dataclass(frozen=True, slots=True)
++class MCPToolDeclaration:
++    """One executable MCP compatibility declaration.
++
++    ``minimal_invocation_json`` is stored as canonical JSON rather than a
++    mutable mapping so declarations stay immutable and can be rendered without
++    aliasing caller-owned values.
++    """
++
++    name: str
++    module: str
++    family: MCPDeclarationFamily
++    verb: MCPVerb
++    object_kind: str
++    required_role: MCPRole
++    result_semantics: MCPResultSemantics
++    canonical_owner: str
++    canonical_plan: str
++    minimal_invocation_json: str
++    discovery: tuple[str, ...]
++    continuation: tuple[str, ...]
++    compatibility_route: str
++    workflow_coverage: tuple[str, ...]
++    telemetry_key: str
++    injection_policy: MCPInjectionPolicy = "not_applicable"
++    provenance_contract: tuple[str, ...] = ()
++    confirmation_policy: MCPConfirmationPolicy = "none"
++    lifecycle: tuple[str, ...] = ()
++    resource_alternative: str | None = None
++    prompt_alternative: str | None = None
++    deprecation_state: MCPDeprecationState = "retained_compatibility"
++
++    def minimal_invocation(self) -> dict[str, object]:
++        """Return a fresh validated mapping for generated contracts/tests."""
++
++        value = json.loads(self.minimal_invocation_json)
++        if not isinstance(value, dict):
++            raise ValueError(f"{self.name}: minimal invocation must decode to an object")
++        return cast(dict[str, object], value)
++
++    def to_equivalence_dict(self) -> dict[str, object]:
++        """Render stable, JSON-compatible equivalence metadata."""
++
++        return {
++            "name": self.name,
++            "module": self.module,
++            "family": self.family,
++            "verb": self.verb,
++            "object_kind": self.object_kind,
++            "required_role": self.required_role,
++            "result_semantics": self.result_semantics,
++            "canonical_owner": self.canonical_owner,
++            "canonical_plan": self.canonical_plan,
++            "minimal_invocation": self.minimal_invocation(),
++            "discovery": list(self.discovery),
++            "continuation": list(self.continuation),
++            "resource_alternative": self.resource_alternative,
++            "prompt_alternative": self.prompt_alternative,
++            "compatibility_route": self.compatibility_route,
++            "workflow_coverage": list(self.workflow_coverage),
++            "telemetry_key": self.telemetry_key,
++            "injection_policy": self.injection_policy,
++            "provenance_contract": list(self.provenance_contract),
++            "confirmation_policy": self.confirmation_policy,
++            "lifecycle": list(self.lifecycle),
++            "deprecation_state": self.deprecation_state,
++        }
++
++
++__all__ = [
++    "MCPConfirmationPolicy",
++    "MCPDeclarationFamily",
++    "MCPDeprecationState",
++    "MCPInjectionPolicy",
++    "MCPResultSemantics",
++    "MCPToolDeclaration",
++    "MCPVerb",
++]
+diff --git a/polylogue/mcp/declarations/registration.py b/polylogue/mcp/declarations/registration.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa04aaadde56029e7201664906616431bb1995b1
+--- /dev/null
++++ b/polylogue/mcp/declarations/registration.py
+@@ -0,0 +1,114 @@
++"""Role-scoped registration adapter for declared MCP tools."""
++
++from __future__ import annotations
++
++import inspect
++from collections.abc import Awaitable, Callable
++from typing import Any, Protocol, TypeAlias
++
++from polylogue.mcp.declarations.models import MCPToolDeclaration
++from polylogue.mcp.declarations.registry import (
++    MCP_CONTEXT_ASSERTION_TOOL_NAMES,
++    declaration_for,
++)
++from polylogue.mcp.server_support import MCPRole, role_allows
++
++MCPToolHandler: TypeAlias = Callable[..., Awaitable[str]]
++
++
++class MCPToolHost(Protocol):
++    def tool(self) -> Callable[[MCPToolHandler], Any]:
++        raise NotImplementedError
++
++
++class MCPDeclarationRegistrationError(RuntimeError):
++    """Raised when a production handler and declaration drift apart."""
++
++
++class MCPDeclarationRegistrar:
++    """Register exact handlers from declarations without becoming an executor.
++
++    The registrar owns discovery/role filtering and static adapter-contract
++    checks only. It never invokes, wraps, or dispatches a handler, so distinct
++    maintenance/destructive implementations and their audit semantics remain
++    visible production code.
++    """
++
++    def __init__(self, mcp: MCPToolHost, *, role: MCPRole) -> None:
++        self._mcp = mcp
++        self._role = role
++        self._seen: dict[str, MCPToolDeclaration] = {}
++        self._registered: set[str] = set()
++
++    @property
++    def registered_names(self) -> frozenset[str]:
++        return frozenset(self._registered)
++
++    @property
++    def seen_names(self) -> frozenset[str]:
++        return frozenset(self._seen)
++
++    def tool(self) -> Callable[[MCPToolHandler], MCPToolHandler]:
++        """Validate and role-filter one exact production handler."""
++
++        def register(handler: MCPToolHandler) -> MCPToolHandler:
++            name = handler.__name__
++            try:
++                declaration = declaration_for(name)
++            except KeyError as exc:
++                raise MCPDeclarationRegistrationError(str(exc)) from exc
++            if name in self._seen:
++                raise MCPDeclarationRegistrationError(f"duplicate MCP handler registration: {name}")
++            self._validate_handler(declaration, handler)
++            self._seen[name] = declaration
++            if role_allows(self._role, declaration.required_role):
++                self._mcp.tool()(handler)
++                self._registered.add(name)
++            return handler
++
++        return register
++
++    def assert_complete(self) -> None:
++        """Require every migrated declaration to meet one concrete handler."""
++
++        missing = MCP_CONTEXT_ASSERTION_TOOL_NAMES - self.seen_names
++        unexpected = self.seen_names - MCP_CONTEXT_ASSERTION_TOOL_NAMES
++        if missing or unexpected:
++            raise MCPDeclarationRegistrationError(
++                "MCP declaration/adapter mismatch: "
++                f"missing_handlers={sorted(missing)}, unexpected_handlers={sorted(unexpected)}"
++            )
++
++    @staticmethod
++    def _validate_handler(declaration: MCPToolDeclaration, handler: MCPToolHandler) -> None:
++        if handler.__module__ != declaration.module:
++            raise MCPDeclarationRegistrationError(
++                f"{declaration.name}: declaration module {declaration.module!r} "
++                f"does not match handler module {handler.__module__!r}"
++            )
++        if not inspect.iscoroutinefunction(handler):
++            raise MCPDeclarationRegistrationError(f"{declaration.name}: MCP handler must be async")
++        signature = inspect.signature(handler)
++        missing_example_args = set(declaration.minimal_invocation()) - set(signature.parameters)
++        if missing_example_args:
++            raise MCPDeclarationRegistrationError(
++                f"{declaration.name}: minimal invocation names missing from handler: {sorted(missing_example_args)}"
++            )
++        if declaration.confirmation_policy != "none":
++            confirm = signature.parameters.get("confirm")
++            if confirm is None or confirm.default is not False:
++                raise MCPDeclarationRegistrationError(
++                    f"{declaration.name}: confirmation policy requires confirm: bool = False"
++                )
++        if declaration.confirmation_policy == "dry_run_or_explicit_confirm":
++            dry_run = signature.parameters.get("dry_run")
++            if dry_run is None or dry_run.default is not False:
++                raise MCPDeclarationRegistrationError(
++                    f"{declaration.name}: dry-run confirmation policy requires dry_run: bool = False"
++                )
++
++
++__all__ = [
++    "MCPDeclarationRegistrar",
++    "MCPDeclarationRegistrationError",
++]
+diff --git a/polylogue/mcp/declarations/registry.py b/polylogue/mcp/declarations/registry.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ec15ad78c96cd0e604166f0c9a3cf898335a3f8c
+--- /dev/null
++++ b/polylogue/mcp/declarations/registry.py
+@@ -0,0 +1,868 @@
++"""MCP declarations for context, assertion, correction, and maintenance tools."""
++
++from __future__ import annotations
++
++import json
++from collections.abc import Iterable
++
++from polylogue.mcp.declarations.models import (
++    MCPConfirmationPolicy,
++    MCPDeclarationFamily,
++    MCPInjectionPolicy,
++    MCPResultSemantics,
++    MCPToolDeclaration,
++    MCPVerb,
++)
++from polylogue.mcp.server_support import MCPRole, role_allows
++
++
++def _canonical_json(value: dict[str, object]) -> str:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
++
++
++def _declaration(
++    name: str,
++    *,
++    module: str,
++    family: MCPDeclarationFamily,
++    verb: MCPVerb,
++    object_kind: str,
++    required_role: MCPRole,
++    result_semantics: MCPResultSemantics,
++    canonical_owner: str,
++    minimal_invocation: dict[str, object] | None = None,
++    discovery: tuple[str, ...] = (),
++    continuation: tuple[str, ...] = (),
++    workflows: tuple[str, ...] = (),
++    injection_policy: MCPInjectionPolicy = "not_applicable",
++    provenance: tuple[str, ...] = (),
++    confirmation: MCPConfirmationPolicy = "none",
++    lifecycle: tuple[str, ...] = (),
++    resource_alternative: str | None = None,
++    prompt_alternative: str | None = None,
++) -> MCPToolDeclaration:
++    return MCPToolDeclaration(
++        name=name,
++        module=module,
++        family=family,
++        verb=verb,
++        object_kind=object_kind,
++        required_role=required_role,
++        result_semantics=result_semantics,
++        canonical_owner=canonical_owner,
++        canonical_plan=canonical_owner,
++        minimal_invocation_json=_canonical_json(minimal_invocation or {}),
++        discovery=discovery,
++        continuation=continuation,
++        resource_alternative=resource_alternative,
++        prompt_alternative=prompt_alternative,
++        compatibility_route=name,
++        workflow_coverage=workflows,
++        telemetry_key=f"mcp.tool.{name}",
++        injection_policy=injection_policy,
++        provenance_contract=provenance,
++        confirmation_policy=confirmation,
++        lifecycle=lifecycle,
++    )
++
++
++_CONTEXT_MODULE = "polylogue.mcp.server_context_tools"
++_MUTATION_MODULE = "polylogue.mcp.server_mutation_tools"
++_PERSONAL_MODULE = "polylogue.mcp.server_personal_state_tools"
++_MAINTENANCE_MODULE = "polylogue.mcp.server_maintenance_tools"
++
++_CONTEXT_DECLARATIONS = (
++    _declaration(
++        "get_context_delivery",
++        module=_CONTEXT_MODULE,
++        family="context",
++        verb="context",
++        object_kind="context_delivery_receipt",
++        required_role="read",
++        result_semantics="receipt",
++        canonical_owner="polylogue.api.Polylogue.get_context_delivery",
++        minimal_invocation={
++            "snapshot_ref": "context-snapshot:session:example:explicit-recall",
++            "recipient_ref": "session:example",
++        },
++        discovery=("context receipt", "recipient-scoped exact bytes"),
++        continuation=("snapshot_ref", "recipient_ref"),
++        workflows=("context receipt audit", "recipient mismatch privacy"),
++        injection_policy="never_inject",
++        provenance=("snapshot_ref", "recipient_ref", "context_image_sha256"),
++        lifecycle=("read_receipt",),
++    ),
++    _declaration(
++        "build_context_image",
++        module=_CONTEXT_MODULE,
++        family="context",
++        verb="context",
++        object_kind="context_image",
++        required_role="read",
++        result_semantics="bounded_context",
++        canonical_owner="polylogue.api.Polylogue.context_image_payload",
++        minimal_invocation={"project_repo": "polylogue", "max_sessions": 5, "detail_level": "compact"},
++        discovery=("bounded context", "query-selected sessions", "token omissions"),
++        workflows=("continuity recall", "bounded evidence assembly"),
++        injection_policy="never_inject",
++        provenance=("selected session refs", "context spec", "omission reasons"),
++        lifecycle=("select", "compile", "return"),
++    ),
++    _declaration(
++        "compose_context_preamble",
++        module=_CONTEXT_MODULE,
++        family="context",
++        verb="context",
++        object_kind="context_preamble",
++        required_role="read",
++        result_semantics="bounded_context",
++        canonical_owner="polylogue.context.preamble.build_context_preamble_payload",
++        minimal_invocation={},
++        discovery=("SessionStart preamble", "lineage", "related sessions"),
++        workflows=("session start continuity",),
++        injection_policy="operator_judgment",
++        provenance=("source_tool_calls", "successor_session_id"),
++        lifecycle=("compose", "return"),
++        prompt_alternative="resume_context",
++    ),
++)
++
++_ASSERTION_DECLARATIONS = (
++    _declaration(
++        "capture_assertion_candidate",
++        module=_MUTATION_MODULE,
++        family="assertion",
++        verb="write",
++        object_kind="assertion_candidate",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.capture_assertion_candidate",
++        minimal_invocation={"body_text": "candidate claim", "author_ref": "agent:session:example"},
++        discovery=("agent-authored candidate", "pending review", "non-injected"),
++        workflows=("candidate capture", "later operator judgment"),
++        injection_policy="candidate_only",
++        provenance=("author_ref", "author_kind=agent", "evidence_refs", "scope_refs"),
++        lifecycle=("capture", "candidate", "receipt"),
++    ),
++    _declaration(
++        "import_annotation_batch",
++        module=_MUTATION_MODULE,
++        family="assertion",
++        verb="write",
++        object_kind="annotation_batch",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.annotations.importer.import_annotation_batch",
++        minimal_invocation={
++            "jsonl": '{"row_key":"r1","value":{},"evidence_refs":[]}',
++            "batch_id": "batch-example",
++            "schema_id": "delegation.discourse",
++            "schema_version": 1,
++            "target_ref": "delegation:example",
++            "source_result_ref": "result-set:example",
++            "actor_ref": "agent:example",
++            "model_ref": "agent:model",
++            "prompt_ref": "block:example:0",
++        },
++        discovery=("typed JSONL annotations", "immutable schema", "batch provenance"),
++        workflows=("annotation import", "candidate adjudication"),
++        injection_policy="candidate_only",
++        provenance=(
++            "batch_id",
++            "schema_id",
++            "schema_version",
++            "source_result_ref",
++            "actor_ref",
++            "model_ref",
++            "prompt_ref",
++        ),
++        lifecycle=("validate_schema", "validate_refs", "persist_batch", "persist_candidates", "receipt"),
++    ),
++    _declaration(
++        "blackboard_post",
++        module=_MUTATION_MODULE,
++        family="assertion",
++        verb="write",
++        object_kind="blackboard_note",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.post_blackboard_note",
++        minimal_invocation={"kind": "finding", "title": "Finding", "content": "Evidence-backed note"},
++        discovery=("persistent agent blackboard", "scoped note"),
++        workflows=("coordination handoff", "candidate note"),
++        injection_policy="candidate_only",
++        provenance=("author_ref", "author_kind", "evidence_refs", "scope"),
++        lifecycle=("validate", "persist", "receipt"),
++    ),
++)
++
++_PERSONAL_DECLARATIONS = (
++    _declaration(
++        "add_tag",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_tag",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.add_tag",
++        minimal_invocation={"session_id": "session:example", "tag": "review"},
++        discovery=("add session tag", "idempotent"),
++        workflows=("triage",),
++        provenance=("session_id", "tag", "author_ref", "author_kind"),
++        lifecycle=("resolve", "apply", "receipt"),
++    ),
++    _declaration(
++        "remove_tag",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_tag",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.remove_tag",
++        minimal_invocation={"session_id": "session:example", "tag": "review", "confirm": True},
++        discovery=("remove session tag", "idempotent"),
++        workflows=("triage correction",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "resolve", "apply", "receipt"),
++    ),
++    _declaration(
++        "bulk_tag_sessions",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_tag_batch",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.bulk_tag_sessions",
++        minimal_invocation={"session_ids": ["session:example"], "tags": ["review"]},
++        discovery=("bulk tag", "affected/skipped counts"),
++        workflows=("bulk triage",),
++        lifecycle=("validate", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_tags",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="tag_counts",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_tags",
++        discovery=("user-tier tags", "counts"),
++        workflows=("triage readback",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "list_marks",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_mark",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_marks",
++        discovery=("star/pin/hide marks",),
++        workflows=("reader state readback",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "add_mark",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_mark",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.add_mark",
++        minimal_invocation={"session_id": "session:example", "mark_type": "star"},
++        discovery=("add user mark", "idempotent"),
++        workflows=("reader state",),
++        lifecycle=("resolve", "apply", "receipt"),
++    ),
++    _declaration(
++        "remove_mark",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_mark",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.remove_mark",
++        minimal_invocation={"session_id": "session:example", "mark_type": "star", "confirm": True},
++        discovery=("remove user mark", "idempotent"),
++        workflows=("reader state correction",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "resolve", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_annotations",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_annotation",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_annotations",
++        discovery=("private annotation readback",),
++        workflows=("annotation workflow",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "save_annotation",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_annotation",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.save_annotation",
++        minimal_invocation={"annotation_id": "ann-example", "session_id": "session:example", "note_text": "note"},
++        discovery=("save private annotation", "upsert"),
++        workflows=("annotation workflow",),
++        provenance=("annotation_id", "session_id", "target"),
++        lifecycle=("resolve", "upsert", "receipt"),
++    ),
++    _declaration(
++        "delete_annotation",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="user_annotation",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_annotation",
++        minimal_invocation={"annotation_id": "ann-example", "confirm": True},
++        discovery=("delete private annotation", "idempotent"),
++        workflows=("annotation cleanup",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_saved_views",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="saved_view",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_views",
++        discovery=("saved query views",),
++        workflows=("saved query",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "save_saved_view",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="saved_view",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.save_view",
++        minimal_invocation={"name": "Review", "query_json": "{}"},
++        discovery=("save query view", "validated query spec"),
++        workflows=("saved query",),
++        lifecycle=("validate", "upsert", "receipt"),
++    ),
++    _declaration(
++        "delete_saved_view",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="saved_view",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_view",
++        minimal_invocation={"view_id": "view-example", "confirm": True},
++        discovery=("delete saved view", "idempotent"),
++        workflows=("saved query cleanup",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_recall_packs",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="recall_pack",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_recall_packs",
++        discovery=("recall pack readback",),
++        workflows=("continuity recall",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "save_recall_pack",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="recall_pack",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.create_recall_pack",
++        minimal_invocation={"pack_id": "pack-example", "label": "Example", "payload_json": '{"items":[]}'},
++        discovery=("save recall pack", "typed items"),
++        workflows=("continuity recall",),
++        lifecycle=("validate", "upsert", "receipt"),
++    ),
++    _declaration(
++        "delete_recall_pack",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="recall_pack",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_recall_pack",
++        minimal_invocation={"pack_id": "pack-example", "confirm": True},
++        discovery=("delete recall pack", "idempotent"),
++        workflows=("continuity cleanup",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_workspaces",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="reader_workspace",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_workspaces",
++        discovery=("reader workspace readback",),
++        workflows=("reader workspace",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "save_workspace",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="reader_workspace",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.save_workspace",
++        minimal_invocation={"workspace_id": "workspace-example", "name": "Example"},
++        discovery=("save reader workspace",),
++        workflows=("reader workspace",),
++        lifecycle=("validate", "upsert", "receipt"),
++    ),
++    _declaration(
++        "delete_workspace",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="reader_workspace",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_workspace",
++        minimal_invocation={"workspace_id": "workspace-example", "confirm": True},
++        discovery=("delete reader workspace", "idempotent"),
++        workflows=("reader workspace cleanup",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++    _declaration(
++        "get_metadata",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_metadata",
++        required_role="write",
++        result_semantics="receipt",
++        canonical_owner="polylogue.api.Polylogue.get_metadata",
++        minimal_invocation={"session_id": "session:example"},
++        discovery=("session metadata readback",),
++        workflows=("metadata workflow",),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "set_metadata",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_metadata",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.set_metadata",
++        minimal_invocation={"session_id": "session:example", "key": "note", "value": "value"},
++        discovery=("set metadata key", "idempotent"),
++        workflows=("metadata workflow",),
++        lifecycle=("validate", "apply", "receipt"),
++    ),
++    _declaration(
++        "delete_metadata",
++        module=_PERSONAL_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session_metadata",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_metadata",
++        minimal_invocation={"session_id": "session:example", "key": "note", "confirm": True},
++        discovery=("delete metadata key", "idempotent"),
++        workflows=("metadata cleanup",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "validate", "apply", "receipt"),
++    ),
++    _declaration(
++        "delete_session",
++        module=_MUTATION_MODULE,
++        family="personal_state",
++        verb="write",
++        object_kind="session",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.delete_session_safe",
++        minimal_invocation={"session_id": "session:example", "confirm": True},
++        discovery=("delete session", "destructive"),
++        workflows=("session deletion",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++)
++
++_CORRECTION_DECLARATIONS = (
++    _declaration(
++        "record_correction",
++        module=_PERSONAL_MODULE,
++        family="correction",
++        verb="write",
++        object_kind="insight_correction",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.record_correction",
++        minimal_invocation={"session_id": "session:example", "kind": "phase_boundary", "payload": {}},
++        discovery=("record derived-insight correction",),
++        workflows=("learning correction",),
++        provenance=("session_id", "kind", "author_ref", "author_kind"),
++        lifecycle=("resolve", "validate", "apply", "receipt"),
++    ),
++    _declaration(
++        "list_corrections",
++        module=_PERSONAL_MODULE,
++        family="correction",
++        verb="write",
++        object_kind="insight_correction",
++        required_role="write",
++        result_semantics="exhaustive_page",
++        canonical_owner="polylogue.api.Polylogue.list_corrections",
++        discovery=("correction readback",),
++        workflows=("learning correction",),
++        continuation=("offset", "limit"),
++        lifecycle=("read",),
++    ),
++    _declaration(
++        "clear_corrections",
++        module=_PERSONAL_MODULE,
++        family="correction",
++        verb="write",
++        object_kind="insight_correction",
++        required_role="write",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.clear_corrections",
++        minimal_invocation={"session_id": "session:example"},
++        discovery=("clear correction records",),
++        workflows=("learning correction cleanup",),
++        lifecycle=("resolve", "apply", "receipt"),
++    ),
++)
++
++_JUDGMENT_DECLARATIONS = (
++    _declaration(
++        "judge_assertion_candidate",
++        module=_MUTATION_MODULE,
++        family="judgment",
++        verb="judge",
++        object_kind="assertion_candidate",
++        required_role="review",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.judge_assertion_candidates",
++        minimal_invocation={"candidate_ref": "assertion:candidate", "decision": "accept", "actor_ref": "user:local"},
++        discovery=("operator judgment", "accept/reject/defer/supersede"),
++        workflows=("candidate adjudication",),
++        injection_policy="operator_judgment",
++        provenance=("candidate_ref", "actor_ref", "decision", "reason"),
++        lifecycle=("authorize", "judge", "receipt"),
++    ),
++    _declaration(
++        "judge_assertion_candidates",
++        module=_MUTATION_MODULE,
++        family="judgment",
++        verb="judge",
++        object_kind="assertion_judgment_batch",
++        required_role="review",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.judge_assertion_candidates",
++        minimal_invocation={
++            "items": [{"candidate_ref": "assertion:candidate", "decision": "accept"}],
++            "actor_ref": "user:local",
++        },
++        discovery=("bulk operator judgment", "partial success"),
++        workflows=("candidate adjudication",),
++        injection_policy="operator_judgment",
++        provenance=("candidate_ref", "actor_ref", "decision", "reason"),
++        lifecycle=("authorize", "validate_each", "judge_each", "receipt"),
++    ),
++)
++
++_MAINTENANCE_DECLARATIONS = (
++    _declaration(
++        "maintenance_preview",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="maintenance_plan",
++        required_role="admin",
++        result_semantics="maintenance_preview",
++        canonical_owner="polylogue.maintenance.planner.preview_backfill",
++        discovery=("maintenance dry-run", "exact scope"),
++        workflows=("maintenance plan",),
++        lifecycle=("preview", "receipt"),
++    ),
++    _declaration(
++        "maintenance_execute",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="maintenance_operation",
++        required_role="admin",
++        result_semantics="maintenance_execute",
++        canonical_owner="polylogue.maintenance.planner.execute_backfill",
++        minimal_invocation={"dry_run": True},
++        discovery=("maintenance execute", "dry-run or explicit confirmation"),
++        workflows=("maintenance apply",),
++        confirmation="dry_run_or_explicit_confirm",
++        lifecycle=("preview_or_confirm", "apply", "receipt", "status"),
++    ),
++    _declaration(
++        "maintenance_status",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="maintenance_operation",
++        required_role="admin",
++        result_semantics="maintenance_status",
++        canonical_owner="polylogue.maintenance.registry.MaintenanceOperationRegistry.get_operation",
++        minimal_invocation={"operation_id": "operation-example"},
++        discovery=("maintenance status", "persisted receipt"),
++        workflows=("maintenance recovery",),
++        lifecycle=("read_status",),
++    ),
++    _declaration(
++        "maintenance_list",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="maintenance_operation",
++        required_role="admin",
++        result_semantics="maintenance_status",
++        canonical_owner="polylogue.maintenance.registry.MaintenanceOperationRegistry.list_operations",
++        discovery=("maintenance operation list",),
++        workflows=("maintenance recovery",),
++        lifecycle=("read_status",),
++    ),
++    _declaration(
++        "rebuild_index",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="search_index",
++        required_role="admin",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.rebuild_index",
++        minimal_invocation={"confirm": True},
++        discovery=("full index rebuild",),
++        workflows=("index repair",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++    _declaration(
++        "update_index",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="search_index",
++        required_role="admin",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.update_index",
++        minimal_invocation={"session_ids": ["session:example"]},
++        discovery=("incremental index update",),
++        workflows=("index catch-up",),
++        lifecycle=("apply", "receipt"),
++    ),
++    _declaration(
++        "rebuild_session_insights",
++        module=_MAINTENANCE_MODULE,
++        family="maintenance",
++        verb="maintenance",
++        object_kind="session_insights",
++        required_role="admin",
++        result_semantics="mutation",
++        canonical_owner="polylogue.api.Polylogue.rebuild_insights",
++        minimal_invocation={"confirm": True},
++        discovery=("derived insight rebuild",),
++        workflows=("derived repair",),
++        confirmation="explicit_confirm",
++        lifecycle=("confirm", "apply", "receipt"),
++    ),
++)
++
++MCP_CONTEXT_ASSERTION_DECLARATIONS: tuple[MCPToolDeclaration, ...] = (
++    *_CONTEXT_DECLARATIONS,
++    *_ASSERTION_DECLARATIONS,
++    *_PERSONAL_DECLARATIONS,
++    *_CORRECTION_DECLARATIONS,
++    *_JUDGMENT_DECLARATIONS,
++    *_MAINTENANCE_DECLARATIONS,
++)
++
++
++def _build_registry(declarations: Iterable[MCPToolDeclaration]) -> dict[str, MCPToolDeclaration]:
++    registry: dict[str, MCPToolDeclaration] = {}
++    for declaration in declarations:
++        if declaration.name in registry:
++            raise ValueError(f"duplicate MCP declaration: {declaration.name}")
++        registry[declaration.name] = declaration
++    return registry
++
++
++MCP_CONTEXT_ASSERTION_REGISTRY = _build_registry(MCP_CONTEXT_ASSERTION_DECLARATIONS)
++MCP_CONTEXT_ASSERTION_TOOL_NAMES = frozenset(MCP_CONTEXT_ASSERTION_REGISTRY)
++
++
++def declaration_for(name: str) -> MCPToolDeclaration:
++    """Return one declaration, failing with an actionable adapter error."""
++
++    try:
++        return MCP_CONTEXT_ASSERTION_REGISTRY[name]
++    except KeyError as exc:
++        raise KeyError(f"MCP handler {name!r} has no context/assertion declaration") from exc
++
++
++def declarations_for_role(role: MCPRole) -> tuple[MCPToolDeclaration, ...]:
++    """Return declarations visible to one authenticated role."""
++
++    return tuple(
++        declaration
++        for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS
++        if role_allows(role, declaration.required_role)
++    )
++
++
++def equivalence_document() -> dict[str, object]:
++    """Return the generated migration/equivalence document."""
++
++    by_family: dict[str, int] = {}
++    by_role: dict[str, int] = {}
++    for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS:
++        by_family[declaration.family] = by_family.get(declaration.family, 0) + 1
++        by_role[declaration.required_role] = by_role.get(declaration.required_role, 0) + 1
++    return {
++        "schema_version": "polylogue.mcp.context-assertion-equivalence.v1",
++        "migration_owner": "polylogue-t46.8.3",
++        "dependency": "polylogue-t46.8.1",
++        "tool_count": len(MCP_CONTEXT_ASSERTION_DECLARATIONS),
++        "counts_by_family": dict(sorted(by_family.items())),
++        "counts_by_required_role": dict(sorted(by_role.items())),
++        "declarations": [declaration.to_equivalence_dict() for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS],
++    }
++
++
++def render_equivalence_json() -> str:
++    """Render the committed equivalence artifact deterministically."""
++
++    return json.dumps(equivalence_document(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
++
++
++def validate_registry() -> None:
++    """Fail closed on trust, role, provenance, and maintenance drift."""
++
++    if len(MCP_CONTEXT_ASSERTION_TOOL_NAMES) != len(MCP_CONTEXT_ASSERTION_DECLARATIONS):
++        raise ValueError("MCP declaration names must be unique")
++
++    for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS:
++        if declaration.compatibility_route != declaration.name:
++            raise ValueError(f"{declaration.name}: compatibility route must preserve the public tool name")
++        if declaration.canonical_plan != declaration.canonical_owner:
++            raise ValueError(f"{declaration.name}: canonical plan must name the existing production owner")
++        if declaration.telemetry_key != f"mcp.tool.{declaration.name}":
++            raise ValueError(f"{declaration.name}: telemetry key must preserve per-tool attribution")
++        if not declaration.module.startswith("polylogue.mcp."):
++            raise ValueError(f"{declaration.name}: declaration module must name the production MCP adapter")
++        if declaration.family == "context" and declaration.required_role != "read":
++            raise ValueError(f"{declaration.name}: context reads must remain read-role tools")
++        if declaration.family == "judgment" and declaration.required_role != "review":
++            raise ValueError(f"{declaration.name}: judgment tools require review capability")
++        if declaration.family == "maintenance" and declaration.required_role != "admin":
++            raise ValueError(f"{declaration.name}: maintenance tools require admin capability")
++        if declaration.injection_policy == "candidate_only" and declaration.required_role != "write":
++            raise ValueError(f"{declaration.name}: candidate writers must remain write-role tools")
++        if (
++            declaration.confirmation_policy not in {"none", "dry_run_or_explicit_confirm"}
++            and "confirm" not in declaration.minimal_invocation()
++        ):
++            raise ValueError(f"{declaration.name}: confirmation declaration needs confirm=true example")
++
++    capture = declaration_for("capture_assertion_candidate")
++    if capture.injection_policy != "candidate_only" or not {"author_ref", "author_kind=agent"} <= set(
++        capture.provenance_contract
++    ):
++        raise ValueError("capture_assertion_candidate must preserve agent candidate provenance")
++
++    annotation_import = declaration_for("import_annotation_batch")
++    required_batch_provenance = {
++        "batch_id",
++        "schema_id",
++        "schema_version",
++        "source_result_ref",
++        "actor_ref",
++        "model_ref",
++        "prompt_ref",
++    }
++    if not required_batch_provenance <= set(annotation_import.provenance_contract):
++        raise ValueError("import_annotation_batch must preserve immutable schema/batch provenance")
++
++    for name in ("judge_assertion_candidate", "judge_assertion_candidates"):
++        declaration = declaration_for(name)
++        if declaration.injection_policy != "operator_judgment":
++            raise ValueError(f"{name}: injection remains an operator judgment")
++
++    for name in (
++        "delete_annotation",
++        "delete_saved_view",
++        "delete_recall_pack",
++        "delete_workspace",
++        "delete_metadata",
++        "remove_tag",
++        "remove_mark",
++        "rebuild_index",
++        "rebuild_session_insights",
++    ):
++        if declaration_for(name).confirmation_policy != "explicit_confirm":
++            raise ValueError(f"{name}: interim confirmation contract missing")
++    if declaration_for("maintenance_execute").confirmation_policy != "dry_run_or_explicit_confirm":
++        raise ValueError("maintenance_execute must allow dry-run or require explicit confirmation")
++
++
++validate_registry()
++
++__all__ = [
++    "MCP_CONTEXT_ASSERTION_DECLARATIONS",
++    "MCP_CONTEXT_ASSERTION_REGISTRY",
++    "MCP_CONTEXT_ASSERTION_TOOL_NAMES",
++    "declaration_for",
++    "declarations_for_role",
++    "equivalence_document",
++    "render_equivalence_json",
++    "validate_registry",
++]
+diff --git a/polylogue/mcp/server_context_tools.py b/polylogue/mcp/server_context_tools.py
+index e0a49bb5e3fb15a04e01aab474a95356c4534005..c34720f6d867482f2065c0909f33900e314f36ba 100644
+--- a/polylogue/mcp/server_context_tools.py
++++ b/polylogue/mcp/server_context_tools.py
+@@ -11,9 +11,9 @@ from __future__ import annotations
+ 
+ from typing import TYPE_CHECKING
+ 
+-if TYPE_CHECKING:
+-    from mcp.server.fastmcp import FastMCP
++from polylogue.mcp.declarations.registration import MCPDeclarationRegistrar
+ 
++if TYPE_CHECKING:
+     from polylogue.mcp.server_support import ServerCallbacks
+ 
+ _DEFAULT_MAX_SESSIONS = 5
+@@ -30,8 +30,8 @@ def _detail_includes_messages(detail_level: str) -> bool:
+     return _DETAIL_INCLUDES_MESSAGES.get(detail_level, True)
+ 
+ 
+-def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+-    @mcp.tool()
++def register_context_tools(registrar: MCPDeclarationRegistrar, hooks: ServerCallbacks) -> None:
++    @registrar.tool()
+     async def get_context_delivery(snapshot_ref: str, recipient_ref: str) -> str:
+         """Read the exact persisted context image for its recorded recipient.
+ 
+@@ -58,7 +58,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("get_context_delivery", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def build_context_image(
+         project_path: str | None = None,
+         project_repo: str | None = None,
+@@ -112,7 +112,7 @@ def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("build_context_image", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def compose_context_preamble(
+         repo_path: str | None = None,
+         cwd: str | None = None,
+diff --git a/polylogue/mcp/server_maintenance_tools.py b/polylogue/mcp/server_maintenance_tools.py
+index 36674caa31b83e9409ce37b1daac6c66a983fd8e..c91fcea4f42509b0fc6e9494c1cf0df8ab6372ab 100644
+--- a/polylogue/mcp/server_maintenance_tools.py
++++ b/polylogue/mcp/server_maintenance_tools.py
+@@ -8,11 +8,10 @@ from typing import TYPE_CHECKING
+ 
+ from polylogue.core.enums import Origin
+ from polylogue.maintenance.scope import MaintenanceScopeFilter
++from polylogue.mcp.declarations.registration import MCPDeclarationRegistrar
+ from polylogue.mcp.payloads import MCPMutationStatusPayload, MCPRootPayload
+ 
+ if TYPE_CHECKING:
+-    from mcp.server.fastmcp import FastMCP
+-
+     from polylogue.mcp.server_support import ServerCallbacks
+ 
+ 
+@@ -53,8 +52,8 @@ def _build_mcp_scope_filter(
+     )
+ 
+ 
+-def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+-    @mcp.tool()
++def register_maintenance_tools(registrar: MCPDeclarationRegistrar, hooks: ServerCallbacks) -> None:
++    @registrar.tool()
+     async def maintenance_preview(
+         targets: list[str] | None = None,
+         session_ids: list[str] | None = None,
+@@ -109,10 +108,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+             session_ids=tuple(session_ids or ()),
+         )
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def maintenance_execute(
+         targets: list[str] | None = None,
+         dry_run: bool = False,
++        confirm: bool = False,
+         session_ids: list[str] | None = None,
+         origin: str | None = None,
+         source_family: str | None = None,
+@@ -132,6 +132,11 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+         """
+ 
+         async def run() -> str:
++            if not dry_run and not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to execute maintenance",
++                    code="confirmation_required",
++                )
+             from polylogue.config import Config
+             from polylogue.maintenance.envelope import envelope_from_operation
+             from polylogue.maintenance.planner import execute_backfill
+@@ -163,7 +168,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+             session_ids=tuple(session_ids or ()),
+         )
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def maintenance_status(operation_id: str) -> str:
+         """Return one persisted maintenance operation snapshot by id (#1197).
+ 
+@@ -202,7 +207,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("maintenance_status", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def maintenance_list() -> str:
+         """List every persisted maintenance operation snapshot (#1197).
+ 
+@@ -244,9 +249,14 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("maintenance_list", run)
+ 
+-    @mcp.tool()
+-    async def rebuild_index() -> str:
++    @registrar.tool()
++    async def rebuild_index(confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to rebuild the index",
++                    code="confirmation_required",
++                )
+             poly = hooks.get_polylogue()
+             success = await poly.rebuild_index()
+             status_info = await poly.get_index_status()
+@@ -263,7 +273,7 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("rebuild_index", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def update_index(session_ids: list[str]) -> str:
+         async def run() -> str:
+             success = await hooks.get_polylogue().update_index(session_ids)
+@@ -277,9 +287,17 @@ def register_maintenance_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("update_index", run, session_ids=tuple(session_ids))
+ 
+-    @mcp.tool()
+-    async def rebuild_session_insights(session_ids: list[str] | None = None) -> str:
++    @registrar.tool()
++    async def rebuild_session_insights(
++        session_ids: list[str] | None = None,
++        confirm: bool = False,
++    ) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to rebuild session insights",
++                    code="confirmation_required",
++                )
+             poly = hooks.get_polylogue()
+             counts = await poly.rebuild_insights(session_ids=session_ids)
+             return hooks.json_payload(
+diff --git a/polylogue/mcp/server_mutation_tools.py b/polylogue/mcp/server_mutation_tools.py
+index ac8a2f903548eb20ae722233424654cd0332571c..8fdca78cf4ec2a5a909deaa2eace2cb2cc4fe1ef 100644
+--- a/polylogue/mcp/server_mutation_tools.py
++++ b/polylogue/mcp/server_mutation_tools.py
+@@ -13,6 +13,7 @@ from polylogue.annotations.importer import (
+ )
+ from polylogue.core.user_state_targets import MARK_TYPE_NAMES, TARGET_SESSION, is_mark_type_supported
+ from polylogue.mcp.archive_support import blackboard_note_payload
++from polylogue.mcp.declarations.registration import MCPDeclarationRegistrar
+ from polylogue.mcp.mutation_support import page_items, resolve_session_or_error
+ from polylogue.mcp.payloads import (
+     MCPTagCountsPayload,
+@@ -24,8 +25,6 @@ from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
+ from polylogue.mcp.server_personal_state_tools import register_personal_state_tools
+ 
+ if TYPE_CHECKING:
+-    from mcp.server.fastmcp import FastMCP
+-
+     from polylogue.mcp.server_support import ServerCallbacks
+ 
+ 
+@@ -39,8 +38,8 @@ def _none_if_empty(value: str | None) -> str | None:
+     return value if value else None
+ 
+ 
+-def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+-    @mcp.tool()
++def register_mutation_tools(registrar: MCPDeclarationRegistrar, hooks: ServerCallbacks) -> None:
++    @registrar.tool()
+     async def capture_assertion_candidate(
+         body_text: str,
+         author_ref: str,
+@@ -74,7 +73,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("capture_assertion_candidate", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def import_annotation_batch(
+         jsonl: str,
+         batch_id: str,
+@@ -110,7 +109,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("import_annotation_batch", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def blackboard_post(
+         kind: str,
+         title: str,
+@@ -158,7 +157,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("blackboard_post", run, session_id=scope_session)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def add_tag(
+         session_id: str,
+         tag: str,
+@@ -187,9 +186,15 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("add_tag", run, session_id=session_id)
+ 
+-    @mcp.tool()
+-    async def remove_tag(session_id: str, tag: str) -> str:
++    @registrar.tool()
++    async def remove_tag(session_id: str, tag: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to remove tag",
++                    code="confirmation_required",
++                    session_id=session_id,
++                )
+             resolved, err = await resolve_session_or_error(hooks, session_id)
+             if err:
+                 return err
+@@ -209,7 +214,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("remove_tag", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def bulk_tag_sessions(session_ids: list[str], tags: list[str]) -> str:
+         async def run() -> str:
+             poly = hooks.get_polylogue()
+@@ -230,7 +235,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("bulk_tag_sessions", run, session_ids=tuple(session_ids))
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_tags(
+         origin: str | None = None,
+         limit: MCPToolLimit = 50,
+@@ -256,7 +261,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_tags", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_marks(
+         mark_type: str | None = None,
+         session_id: str | None = None,
+@@ -312,7 +317,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_marks", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def add_mark(
+         session_id: str,
+         mark_type: str,
+@@ -349,15 +354,22 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("add_mark", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def remove_mark(
+         session_id: str,
+         mark_type: str,
+         target_type: str = TARGET_SESSION,
+         target_id: str | None = None,
+         message_id: str | None = None,
++        confirm: bool = False,
+     ) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to remove mark",
++                    code="confirmation_required",
++                    session_id=session_id,
++                )
+             mark_error = _mark_type_error(hooks, mark_type)
+             if mark_error:
+                 return mark_error
+@@ -386,14 +398,15 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("remove_mark", run, session_id=session_id)
+ 
+-    register_personal_state_tools(mcp, hooks)
++    register_personal_state_tools(registrar, hooks)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def delete_session(session_id: str, confirm: bool = False) -> str:
+         async def run() -> str:
+             if not confirm:
+                 return hooks.error_json(
+                     "Safety guard: set confirm=true to delete",
++                    code="confirmation_required",
+                     session_id=session_id,
+                 )
+ 
+@@ -411,10 +424,10 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+         return await hooks.async_safe_call("delete_session", run, session_id=session_id)
+ 
+ 
+-def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
++def register_assertion_review_tools(registrar: MCPDeclarationRegistrar, hooks: ServerCallbacks) -> None:
+     """Register promotion tools only for authenticated review capability."""
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def judge_assertion_candidate(
+         candidate_ref: str,
+         decision: Literal["accept", "reject", "defer", "supersede"],
+@@ -448,7 +461,7 @@ def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> Non
+ 
+         return await hooks.async_safe_call("judge_assertion_candidate", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def judge_assertion_candidates(
+         items: list[dict[str, object]],
+         actor_ref: str = "user:local",
+diff --git a/polylogue/mcp/server_personal_state_tools.py b/polylogue/mcp/server_personal_state_tools.py
+index 9888418833447224559a28efd0ebe9727d15220c..be3f6fbd40b2e3f4c626ab50db5bd85f36504f66 100644
+--- a/polylogue/mcp/server_personal_state_tools.py
++++ b/polylogue/mcp/server_personal_state_tools.py
+@@ -13,6 +13,7 @@ from hashlib import sha256
+ from typing import TYPE_CHECKING
+ 
+ from polylogue.core.user_state_targets import TARGET_SESSION
++from polylogue.mcp.declarations.registration import MCPDeclarationRegistrar
+ from polylogue.mcp.mutation_support import page_items, resolve_session_or_error
+ from polylogue.mcp.payloads import (
+     MCPMetadataPayload,
+@@ -30,8 +31,6 @@ from polylogue.mcp.payloads import (
+ from polylogue.mcp.query_contracts import MCPCharacterLimit, MCPToolLimit, MCPToolOffset
+ 
+ if TYPE_CHECKING:
+-    from mcp.server.fastmcp import FastMCP
+-
+     from polylogue.mcp.server_support import ServerCallbacks
+ 
+ 
+@@ -146,10 +145,10 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
+     )
+ 
+ 
+-def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
++def register_personal_state_tools(registrar: MCPDeclarationRegistrar, hooks: ServerCallbacks) -> None:
+     """Register annotations, views, recall packs, workspaces, metadata and corrections."""
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_annotations(
+         session_id: str | None = None,
+         target_type: str | None = None,
+@@ -192,7 +191,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_annotations", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def save_annotation(
+         annotation_id: str,
+         session_id: str,
+@@ -222,9 +221,14 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("save_annotation", run, session_id=session_id)
+ 
+-    @mcp.tool()
+-    async def delete_annotation(annotation_id: str) -> str:
++    @registrar.tool()
++    async def delete_annotation(annotation_id: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to delete annotation",
++                    code="confirmation_required",
++                )
+             deleted = await hooks.get_polylogue().delete_annotation(annotation_id)
+             return hooks.json_payload(
+                 MutationResultPayload(
+@@ -237,7 +241,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("delete_annotation", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_saved_views(
+         limit: MCPToolLimit = 50, offset: MCPToolOffset = 0, max_chars_per_item: MCPCharacterLimit = None
+     ) -> str:
+@@ -263,7 +267,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_saved_views", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def save_saved_view(name: str, query_json: str, view_id: str | None = None) -> str:
+         async def run() -> str:
+             if not name.strip():
+@@ -292,9 +296,14 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("save_saved_view", run)
+ 
+-    @mcp.tool()
+-    async def delete_saved_view(view_id: str) -> str:
++    @registrar.tool()
++    async def delete_saved_view(view_id: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to delete saved view",
++                    code="confirmation_required",
++                )
+             deleted = await hooks.get_polylogue().delete_view(view_id)
+             return hooks.json_payload(
+                 MutationResultPayload(
+@@ -307,7 +316,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("delete_saved_view", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_recall_packs(
+         limit: MCPToolLimit = 50, offset: MCPToolOffset = 0, max_chars_per_item: MCPCharacterLimit = None
+     ) -> str:
+@@ -338,7 +347,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_recall_packs", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def save_recall_pack(pack_id: str, label: str, payload_json: str = "{}") -> str:
+         async def run() -> str:
+             if not pack_id.strip():
+@@ -364,9 +373,14 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("save_recall_pack", run)
+ 
+-    @mcp.tool()
+-    async def delete_recall_pack(pack_id: str) -> str:
++    @registrar.tool()
++    async def delete_recall_pack(pack_id: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to delete recall pack",
++                    code="confirmation_required",
++                )
+             deleted = await hooks.get_polylogue().delete_recall_pack(pack_id)
+             return hooks.json_payload(
+                 MutationResultPayload(
+@@ -379,7 +393,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("delete_recall_pack", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_workspaces(
+         limit: MCPToolLimit = 50, offset: MCPToolOffset = 0, max_chars_per_item: MCPCharacterLimit = None
+     ) -> str:
+@@ -413,7 +427,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_workspaces", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def save_workspace(
+         workspace_id: str,
+         name: str,
+@@ -462,9 +476,14 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("save_workspace", run)
+ 
+-    @mcp.tool()
+-    async def delete_workspace(workspace_id: str) -> str:
++    @registrar.tool()
++    async def delete_workspace(workspace_id: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to delete workspace",
++                    code="confirmation_required",
++                )
+             deleted = await hooks.get_polylogue().delete_workspace(workspace_id)
+             return hooks.json_payload(
+                 MutationResultPayload(
+@@ -477,7 +496,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("delete_workspace", run)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def get_metadata(session_id: str) -> str:
+         async def run() -> str:
+             metadata = await hooks.get_polylogue().get_metadata(session_id)
+@@ -485,7 +504,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("get_metadata", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def set_metadata(session_id: str, key: str, value: str) -> str:
+         async def run() -> str:
+             from polylogue.api.archive import SessionNotFoundError
+@@ -515,9 +534,15 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("set_metadata", run, session_id=session_id)
+ 
+-    @mcp.tool()
+-    async def delete_metadata(session_id: str, key: str) -> str:
++    @registrar.tool()
++    async def delete_metadata(session_id: str, key: str, confirm: bool = False) -> str:
+         async def run() -> str:
++            if not confirm:
++                return hooks.error_json(
++                    "Safety guard: set confirm=true to delete metadata",
++                    code="confirmation_required",
++                    session_id=session_id,
++                )
+             from polylogue.api.archive import SessionNotFoundError
+             from polylogue.surfaces.payloads import MetadataKeyValidationError, validate_metadata_key
+ 
+@@ -542,7 +567,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("delete_metadata", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def record_correction(
+         session_id: str,
+         kind: str,
+@@ -580,7 +605,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("record_correction", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def list_corrections(
+         session_id: str | None = None,
+         kind: str | None = None,
+@@ -637,7 +662,7 @@ def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+         return await hooks.async_safe_call("list_corrections", run, session_id=session_id)
+ 
+-    @mcp.tool()
++    @registrar.tool()
+     async def clear_corrections(session_id: str, kind: str | None = None) -> str:
+         """Delete one or all corrections for a session."""
+ 
+diff --git a/polylogue/mcp/server_tools.py b/polylogue/mcp/server_tools.py
+index 5c08d927da843bda6c12ca39da18cf748f8440dc..a195f8fa9828a0542399b57983cf3e97060b8429 100644
+--- a/polylogue/mcp/server_tools.py
++++ b/polylogue/mcp/server_tools.py
+@@ -23,6 +23,7 @@ from polylogue.mcp.archive_support import (
+     blackboard_note_payload,
+     mcp_archive_root,
+ )
++from polylogue.mcp.declarations.registration import MCPDeclarationRegistrar
+ from polylogue.mcp.payloads import (
+     MCPArchiveSearchHitPayload,
+     MCPArchiveSearchPayload,
+@@ -57,7 +58,6 @@ from polylogue.mcp.server_context_tools import register_context_tools
+ from polylogue.mcp.server_insight_tools import register_insight_tools
+ from polylogue.mcp.server_maintenance_tools import register_maintenance_tools
+ from polylogue.mcp.server_mutation_tools import register_assertion_review_tools, register_mutation_tools
+-from polylogue.mcp.server_support import role_allows
+ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+ 
+ if TYPE_CHECKING:
+@@ -1310,16 +1310,15 @@ def register_read_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+ 
+ 
+ def register_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
++    registrar = MCPDeclarationRegistrar(mcp, role=hooks.role)
+     register_query_tools(mcp, hooks)
+     register_read_tools(mcp, hooks)
+-    register_context_tools(mcp, hooks)
++    register_context_tools(registrar, hooks)
+     register_insight_tools(mcp, hooks)
+-    if role_allows(hooks.role, "write"):
+-        register_mutation_tools(mcp, hooks)
+-    if role_allows(hooks.role, "review"):
+-        register_assertion_review_tools(mcp, hooks)
+-    if role_allows(hooks.role, "admin"):
+-        register_maintenance_tools(mcp, hooks)
++    register_mutation_tools(registrar, hooks)
++    register_assertion_review_tools(registrar, hooks)
++    register_maintenance_tools(registrar, hooks)
++    registrar.assert_complete()
+ 
+ 
+ __all__ = ["register_query_tools", "register_read_tools", "register_tools"]
+diff --git a/tests/infra/mcp.py b/tests/infra/mcp.py
+index 258ab5e84f088709969191f6152a1c96033cded5..5c7af1e418d0b38ac1e3bd268ec0e995036186e7 100644
+--- a/tests/infra/mcp.py
++++ b/tests/infra/mcp.py
+@@ -10,50 +10,27 @@ from unittest.mock import AsyncMock, MagicMock
+ 
+ from polylogue.archive.models import Session
+ from polylogue.core.enums import Provider
++from polylogue.mcp.declarations.registry import MCP_CONTEXT_ASSERTION_TOOL_NAMES
+ from tests.infra.builders import make_conv, make_msg
+ 
+-EXPECTED_TOOL_NAMES = {
++_EXPECTED_UNMIGRATED_TOOL_NAMES = {
+     "search",
+     "query_units",
+     "resolve_ref",
+     "explain_import",
+     "list_sessions",
+     "compile_context",
+-    "get_context_delivery",
+-    "build_context_image",
+     "blackboard_list",
+-    "blackboard_post",
+-    "capture_assertion_candidate",
+-    "import_annotation_batch",
+     "join_typed_annotations",
+     "list_assertion_claims",
+     "list_assertion_candidates",
+     "list_assertion_candidate_reviews",
+-    "judge_assertion_candidate",
+-    "judge_assertion_candidates",
+     "neighbor_candidates",
+     "stats",
+     "embedding_status",
+     "embedding_preflight",
+     "facets",
+     "agent_coordination",
+-    "add_tag",
+-    "remove_tag",
+-    "bulk_tag_sessions",
+-    "list_tags",
+-    "list_marks",
+-    "add_mark",
+-    "remove_mark",
+-    "list_annotations",
+-    "save_annotation",
+-    "delete_annotation",
+-    "list_saved_views",
+-    "save_saved_view",
+-    "delete_saved_view",
+-    "get_metadata",
+-    "set_metadata",
+-    "delete_metadata",
+-    "delete_session",
+     "get_session_summary",
+     "get_session_tree",
+     "get_session_topology",
+@@ -64,15 +41,8 @@ EXPECTED_TOOL_NAMES = {
+     "query_completions",
+     "readiness_check",
+     "named_source_freshness",
+-    "rebuild_index",
+-    "update_index",
+     "get_postmortem_bundle",
+     "get_pathologies",
+-    "rebuild_session_insights",
+-    "maintenance_preview",
+-    "maintenance_execute",
+-    "maintenance_status",
+-    "maintenance_list",
+     "session_profile",
+     "session_latency_profile",
+     "tool_call_latency_distribution",
+@@ -103,21 +73,12 @@ EXPECTED_TOOL_NAMES = {
+     "archive_get_session",
+     "archive_list_sessions",
+     "archive_search_sessions",
+-    "clear_corrections",
+-    "compose_context_preamble",
+-    "delete_recall_pack",
+-    "delete_workspace",
+     "get_messages",
+     "insight_rigor_audit",
+-    "list_corrections",
+-    "list_recall_packs",
+-    "list_workspaces",
+     "provider_usage",
+     "raw_artifacts",
+-    "record_correction",
+-    "save_recall_pack",
+-    "save_workspace",
+ }
++EXPECTED_TOOL_NAMES = _EXPECTED_UNMIGRATED_TOOL_NAMES | set(MCP_CONTEXT_ASSERTION_TOOL_NAMES)
+ 
+ EXPECTED_RESOURCE_URIS = {
+     "polylogue://stats",
+diff --git a/tests/unit/maintenance/test_envelope_contracts.py b/tests/unit/maintenance/test_envelope_contracts.py
+index ddd849995f31d60be705d0921e9d9a3a4d572c45..31571dff2071a52950a385ad60df1781950a5c8a 100644
+--- a/tests/unit/maintenance/test_envelope_contracts.py
++++ b/tests/unit/maintenance/test_envelope_contracts.py
+@@ -271,6 +271,32 @@ class TestMaintenanceMCPTools:
+         assert payload["origin"] == "mcp"
+         assert payload["mode"] == "preview"
+ 
++    def test_maintenance_execute_dry_run_does_not_require_confirmation(self) -> None:
++        """Dry-run remains observable while execution fails closed without confirm.
++
++        Production dependency: the distinct ``maintenance_execute`` handler's
++        ``dry_run or confirm`` gate. Requiring confirmation for dry-run would
++        break safe planning; removing the gate would let real execution reach
++        ``execute_backfill`` without explicit authorization.
++        """
++        from polylogue.mcp.server import build_server
++
++        operation = _example_operation()
++        server = build_server(role="admin")
++        fn = server._tool_manager._tools["maintenance_execute"].fn
++
++        with patch(
++            "polylogue.maintenance.planner.execute_backfill",
++            return_value=operation,
++        ) as execute_backfill:
++            result = asyncio.run(fn(dry_run=True))
++
++        payload = json.loads(result)
++        assert payload["origin"] == "mcp"
++        assert payload["mode"] == "execute"
++        execute_backfill.assert_called_once()
++        assert execute_backfill.call_args.kwargs["dry_run"] is True
++
+ 
+ # ---------------------------------------------------------------------------
+ # Helpers
+diff --git a/tests/unit/mcp/test_context_assertion_declarations.py b/tests/unit/mcp/test_context_assertion_declarations.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa5e6c99b8aebf6f4c5d3bac087e2954984cbece
+--- /dev/null
++++ b/tests/unit/mcp/test_context_assertion_declarations.py
+@@ -0,0 +1,253 @@
++"""Executable contracts for the context/assertion MCP declaration migration."""
++
++from __future__ import annotations
++
++import inspect
++import json
++from pathlib import Path
++from typing import cast
++from unittest.mock import patch
++
++import pytest
++
++from polylogue.api import Polylogue
++from polylogue.mcp.declarations.registry import (
++    MCP_CONTEXT_ASSERTION_DECLARATIONS,
++    MCP_CONTEXT_ASSERTION_TOOL_NAMES,
++    declaration_for,
++    declarations_for_role,
++    render_equivalence_json,
++)
++from polylogue.mcp.server import build_server
++from polylogue.mcp.server_support import MCPRole
++from tests.infra.mcp import EXPECTED_TOOL_NAMES, MCPServerUnderTest, invoke_surface
++from tests.infra.storage_records import SessionBuilder
++
++_EQUIVALENCE_ARTIFACT = Path("docs/generated/mcp-context-assertion-equivalence.json")
++
++
++def _tool_names(role: MCPRole) -> set[str]:
++    server = cast(MCPServerUnderTest, build_server(role=role))
++    return set(server._tool_manager._tools)
++
++
++@pytest.mark.parametrize("role", ("read", "write", "review", "admin"))
++def test_declarations_drive_role_scoped_registration(role: MCPRole) -> None:
++    """Production dependency: ``register_tools`` and ``MCPDeclarationRegistrar``.
++
++    Removing declaration-owned filtering, restoring a family-level role gate,
++    or changing a declaration's required role makes this exact discovery
++    equivalence fail.
++    """
++
++    actual = _tool_names(role) & MCP_CONTEXT_ASSERTION_TOOL_NAMES
++    expected = {declaration.name for declaration in declarations_for_role(role)}
++    assert actual == expected
++
++
++def test_declarations_bind_exact_production_handlers_and_input_contracts() -> None:
++    """Production dependency: every registered FastMCP handler and signature.
++
++    Replacing a handler with a wrapper in another module, deleting a handler,
++    dropping a minimal-invocation parameter, or removing a confirmation default
++    fails this test (and the production registrar's startup validation).
++    """
++
++    server = cast(MCPServerUnderTest, build_server(role="admin"))
++    for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS:
++        handler = server._tool_manager._tools[declaration.name].fn
++        assert handler.__module__ == declaration.module, declaration.name
++        assert inspect.iscoroutinefunction(handler), declaration.name
++        signature = inspect.signature(handler)
++        assert set(declaration.minimal_invocation()) <= set(signature.parameters), declaration.name
++        if declaration.confirmation_policy != "none":
++            assert signature.parameters["confirm"].default is False, declaration.name
++        if declaration.confirmation_policy == "dry_run_or_explicit_confirm":
++            assert signature.parameters["dry_run"].default is False, declaration.name
++
++
++def test_registry_preserves_trust_injection_and_annotation_provenance() -> None:
++    """Production dependency: candidate, judgment, and annotation declarations.
++
++    Promoting agent-authored candidates to injectable writes, weakening review
++    role, or omitting immutable schema/batch provenance makes these assertions
++    fail before an adapter can register.
++    """
++
++    capture = declaration_for("capture_assertion_candidate")
++    assert capture.required_role == "write"
++    assert capture.injection_policy == "candidate_only"
++    assert {"author_ref", "author_kind=agent"} <= set(capture.provenance_contract)
++
++    annotation_import = declaration_for("import_annotation_batch")
++    assert annotation_import.injection_policy == "candidate_only"
++    assert {
++        "batch_id",
++        "schema_id",
++        "schema_version",
++        "source_result_ref",
++        "actor_ref",
++        "model_ref",
++        "prompt_ref",
++    } <= set(annotation_import.provenance_contract)
++
++    for name in ("judge_assertion_candidate", "judge_assertion_candidates"):
++        judgment = declaration_for(name)
++        assert judgment.required_role == "review"
++        assert judgment.injection_policy == "operator_judgment"
++        assert "actor_ref" in judgment.provenance_contract
++
++
++def test_generated_equivalence_artifact_matches_executable_registry() -> None:
++    """Production dependency: ``render_equivalence_json`` and the registry.
++
++    Editing the committed artifact, changing a declaration without regenerating
++    it, or returning unstable declaration ordering makes byte equality fail.
++    """
++
++    assert _EQUIVALENCE_ARTIFACT.read_text() == render_equivalence_json()
++
++
++def test_declarations_do_not_claim_unimplemented_protocol_routes() -> None:
++    """Production dependency: current MCP resource/prompt registration.
++
++    Adding an invented URI or naming a prompt that is not actually registered
++    makes this fail. The migration may describe only real compatibility routes
++    until a production resource resolver is implemented.
++    """
++
++    assert all(declaration.resource_alternative is None for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS)
++    prompt_alternatives = {
++        declaration.name: declaration.prompt_alternative
++        for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS
++        if declaration.prompt_alternative is not None
++    }
++    assert prompt_alternatives == {"compose_context_preamble": "resume_context"}
++
++    server = cast(MCPServerUnderTest, build_server(role="admin"))
++    assert "resume_context" in server._prompt_manager._prompts
++
++
++def test_expected_tool_inventory_uses_declared_names() -> None:
++    """Production dependency: the shared discovery inventory in ``tests.infra``.
++
++    Removing the registry union or omitting one migrated declaration makes the
++    expected surface diverge from the executable declaration set.
++    """
++
++    assert MCP_CONTEXT_ASSERTION_TOOL_NAMES <= EXPECTED_TOOL_NAMES
++    assert len(MCP_CONTEXT_ASSERTION_TOOL_NAMES) == 41
++
++
++def test_declared_confirmation_contracts_fail_closed_before_backend_access() -> None:
++    """Production dependency: all individually implemented destructive handlers.
++
++    Removing any per-handler guard (or moving it after session resolution,
++    planner construction, or facade access) permits the patched backend seam to
++    be touched and fails this test. The test intentionally does not use a
++    generic mutation dispatcher.
++    """
++
++    guarded = tuple(
++        declaration for declaration in MCP_CONTEXT_ASSERTION_DECLARATIONS if declaration.confirmation_policy != "none"
++    )
++    assert {declaration.name for declaration in guarded} == {
++        "remove_tag",
++        "remove_mark",
++        "delete_annotation",
++        "delete_saved_view",
++        "delete_recall_pack",
++        "delete_workspace",
++        "delete_metadata",
++        "delete_session",
++        "maintenance_execute",
++        "rebuild_index",
++        "rebuild_session_insights",
++    }
++
++    with patch("polylogue.mcp.server._get_polylogue") as get_polylogue:
++        server = cast(MCPServerUnderTest, build_server(role="admin"))
++        for declaration in guarded:
++            kwargs = declaration.minimal_invocation()
++            kwargs.pop("confirm", None)
++            if declaration.confirmation_policy == "dry_run_or_explicit_confirm":
++                kwargs["dry_run"] = False
++            payload = json.loads(invoke_surface(server._tool_manager._tools[declaration.name].fn, **kwargs))
++            assert payload["code"] == "confirmation_required", declaration.name
++            assert payload["is_error"] is True, declaration.name
++
++    get_polylogue.assert_not_called()
++
++
++def test_real_mcp_candidate_write_review_and_readback_preserves_authority(
++    cli_workspace: dict[str, Path],
++) -> None:
++    """Production dependency: FastMCP adapters, facade, and real ``user.db``.
++
++    Replacing candidate capture with a mock-only path, making write-role tools
++    promote or inject content, bypassing reviewer actor/injection controls, or
++    disconnecting either MCP readback route makes this end-to-end test fail.
++    """
++
++    session = SessionBuilder(cli_workspace["db_path"], "mcp-declaration-roundtrip").provider("codex")
++    session.save()
++    session_ref = f"session:{session.native_session_id()}"
++    poly = Polylogue(archive_root=cli_workspace["archive_root"])
++
++    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
++        write_server = cast(MCPServerUnderTest, build_server(role="write"))
++        read_server = cast(MCPServerUnderTest, build_server(role="read"))
++        review_server = cast(MCPServerUnderTest, build_server(role="review"))
++
++        captured = json.loads(
++            invoke_surface(
++                write_server._tool_manager._tools["capture_assertion_candidate"].fn,
++                body_text="Agent candidate requiring operator judgment",
++                kind="lesson",
++                refs=[session_ref],
++                scope_refs=["repo:polylogue"],
++                author_ref="agent:codex-session:mcp-declaration-roundtrip",
++            )
++        )
++        assert captured["status"] == "candidate"
++        assert captured["author_kind"] == "agent"
++        assert captured["context_policy"] == {"inject": False, "promotion_required": True}
++
++        pending = json.loads(
++            invoke_surface(
++                read_server._tool_manager._tools["list_assertion_candidates"].fn,
++                target_ref=session_ref,
++                limit=10,
++            )
++        )
++        assert pending["total"] == 1
++        assert pending["items"][0]["assertion_id"] == captured["assertion_id"]
++        assert pending["items"][0]["status"] == "candidate"
++        assert pending["items"][0]["context_policy"]["inject"] is False
++
++        judgment = json.loads(
++            invoke_surface(
++                review_server._tool_manager._tools["judge_assertion_candidate"].fn,
++                candidate_ref=f"assertion:{captured['assertion_id']}",
++                decision="accept",
++                inject=True,
++                actor_ref="user:operator",
++                reason="verified against archived evidence",
++            )
++        )
++        assert judgment["applied_count"] == 1
++        assert judgment["failed_count"] == 0
++
++        active = json.loads(
++            invoke_surface(
++                read_server._tool_manager._tools["list_assertion_claims"].fn,
++                target_ref=session_ref,
++                statuses="active",
++                context_inject=True,
++                limit=10,
++            )
++        )
++        assert active["total"] == 1
++        assert active["items"][0]["status"] == "active"
++        assert active["items"][0]["body_text"] == "Agent candidate requiring operator judgment"
++        assert active["items"][0]["context_policy"] == {"inject": True}
+diff --git a/tests/unit/mcp/test_per_tool_contracts.py b/tests/unit/mcp/test_per_tool_contracts.py
+index 7323932193a4707c88d96289c2beb36a8c924e13..c2bce99713c21be8a5ebf53b94ffa3c332517a2e 100644
+--- a/tests/unit/mcp/test_per_tool_contracts.py
++++ b/tests/unit/mcp/test_per_tool_contracts.py
+@@ -1,6 +1,6 @@
+ """Per-tool contract coverage for the MCP mutation-tools surface (#1294).
+ 
+-Pins three durable contracts for every ``@mcp.tool()`` registered by
++Pins three durable contracts for every declared MCP mutation handler registered by
+ the modules composed by ``polylogue.mcp.server_mutation_tools``:
+ 
+ 1. **Argument validation** — each tool has a registered handler, the
+@@ -8,16 +8,15 @@ the modules composed by ``polylogue.mcp.server_mutation_tools``:
+    and at least one input rejection or happy path returns a structured
+    JSON envelope (no raw tracebacks).
+ 2. **Authorization** — every mutation tool is absent from a ``read``-role
+-   server. ``server_tools.register_tools`` gates the whole mutation
+-   register on ``role_allows(role, "write")``; this test pins that gate
+-   per tool so a future regression that promoted any tool to
+-   read-role registration fails loudly.
++   server. Declaration-owned role filtering pins that boundary per tool,
++   so a future regression that promoted any mutation to read-role
++   registration fails loudly.
+ 3. **Idempotency** — create-twice, delete-missing, update-with-same
+    payload return the documented ``status``/``outcome`` shape rather
+    than crashing.
+ 
+ Tool names are discovered from the admin-role FastMCP server (not a
+-hard-coded list) so adding a new ``@mcp.tool()`` without coverage
++hard-coded list) so adding a new declared handler without coverage
+ fails the discovery test until it is added to ``TOOL_MATRIX``.
+ """
+ 
+@@ -100,7 +99,7 @@ def _discover_mutation_result_tool_names() -> frozenset[str]:
+     """Discover mutation tools whose success path emits MutationResultPayload."""
+     names: set[str] = set()
+     for module in _mutation_registration_modules():
+-        for chunk in inspect.getsource(module).split("    @mcp.tool()"):
++        for chunk in re.split(r"    @(?:mcp|registrar)\.tool\(\)", inspect.getsource(module)):
+             match = re.search(r"async def ([a-zA-Z_][a-zA-Z0-9_]*)\(", chunk)
+             if match and "MutationResultPayload(" in chunk:
+                 names.add(match.group(1))
+@@ -178,7 +177,7 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "remove_tag": {
+         "required": {"session_id", "tag"},
+-        "happy": {"session_id": _CONV_ID, "tag": "review"},
++        "happy": {"session_id": _CONV_ID, "tag": "review", "confirm": True},
+     },
+     "bulk_tag_sessions": {
+         "required": {"session_ids", "tags"},
+@@ -199,8 +198,8 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "remove_mark": {
+         "required": {"session_id", "mark_type"},
+-        "happy": {"session_id": _CONV_ID, "mark_type": "star"},
+-        "invalid_value": {"session_id": _CONV_ID, "mark_type": "bogus"},
++        "happy": {"session_id": _CONV_ID, "mark_type": "star", "confirm": True},
++        "invalid_value": {"session_id": _CONV_ID, "mark_type": "bogus", "confirm": True},
+     },
+     "list_annotations": {
+         "required": set(),
+@@ -213,7 +212,7 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "delete_annotation": {
+         "required": {"annotation_id"},
+-        "happy": {"annotation_id": "ann-1"},
++        "happy": {"annotation_id": "ann-1", "confirm": True},
+     },
+     "list_saved_views": {
+         "required": set(),
+@@ -226,7 +225,7 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "delete_saved_view": {
+         "required": {"view_id"},
+-        "happy": {"view_id": "view-1"},
++        "happy": {"view_id": "view-1", "confirm": True},
+     },
+     "list_recall_packs": {
+         "required": set(),
+@@ -239,7 +238,7 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "delete_recall_pack": {
+         "required": {"pack_id"},
+-        "happy": {"pack_id": "pack-1"},
++        "happy": {"pack_id": "pack-1", "confirm": True},
+     },
+     "list_workspaces": {
+         "required": set(),
+@@ -252,7 +251,7 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "delete_workspace": {
+         "required": {"workspace_id"},
+-        "happy": {"workspace_id": "ws-1"},
++        "happy": {"workspace_id": "ws-1", "confirm": True},
+     },
+     "get_metadata": {
+         "required": {"session_id"},
+@@ -265,8 +264,8 @@ TOOL_MATRIX: dict[str, dict[str, Any]] = {
+     },
+     "delete_metadata": {
+         "required": {"session_id", "key"},
+-        "happy": {"session_id": _CONV_ID, "key": "note"},
+-        "invalid_value": {"session_id": _CONV_ID, "key": ""},
++        "happy": {"session_id": _CONV_ID, "key": "note", "confirm": True},
++        "invalid_value": {"session_id": _CONV_ID, "key": "", "confirm": True},
+     },
+     "delete_session": {
+         "required": {"session_id"},
+@@ -356,8 +355,9 @@ class TestMutationToolDiscovery:
+     """
+ 
+     def test_personal_state_tools_depend_on_parent_composition_seam(self) -> None:
+-        """The parent registrar owns the only route into the extracted tools."""
++        """The parent registrar fails closed when extracted handlers disappear."""
+         from polylogue.mcp import server_personal_state_tools
++        from polylogue.mcp.declarations.registration import MCPDeclarationRegistrationError
+         from polylogue.mcp.server import build_server
+ 
+         registered = cast(MCPServerUnderTest, build_server(role="admin"))
+@@ -371,11 +371,13 @@ class TestMutationToolDiscovery:
+         }
+         assert personal_names
+ 
+-        with patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar:
+-            suppressed = cast(MCPServerUnderTest, build_server(role="admin"))
++        with (
++            patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar,
++            pytest.raises(MCPDeclarationRegistrationError, match="missing_handlers"),
++        ):
++            build_server(role="admin")
+ 
+         registrar.assert_called_once()
+-        assert personal_names.isdisjoint(suppressed._tool_manager._tools), sorted(personal_names)
+ 
+     def test_every_mutation_tool_is_in_matrix(self) -> None:
+         missing = MUTATION_TOOL_NAMES - set(TOOL_MATRIX.keys())
+@@ -593,7 +595,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "remove_tag",
+-        {"session_id": _CONV_ID, "tag": "missing"},
++        {"session_id": _CONV_ID, "tag": "missing", "confirm": True},
+         "remove_tag",
+         TagMutationResult(outcome="not_present", detail="tag_absent"),
+         TagMutationResult(outcome="not_present", detail="tag_absent"),
+@@ -613,7 +615,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "remove_mark",
+-        {"session_id": _CONV_ID, "mark_type": "star"},
++        {"session_id": _CONV_ID, "mark_type": "star", "confirm": True},
+         "remove_mark",
+         False,
+         False,
+@@ -637,7 +639,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "delete_annotation",
+-        {"annotation_id": "missing-ann"},
++        {"annotation_id": "missing-ann", "confirm": True},
+         "delete_annotation",
+         False,
+         False,
+@@ -647,7 +649,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "delete_saved_view",
+-        {"view_id": "missing-view"},
++        {"view_id": "missing-view", "confirm": True},
+         "delete_view",
+         False,
+         False,
+@@ -657,7 +659,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "delete_recall_pack",
+-        {"pack_id": "missing-pack"},
++        {"pack_id": "missing-pack", "confirm": True},
+         "delete_recall_pack",
+         False,
+         False,
+@@ -667,7 +669,7 @@ _IDEMPOTENT_CASES = [
+     ),
+     pytest.param(
+         "delete_workspace",
+-        {"workspace_id": "missing-ws"},
++        {"workspace_id": "missing-ws", "confirm": True},
+         "delete_workspace",
+         False,
+         False,
+diff --git a/tests/unit/mcp/test_tag_idempotency.py b/tests/unit/mcp/test_tag_idempotency.py
+index 76ad0d977607cafd1ae47a4252782a6e622a3f98..20eb396d115ef92d2b00a61c85b15b5c5f6865c3 100644
+--- a/tests/unit/mcp/test_tag_idempotency.py
++++ b/tests/unit/mcp/test_tag_idempotency.py
+@@ -109,6 +109,7 @@ class TestTagIdempotencyOutcomes:
+                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
+                 session_id=_CONV_ID,
+                 tag=_TAG,
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+@@ -128,6 +129,7 @@ class TestTagIdempotencyOutcomes:
+                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
+                 session_id=_CONV_ID,
+                 tag=_TAG,
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+@@ -146,6 +148,7 @@ class TestTagIdempotencyOutcomes:
+                 mcp_server._tool_manager._tools[_REMOVE_TAG_TOOL].fn,
+                 session_id="nonexistent:id",
+                 tag=_TAG,
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+diff --git a/tests/unit/mcp/test_tool_contracts.py b/tests/unit/mcp/test_tool_contracts.py
+index f3f07e96f2c3a9c6ffb82b463e20ad631a1f7237..4da60ef5c05fe8af663fe43ec26ec2ae0f3b2c36 100644
+--- a/tests/unit/mcp/test_tool_contracts.py
++++ b/tests/unit/mcp/test_tool_contracts.py
+@@ -2004,7 +2004,10 @@ class TestMutationTools:
+             mock_get_polylogue.return_value = mock_poly
+ 
+             result = invoke_surface(
+-                mcp_server._tool_manager._tools["remove_tag"].fn, session_id="test:conv-123", tag="important"
++                mcp_server._tool_manager._tools["remove_tag"].fn,
++                session_id="test:conv-123",
++                tag="important",
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+@@ -2023,6 +2026,7 @@ class TestMutationTools:
+                 mcp_server._tool_manager._tools["remove_tag"].fn,
+                 session_id="test:conv-123",
+                 tag="important",
++                confirm=True,
+             )
+ 
+         body = json.loads(result)
+@@ -2261,6 +2265,7 @@ class TestMutationTools:
+                 mcp_server._tool_manager._tools["delete_metadata"].fn,
+                 session_id="test:conv-123",
+                 key="author",
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+@@ -2454,7 +2459,7 @@ class TestMutationTools:
+             mock_poly.get_index_status = AsyncMock(return_value={"exists": True, "count": 500})
+             mock_get_polylogue.return_value = mock_poly
+ 
+-            result = invoke_surface(mcp_server._tool_manager._tools["rebuild_index"].fn)
++            result = invoke_surface(mcp_server._tool_manager._tools["rebuild_index"].fn, confirm=True)
+ 
+         parsed = json.loads(result)
+         assert parsed["status"] == "ok"
+@@ -2489,6 +2494,7 @@ class TestMutationTools:
+             result = invoke_surface(
+                 mcp_server._tool_manager._tools["rebuild_session_insights"].fn,
+                 session_ids=["conv-1", "conv-2"],
++                confirm=True,
+             )
+ 
+         parsed = json.loads(result)
+diff --git a/tests/unit/mcp/test_user_state_tools.py b/tests/unit/mcp/test_user_state_tools.py
+index c00795fda9e0748c7707627a40a31abacf73f362..de7d398056205dfaa22af82bd8d202fd15da8162 100644
+--- a/tests/unit/mcp/test_user_state_tools.py
++++ b/tests/unit/mcp/test_user_state_tools.py
+@@ -93,6 +93,7 @@ def test_remove_mark_reports_missing_mark(mcp_server: MCPServerUnderTest) -> Non
+             mcp_server._tool_manager._tools["remove_mark"].fn,
+             session_id="conv-123",
+             mark_type="star",
++            confirm=True,
+         )
+ 
+     parsed = json.loads(result)
+@@ -112,6 +113,7 @@ def test_remove_mark_rejects_unknown_type(mcp_server: MCPServerUnderTest) -> Non
+         mcp_server._tool_manager._tools["remove_mark"].fn,
+         session_id="conv-123",
+         mark_type="later",
++        confirm=True,
+     )
+ 
+     parsed = json.loads(result)
+@@ -200,7 +202,11 @@ def test_delete_annotation_reports_status(mcp_server: MCPServerUnderTest) -> Non
+         mock_poly.delete_annotation = AsyncMock(return_value=False)
+         mock_get_polylogue.return_value = mock_poly
+ 
+-        result = invoke_surface(mcp_server._tool_manager._tools["delete_annotation"].fn, annotation_id="ann-1")
++        result = invoke_surface(
++            mcp_server._tool_manager._tools["delete_annotation"].fn,
++            annotation_id="ann-1",
++            confirm=True,
++        )
+ 
+     parsed = json.loads(result)
+     assert parsed["status"] == "not_found"
+@@ -291,7 +297,11 @@ def test_delete_saved_view_reports_status(mcp_server: MCPServerUnderTest) -> Non
+         mock_poly.delete_view = AsyncMock(return_value=True)
+         mock_get_polylogue.return_value = mock_poly
+ 
+-        result = invoke_surface(mcp_server._tool_manager._tools["delete_saved_view"].fn, view_id="view-1")
++        result = invoke_surface(
++            mcp_server._tool_manager._tools["delete_saved_view"].fn,
++            view_id="view-1",
++            confirm=True,
++        )
+ 
+     parsed = json.loads(result)
+     assert parsed["status"] == "deleted"
+@@ -351,7 +361,11 @@ def test_delete_recall_pack_reports_status(mcp_server: MCPServerUnderTest) -> No
+         mock_poly.delete_recall_pack = AsyncMock(return_value=False)
+         mock_get_polylogue.return_value = mock_poly
+ 
+-        result = invoke_surface(mcp_server._tool_manager._tools["delete_recall_pack"].fn, pack_id="pack-1")
++        result = invoke_surface(
++            mcp_server._tool_manager._tools["delete_recall_pack"].fn,
++            pack_id="pack-1",
++            confirm=True,
++        )
+ 
+     parsed = json.loads(result)
+     assert parsed["status"] == "not_found"
+@@ -413,7 +427,11 @@ def test_delete_workspace_reports_status(mcp_server: MCPServerUnderTest) -> None
+         mock_poly.delete_workspace = AsyncMock(return_value=False)
+         mock_get_polylogue.return_value = mock_poly
+ 
+-        result = invoke_surface(mcp_server._tool_manager._tools["delete_workspace"].fn, workspace_id="workspace-1")
++        result = invoke_surface(
++            mcp_server._tool_manager._tools["delete_workspace"].fn,
++            workspace_id="workspace-1",
++            confirm=True,
++        )
+ 
+     parsed = json.loads(result)
+     assert parsed["status"] == "not_found"

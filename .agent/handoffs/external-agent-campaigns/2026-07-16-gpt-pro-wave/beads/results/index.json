@@ -89,7 +89,7 @@
     {
       "job": "beads-06",
       "workload": "beads",
-      "state": "triaged_snapshot_relative",
+      "state": "triaged",
       "attempt_id": "a01",
       "package_revision": "r04",
       "artifact": "beads-06/a01/raw/beads-06-agent-manual-install-r04.zip",

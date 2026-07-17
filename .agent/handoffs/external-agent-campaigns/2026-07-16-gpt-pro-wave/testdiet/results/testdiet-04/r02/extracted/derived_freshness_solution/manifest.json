@@ -1,0 +1,70 @@
+{
+  "base_commit": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "base_repositories": [],
+  "candidate_apply_checks": [],
+  "changed_paths": [],
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "f8bd92106f54f4e0e0271ad8fd5b8f6f897c49d6ac32ce9b7aff40047b54a1b5",
+      "size": 736
+    },
+    {
+      "path": "candidate-index.json",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "size": 3
+    },
+    {
+      "path": "changed-paths.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "path": "input-identities.json",
+      "sha256": "fd6e7a31df91aec9d0d97e76d8508c0917e16ce1a25ff8e661ec5e2d2b06cfcf",
+      "size": 480
+    },
+    {
+      "path": "requirements/04-derived-freshness.md",
+      "sha256": "72b34413851a796814cf1bddde0821317ed836382dd55857239598b4c4efe072",
+      "size": 6516
+    },
+    {
+      "path": "selection.json",
+      "sha256": "f1dacdc1aa39d1754cd1d5c333c9c80313fe4ecdbda6d5505d335bedfabf598b",
+      "size": 205
+    },
+    {
+      "path": "solution.patch",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    }
+  ],
+  "finished_utc": "2026-07-17T11:36:58Z",
+  "patch_bytes": 0,
+  "prior_zips": [
+    {
+      "members": 6,
+      "ok": true,
+      "path": "/mnt/data/derived-freshness-r02.zip"
+    },
+    {
+      "members": 6,
+      "ok": true,
+      "path": "/mnt/data/derived-freshness.zip"
+    }
+  ],
+  "repositories": [],
+  "selected_candidate": null,
+  "started_utc": "2026-07-17T11:36:56Z",
+  "steps": [
+    {
+      "ok": true,
+      "source_extract_members": 45
+    },
+    {
+      "ok": true,
+      "tests_extract_members": 73
+    }
+  ]
+}

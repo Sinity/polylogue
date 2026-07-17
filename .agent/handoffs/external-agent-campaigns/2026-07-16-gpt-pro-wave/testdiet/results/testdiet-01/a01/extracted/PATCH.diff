@@ -1,0 +1,786 @@
+diff --git a/polylogue/cli/archive_query.py b/polylogue/cli/archive_query.py
+index c41fcc8645a93e81d597f7d61d3f0d8df459af6f..27b84a74c765f417e635edfbd5a94d6211f67eb5 100644
+--- a/polylogue/cli/archive_query.py
++++ b/polylogue/cli/archive_query.py
+@@ -729,38 +729,10 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
+         summaries = archive.list_summaries(
+             limit=fetch_limit,
+             offset=page_offset,
+-            origin=origin,
+-            origins=origins,
+-            excluded_origins=excluded_origins,
+-            tags=tags,
+-            excluded_tags=excluded_tags,
+-            repo_names=repo_names,
+-            project_refs=project_refs,
+-            has_types=has_types,
+-            has_tool_use=has_tool_use,
+-            has_thinking=has_thinking,
+-            has_paste=has_paste,
+-            tool_terms=tool_terms,
+-            excluded_tool_terms=excluded_tool_terms,
+-            action_terms=action_terms,
+-            excluded_action_terms=excluded_action_terms,
+-            action_sequence=action_sequence,
+-            action_text_terms=action_text_terms,
+-            referenced_paths=referenced_paths,
+-            cwd_prefix=cwd_prefix,
+-            typed_only=typed_only,
+-            message_type=message_type,
+-            title=title_filter,
+-            min_messages=min_messages,
+-            max_messages=max_messages,
+-            min_words=min_words,
+-            max_words=max_words,
+-            since_ms=since_ms,
+-            until_ms=until_ms,
+-            since_session_id=since_session_id,
+             sample=sample_count is not None,
+             sort=sort,
+             reverse=reverse,
++            **filter_kwargs,
+         )
+         page_summaries, next_cursor = _paginate_rows(summaries, limit=limit, offset=page_offset)
+         if stream:
+diff --git a/tests/infra/query_manifest_oracle.py b/tests/infra/query_manifest_oracle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..423ecfd817d28084eab9f36cf347f2130c1d417e
+--- /dev/null
++++ b/tests/infra/query_manifest_oracle.py
+@@ -0,0 +1,244 @@
++"""Independent planted-fact oracle for real query composition laws.
++
++The oracle deliberately knows nothing about Polylogue's parser, query specs,
++SQL relations, or public payload models.  It computes expected membership and
++cardinality directly from the facts planted by the test fixture.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True, slots=True)
++class QueryActionFact:
++    """One planted tool-use fact and its optional paired result."""
++
++    message_native_id: str
++    occurred_at_ms: int
++    tool_name: str
++    tool_id: str
++    command: str | None = None
++    path: str | None = None
++    output_text: str | None = None
++    is_error: bool | None = None
++    exit_code: int | None = None
++
++
++@dataclass(frozen=True, slots=True)
++class QuerySessionFact:
++    """One independently specified session planted into the archive."""
++
++    provider: str
++    origin: str
++    native_id: str
++    title: str
++    actions: tuple[QueryActionFact, ...] = ()
++
++    @property
++    def session_id(self) -> str:
++        return f"{self.origin}:{self.native_id}"
++
++
++@dataclass(frozen=True, slots=True)
++class ExpectedActionRow:
++    """Expected action row, including its hidden join key, from planted facts."""
++
++    session_id: str
++    message_id: str
++    tool_name: str
++    tool_id: str
++    output_text: str | None
++    is_error: bool | None
++    exit_code: int | None
++
++
++@dataclass(frozen=True, slots=True)
++class QueryManifest:
++    """Pure expected-result model for query membership and cardinality."""
++
++    sessions: tuple[QuerySessionFact, ...]
++
++    def session_ids(
++        self,
++        *,
++        origin: str | None = None,
++        title_contains: str | None = None,
++        exact_session_id: str | None = None,
++    ) -> tuple[str, ...]:
++        selected = []
++        for session in self.sessions:
++            if origin is not None and session.origin != origin:
++                continue
++            if title_contains is not None and title_contains.lower() not in session.title.lower():
++                continue
++            if exact_session_id is not None and session.session_id != exact_session_id:
++                continue
++            selected.append(session.session_id)
++        return tuple(sorted(selected))
++
++    def action_rows(
++        self,
++        *,
++        session_id: str,
++        tool_name: str | None = None,
++    ) -> tuple[ExpectedActionRow, ...]:
++        rows = []
++        for session in self.sessions:
++            if session.session_id != session_id:
++                continue
++            for action in session.actions:
++                if tool_name is not None and action.tool_name.casefold() != tool_name.casefold():
++                    continue
++                rows.append(
++                    ExpectedActionRow(
++                        session_id=session.session_id,
++                        message_id=f"{session.session_id}:{action.message_native_id}",
++                        tool_name=action.tool_name,
++                        tool_id=action.tool_id,
++                        output_text=action.output_text,
++                        is_error=action.is_error,
++                        exit_code=action.exit_code,
++                    )
++                )
++        return tuple(rows)
++
++    def action_partition(
++        self,
++        *,
++        session_id: str,
++        tool_name: str,
++        field: str,
++    ) -> tuple[tuple[str, int], ...]:
++        if field != "is_error":
++            raise ValueError(f"unsupported oracle partition field: {field}")
++        counts: dict[str, int] = {}
++        for row in self.action_rows(session_id=session_id, tool_name=tool_name):
++            key = "unknown" if row.is_error is None else str(int(row.is_error))
++            counts[key] = counts.get(key, 0) + 1
++        return tuple(sorted(counts.items()))
++
++    def page_actions(
++        self,
++        *,
++        session_id: str,
++        tool_name: str,
++        limit: int,
++        offset: int,
++    ) -> tuple[ExpectedActionRow, ...]:
++        rows = self.action_rows(session_id=session_id, tool_name=tool_name)
++        return rows[offset : offset + limit]
++
++
++QUERY_CARDINALITY_MANIFEST = QueryManifest(
++    sessions=(
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-action",
++            title="td01 action duplicate pairing",
++            actions=(
++                QueryActionFact(
++                    message_native_id="m-action-01",
++                    occurred_at_ms=1_767_225_601_000,
++                    tool_name="Bash",
++                    tool_id="td01-repeat",
++                    command="printf first",
++                    output_text="first ok",
++                    is_error=False,
++                    exit_code=0,
++                ),
++                QueryActionFact(
++                    message_native_id="m-action-02",
++                    occurred_at_ms=1_767_225_602_000,
++                    tool_name="Bash",
++                    tool_id="td01-repeat",
++                    command="printf second",
++                    output_text="second failed",
++                    is_error=True,
++                    exit_code=7,
++                ),
++                QueryActionFact(
++                    message_native_id="m-action-03",
++                    occurred_at_ms=1_767_225_603_000,
++                    tool_name="Bash",
++                    tool_id="td01-missing",
++                    command="printf missing",
++                ),
++                QueryActionFact(
++                    message_native_id="m-action-04",
++                    occurred_at_ms=1_767_225_604_000,
++                    tool_name="Read",
++                    tool_id="td01-read",
++                    path="polylogue/archive/query/expression.py",
++                    output_text="read ok",
++                    is_error=False,
++                    exit_code=0,
++                ),
++            ),
++        ),
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-action-decoy",
++            title="td01 action predicate decoy",
++            actions=(
++                QueryActionFact(
++                    message_native_id="m-decoy",
++                    occurred_at_ms=1_767_225_605_000,
++                    tool_name="Bash",
++                    tool_id="td01-repeat",
++                    command="printf decoy",
++                    output_text="decoy",
++                    is_error=False,
++                    exit_code=0,
++                ),
++            ),
++        ),
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-delete-a",
++            title="td01-delete-cohort alpha",
++        ),
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-delete-b",
++            title="td01-delete-cohort beta",
++        ),
++        QuerySessionFact(
++            provider="claude-code",
++            origin="claude-code-session",
++            native_id="td01-delete-shadow",
++            title="td01-delete-cohort provider shadow",
++        ),
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-shared",
++            title="td01 canonical identity codex",
++        ),
++        QuerySessionFact(
++            provider="claude-code",
++            origin="claude-code-session",
++            native_id="td01-shared",
++            title="td01 canonical identity claude",
++        ),
++        QuerySessionFact(
++            provider="codex",
++            origin="codex-session",
++            native_id="td01-keep",
++            title="td01 retained control",
++        ),
++    )
++)
++
++
++__all__ = [
++    "ExpectedActionRow",
++    "QUERY_CARDINALITY_MANIFEST",
++    "QueryActionFact",
++    "QueryManifest",
++    "QuerySessionFact",
++]
+diff --git a/tests/unit/cli/test_query_composition_laws.py b/tests/unit/cli/test_query_composition_laws.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0efbc70cba07badb075b2e8ad8c7b3fa0067a426
+--- /dev/null
++++ b/tests/unit/cli/test_query_composition_laws.py
+@@ -0,0 +1,486 @@
++"""Real-route survivor laws for query algebra and relational cardinality."""
++
++from __future__ import annotations
++
++import json
++from collections.abc import Mapping
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++import pytest
++from click.testing import CliRunner
++
++from polylogue.api import Polylogue
++from polylogue.archive.message.roles import Role
++from polylogue.archive.query.expression import (
++    compile_expression,
++    parse_expression_ast,
++    parse_unit_source_expression,
++)
++from polylogue.core.enums import BlockType, Provider
++from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
++from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
++from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope, QueryUnitEnvelope
++from tests.infra.query_manifest_oracle import (
++    QUERY_CARDINALITY_MANIFEST,
++    ExpectedActionRow,
++    QueryActionFact,
++    QuerySessionFact,
++)
++from tests.infra.workload_artifacts import (
++    SeededArchiveArtifact,
++    build_seeded_archive,
++    clone_seeded_archive,
++)
++
++_SESSION_COHORT_MARKER = "td01-delete-cohort"
++_SESSION_COHORT_EXPRESSION = f"sessions where title:{_SESSION_COHORT_MARKER} AND origin:codex-session"
++_EXACT_ID_EXPRESSION = "sessions where session:codex-session:td01-shared"
++_ACTION_SESSION_ID = "codex-session:td01-action"
++_ACTION_ROWS_EXPRESSION = f"actions where session.id:{_ACTION_SESSION_ID} AND tool:bash | sort by time asc"
++_ACTION_COUNT_EXPRESSION = f"actions where session.id:{_ACTION_SESSION_ID} AND tool:bash | count"
++_ACTION_PARTITION_EXPRESSION = (
++    f"actions where session.id:{_ACTION_SESSION_ID} AND tool:bash | group by is_error | count | sort by key asc"
++)
++
++
++@dataclass(frozen=True, slots=True)
++class QueryLawArchive:
++    root: Path
++    seeded_manifest_id: str
++    real_pipeline_target_id: str
++
++
++def _tool_input(action: QueryActionFact) -> dict[str, object]:
++    if action.command is not None:
++        return {"command": action.command}
++    if action.path is not None:
++        return {"file_path": action.path}
++    return {}
++
++
++def _parsed_session(fact: QuerySessionFact) -> ParsedSession:
++    messages: list[ParsedMessage] = []
++    for position, action in enumerate(fact.actions):
++        blocks = [
++            ParsedContentBlock(
++                type=BlockType.TOOL_USE,
++                tool_name=action.tool_name,
++                tool_id=action.tool_id,
++                tool_input=_tool_input(action),
++            )
++        ]
++        if action.output_text is not None:
++            blocks.append(
++                ParsedContentBlock(
++                    type=BlockType.TOOL_RESULT,
++                    tool_id=action.tool_id,
++                    text=action.output_text,
++                    is_error=action.is_error,
++                    exit_code=action.exit_code,
++                )
++            )
++        messages.append(
++            ParsedMessage(
++                provider_message_id=action.message_native_id,
++                role=Role.ASSISTANT,
++                text=f"planted query-law action {position}",
++                occurred_at_ms=action.occurred_at_ms,
++                position=position,
++                blocks=blocks,
++            )
++        )
++    if not messages:
++        messages.append(
++            ParsedMessage(
++                provider_message_id="m-session",
++                role=Role.USER,
++                text=fact.title,
++                occurred_at_ms=1_767_225_600_000,
++                position=0,
++                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=fact.title)],
++            )
++        )
++    return ParsedSession(
++        source_name=Provider.from_string(fact.provider),
++        provider_session_id=fact.native_id,
++        title=fact.title,
++        created_at="2026-01-01T00:00:00+00:00",
++        updated_at="2026-01-01T00:00:00+00:00",
++        messages=messages,
++    )
++
++
++@pytest.fixture(scope="module")
++def query_law_seed(tmp_path_factory: pytest.TempPathFactory) -> SeededArchiveArtifact:
++    """Build the existing C-03 provider-native acquire/parse/index artifact once."""
++    return build_seeded_archive(cache_root=tmp_path_factory.mktemp("td01-seed") / "cache")
++
++
++@pytest.fixture
++def query_law_archive(
++    workspace_env: dict[str, Path],
++    query_law_seed: SeededArchiveArtifact,
++) -> QueryLawArchive:
++    """Clone the real-pipeline canary and append the independent oracle facts."""
++    clone = clone_seeded_archive(query_law_seed, workspace_env["archive_root"])
++    with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
++        planted_ids = tuple(
++            archive.write_parsed(_parsed_session(session)) for session in QUERY_CARDINALITY_MANIFEST.sessions
++        )
++    assert planted_ids == tuple(session.session_id for session in QUERY_CARDINALITY_MANIFEST.sessions)
++    target = next(
++        fact.expected_session_id
++        for fact in query_law_seed.facts
++        if fact.expected_session_id == "codex-session:c03-target"
++    )
++    assert target is not None
++    return QueryLawArchive(
++        root=clone.root,
++        seeded_manifest_id=clone.source_manifest_id,
++        real_pipeline_target_id=target,
++    )
++
++
++def _normalized_error(value: object) -> bool | None:
++    return None if value is None else bool(value)
++
++
++def _expected_action_signature(row: ExpectedActionRow) -> tuple[object, ...]:
++    return (
++        row.session_id,
++        row.message_id,
++        row.tool_name,
++        row.output_text,
++        row.is_error,
++        row.exit_code,
++    )
++
++
++def _action_signature(row: Any) -> tuple[object, ...]:
++    return (
++        str(row.session_id),
++        str(row.message_id),
++        str(row.tool_name),
++        row.output_text,
++        _normalized_error(row.is_error),
++        row.exit_code,
++    )
++
++
++def _json_action_signature(row: Mapping[str, object]) -> tuple[object, ...]:
++    return (
++        str(row["session_id"]),
++        str(row["message_id"]),
++        str(row["tool_name"]),
++        row.get("output_text"),
++        _normalized_error(row.get("is_error")),
++        row.get("exit_code"),
++    )
++
++
++@pytest.mark.query_routing
++@pytest.mark.asyncio
++async def test_session_membership_count_and_canonical_identity_agree_across_public_routes(
++    query_law_archive: QueryLawArchive,
++) -> None:
++    """Parser/lowerer, facade list/count, and CLI must select the oracle's exact IDs.
++
++    Production dependencies: ``parse_expression_ast``/``compile_expression``,
++    ``SessionQuerySpec.list``/``count`` through ``Polylogue``, and the root CLI
++    list route. Dropping either title or origin selection admits a planted
++    provider shadow; suffix-only identity admits both ``td01-shared`` sessions.
++    """
++    assert query_law_archive.seeded_manifest_id.startswith("seeded-manifest:sha256:")
++    expected = QUERY_CARDINALITY_MANIFEST.session_ids(
++        origin="codex-session",
++        title_contains=_SESSION_COHORT_MARKER,
++    )
++    ast = parse_expression_ast(_SESSION_COHORT_EXPRESSION)
++    spec = compile_expression(_SESSION_COHORT_EXPRESSION)
++    assert ast.boolean_predicate is not None
++    assert spec.boolean_predicate == ast.boolean_predicate
++    assert spec.has_filters()
++
++    facade = Polylogue(
++        archive_root=query_law_archive.root,
++        db_path=query_law_archive.root / "index.db",
++    )
++    try:
++        sessions = await facade.list_sessions_for_spec(spec)
++        count = await spec.count(facade.config)
++        exact_spec = compile_expression(_EXACT_ID_EXPRESSION)
++        exact_sessions = await facade.list_sessions_for_spec(exact_spec)
++        assert await facade.get_session_summary(query_law_archive.real_pipeline_target_id) is not None
++    finally:
++        await facade.close()
++
++    actual_ids = tuple(sorted(str(session.id) for session in sessions))
++    assert actual_ids == expected
++    assert count == len(expected)
++    assert tuple(str(session.id) for session in exact_sessions) == ("codex-session:td01-shared",)
++
++    from polylogue.cli import cli
++
++    result = CliRunner().invoke(
++        cli,
++        ["--plain", "--format", "json", "find", _SESSION_COHORT_EXPRESSION],
++    )
++    assert result.exit_code == 0, result.output
++    payload = json.loads(result.output)
++    cli_ids = tuple(sorted(str(item["id"]) for item in payload["items"]))
++    assert cli_ids == expected
++    assert payload["total"] == len(expected)
++
++
++@pytest.mark.query_routing
++@pytest.mark.asyncio
++async def test_action_rows_count_partition_and_pages_agree_across_repository_facade_and_cli(
++    query_law_archive: QueryLawArchive,
++) -> None:
++    """One explicit action selection must preserve identities and cardinality.
++
++    Production dependencies: terminal-unit parsing, the canonical SQLite
++    action relation, repository row/count executors, ``Polylogue.query_units``,
++    and the terminal-unit CLI renderer. Moving selection global-first, dropping
++    the exact session predicate, or replacing rank pairing with equality join
++    changes at least one asserted row, count, partition, or page boundary.
++    """
++    expected_rows = QUERY_CARDINALITY_MANIFEST.action_rows(
++        session_id=_ACTION_SESSION_ID,
++        tool_name="bash",
++    )
++    expected_signatures = tuple(_expected_action_signature(row) for row in expected_rows)
++    source = parse_unit_source_expression(_ACTION_ROWS_EXPRESSION)
++    assert source is not None
++    assert source.unit == "action"
++    assert source.pipeline.sort is not None
++    assert source.pipeline.sort.field == "time"
++
++    with ArchiveStore.open_existing(query_law_archive.root) as archive:
++        repository_rows = archive.query_actions(
++            source.predicate,
++            limit=10,
++            sort="time",
++            sort_direction="asc",
++        )
++        repository_count = archive.query_unit_counts(
++            "action",
++            source.predicate,
++        )
++    assert tuple(_action_signature(row) for row in repository_rows) == expected_signatures
++    assert [(row.group_key, row.count) for row in repository_count] == [("all", len(expected_rows))]
++
++    facade = Polylogue(
++        archive_root=query_law_archive.root,
++        db_path=query_law_archive.root / "index.db",
++    )
++    try:
++        first_page = await facade.query_units(_ACTION_ROWS_EXPRESSION, limit=2, offset=0)
++        assert isinstance(first_page, QueryUnitEnvelope)
++        assert first_page.next_offset == 2
++        second_page = await facade.query_units(
++            _ACTION_ROWS_EXPRESSION,
++            limit=2,
++            offset=first_page.next_offset,
++        )
++        whole = await facade.query_units(_ACTION_ROWS_EXPRESSION, limit=10, offset=0)
++        count_envelope = await facade.query_units(_ACTION_COUNT_EXPRESSION, limit=10)
++        partition_envelope = await facade.query_units(_ACTION_PARTITION_EXPRESSION, limit=10)
++    finally:
++        await facade.close()
++
++    assert isinstance(second_page, QueryUnitEnvelope)
++    assert isinstance(whole, QueryUnitEnvelope)
++    assert second_page.next_offset is None
++    page_signatures = tuple(_action_signature(row) for row in (*first_page.items, *second_page.items))
++    whole_signatures = tuple(_action_signature(row) for row in whole.items)
++    assert page_signatures == whole_signatures == expected_signatures
++    assert tuple(_action_signature(row) for row in first_page.items) == tuple(
++        _expected_action_signature(row)
++        for row in QUERY_CARDINALITY_MANIFEST.page_actions(
++            session_id=_ACTION_SESSION_ID,
++            tool_name="bash",
++            limit=2,
++            offset=0,
++        )
++    )
++    assert tuple(_action_signature(row) for row in second_page.items) == tuple(
++        _expected_action_signature(row)
++        for row in QUERY_CARDINALITY_MANIFEST.page_actions(
++            session_id=_ACTION_SESSION_ID,
++            tool_name="bash",
++            limit=2,
++            offset=2,
++        )
++    )
++
++    assert isinstance(count_envelope, QueryUnitAggregateEnvelope)
++    assert [(row.group_key, row.count) for row in count_envelope.items] == [("all", len(expected_rows))]
++    assert isinstance(partition_envelope, QueryUnitAggregateEnvelope)
++    assert tuple((str(row.group_key), row.count) for row in partition_envelope.items) == (
++        QUERY_CARDINALITY_MANIFEST.action_partition(
++            session_id=_ACTION_SESSION_ID,
++            tool_name="bash",
++            field="is_error",
++        )
++    )
++    assert sum(row.count for row in partition_envelope.items) == len(expected_rows)
++
++    from polylogue.cli import cli
++
++    result = CliRunner().invoke(
++        cli,
++        ["--plain", "--format", "json", "find", _ACTION_ROWS_EXPRESSION],
++    )
++    assert result.exit_code == 0, result.output
++    payload = json.loads(result.output)
++    assert tuple(_json_action_signature(item) for item in payload["items"]) == expected_signatures
++    assert payload["total"] == len(expected_rows)
++
++
++@pytest.mark.query_routing
++@pytest.mark.asyncio
++async def test_delete_preview_and_apply_remove_the_same_oracle_membership(
++    query_law_archive: QueryLawArchive,
++) -> None:
++    """The stable CLI action route must preview and apply one complete ID set.
++
++    Production dependencies: expression parsing/lowering, the mutation
++    cardinality resolver, dry-run payload, and ``ArchiveStore.delete_sessions``.
++    A page-limited preview or an origin predicate dropped before apply leaves a
++    mismatch that this pre/post membership proof detects.
++    """
++    expected = QUERY_CARDINALITY_MANIFEST.session_ids(
++        origin="codex-session",
++        title_contains=_SESSION_COHORT_MARKER,
++    )
++
++    from polylogue.cli import cli
++
++    runner = CliRunner()
++    preview = runner.invoke(
++        cli,
++        [
++            "--plain",
++            "find",
++            _SESSION_COHORT_EXPRESSION,
++            "then",
++            "delete",
++            "--dry-run",
++            "--all",
++            "--json",
++        ],
++    )
++    assert preview.exit_code == 0, preview.output
++    preview_payload = json.loads(preview.output)
++    preview_ids = tuple(sorted(str(session_id) for session_id in preview_payload["session_ids"]))
++    assert preview_payload["status"] == "preview"
++    assert preview_payload["session_count"] == len(expected)
++    assert preview_payload["affected_count"] == 0
++    assert preview_ids == expected
++    assert len(preview_ids) == len(set(preview_ids))
++
++    applied = runner.invoke(
++        cli,
++        [
++            "--plain",
++            "find",
++            _SESSION_COHORT_EXPRESSION,
++            "then",
++            "delete",
++            "--yes",
++            "--all",
++            "--json",
++        ],
++    )
++    assert applied.exit_code == 0, applied.output
++    applied_payload = json.loads(applied.output)
++    assert applied_payload == {
++        "status": "deleted",
++        "operation": "delete",
++        "session_count": len(expected),
++        "affected_count": len(expected),
++    }
++
++    spec = compile_expression(_SESSION_COHORT_EXPRESSION)
++    facade = Polylogue(
++        archive_root=query_law_archive.root,
++        db_path=query_law_archive.root / "index.db",
++    )
++    try:
++        assert await spec.count(facade.config) == 0
++        assert await facade.get_session_summary(query_law_archive.real_pipeline_target_id) is not None
++        for fact in QUERY_CARDINALITY_MANIFEST.sessions:
++            summary = await facade.get_session_summary(fact.session_id)
++            assert (summary is None) == (fact.session_id in expected)
++    finally:
++        await facade.close()
++
++
++@pytest.mark.query_routing
++def test_rank_pairing_survivor_rejects_plain_equality_join_mutation(
++    query_law_archive: QueryLawArchive,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """A representative equality-join mutant yields five rows instead of three.
++
++    Two ``td01-repeat`` uses and two results become a 2x2 cross-product (four
++    rows), while the unmatched ``td01-missing`` use contributes one more. The
++    production rank-paired relation yields exactly three Bash actions.
++    """
++    import polylogue.storage.sqlite.archive_tiers.archive as archive_module
++
++    source = parse_unit_source_expression(_ACTION_ROWS_EXPRESSION)
++    assert source is not None
++    expected_rows = QUERY_CARDINALITY_MANIFEST.action_rows(
++        session_id=_ACTION_SESSION_ID,
++        tool_name="bash",
++    )
++    expected_count = len(expected_rows)
++    assert tuple(row.tool_id for row in expected_rows) == (
++        "td01-repeat",
++        "td01-repeat",
++        "td01-missing",
++    )
++
++    with ArchiveStore.open_existing(query_law_archive.root, read_only=False) as archive:
++        baseline = archive.query_unit_counts("action", source.predicate)
++        assert [(row.group_key, row.count) for row in baseline] == [("all", expected_count)]
++        archive._conn.execute(
++            """
++            CREATE TEMP VIEW td01_plain_actions AS
++            SELECT
++                u.session_id,
++                u.message_id,
++                u.block_id AS tool_use_block_id,
++                u.tool_name,
++                u.semantic_type,
++                u.tool_command,
++                u.tool_path,
++                u.tool_input,
++                r.text AS output_text,
++                r.tool_result_is_error AS is_error,
++                r.tool_result_exit_code AS exit_code,
++                r.block_id AS tool_result_block_id,
++                NULL AS followup_class,
++                NULL AS followup_message_ref
++            FROM blocks AS u
++            LEFT JOIN blocks AS r
++              ON r.session_id = u.session_id
++             AND r.tool_id = u.tool_id
++             AND r.block_type = 'tool_result'
++            WHERE u.block_type = 'tool_use'
++            """
++        )
++        monkeypatch.setattr(
++            archive_module,
++            "_action_relation_for_query",
++            lambda **_kwargs: ("", "td01_plain_actions", []),
++        )
++        mutant = archive.query_unit_counts("action", source.predicate)
++
++    mutant_count = mutant[0].count
++    assert mutant_count == 5
++    assert mutant_count != expected_count
