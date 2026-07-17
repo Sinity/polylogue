@@ -6,8 +6,12 @@ import argparse
 import json
 import os
 import sys
+import time
 import tracemalloc
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import cast
 
 
 def _payload(index: int) -> bytes:
@@ -46,6 +50,39 @@ def _codex_payload(record_count: int) -> bytes:
     ).encode("utf-8")
 
 
+def _process_io_counters() -> dict[str, int | None]:
+    """Return Linux process I/O counters without guessing from wall time."""
+    counters: dict[str, int | None] = {
+        "rchar": None,
+        "wchar": None,
+        "read_bytes": None,
+        "write_bytes": None,
+    }
+    try:
+        for line in Path("/proc/self/io").read_text(encoding="ascii").splitlines():
+            key, separator, raw_value = line.partition(":")
+            if separator and key in counters:
+                counters[key] = int(raw_value.strip())
+    except (OSError, ValueError):
+        pass
+    return counters
+
+
+def _journal_storage_bytes(journal_root: Path) -> dict[str, int]:
+    """Keep journal database and WAL growth separately observable."""
+    totals = {"journal_db_bytes": 0, "journal_wal_bytes": 0, "journal_shm_bytes": 0}
+    for path in journal_root.glob("run-*.sqlite3*"):
+        if not path.is_file():
+            continue
+        if path.name.endswith("-wal"):
+            totals["journal_wal_bytes"] += path.stat().st_size
+        elif path.name.endswith("-shm"):
+            totals["journal_shm_bytes"] += path.stat().st_size
+        else:
+            totals["journal_db_bytes"] += path.stat().st_size
+    return totals
+
+
 def _resource_snapshot(*, phase: str, journal_root: Path) -> dict[str, int | str | None]:
     smaps: dict[str, int] = {}
     try:
@@ -56,16 +93,19 @@ def _resource_snapshot(*, phase: str, journal_root: Path) -> dict[str, int | str
     except (OSError, ValueError, IndexError):
         pass
     current, peak = tracemalloc.get_traced_memory()
-    journal_bytes = sum(path.stat().st_size for path in journal_root.glob("run-*.sqlite3*") if path.is_file())
+    journal_storage = _journal_storage_bytes(journal_root)
     return {
         "phase": phase,
+        "monotonic_ns": time.monotonic_ns(),
         "pss_kb": smaps.get("Pss"),
         "anon_pss_kb": smaps.get("Pss_Anon"),
         "file_pss_kb": smaps.get("Pss_File"),
         "swap_pss_kb": smaps.get("SwapPss"),
         "tracemalloc_current_bytes": current,
         "tracemalloc_peak_bytes": peak,
-        "journal_bytes": journal_bytes,
+        "journal_bytes": sum(journal_storage.values()),
+        **journal_storage,
+        **_process_io_counters(),
     }
 
 
@@ -85,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["XDG_STATE_HOME"] = str(archive_root.parent / "state")
 
     from polylogue.core.enums import Provider
-    from polylogue.schemas.generation import provider_bundle
+    from polylogue.schemas.generation import observation_journal, provider_bundle
     from polylogue.schemas.generation.workflow import generate_provider_schema
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -106,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
 
     journal_root = Path(os.environ["XDG_CACHE_HOME"]) / "polylogue" / "schema-observation-journals"
     snapshots: list[dict[str, int | str | None]] = []
+    method_metrics: dict[str, dict[str, int]] = defaultdict(lambda: {"calls": 0, "wall_ns": 0, "yielded": 0})
     tracemalloc.start()
     snapshots.append(_resource_snapshot(phase="before-provider-bundle", journal_root=journal_root))
     for name in ("_collect_cluster_accumulators", "_build_package_candidates", "build_provider_catalog_artifacts"):
@@ -120,6 +161,39 @@ def main(argv: list[str] | None = None) -> int:
             return result
 
         setattr(provider_bundle, name, wrapped)
+
+    def wrap_journal_method(name: str, *, iterable: bool = False) -> None:
+        original = getattr(observation_journal.ObservationJournal, name)
+
+        def wrapped(self: object, *call_args: object, **call_kwargs: object) -> object:
+            started_ns = time.monotonic_ns()
+            result = original(self, *call_args, **call_kwargs)
+            if not iterable:
+                metric = method_metrics[name]
+                metric["calls"] += 1
+                metric["wall_ns"] += time.monotonic_ns() - started_ns
+                return result
+
+            def measured() -> Iterator[object]:
+                yielded = 0
+                try:
+                    for item in cast(Iterable[object], result):
+                        yielded += 1
+                        yield item
+                finally:
+                    metric = method_metrics[name]
+                    metric["calls"] += 1
+                    metric["yielded"] += yielded
+                    metric["wall_ns"] += time.monotonic_ns() - started_ns
+
+            return measured()
+
+        setattr(observation_journal.ObservationJournal, name, wrapped)
+
+    for method_name in ("append_unit", "flush", "assign_canonical_package_families"):
+        wrap_journal_method(method_name)
+    for method_name in ("_iter_joined_memberships", "iter_distinct_membership_values"):
+        wrap_journal_method(method_name, iterable=True)
     try:
         result = generate_provider_schema(
             args.provider,
@@ -136,8 +210,10 @@ def main(argv: list[str] | None = None) -> int:
                 "error": result.error,
                 "sample_count": result.sample_count,
                 "cluster_count": result.cluster_count,
+                "phase_receipt": result.phase_receipt,
                 "journal_remaining": sorted(path.name for path in journal_root.glob("run-*.sqlite3*")),
                 "phases": snapshots,
+                "journal_method_metrics": dict(method_metrics),
             },
             sort_keys=True,
         ),

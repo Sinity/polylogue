@@ -39,6 +39,7 @@ class _InferenceProbeResult:
     peak_rss_bytes: int
     peak_journal_bytes: int
     phase_snapshots: tuple[dict[str, object], ...]
+    journal_method_metrics: dict[str, dict[str, int]]
     receipt: WorkloadReceipt
 
 
@@ -102,9 +103,12 @@ def _run_inference_probe(
         assert process.returncode == 0, stderr
         payload = json.loads(stdout)
         assert payload["success"] is True
+        assert payload["phase_receipt"]["status"] == "succeeded"
         assert payload["journal_remaining"] == []
         phase_snapshots = tuple(item for item in payload["phases"] if isinstance(item, dict))
         assert phase_snapshots
+        journal_method_metrics = payload["journal_method_metrics"]
+        assert isinstance(journal_method_metrics, dict)
         wall_ms = (time.perf_counter() - started) * 1_000
         spec = WorkloadEnvelopeSpec(
             workload_id="canary:schema-inference-memory-scaling",
@@ -156,6 +160,11 @@ def _run_inference_probe(
             peak_rss_bytes=peak_rss_bytes,
             peak_journal_bytes=peak_journal_bytes,
             phase_snapshots=phase_snapshots,
+            journal_method_metrics={
+                str(name): {str(key): int(value) for key, value in metric.items()}
+                for name, metric in journal_method_metrics.items()
+                if isinstance(metric, dict)
+            },
             receipt=receipt,
         )
     finally:
@@ -537,6 +546,15 @@ def test_full_generation_10x_scales_counts_without_10x_python_memory(tmp_path: P
         "after-build_provider_catalog_artifacts",
         "after-provider-bundle",
     }
+    assert all(
+        {"monotonic_ns", "rchar", "wchar", "read_bytes", "write_bytes", "journal_db_bytes", "journal_wal_bytes"}
+        <= snapshot.keys()
+        for snapshot in one_x.phase_snapshots
+    )
+    assert one_x.journal_method_metrics["append_unit"]["calls"] == 32
+    assert ten_x.journal_method_metrics["append_unit"]["calls"] == 320
+    assert one_x.journal_method_metrics["flush"]["calls"] >= 1
+    assert one_x.journal_method_metrics["assign_canonical_package_families"]["calls"] == 1
     assert ten_x.peak_rss_bytes <= one_x.peak_rss_bytes + 96 * 1024 * 1024
     assert one_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_1X.value
     assert ten_x.receipt.spec.inputs[0].scale_tier == WorkloadScaleTier.ARCHIVE_10X.value

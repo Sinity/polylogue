@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
-from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
 from polylogue.schemas.validation.models import ArtifactCoverageReport
@@ -76,6 +76,7 @@ class SchemaInferRequest:
     cluster: bool = False
     cluster_sample_limit: int = 500
     full_corpus: bool = False
+    progress_callback: GenerationProgressCallback | None = None
 
 
 @dataclass(frozen=True)

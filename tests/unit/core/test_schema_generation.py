@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.cluster_collection import _collect_cluster_accumulators
 from polylogue.schemas.generation.models import _ProviderBundle
 from polylogue.schemas.generation.observation_journal import ObservationJournal
@@ -62,9 +63,34 @@ class TestProviderSchemaGeneration:
         assert success.success
         assert success.provider == "test"
         assert success.sample_count == 10
-
         failure = GenerationResult(provider="test", schema=None, sample_count=0, error="no data")
         assert not failure.success
+
+
+def test_generation_records_aggregate_phase_receipt(seeded_archive_writable: SeededArchiveClone) -> None:
+    events: list[JSONDocument] = []
+    result = generate_provider_schema(
+        "chatgpt",
+        db_path=seeded_archive_writable.root / "index.db",
+        max_samples=10,
+        progress_callback=lambda _phase, payload: events.append(payload),
+    )
+
+    if result.sample_count == 0:
+        pytest.skip("seeded archive has no chatgpt samples")
+    assert result.success
+    assert result.phase_receipt["status"] == "succeeded"
+    phases = result.phase_receipt["phases"]
+    assert isinstance(phases, list)
+    assert {item["name"] for item in phases if isinstance(item, dict)} == {
+        "observe_and_cluster",
+        "assemble_packages",
+        "build_catalog",
+    }
+    assert {item["state"] for item in events} >= {"started", "completed", "progress"}
+    progress = next(item for item in events if item["state"] == "progress")
+    assert progress["estimate_status"] == "source_total_unavailable"
+    assert isinstance(progress["units_per_s"], float)
 
 
 def test_catalog_selection_preserves_latest_without_defaulting_to_rare_family() -> None:
