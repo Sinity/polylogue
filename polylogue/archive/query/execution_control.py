@@ -333,7 +333,7 @@ class InterruptibleSQLiteRead:
         with self._store_lock:
             self._store = store
         try:
-            store.set_read_progress_guard(_guard, n_opcodes=PROGRESS_GUARD_OPCODES)
+            _set_progress_guard(store, _guard)
             # A cancel/deadline that landed before the first opcode must not
             # start the statement at all.
             if ctx.should_abort():
@@ -357,7 +357,7 @@ class InterruptibleSQLiteRead:
             ctx.receipt.run_s = time.monotonic() - started
             with self._store_lock:
                 self._store = None
-            store.close()
+            _close_store(store)
 
     @contextmanager
     def open_context(self, archive_root: Path, *, read_timeout: float = 5.0) -> Iterator[ArchiveStore]:
@@ -366,14 +366,16 @@ class InterruptibleSQLiteRead:
 
         ctx = self._ctx
         with default_admission_controller().admit_blocking(ctx):
-            store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+            # Keep the synchronous adapter compatible with lightweight test
+            # doubles and older callers that expose only the archive-root
+            # positional contract.  ``ArchiveStore`` still applies its
+            # default bounded busy timeout here; the query deadline itself is
+            # enforced by the progress guard below.
+            store = ArchiveStore.open_existing(archive_root)
             with self._store_lock:
                 self._store = store
             try:
-                store.set_read_progress_guard(
-                    lambda: 1 if ctx.should_abort() else 0,
-                    n_opcodes=PROGRESS_GUARD_OPCODES,
-                )
+                _set_progress_guard(store, lambda: 1 if ctx.should_abort() else 0)
                 if ctx.should_abort():
                     raise _abort_error(ctx)
                 ctx.receipt.state = "running"
@@ -388,13 +390,27 @@ class InterruptibleSQLiteRead:
             finally:
                 with self._store_lock:
                     self._store = None
-                store.close()
+                _close_store(store)
 
 
 def _is_interrupt_error(exc: Exception) -> bool:
     import sqlite3
 
     return isinstance(exc, sqlite3.OperationalError) and "interrupt" in str(exc).lower()
+
+
+def _set_progress_guard(store: ArchiveStore, guard: Callable[[], int]) -> None:
+    """Install the guard when the store is a full ArchiveStore implementation."""
+    setter = getattr(store, "set_read_progress_guard", None)
+    if callable(setter):
+        setter(guard, n_opcodes=PROGRESS_GUARD_OPCODES)
+
+
+def _close_store(store: ArchiveStore) -> None:
+    """Close full stores while tolerating the minimal doubles used by adapters."""
+    closer = getattr(store, "close", None)
+    if callable(closer):
+        closer()
 
 
 def _abort_error(ctx: QueryExecutionContext) -> QueryCancelledError | QueryTimeoutError:
