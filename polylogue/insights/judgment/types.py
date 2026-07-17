@@ -1,13 +1,8 @@
 """Shared types for the comparative-judgment mechanisms (rxdo.9.11, part I/K).
 
-``JudgeIdentity`` is an interim, scoped stand-in for the not-yet-built
-:mod:`polylogue.core` ``ActorRef``/``ExecutionContextRef`` pair (polylogue-h6r).
-It carries the same two-part shape h6r specifies -- a durable actor identity
-plus a separate content-addressed execution-context fingerprint -- so that
-when h6r lands, judge identity here can be re-pointed at it without a shape
-change. Do not add a third "vibes" field; execution-context drift must always
-be visible as a different ``execution_context_id``, never folded into
-``actor_ref``.
+``JudgeIdentity`` consumes the core ``ActorRef``/``ExecutionContextRef`` pair.
+The public properties retain the durable string wire shape, but there is no
+second judgment-only identity tuple to drift from the work-evidence contract.
 """
 
 from __future__ import annotations
@@ -17,6 +12,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from polylogue.core.enums import ComparativeVerdict
+from polylogue.core.refs import ActorRef, ExecutionContextRef
 
 Dimension: TypeAlias = str
 Ordering: TypeAlias = tuple[str, ...]
@@ -34,7 +30,7 @@ NON_DIRECTED_VERDICTS: frozenset[ComparativeVerdict] = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class JudgeIdentity:
     """WHO judged: an operator or an agent (model + prompt/config fingerprint).
 
@@ -45,14 +41,39 @@ class JudgeIdentity:
     a *different* calibration stratum (rxdo.9.12) -- never collapse the two.
     """
 
-    actor_ref: str
-    execution_context_id: str
+    actor: ActorRef
+    execution_context: ExecutionContextRef
 
-    def __post_init__(self) -> None:
-        if not self.actor_ref.strip():
-            raise ValueError("actor_ref cannot be empty")
-        if not self.execution_context_id.strip():
-            raise ValueError("execution_context_id cannot be empty")
+    def __init__(
+        self,
+        *,
+        actor: ActorRef | None = None,
+        execution_context: ExecutionContextRef | None = None,
+        actor_ref: str | None = None,
+        execution_context_id: str | None = None,
+    ) -> None:
+        if actor is not None and actor_ref is not None:
+            raise ValueError("provide actor or actor_ref, not both")
+        if execution_context is not None and execution_context_id is not None:
+            raise ValueError("provide execution_context or execution_context_id, not both")
+        if actor is None:
+            if actor_ref is None:
+                raise ValueError("judge identity requires an actor")
+            actor = ActorRef.parse(actor_ref)
+        if execution_context is None:
+            if execution_context_id is None:
+                raise ValueError("judge identity requires an execution context")
+            execution_context = ExecutionContextRef.from_legacy_id(execution_context_id)
+        object.__setattr__(self, "actor", actor)
+        object.__setattr__(self, "execution_context", execution_context)
+
+    @property
+    def actor_ref(self) -> str:
+        return self.actor.format()
+
+    @property
+    def execution_context_id(self) -> str:
+        return self.execution_context.context_id
 
 
 @dataclass(frozen=True, slots=True)

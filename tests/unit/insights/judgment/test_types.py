@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.core.enums import ComparativeVerdict
+from polylogue.core.refs import ActorRef, ExecutionContextRef
 from polylogue.insights.judgment.types import (
     NON_DIRECTED_VERDICTS,
     ComparativeJudgment,
@@ -15,6 +16,29 @@ from polylogue.insights.judgment.types import (
 )
 
 _JUDGE = JudgeIdentity(actor_ref="user:local", execution_context_id="ctx-1")
+
+
+def test_judge_identity_uses_core_identity_refs_and_preserves_wire_properties() -> None:
+    actor = ActorRef.parse("agent:claude-sonnet-5")
+    context = ExecutionContextRef.from_observation(
+        {"harness": "claude-code@1", "prompt_ref": "assertion:prompt-a"}, unknown_fields=("permissions",)
+    )
+
+    judge = JudgeIdentity(actor=actor, execution_context=context)
+
+    assert judge.actor is actor
+    assert judge.execution_context is context
+    assert judge.actor_ref == "agent:claude-sonnet-5"
+    assert judge.execution_context_id == context.context_id
+
+
+def test_judge_identity_rejects_parallel_string_and_typed_identity_owners() -> None:
+    with pytest.raises(ValueError, match="actor or actor_ref"):
+        JudgeIdentity(
+            actor=ActorRef.parse("user:local"),
+            actor_ref="user:local",
+            execution_context_id="legacy-context",
+        )
 
 
 def _pairwise(verdict: ComparativeVerdict, *, judgment_id: str = "j1") -> ComparativeJudgment:

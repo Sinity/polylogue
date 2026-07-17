@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Final, Literal, TypeAlias
 
 ObjectRefKind: TypeAlias = Literal[
@@ -73,6 +76,9 @@ ObjectRefKind: TypeAlias = Literal[
 
 EvidenceRefKind: TypeAlias = Literal["session", "message", "block"]
 PublicRef: TypeAlias = "ObjectRef | EvidenceRef"
+ActorKind: TypeAlias = Literal["user", "service", "agent", "model"]
+
+_ACTOR_KINDS: Final[frozenset[ActorKind]] = frozenset({"user", "service", "agent", "model"})
 
 _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "session": "session",
@@ -228,6 +234,130 @@ class EvidenceRef:
         return ObjectRef(kind="session", object_id=self.session_id)
 
 
+@dataclass(frozen=True, slots=True)
+class ActorRef:
+    """Stable identity for a human, service, agent persona, or model family.
+
+    Runtime configuration, prompt material, and permissions intentionally do
+    not belong here.  They identify an :class:`ExecutionContextRef` instead,
+    so a single actor can be compared across explicitly distinct environments.
+    """
+
+    kind: ActorKind
+    identity: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in _ACTOR_KINDS:
+            raise ValueError(f"unsupported actor kind: {self.kind!r}")
+        if not self.identity.strip():
+            raise ValueError("actor identity cannot be empty")
+
+    @classmethod
+    def parse(cls, value: str) -> ActorRef:
+        kind, separator, identity = value.partition(":")
+        if not separator:
+            raise ValueError("actor ref must use 'kind:identity' form")
+        if kind not in _ACTOR_KINDS:
+            raise ValueError(f"unsupported actor kind: {kind!r}")
+        return cls(kind=kind, identity=identity)
+
+    def format(self) -> str:
+        return f"{self.kind}:{self.identity}"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContextRef:
+    """Content-addressed behavioral environment with explicit missing fields.
+
+    ``from_observation`` is the construction path for new context identities.
+    ``from_legacy_id`` exists only to retain already-persisted opaque values;
+    callers cannot claim a legacy id is a complete content-addressed context.
+    """
+
+    context_id: str
+    known_fields: tuple[str, ...] = ()
+    unknown_fields: tuple[str, ...] = ()
+    content_addressed: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.context_id.strip():
+            raise ValueError("execution context id cannot be empty")
+        known = tuple(sorted(set(self.known_fields)))
+        unknown = tuple(sorted(set(self.unknown_fields)))
+        if any(not field.strip() for field in (*known, *unknown)):
+            raise ValueError("execution context field names cannot be empty")
+        if set(known) & set(unknown):
+            raise ValueError("execution context fields cannot be both known and unknown")
+        if self.content_addressed and not self.context_id.startswith("sha256:"):
+            raise ValueError("content-addressed execution contexts must use a sha256 id")
+        object.__setattr__(self, "known_fields", known)
+        object.__setattr__(self, "unknown_fields", unknown)
+
+    @classmethod
+    def from_observation(
+        cls,
+        fields: Mapping[str, object],
+        *,
+        unknown_fields: tuple[str, ...] = (),
+    ) -> ExecutionContextRef:
+        """Build one deterministic context id from observed environment fields."""
+
+        known_fields = tuple(sorted(fields))
+        canonical = json.dumps(
+            {"fields": {key: fields[key] for key in known_fields}, "unknown_fields": sorted(set(unknown_fields))},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return cls(
+            context_id=f"sha256:{sha256(canonical.encode('utf-8')).hexdigest()}",
+            known_fields=known_fields,
+            unknown_fields=unknown_fields,
+        )
+
+    @classmethod
+    def from_legacy_id(cls, context_id: str) -> ExecutionContextRef:
+        """Represent an old opaque context id without overstating its evidence."""
+
+        return cls(context_id=context_id, content_addressed=False)
+
+    @property
+    def unknown_fraction(self) -> float:
+        total = len(self.known_fields) + len(self.unknown_fields)
+        return len(self.unknown_fields) / total if total else 1.0
+
+    @property
+    def is_complete(self) -> bool:
+        return self.content_addressed and not self.unknown_fields
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerProfileRef:
+    """An explicit grouping over actor, exact context, and declared role."""
+
+    actor: ActorRef
+    execution_context: ExecutionContextRef
+    role: str
+
+    def __post_init__(self) -> None:
+        if not self.role.strip():
+            raise ValueError("worker profile role cannot be empty")
+
+    @property
+    def profile_id(self) -> str:
+        canonical = json.dumps(
+            {
+                "actor": self.actor.format(),
+                "execution_context": self.execution_context.context_id,
+                "role": self.role,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return f"sha256:{sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def parse_public_ref(value: str) -> ObjectRef | EvidenceRef:
     """Parse a public object or raw evidence reference."""
 
@@ -295,11 +425,15 @@ def parse_delegation_edge_object_id(object_id: str) -> tuple[str, str] | None:
 
 
 __all__ = [
+    "ActorKind",
+    "ActorRef",
     "EvidenceRef",
     "EvidenceRefKind",
+    "ExecutionContextRef",
     "ObjectRef",
     "ObjectRefKind",
     "PublicRef",
+    "WorkerProfileRef",
     "delegation_edge_object_id",
     "normalize_object_ref_text",
     "normalize_public_ref_text",
