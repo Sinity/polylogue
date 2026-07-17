@@ -71,6 +71,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
+| `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
 
 ## Core Loop
 
@@ -152,6 +153,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools lab test-economics` | Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11). |
+| `devtools lab testmon-proof` | Prove real testmon affected selection against a semantic production mutation. |
 
 ### Verification
 
