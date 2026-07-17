@@ -34,6 +34,7 @@ from polylogue.scenarios.workload import (
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier
 from polylogue.storage import repair
+from polylogue.storage.raw_authority import RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
@@ -47,6 +48,7 @@ class RawAuthorityScalePass:
     repaired_count: int
     executable_component_count: int
     fixed_point: bool
+    plan_status_counts: dict[str, int]
     wall_ms: int
     peak_rss_bytes: int
     peak_pss_bytes: int | None
@@ -79,6 +81,7 @@ class RawAuthorityScaleScenario:
     expanded_candidates: int
     total_payload_bytes: int
     component_cohorts: tuple[tuple[int, int, int], ...] | None = None
+    terminal_sibling_outcome: str = "terminal"
 
     def __post_init__(self) -> None:
         if self.components < 1:
@@ -89,6 +92,8 @@ class RawAuthorityScaleScenario:
             raise ValueError("scenario expanded candidates cannot be smaller than direct candidates")
         if self.total_payload_bytes < self.expanded_candidates * 256:
             raise ValueError("scenario payload budget is too small for valid JSONL evidence")
+        if self.terminal_sibling_outcome not in {"terminal", "deferred"}:
+            raise ValueError("scenario terminal sibling outcome must be terminal or deferred")
         if self.component_cohorts is not None:
             if not self.component_cohorts:
                 raise ValueError("scenario component cohorts cannot be empty")
@@ -157,6 +162,7 @@ class RawAuthorityScaleScenario:
             expanded_candidates=count("expanded_candidate_count"),
             total_payload_bytes=count("expanded_total_blob_bytes"),
             component_cohorts=cohorts,
+            terminal_sibling_outcome=str(profile.get("terminal_sibling_outcome", "terminal")),
         )
 
 
@@ -326,6 +332,7 @@ def _requested_shape(scenario: RawAuthorityScaleScenario, *, pass_limit: int) ->
             }
             for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
         ]
+        payload["terminal_sibling_outcome"] = scenario.terminal_sibling_outcome
     return payload
 
 
@@ -371,6 +378,10 @@ def _record_repair_pass(
             repaired_count=result.repaired_count,
             executable_component_count=int(metrics.get("raw_materialization_selected_executable_component_count", 0)),
             fixed_point=receipt.fixed_point,
+            plan_status_counts={
+                status.value: sum(outcome.status is status for outcome in result.plan_outcomes)
+                for status in RawReplayPlanStatus
+            },
             wall_ms=wall_ms,
             peak_rss_bytes=max(_rss_bytes(), before.rss_bytes, after.rss_bytes),
             peak_pss_bytes=max(value for value in (before.pss_bytes, after.pss_bytes) if value is not None)
@@ -504,7 +515,7 @@ def run_raw_authority_scale_proof(
                                         INSERT INTO raw_revision_applications (
                                             decision_id, raw_id, session_id, logical_source_key,
                                             source_revision, acquisition_generation, decision, detail, decided_at_ms
-                                        ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)
                                         """,
                                         (
                                             f"synthetic-terminal:{raw_id}",
@@ -512,6 +523,10 @@ def run_raw_authority_scale_proof(
                                             f"codex-session:{row_native_id}",
                                             f"synthetic:authority-component:{row_component:05d}",
                                             row_hash,
+                                            "ambiguous"
+                                            if scenario.terminal_sibling_outcome == "terminal"
+                                            else "deferred",
+                                            f"synthetic {scenario.terminal_sibling_outcome} sibling",
                                         ),
                                     )
                             acquired_at_ms += 1
@@ -552,7 +567,7 @@ def run_raw_authority_scale_proof(
                                     INSERT INTO raw_revision_applications (
                                         decision_id, raw_id, session_id, logical_source_key,
                                         source_revision, acquisition_generation, decision, detail, decided_at_ms
-                                    ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)
                                     """,
                                     (
                                         f"synthetic-terminal:{raw_id}",
@@ -560,6 +575,8 @@ def run_raw_authority_scale_proof(
                                         f"codex-session:{row_native_id}",
                                         f"synthetic:authority-component:{row_component:05d}",
                                         row_hash,
+                                        "ambiguous" if scenario.terminal_sibling_outcome == "terminal" else "deferred",
+                                        f"synthetic {scenario.terminal_sibling_outcome} sibling",
                                     ),
                                 )
                         acquired_at_ms += 1
@@ -581,11 +598,7 @@ def run_raw_authority_scale_proof(
         if not keep:
             shutil.rmtree(root)
         return prepared_report
-    if scenario.component_cohorts is not None:
-        raise ValueError(
-            "an exact cohort scenario is preparation-only until its terminal/deferred outcome variants are implemented"
-        )
-    if scenario.expanded_candidates != scenario.direct_candidates:
+    if scenario.expanded_candidates != scenario.direct_candidates and scenario.component_cohorts is None:
         raise ValueError(
             "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
             "use prepare_only to inspect its exact topology until those outcome variants are implemented"
