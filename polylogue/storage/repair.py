@@ -4347,6 +4347,11 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     if not bool(backlog["available"]):
         return {"available": False, "reason": backlog["reason"]}
     component_raw_counts = [len(component) for component in candidates.authority_components]
+    candidate_ids = set(candidates.raw_ids)
+    component_cohorts: dict[tuple[int, int], int] = {}
+    for component in candidates.authority_components:
+        key = (len(component), len(candidate_ids.intersection(component)))
+        component_cohorts[key] = component_cohorts.get(key, 0) + 1
     component_blob_bytes = [
         sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
         for component in candidates.authority_components
@@ -4362,6 +4367,14 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
         "total_blob_bytes": _backlog_count(backlog, "total_blob_bytes"),
         "expanded_total_blob_bytes": _backlog_count(backlog, "expanded_total_blob_bytes"),
         "component_raw_count_histogram": _histogram(component_raw_counts, field="upper_bound_raw_count"),
+        "component_cohort_distribution": [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "component_count": count,
+            }
+            for (raw_count, direct_candidate_count), count in sorted(component_cohorts.items())
+        ],
         "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
         "residual_state_counts": {
             "missing_blob_count": _backlog_count(backlog, "missing_blob_count"),

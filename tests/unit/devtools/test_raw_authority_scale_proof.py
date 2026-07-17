@@ -118,6 +118,9 @@ def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
     assert profile["expanded_candidate_count"] == 1
     assert profile["authority_component_count"] == 1
     assert profile["component_raw_count_histogram"] == [{"upper_bound_raw_count": 1, "count": 1}]
+    assert profile["component_cohort_distribution"] == [
+        {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1}
+    ]
     serialized = str(profile)
     assert "private-native-id" not in serialized
     assert "/private/source/session.jsonl" not in serialized
@@ -204,3 +207,28 @@ def test_raw_authority_scale_proof_keeps_prefix_chain_across_blob_flushes(tmp_pa
     achieved = cast(dict[str, object], payload["achieved_shape"])
     assert achieved["authority_component_count"] == 1
     assert achieved["expanded_candidate_count"] == 129
+
+
+def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohorts(tmp_path: Path) -> None:
+    scenario = RawAuthorityScaleScenario(
+        components=2,
+        direct_candidates=2,
+        expanded_candidates=4,
+        total_payload_bytes=4096,
+        component_cohorts=((1, 1, 1), (3, 1, 1)),
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        keep=True,
+        prepare_only=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    achieved = cast(dict[str, object], payload["achieved_shape"])
+    assert achieved["component_cohort_distribution"] == [
+        {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1},
+        {"component_raw_count": 3, "direct_candidate_count": 1, "component_count": 1},
+    ]
