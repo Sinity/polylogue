@@ -104,6 +104,17 @@ class OriginSpecRegistry:
             for item in validate_registry(self._kernel)
         ]
         executable = [spec for spec in self.specs() if spec.lifecycle == "executable"]
+        missing_origins = sorted(set(Origin) - set(self._by_origin), key=lambda origin: origin.value)
+        diagnostics.extend(
+            OriginSpecDiagnostic(
+                code="missing_origin_spec",
+                message=f"{origin.value}: public Origin has no admission declaration",
+                origin=origin,
+                owner_path="polylogue/sources/origin_specs.py",
+                repair_command="devtools test tests/unit/sources/test_origin_specs.py",
+            )
+            for origin in missing_origins
+        )
         tightness = [spec.detector_tightness for spec in executable]
         if len(tightness) != len(set(tightness)):
             diagnostics.extend(
@@ -228,8 +239,172 @@ def _grok_spec() -> OriginSpec:
     )
 
 
+def _executable_spec(
+    origin: Origin,
+    *,
+    provider: Provider,
+    tightness: int,
+    discovery: str,
+    acquisition_modes: tuple[str, ...],
+    parser_paths: tuple[str, ...],
+    fixture_paths: tuple[str, ...],
+    stream_parser_path: str | None = None,
+    assembly_paths: tuple[str, ...] = (),
+    fidelity_notes: tuple[str, ...] = (),
+) -> OriginSpec:
+    return OriginSpec(
+        origin=origin,
+        declaration=_declaration(origin, lifecycle="executable", discovery=discovery),
+        lifecycle="executable",
+        acquisition_modes=acquisition_modes,
+        provider_wires=(provider,),
+        collision_policy=None,
+        detector_tightness=tightness,
+        parser_paths=parser_paths,
+        stream_parser_path=stream_parser_path,
+        assembly_paths=assembly_paths,
+        fixture_paths=fixture_paths,
+        coverage_refs=(f"origin:{origin.value}:admitted",),
+        fidelity_notes=fidelity_notes,
+        semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
+    )
+
+
+def _codex_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.CODEX_SESSION,
+        provider=Provider.CODEX,
+        tightness=50,
+        discovery="Codex session JSONL admission.",
+        acquisition_modes=("session-jsonl",),
+        parser_paths=("polylogue/sources/parsers/codex.py",),
+        fixture_paths=("tests/unit/sources/test_parsers_codex.py", "tests/data/codex_event_stream"),
+        stream_parser_path="polylogue/sources/parsers/codex.py:parse_codex_stream",
+    )
+
+
+def _gemini_cli_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.GEMINI_CLI_SESSION,
+        provider=Provider.GEMINI_CLI,
+        tightness=10,
+        discovery="Gemini CLI local-agent document admission.",
+        acquisition_modes=("local-agent-document",),
+        parser_paths=("polylogue/sources/parsers/local_agent.py",),
+        fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+    )
+
+
+def _hermes_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.HERMES_SESSION,
+        provider=Provider.HERMES,
+        tightness=20,
+        discovery="Hermes state database and span document admission.",
+        acquisition_modes=("state-db", "atif-spans"),
+        parser_paths=("polylogue/sources/parsers/hermes_state.py", "polylogue/sources/parsers/hermes_spans.py"),
+        fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+    )
+
+
+def _antigravity_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.ANTIGRAVITY_SESSION,
+        provider=Provider.ANTIGRAVITY,
+        tightness=30,
+        discovery="Antigravity language-server export admission.",
+        acquisition_modes=("language-server-export",),
+        parser_paths=("polylogue/sources/parsers/antigravity.py",),
+        fixture_paths=(
+            "tests/unit/sources/test_antigravity_language_server.py",
+            "tests/unit/sources/parsers/test_antigravity.py",
+        ),
+    )
+
+
+def _beads_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.BEADS_ISSUE,
+        provider=Provider.BEADS,
+        tightness=40,
+        discovery="Beads issue export admission.",
+        acquisition_modes=("issue-jsonl",),
+        parser_paths=("polylogue/sources/parsers/beads.py",),
+        fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
+        stream_parser_path="polylogue/sources/parsers/beads.py:parse_beads_stream",
+    )
+
+
+def _claude_ai_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.CLAUDE_AI_EXPORT,
+        provider=Provider.CLAUDE_AI,
+        tightness=80,
+        discovery="Claude AI document export admission.",
+        acquisition_modes=("export-json",),
+        parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
+        fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
+    )
+
+
+def _aistudio_drive_spec() -> OriginSpec:
+    origin = Origin.AISTUDIO_DRIVE
+    return OriginSpec(
+        origin=origin,
+        declaration=_declaration(origin, lifecycle="executable", discovery="AI Studio and Drive export admission."),
+        lifecycle="executable",
+        acquisition_modes=("drive-like-export",),
+        provider_wires=(Provider.GEMINI, Provider.DRIVE),
+        collision_policy="Gemini and Drive wire families intentionally normalize to one public AI Studio origin.",
+        detector_tightness=90,
+        parser_paths=("polylogue/sources/parsers/drive.py",),
+        stream_parser_path=None,
+        assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
+        fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
+        coverage_refs=("origin:aistudio-drive:admitted",),
+        fidelity_notes=("Provider reverse mapping remains intentionally non-injective.",),
+        semantic_reparse="reparse when Drive parser fingerprints change",
+    )
+
+
+def _unknown_spec() -> OriginSpec:
+    origin = Origin.UNKNOWN_EXPORT
+    return OriginSpec(
+        origin=origin,
+        declaration=_declaration(
+            origin, lifecycle="compatibility-only", discovery="Unknown fallback origin admission."
+        ),
+        lifecycle="compatibility-only",
+        acquisition_modes=("fallback", "browser-capture"),
+        provider_wires=(Provider.UNKNOWN,),
+        collision_policy=None,
+        detector_tightness=None,
+        parser_paths=(),
+        stream_parser_path=None,
+        assembly_paths=(),
+        fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+        coverage_refs=("origin:unknown-export:fallback",),
+        fidelity_notes=(
+            "Fallback is explicit; browser capture resolves a provider-specific origin before archive materialization.",
+        ),
+        semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
+    )
+
+
 ORIGIN_SPEC_REGISTRY = OriginSpecRegistry()
-for _spec in (_claude_code_spec(), _chatgpt_spec(), _grok_spec()):
+for _spec in (
+    _claude_code_spec(),
+    _codex_spec(),
+    _gemini_cli_spec(),
+    _hermes_spec(),
+    _antigravity_spec(),
+    _beads_spec(),
+    _grok_spec(),
+    _chatgpt_spec(),
+    _claude_ai_spec(),
+    _aistudio_drive_spec(),
+    _unknown_spec(),
+):
     ORIGIN_SPEC_REGISTRY.register(_spec)
 ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
 

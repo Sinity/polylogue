@@ -16,7 +16,7 @@ from polylogue.sources.origin_specs import (
 )
 
 
-def test_origin_spec_pilots_cover_stream_document_and_reserved_lifecycle() -> None:
+def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     """Production dependency: source admission is one typed public-origin registry.
 
     Anti-vacuity mutation: removing a pilot's parser, fixture, coverage, or
@@ -35,6 +35,9 @@ def test_origin_spec_pilots_cover_stream_document_and_reserved_lifecycle() -> No
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
     assert grok.lifecycle == "reserved"
     assert not grok.parser_paths
+    assert set(by_origin) == set(Origin)
+    assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
+    assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
 
 
@@ -45,10 +48,12 @@ def test_origin_specs_are_parity_checked_against_current_dispatch_order() -> Non
 def test_origin_spec_reports_source_locatable_missing_dispatch_provider() -> None:
     diagnostics = validate_dispatch_precedence((Provider.CODEX,))
 
-    assert [(item.code, item.origin) for item in diagnostics] == [
-        ("missing_dispatch_provider", Origin.CHATGPT_EXPORT),
-        ("missing_dispatch_provider", Origin.CLAUDE_CODE_SESSION),
-    ]
+    assert {item.code for item in diagnostics} == {"missing_dispatch_provider"}
+    assert {item.origin for item in diagnostics} == {
+        spec.origin
+        for spec in ORIGIN_SPECS
+        if spec.lifecycle == "executable" and spec.origin is not Origin.CODEX_SESSION
+    }
     assert {item.owner_path for item in diagnostics} == {"polylogue/sources/origin_specs.py"}
 
 
