@@ -350,7 +350,13 @@ def _row_sizes(
     sizes: list[list[int]] = []
     for minimums, target in zip(minimum_rows, target_component_bytes, strict=True):
         rows = list(minimums)
-        rows[-1] += target - sum(rows)
+        extra_bytes = target - sum(rows)
+        if _uses_independent_component_members(scenario):
+            extra_per_member, remainder = divmod(extra_bytes, len(rows))
+            for member in range(len(rows)):
+                rows[member] += extra_per_member + (1 if member < remainder else 0)
+        else:
+            rows[-1] += extra_bytes
         sizes.append(rows)
     return sizes
 
@@ -570,6 +576,17 @@ def run_raw_authority_scale_proof(
         max_io_full_avg10=max_io_full_avg10,
         max_memory_full_avg10=max_memory_full_avg10,
     )
+    generation_samples = [admission_sample]
+
+    def check_generation_pressure() -> None:
+        sample = _process_sample()
+        _assert_admission(
+            sample,
+            max_io_full_avg10=max_io_full_avg10,
+            max_memory_full_avg10=max_memory_full_avg10,
+        )
+        generation_samples.append(sample)
+
     root = workdir.expanduser().resolve() / "raw-authority-scale-proof"
     if root.exists():
         shutil.rmtree(root)
@@ -623,6 +640,7 @@ def run_raw_authority_scale_proof(
                     if len(pending_rows) < 128:
                         continue
                     publisher.flush()
+                    check_generation_pressure()
                     with source_conn:
                         for (
                             row_native_id,
@@ -668,6 +686,7 @@ def run_raw_authority_scale_proof(
                                     )
                             acquired_at_ms += 1
                     pending_rows.clear()
+                    check_generation_pressure()
                     # Publication atomically moves prepared blobs.  Continue
                     # the prefix chain from the now-stable final blob rather
                     # than the moved temporary path, so large components can
@@ -675,6 +694,7 @@ def run_raw_authority_scale_proof(
                     previous = publisher.blob_path(blob_hash)
             if pending_rows:
                 publisher.flush()
+                check_generation_pressure()
                 with source_conn:
                     for (
                         row_native_id,
@@ -717,6 +737,7 @@ def run_raw_authority_scale_proof(
                                     ),
                                 )
                         acquired_at_ms += 1
+                check_generation_pressure()
         staging.rmdir()
     archive_id = _generated_archive_id(generated_rows)
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
@@ -727,6 +748,7 @@ def run_raw_authority_scale_proof(
             "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
             "achieved_shape": achieved_shape,
             "admission_sample": asdict(admission_sample),
+            "generation_samples": [asdict(sample) for sample in generation_samples],
             "prepared_only": True,
         }
         (root / "raw-authority-scale-preflight.json").write_text(
@@ -823,6 +845,7 @@ def run_raw_authority_scale_proof(
         "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
         "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
+        "generation_samples": [asdict(sample) for sample in generation_samples],
         "passes": [asdict(item) for item in pass_receipts],
         "fixed_point_digests": fixed_point_digests,
         "receipt": receipt.to_payload(),
