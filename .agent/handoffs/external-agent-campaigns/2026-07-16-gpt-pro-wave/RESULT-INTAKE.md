@@ -37,3 +37,20 @@ own reconciliation work.
 
 Browser-visible result summaries that failed to produce a valid download are
 correlated in Bead notes but are not represented here as accepted artifacts.
+
+## Clipboard and ChatGPT correlation
+
+The operator copied the provider reports to ClipSe in download order. On
+2026-07-17, its history contained one matching report for every retained result
+artifact: `beads-03`, `beads-04`, `testdiet-01`, `testdiet-02`, and
+`analysis-01` through `analysis-05`; a separate matching report described the
+standalone `beads-02` patch. The full 58 MB clipboard-history export is personal
+ambient data and is intentionally neither committed nor treated as a provider
+export. The raw package and its ledger checksum are the durable campaign copy.
+
+The live archive does already contain a captured ChatGPT conversation for the
+agent-manual follow-up, `chatgpt-export:6a59b873-f1c4-83eb-90b6-66a7dd6c9569`.
+Its attachments/turn state are searchable, but the downloaded result-package
+contents are not: an exact archive search for `beads-03-mcp-read-migration-r01.zip`
+returned no session. This is the concrete current limitation owned by
+`polylogue-hs3y`, not a reason to silently discard the work.
