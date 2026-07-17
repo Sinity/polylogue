@@ -4311,6 +4311,14 @@ def _histogram(values: Sequence[int], *, field: str) -> list[dict[str, int]]:
     return [{field: upper_bound, "count": count} for upper_bound, count in sorted(buckets.items())]
 
 
+def _backlog_count(backlog: Mapping[str, object], field: str) -> int:
+    """Read a bounded numeric backlog field without trusting an untyped dict."""
+    value = backlog.get(field)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    raise RuntimeError(f"raw materialization backlog returned a non-integral {field!r}: {value!r}")
+
+
 def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     """Return a private-free authority-frontier shape for synthetic proof input.
 
@@ -4330,23 +4338,23 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     return {
         "available": True,
         "format": "raw-authority-scale-profile-v1",
-        "candidate_count": int(backlog["candidate_count"]),
-        "expanded_candidate_count": int(backlog["expanded_candidate_count"]),
-        "authority_component_count": int(backlog["authority_component_count"]),
-        "executable_authority_component_count": int(backlog["executable_authority_component_count"]),
-        "blocked_authority_component_count": int(backlog["blocked_authority_component_count"]),
-        "total_blob_bytes": int(backlog["total_blob_bytes"]),
-        "expanded_total_blob_bytes": int(backlog["expanded_total_blob_bytes"]),
+        "candidate_count": _backlog_count(backlog, "candidate_count"),
+        "expanded_candidate_count": _backlog_count(backlog, "expanded_candidate_count"),
+        "authority_component_count": _backlog_count(backlog, "authority_component_count"),
+        "executable_authority_component_count": _backlog_count(backlog, "executable_authority_component_count"),
+        "blocked_authority_component_count": _backlog_count(backlog, "blocked_authority_component_count"),
+        "total_blob_bytes": _backlog_count(backlog, "total_blob_bytes"),
+        "expanded_total_blob_bytes": _backlog_count(backlog, "expanded_total_blob_bytes"),
         "component_raw_count_histogram": _histogram(component_raw_counts, field="upper_bound_raw_count"),
         "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
         "residual_state_counts": {
-            "missing_blob_count": int(backlog["missing_blob_count"]),
-            "authority_quarantined_count": int(backlog["authority_quarantined_count"]),
-            "byte_authority_fragment_count": int(backlog["byte_authority_fragment_count"]),
-            "byte_authority_quarantined_count": int(backlog["byte_authority_quarantined_count"]),
-            "byte_authority_pending_count": int(backlog["byte_authority_pending_count"]),
-            "adoption_deferred_count": int(backlog["adoption_deferred_count"]),
-            "blocked_candidate_count": int(backlog["blocked_candidate_count"]),
+            "missing_blob_count": _backlog_count(backlog, "missing_blob_count"),
+            "authority_quarantined_count": _backlog_count(backlog, "authority_quarantined_count"),
+            "byte_authority_fragment_count": _backlog_count(backlog, "byte_authority_fragment_count"),
+            "byte_authority_quarantined_count": _backlog_count(backlog, "byte_authority_quarantined_count"),
+            "byte_authority_pending_count": _backlog_count(backlog, "byte_authority_pending_count"),
+            "adoption_deferred_count": _backlog_count(backlog, "adoption_deferred_count"),
+            "blocked_candidate_count": _backlog_count(backlog, "blocked_candidate_count"),
         },
     }
 
