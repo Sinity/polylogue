@@ -219,6 +219,21 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert tuple(_payload_action_identity(item) for item in read_items) == expected
     assert read_payload["total"] == len(expected)
 
+    # A selector-only boolean expression must take the root list route without
+    # losing its compiled predicate.  This is deliberately distinct from the
+    # terminal action expression above: removing ``**filter_kwargs`` from the
+    # final ``list_summaries`` call returns every session in this archive.
+    selector_result = CliRunner().invoke(
+        cli,
+        ["--plain", "--format", "json", "find", _SESSION_EXPRESSION],
+        env=_cli_env(root),
+    )
+    assert selector_result.exit_code == 0, selector_result.output
+    selector_payload = cast(dict[str, object], json.loads(selector_result.output))
+    selector_items = cast(list[dict[str, object]], selector_payload["items"])
+    assert {str(item["id"]) for item in selector_items} == set(manifest.matching_session_ids())
+    assert selector_payload["total"] == len(manifest.matching_session_ids())
+
     # Preview and apply run against a private clone.  The previewed identities
     # equal the planted session set, apply reports the same cardinality, the
     # selected sessions disappear, and the output-only decoy remains.
