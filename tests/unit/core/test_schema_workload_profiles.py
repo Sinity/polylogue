@@ -203,6 +203,29 @@ def test_annotations_drive_synthetic_numeric_and_array_distributions() -> None:
     assert max(lengths) >= 19
 
 
+def test_synthetic_generation_bounds_inferred_tail_payloads() -> None:
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "string"},
+                "x-polylogue-array-lengths": [2_500, 2_500],
+            }
+        },
+        "x-polylogue-string-lengths": [
+            {"path": "$.items[*]", "min": 1_000_000, "max": 1_000_000, "avg": 1_000_000, "stddev": 0}
+        ],
+    }
+    corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "test")
+
+    generated = cast(dict[str, JSONValue], corpus._generate_from_schema(schema, random.Random(7)))
+    items = cast(list[str], generated["items"])
+
+    assert len(items) == 32
+    assert all(4_000 <= len(item) <= 4_096 for item in items)
+
+
 def test_registry_roundtrips_separate_workload_profile_artifact(tmp_path: Path) -> None:
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     package = SchemaVersionPackage(

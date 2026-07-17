@@ -19,6 +19,11 @@ if TYPE_CHECKING:
 
 SyntheticRecord: TypeAlias = dict[str, JSONValue]
 
+# Inferred schemas retain archive extrema for analysis and scale-tier planning,
+# but this default generator also powers property tests and ordinary seeded
+# artifacts. Sampling a huge nested archive tail there must stay bounded.
+_DEFAULT_MAX_ARRAY_ITEMS = 32
+
 
 class _SyntheticRuntimeContext(Protocol):
     wire_format: WireFormat
@@ -389,6 +394,7 @@ def _generate_array(
         n_items = rng.randint(bounded_lo, bounded_hi)
     else:
         n_items = rng.randint(1, 3)
+    n_items = min(n_items, _DEFAULT_MAX_ARRAY_ITEMS)
 
     item_type = item_schema.get("type")
     item_allows_null = item_type == "null" or (
