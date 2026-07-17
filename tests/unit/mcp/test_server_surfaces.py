@@ -1457,6 +1457,11 @@ class TestPromptSurfaces:
         )
         assert "path:polylogue/cli/click_app.py" in touching
         assert "repo:polylogue" in touching
+        assert "sessions where" not in touching
+
+        failures = await invoke_surface_async(prompts["unacknowledged_failures"].fn, repo="polylogue")
+        assert "actions where" in failures
+        assert "sessions where" not in failures
 
         decisions = await invoke_surface_async(prompts["decisions_about"].fn, topic="lineage")
         assert 'near:"lineage"' in decisions

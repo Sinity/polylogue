@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from polylogue.product.continuity_scenarios import continuity_scenario
 
@@ -24,16 +28,28 @@ def evaluate_replay(
         raise ValueError("observation.calls must be an integer")
     failure = observation.get("failure")
     failure_value = str(failure) if failure is not None else None
+    page_bytes = observation.get("page_bytes")
+    if page_bytes is not None and not isinstance(page_bytes, int):
+        raise ValueError("observation.page_bytes must be an integer")
+    cancel_seconds = observation.get("cancel_seconds")
+    if cancel_seconds is not None and not isinstance(cancel_seconds, (int, float)):
+        raise ValueError("observation.cancel_seconds must be numeric")
     result = scenario.classify(
         fixture,
         observed_refs=[str(ref) for ref in refs],
         calls=calls,
         observed_failure=failure_value if failure_value in scenario.failure_taxonomy else None,  # type: ignore[arg-type]
+        page_bytes=page_bytes,
+        cancel_seconds=float(cancel_seconds) if cancel_seconds is not None else None,
+        continuation_state_lost=bool(observation.get("continuation_state_lost", False)),
+        non_progressing_continuation=bool(observation.get("non_progressing_continuation", False)),
     )
+    expected_record = scenario.oracle_record(fixture)
     return {
         "scenario": scenario.scenario_id,
         "classification": result,
         "expected_refs": list(scenario.oracle(fixture)),
+        "expected_answer": {str(key): value for key, value in expected_record.items() if key != "refs"},
         "observed_refs": refs,
         "calls": calls,
         "budget": {

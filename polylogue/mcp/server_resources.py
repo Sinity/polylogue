@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from polylogue.mcp.archive_support import (
@@ -143,6 +144,7 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     def query_capabilities_resource() -> str:
         """Expose the executable query vocabulary as bounded model-facing data."""
         from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_source_list
+        from polylogue.mcp.declarations import TARGET_DEFAULT_READ_ALGEBRA, TARGET_PROMPTS, TARGET_RESOURCES
 
         units = []
         for descriptor in query_unit_descriptors(terminal_supported=True):
@@ -152,16 +154,20 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "source": descriptor.plural_source,
                     "description": descriptor.description,
                     "example": descriptor.terminal_example or descriptor.example,
-                    "fields": [
-                        {"name": field.name, "description": field.description, "example": field.example}
-                        for field in descriptor.fields
-                    ],
+                    # Keep the catalog itself below the MCP response budget. Full
+                    # field descriptions remain available from query explain/
+                    # completion routes; discovery needs the bounded vocabulary,
+                    # examples, and recovery contract in its first response.
+                    "fields": [field.name for field in descriptor.fields],
                     "aggregate_group_fields": list(descriptor.aggregate_group_fields),
+                    "exists_supported": descriptor.exists_supported,
+                    "lowerer": descriptor.lowerer_kind,
+                    "authority": "normalized evidence; derived rows retain source refs",
+                    "coverage": "current index generation; check readiness for freshness",
                     "stable_order": "time" if descriptor.time_sort_supported else "canonical",
                     "execution": {
                         "result_semantics": "exhaustive_page",
                         "continuation": "query_units response continuation",
-                        "cost": "bounded page; aggregate/group stages may queue as scan work",
                     },
                 }
             )
@@ -172,9 +178,16 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     "kind": "query-capability-catalog",
                     "terminal_sources": terminal_query_source_list(),
                     "grammar": {
-                        "terminal_form": "<sources> where <predicate>",
+                        "terminal_form": "<terminal-source> where <predicate>",
                         "pipeline_form": "<sources> where <predicate> | group by <field> | count",
+                        "scope_form": "sessions where <predicate> | <terminal-source> projection",
+                        "terminal_sources": terminal_query_source_list(),
                         "required_recovery": "Use the returned continuation to advance; do not replay the same page.",
+                    },
+                    "mcp_algebra": {
+                        "read_transactions": [asdict(entry) for entry in TARGET_DEFAULT_READ_ALGEBRA],
+                        "resources": [asdict(entry) for entry in TARGET_RESOURCES],
+                        "prompts": [asdict(entry) for entry in TARGET_PROMPTS],
                     },
                     "units": units,
                 }

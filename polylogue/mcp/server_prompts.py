@@ -483,7 +483,7 @@ Rules:
         return f"""Surface failures in '{repo_name}' since {since} that were never acknowledged.
 
 Call sequence:
-1. query_units(expression='sessions where repo:{repo_name} since:{since} AND exists action(output:failed)', limit=20) — sessions containing failed tool actions.
+1. query_units(expression='actions where session.repo:{repo_name} since:{since} AND output:failed', limit=20) — action rows for sessions containing failed tool outcomes.
 2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
 3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
 
@@ -498,7 +498,7 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
         return f"""Find sessions that touched file path '{path}'.
 
 Call sequence:
-1. query_units(expression='sessions where {repo_clause}exists file(action:file_edit AND path:{path})', limit=20) — sessions that edited the path.
+1. query_units(expression='files where {repo_clause}path:{path}', limit=20) — file/action rows for sessions that touched the path.
 2. query_units(expression='files where path:{path}', limit=20) — per-file action rows (edits, reads, shell references).
 3. search(query='"{path}"', limit=10) — mentions in prose that never became edits.
 4. get_session_summary(id=<session_id>) on each hit for orientation.
