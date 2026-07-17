@@ -5,7 +5,7 @@
   "job_id": "beads-03",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "validated",
+  "state": "subsumed_foundation_retained",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -22,12 +22,19 @@
       "polylogue_attachment_ref": null
     }
   ],
-  "triage": "locally inspected and checksum-validated",
-  "beads": [],
+  "triage": "current-master reconciliation found the core MCP declaration/registration implementation landed independently as PR #3004; the package no longer applies because it overlaps that implementation",
+  "beads": [
+    "polylogue-t46.8",
+    "polylogue-t46.8.2"
+  ],
   "worktree": null,
   "agent_handle": null,
-  "commits": [],
-  "pull_request": null,
-  "verification_receipts": [],
-  "notes": "valid package; preserved pending current-master reconciliation"
+  "commits": [
+    "ed44be18f"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
+  "verification_receipts": [
+    "fresh origin/master at 47fe1cb: both beads-02 and beads-03 apply checks conflict on existing declaration, adapter, renderer, generated-equivalence, and registration paths"
+  ],
+  "notes": "Retained as a positive design and proof input: it describes per-family read migration, no-wrapper FastMCP registration, compatibility witnesses, and representative query/ObjectRef/topology/timeline production routes. Current source already provides the shared declaration substrate. It must not be misrepresented as completing default-surface collapse, semantic tool retirement, shared bounded transaction adoption, URI resources/prompts, cold-model discovery, or incident-scale cancellation/cleanup; those remain polylogue-t46.8.2 scope."
 }
