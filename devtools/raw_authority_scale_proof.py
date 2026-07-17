@@ -429,6 +429,11 @@ def run_raw_authority_scale_proof(
                                     )
                             acquired_at_ms += 1
                     pending_rows.clear()
+                    # Publication atomically moves prepared blobs.  Continue
+                    # the prefix chain from the now-stable final blob rather
+                    # than the moved temporary path, so large components can
+                    # flush without retaining thousands of prepared blobs.
+                    previous = publisher.blob_path(blob_hash)
             if pending_rows:
                 publisher.flush()
                 with source_conn:
