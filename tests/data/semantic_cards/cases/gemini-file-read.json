@@ -1,23 +1,23 @@
 {
-  "case_id": "codex-conflicting-outcome",
-  "claim": "A non-zero exit code dominates a conflicting is_error=false field and emits a caveat.",
-  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
-  "provider_family": "codex",
-  "session_id": "fixture:codex-conflicting-outcome",
+  "session_id": "fixture:gemini-file-read",
+  "provider_family": "gemini-cli",
   "messages": [
     {
       "id": "m-use",
       "role": "assistant",
       "message_type": "tool_use",
-      "text": null,
+      "origin": "gemini-cli-session",
+      "duration_ms": 7,
       "blocks": [
         {
           "id": "b-use",
           "type": "tool_use",
-          "tool_name": "exec_command",
-          "tool_id": "call-1",
+          "tool_name": "read_file",
+          "tool_id": "read-1",
           "tool_input": {
-            "command": "python check.py"
+            "file_path": "src/main.py",
+            "offset": 10,
+            "limit": 20
           }
         }
       ]
@@ -26,15 +26,15 @@
       "id": "m-result",
       "role": "tool",
       "message_type": "tool_result",
-      "text": null,
+      "origin": "gemini-cli-session",
+      "duration_ms": 11,
       "blocks": [
         {
           "id": "b-result",
           "type": "tool_result",
-          "tool_id": "call-1",
-          "text": "completed",
-          "tool_result_is_error": false,
-          "tool_result_exit_code": 2
+          "tool_id": "read-1",
+          "text": "def main():\n    pass\n",
+          "tool_result_is_error": false
         }
       ]
     }
@@ -42,54 +42,69 @@
   "expected_contract": {
     "card_count": 1,
     "kinds": [
-      "shell"
+      "file_read"
     ],
     "outcomes": [
-      "failed"
+      "succeeded"
     ]
   },
   "expected_cards": [
     {
       "schema_version": "semantic-card.v1",
-      "kind": "shell",
-      "title": "Shell command",
+      "kind": "file_read",
+      "title": "File read",
       "source": {
-        "session_id": "fixture:codex-conflicting-outcome",
-        "provider_family": "codex",
+        "session_id": "fixture:gemini-file-read",
+        "provider_family": "gemini-cli",
+        "origin": "gemini-cli-session",
         "message_id": "m-use",
         "block_id": "b-use",
         "block_index": 0,
-        "tool_name": "exec_command",
-        "tool_id": "call-1",
+        "tool_name": "read_file",
+        "tool_id": "read-1",
         "material_origin": "unknown",
+        "duration_ms": 7,
         "result_message_id": "m-result",
         "result_block_id": "b-result",
         "result_block_index": 0,
+        "result_duration_ms": 11,
         "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
-          "value": "exec_command"
+          "value": "read_file"
         },
         {
           "label": "semantic family",
-          "value": "shell"
+          "value": "file_read"
         },
         {
           "label": "classification",
           "value": "exact_alias"
         },
         {
-          "label": "command",
-          "value": "python check.py"
+          "label": "duration",
+          "value": "11 ms"
+        },
+        {
+          "label": "path",
+          "value": "src/main.py"
+        },
+        {
+          "label": "offset",
+          "value": "10"
+        },
+        {
+          "label": "limit",
+          "value": "20"
         }
       ],
       "previews": [
         {
-          "kind": "output",
-          "text": "completed",
-          "line_count": 1,
+          "kind": "content",
+          "text": "def main():\n    pass\n",
+          "line_count": 2,
           "omitted_lines": 0,
           "omitted_characters": 0,
           "truncated": false,
@@ -97,23 +112,22 @@
           "encoding_replacements": 0
         }
       ],
-      "caveats": [
-        "source outcome fields disagree; non-zero exit code is treated as failure"
-      ],
-      "summary": "python check.py",
+      "caveats": [],
+      "summary": "src/main.py",
       "outcome": {
-        "state": "failed",
-        "is_error": false,
-        "exit_code": 2
+        "state": "succeeded",
+        "is_error": false
       },
       "raw_evidence": {
         "tool_input": {
-          "command": "python check.py"
+          "file_path": "src/main.py",
+          "offset": 10,
+          "limit": 20
         },
         "result_preview": {
           "kind": "raw_result",
-          "text": "completed",
-          "line_count": 1,
+          "text": "def main():\n    pass\n",
+          "line_count": 2,
           "omitted_lines": 0,
           "omitted_characters": 0,
           "truncated": false,

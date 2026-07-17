@@ -146,6 +146,18 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
         "child diverges here",
         "child reply",
     ]
+    # Production dependency: read_archive_session_envelope records exact
+    # composition provenance instead of making renderers infer a prefix from
+    # message position. Removing source_session_id or the bounded edge facts
+    # makes these assertions fail.
+    assert envelope.lineage_inheritance == "prefix-sharing"
+    assert envelope.lineage_branch_point_message_id == link["branch_point_message_id"]
+    assert [message.source_session_id for message in envelope.messages] == [
+        parent_id,
+        parent_id,
+        child_id,
+        child_id,
+    ]
 
     conn.close()
 

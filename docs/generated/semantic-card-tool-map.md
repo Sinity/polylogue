@@ -3,13 +3,13 @@
 # Semantic card tool map
 
 This is the review surface for the provider-neutral `semantic-card.v1` registry.
-Persisted semantic type wins, then a repository-grounded exact provider/tool alias.
-Provider namespaces are open: an unlisted tool always becomes a raw fallback card,
+Structural MCP identity wins, then persisted semantic type, then a repository-grounded
+exact provider/tool alias. Provider namespaces are open: an unlisted tool always becomes a raw fallback card,
 and names or prose are never fuzzily classified.
 
-`launch` means the CLI launch slice has a specialized card. `model_only` means the
-shared card model exists but public-surface completion is a follow-on. `fallback`
-is intentional raw evidence, not a missing hidden heuristic.
+`launch` means the shared CLI/API/web renderer has a specialized card. `model_only` means
+the shared card is intentionally generic at the presentation leaf. `fallback` is intentional
+raw evidence, not a missing hidden heuristic.
 
 ## Persisted semantic-family policy
 
@@ -20,16 +20,34 @@ that cannot be enumerated in the exact-alias tables.
 | Persisted semantic type | Card kind | Status |
 |---|---|---|
 | `other` | `fallback` | `fallback` |
-| `file_read` | `fallback` | `fallback` |
+| `file_read` | `file_read` | `launch` |
 | `file_write` | `file_edit` | `launch` |
 | `file_edit` | `file_edit` | `launch` |
 | `shell` | `shell` | `launch` |
 | `git` | `shell` | `launch` |
-| `search` | `fallback` | `fallback` |
-| `web` | `fallback` | `fallback` |
-| `agent` | `fallback` | `fallback` |
+| `search` | `search` | `launch` |
+| `web` | `web` | `launch` |
+| `agent` | `task` | `model_only` |
 | `subagent` | `task` | `model_only` |
 | `thinking` | `fallback` | `fallback` |
+
+## Executable-origin policy
+
+Every `Origin` value has an explicit provider family and open-world fallback policy.
+
+| Origin | Provider family | Namespace | Grounded exact aliases | Unlisted behavior |
+|---|---|---|---:|---|
+| `claude-code-session` | `claude-code` | `open` | 14 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `codex-session` | `codex` | `open` | 8 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `gemini-cli-session` | `gemini-cli` | `open` | 1 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `hermes-session` | `hermes` | `open` | 2 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `antigravity-session` | `antigravity` | `open` | 0 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `beads-issue` | `beads` | `open` | 0 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `grok-export` | `grok` | `open` | 0 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `chatgpt-export` | `chatgpt` | `open` | 3 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `claude-ai-export` | `claude-ai` | `open` | 0 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `aistudio-drive` | `gemini-cli` | `open` | 1 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
+| `unknown-export` | `unknown` | `open` | 0 | `structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence` |
 
 ## Provider exact-alias census
 
@@ -39,25 +57,25 @@ that cannot be enumerated in the exact-alias tables.
 |---|---|---|---|---|---|
 | `canmore.update_textdoc` | `file_edit` | `file_edit` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_chatgpt.py` |
 | `dalle.text2im` | `other` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_chatgpt.py` |
-| `web` | `web` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_chatgpt.py` |
+| `web` | `web` | `web` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_chatgpt.py` |
 
 ## claude-code
 
 | Exact tool name | Semantic type | Card kind | Status | Basis | Evidence |
 |---|---|---|---|---|---|
-| `AskUserQuestion` | `agent` | `fallback` | `fallback` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
+| `AskUserQuestion` | `agent` | `task` | `model_only` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
 | `Bash` | `shell` | `shell` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
 | `Edit` | `file_edit` | `file_edit` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
-| `EnterPlanMode` | `agent` | `fallback` | `fallback` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
-| `ExitPlanMode` | `agent` | `fallback` | `fallback` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
-| `Glob` | `search` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
-| `Grep` | `search` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
+| `EnterPlanMode` | `agent` | `task` | `model_only` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
+| `ExitPlanMode` | `agent` | `task` | `model_only` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
+| `Glob` | `search` | `search` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
+| `Grep` | `search` | `search` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
 | `MultiEdit` | `file_edit` | `file_edit` | `launch` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
 | `NotebookEdit` | `file_edit` | `file_edit` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
-| `Read` | `file_read` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
+| `Read` | `file_read` | `file_read` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
 | `Task` | `subagent` | `task` | `model_only` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
-| `WebFetch` | `web` | `fallback` | `fallback` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
-| `WebSearch` | `web` | `fallback` | `fallback` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
+| `WebFetch` | `web` | `web` | `launch` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
+| `WebSearch` | `web` | `web` | `launch` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
 | `Write` | `file_write` | `file_edit` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_base.py` |
 
 ## codex
@@ -67,17 +85,17 @@ that cannot be enumerated in the exact-alias tables.
 | `apply_patch` | `file_edit` | `file_edit` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_codex.py` |
 | `exec_command` | `shell` | `shell` | `launch` | `fixture_observed` | `tests/unit/sources/test_codex_event_stream_contract.py` |
 | `local_shell_call` | `shell` | `shell` | `launch` | `parser_record_type` | `polylogue/sources/parsers/codex.py` |
-| `search` | `search` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_codex.py` |
+| `search` | `search` | `search` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_codex.py` |
 | `shell` | `shell` | `shell` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_codex.py` |
 | `spawn_agent` | `subagent` | `task` | `model_only` | `classifier_contract` | `polylogue/archive/viewport/tools.py` |
-| `tool_search_call` | `search` | `fallback` | `fallback` | `parser_record_type` | `polylogue/sources/parsers/codex.py` |
-| `web_search_call` | `web` | `fallback` | `fallback` | `parser_record_type` | `polylogue/sources/parsers/codex.py` |
+| `tool_search_call` | `search` | `search` | `launch` | `parser_record_type` | `polylogue/sources/parsers/codex.py` |
+| `web_search_call` | `web` | `web` | `launch` | `parser_record_type` | `polylogue/sources/parsers/codex.py` |
 
 ## gemini-cli
 
 | Exact tool name | Semantic type | Card kind | Status | Basis | Evidence |
 |---|---|---|---|---|---|
-| `read_file` | `file_read` | `fallback` | `fallback` | `fixture_observed` | `tests/unit/sources/test_parsers_local_agent.py` |
+| `read_file` | `file_read` | `file_read` | `launch` | `fixture_observed` | `tests/unit/sources/test_parsers_local_agent.py` |
 
 ## hermes
 
@@ -88,8 +106,9 @@ that cannot be enumerated in the exact-alias tables.
 
 ## Gap-reading rules
 
-- Every provider namespace is treated as open; the finite table is evidence-backed rather than aspirational.
+- Every executable origin has an explicit open namespace; the exact-alias table is evidence-backed rather than aspirational.
+- A structural `mcp__server__tool` identity is classified before provider aliases and exposes both server and tool coordinates.
 - A provider can emit tool names not listed here. Those cards preserve exact raw input and result evidence.
 - A persisted `semantic_type` can safely specialize a provider-private name because classification already happened upstream.
 - `NULL` structural result fields remain `unknown`; a success-like sentence is not a success signal.
-- Web visual wiring, task deep links, richer attachment actions, and streaming cross-page pairing are bounded follow-ons.
+- Cross-page pairing is orchestrated from a whole-session projection; a bounded storage-level pairing index remains a performance follow-on.

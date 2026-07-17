@@ -1,17 +1,8 @@
-"""Per-message semantic-card placement shared by every card-consuming surface.
+"""Per-message placement of one shared semantic transcript document.
 
-``rendering/semantic_cards.py`` builds one ordered :class:`SemanticTranscript`
-(pure, no archive access) that the CLI already renders to Markdown
-(``cli/messages.py``). This module derives a second, equally pure projection
-of that same transcript: a lookup from message id to the cards whose primary
-evidence lives on that message, plus the set of messages whose entire content
-was already absorbed into a card (a paired tool-result message, most often).
-
-Surfaces that render one message at a time — the daemon web reader today —
-consume this instead of re-deriving tool semantics from raw block flags. This
-keeps CLI Markdown and web HTML two renderers over one shared registry
-(``rendering/semantic_card_registry.py``) rather than two independent
-tool-classification implementations drifting apart.
+The pure renderer emits ordered prose, notices, cards, and session-level
+lineage. Message-oriented surfaces consume this placement rather than
+reclassifying raw roles, block flags, or prose at the presentation leaf.
 """
 
 from __future__ import annotations
@@ -19,76 +10,110 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from polylogue.archive.message.models import Message
 from polylogue.core.json import JSONDocument
+from polylogue.rendering.semantic_card_models import LineageDescriptor
 from polylogue.rendering.semantic_cards import build_semantic_transcript
 
 
 @dataclass(frozen=True, slots=True)
 class SemanticCardPlacement:
-    """Card documents and suppression, keyed by the message that owns them."""
+    """Semantic entry documents and compatibility card views by message id."""
 
+    entries_by_message_id: Mapping[str, tuple[JSONDocument, ...]]
+    session_entries: tuple[JSONDocument, ...]
     cards_by_message_id: Mapping[str, tuple[JSONDocument, ...]]
     suppressed_message_ids: frozenset[str]
 
+    def entries_for(self, message_id: str) -> list[JSONDocument]:
+        """All semantic entries owned by *message_id*, in transcript order."""
+
+        return list(self.entries_by_message_id.get(message_id, ()))
+
     def cards_for(self, message_id: str) -> list[JSONDocument]:
-        """Cards whose primary evidence is on *message_id*, in transcript order."""
+        """Compatibility view containing only cards owned by *message_id*."""
 
         return list(self.cards_by_message_id.get(message_id, ()))
 
     def is_suppressed(self, message_id: str) -> bool:
-        """Whether *message_id* is fully absorbed into another message's card.
-
-        A shell/edit/task card pairs a tool-use message with its tool-result
-        message by exact ``tool_id``. The card carries both message ids
-        (``source.message_id`` and ``source.result_message_id``); the result
-        message renders nothing of its own, or the operator would see the
-        same evidence twice — once inside the card, once as a bare
-        tool-result block.
-        """
+        """Whether a pure protocol row is fully absorbed into a paired card."""
 
         return message_id in self.suppressed_message_ids
 
 
-_EMPTY_PLACEMENT = SemanticCardPlacement(cards_by_message_id={}, suppressed_message_ids=frozenset())
+# The historical public name remains valid while the object now places the
+# complete transcript rather than cards alone.
+SemanticTranscriptPlacement = SemanticCardPlacement
+
+_EMPTY_PLACEMENT = SemanticCardPlacement(
+    entries_by_message_id={},
+    session_entries=(),
+    cards_by_message_id={},
+    suppressed_message_ids=frozenset(),
+)
 
 
 def semantic_card_placement_for_messages(
-    messages: Sequence[Message | Mapping[str, object] | object],
+    messages: Sequence[Mapping[str, object] | object],
     *,
     session_id: str,
     provider_family: str | None = None,
+    lineage: LineageDescriptor | None = None,
 ) -> SemanticCardPlacement:
-    """Index a session's semantic cards by the message that should render them.
+    """Place one shared semantic transcript into message/session envelopes.
 
-    Accepts the same message shapes as
-    :func:`polylogue.rendering.semantic_cards.build_semantic_transcript`
-    (domain ``Message`` objects or message-shaped mappings) so DB-backed and
-    archive-backed session reads can share one call.
+    Paired result rows are suppressed only when the renderer emitted no
+    independently meaningful entry for that result message. This preserves
+    mixed protocol/context rows while preventing duplicate pure result output.
     """
 
-    if not messages:
+    if not messages and lineage is None:
         return _EMPTY_PLACEMENT
     transcript = build_semantic_transcript(
         messages,
         session_id=session_id,
         provider_family=provider_family,
+        lineage=lineage,
     )
+    entries_by_message: dict[str, list[JSONDocument]] = {}
     cards_by_message: dict[str, list[JSONDocument]] = {}
-    suppressed: set[str] = set()
-    for card in transcript.cards:
-        primary_id = card.source.message_id or card.source.result_message_id
-        if primary_id is not None:
-            cards_by_message.setdefault(primary_id, []).append(card.to_document())
-        result_id = card.source.result_message_id
-        if result_id is not None and result_id != primary_id:
-            suppressed.add(result_id)
-    if not cards_by_message and not suppressed:
+    session_entries: list[JSONDocument] = []
+    independent_message_ids: set[str] = set()
+    paired_result_ids: set[str] = set()
+
+    for entry in transcript.entries:
+        document = entry.to_document()
+        primary_id = entry.primary_message_id
+        if primary_id is None:
+            session_entries.append(document)
+        else:
+            entries_by_message.setdefault(primary_id, []).append(document)
+            independent_message_ids.add(primary_id)
+
+        if entry.prose is not None:
+            independent_message_ids.add(entry.prose.message_id)
+        elif entry.notice is not None:
+            independent_message_ids.update(source.message_id for source in entry.notice.sources)
+        elif entry.card is not None:
+            card = entry.card
+            if primary_id is not None:
+                cards_by_message.setdefault(primary_id, []).append(card.to_document())
+            result_id = card.source.result_message_id
+            if result_id is not None and result_id != primary_id:
+                paired_result_ids.add(result_id)
+
+    suppressed = paired_result_ids - independent_message_ids
+    if not entries_by_message and not session_entries and not cards_by_message and not suppressed:
         return _EMPTY_PLACEMENT
     return SemanticCardPlacement(
+        entries_by_message_id={key: tuple(value) for key, value in entries_by_message.items()},
+        session_entries=tuple(session_entries),
         cards_by_message_id={key: tuple(value) for key, value in cards_by_message.items()},
         suppressed_message_ids=frozenset(suppressed),
     )
 
 
-__all__ = ["SemanticCardPlacement", "semantic_card_placement_for_messages"]
+__all__ = [
+    "SemanticCardPlacement",
+    "SemanticTranscriptPlacement",
+    "semantic_card_placement_for_messages",
+]

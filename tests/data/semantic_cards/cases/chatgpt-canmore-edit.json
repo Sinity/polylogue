@@ -62,14 +62,24 @@
         "block_index": 0,
         "tool_name": "canmore.update_textdoc",
         "tool_id": "c1",
+        "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "canmore.update_textdoc"
+        },
+        {
+          "label": "semantic family",
+          "value": "file_edit"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
         },
         {
           "label": "path",

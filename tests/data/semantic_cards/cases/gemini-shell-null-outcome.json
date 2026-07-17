@@ -60,14 +60,24 @@
         "block_index": 0,
         "tool_name": "run_shell_command",
         "tool_id": "g1",
+        "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "run_shell_command"
+        },
+        {
+          "label": "semantic family",
+          "value": "shell"
+        },
+        {
+          "label": "classification",
+          "value": "persisted_semantic_type"
         },
         {
           "label": "command",

@@ -1,23 +1,22 @@
 {
-  "case_id": "codex-conflicting-outcome",
-  "claim": "A non-zero exit code dominates a conflicting is_error=false field and emits a caveat.",
-  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "session_id": "fixture:codex-search",
   "provider_family": "codex",
-  "session_id": "fixture:codex-conflicting-outcome",
   "messages": [
     {
       "id": "m-use",
       "role": "assistant",
       "message_type": "tool_use",
-      "text": null,
+      "origin": "codex-session",
       "blocks": [
         {
           "id": "b-use",
           "type": "tool_use",
-          "tool_name": "exec_command",
-          "tool_id": "call-1",
+          "tool_name": "search",
+          "tool_id": "search-1",
+          "semantic_type": "search",
           "tool_input": {
-            "command": "python check.py"
+            "query": "semantic_entries",
+            "path": "polylogue"
           }
         }
       ]
@@ -26,15 +25,14 @@
       "id": "m-result",
       "role": "tool",
       "message_type": "tool_result",
-      "text": null,
+      "origin": "codex-session",
       "blocks": [
         {
           "id": "b-result",
           "type": "tool_result",
-          "tool_id": "call-1",
-          "text": "completed",
-          "tool_result_is_error": false,
-          "tool_result_exit_code": 2
+          "tool_id": "search-1",
+          "text": "polylogue/daemon/http.py: semantic_entries",
+          "tool_result_exit_code": 0
         }
       ]
     }
@@ -42,25 +40,26 @@
   "expected_contract": {
     "card_count": 1,
     "kinds": [
-      "shell"
+      "search"
     ],
     "outcomes": [
-      "failed"
+      "succeeded"
     ]
   },
   "expected_cards": [
     {
       "schema_version": "semantic-card.v1",
-      "kind": "shell",
-      "title": "Shell command",
+      "kind": "search",
+      "title": "Search",
       "source": {
-        "session_id": "fixture:codex-conflicting-outcome",
+        "session_id": "fixture:codex-search",
         "provider_family": "codex",
+        "origin": "codex-session",
         "message_id": "m-use",
         "block_id": "b-use",
         "block_index": 0,
-        "tool_name": "exec_command",
-        "tool_id": "call-1",
+        "tool_name": "search",
+        "tool_id": "search-1",
         "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
@@ -70,25 +69,29 @@
       "fields": [
         {
           "label": "tool",
-          "value": "exec_command"
+          "value": "search"
         },
         {
           "label": "semantic family",
-          "value": "shell"
+          "value": "search"
         },
         {
           "label": "classification",
-          "value": "exact_alias"
+          "value": "persisted_semantic_type"
         },
         {
-          "label": "command",
-          "value": "python check.py"
+          "label": "query",
+          "value": "semantic_entries"
+        },
+        {
+          "label": "scope",
+          "value": "polylogue"
         }
       ],
       "previews": [
         {
-          "kind": "output",
-          "text": "completed",
+          "kind": "matches",
+          "text": "polylogue/daemon/http.py: semantic_entries",
           "line_count": 1,
           "omitted_lines": 0,
           "omitted_characters": 0,
@@ -97,22 +100,20 @@
           "encoding_replacements": 0
         }
       ],
-      "caveats": [
-        "source outcome fields disagree; non-zero exit code is treated as failure"
-      ],
-      "summary": "python check.py",
+      "caveats": [],
+      "summary": "semantic_entries",
       "outcome": {
-        "state": "failed",
-        "is_error": false,
-        "exit_code": 2
+        "state": "succeeded",
+        "exit_code": 0
       },
       "raw_evidence": {
         "tool_input": {
-          "command": "python check.py"
+          "query": "semantic_entries",
+          "path": "polylogue"
         },
         "result_preview": {
           "kind": "raw_result",
-          "text": "completed",
+          "text": "polylogue/daemon/http.py: semantic_entries",
           "line_count": 1,
           "omitted_lines": 0,
           "omitted_characters": 0,

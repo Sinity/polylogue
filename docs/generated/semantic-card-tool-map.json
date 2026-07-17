@@ -3,6 +3,7 @@
   "card_schema_version": "semantic-card.v1",
   "classification_policy": {
     "precedence": [
+      "structural_mcp_tool_identity",
       "persisted_semantic_type",
       "exact_provider_tool_alias",
       "fallback"
@@ -12,55 +13,111 @@
     "null_outcome": "unknown"
   },
   "provider_families": [
+    "antigravity",
+    "beads",
     "chatgpt",
+    "claude-ai",
     "claude-code",
     "codex",
     "gemini-cli",
-    "hermes"
+    "grok",
+    "hermes",
+    "unknown"
   ],
   "card_kinds": [
     "shell",
+    "file_read",
     "file_edit",
+    "search",
+    "web",
     "task",
+    "mcp",
     "lineage",
     "attachment",
     "fallback"
   ],
   "status_counts": {
-    "fallback": 14,
-    "launch": 12,
-    "model_only": 2
+    "fallback": 1,
+    "launch": 22,
+    "model_only": 5
   },
   "provider_namespace_policies": [
     {
-      "provider_family": "chatgpt",
-      "namespace": "open",
-      "grounded_exact_aliases": 3,
-      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
-    },
-    {
+      "origin": "claude-code-session",
       "provider_family": "claude-code",
       "namespace": "open",
       "grounded_exact_aliases": 14,
-      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
     },
     {
+      "origin": "codex-session",
       "provider_family": "codex",
       "namespace": "open",
       "grounded_exact_aliases": 8,
-      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
     },
     {
+      "origin": "gemini-cli-session",
       "provider_family": "gemini-cli",
       "namespace": "open",
       "grounded_exact_aliases": 1,
-      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
     },
     {
+      "origin": "hermes-session",
       "provider_family": "hermes",
       "namespace": "open",
       "grounded_exact_aliases": 2,
-      "unlisted_behavior": "persisted_semantic_type_then_fallback_raw_evidence"
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "antigravity-session",
+      "provider_family": "antigravity",
+      "namespace": "open",
+      "grounded_exact_aliases": 0,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "beads-issue",
+      "provider_family": "beads",
+      "namespace": "open",
+      "grounded_exact_aliases": 0,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "grok-export",
+      "provider_family": "grok",
+      "namespace": "open",
+      "grounded_exact_aliases": 0,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "chatgpt-export",
+      "provider_family": "chatgpt",
+      "namespace": "open",
+      "grounded_exact_aliases": 3,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "claude-ai-export",
+      "provider_family": "claude-ai",
+      "namespace": "open",
+      "grounded_exact_aliases": 0,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "aistudio-drive",
+      "provider_family": "gemini-cli",
+      "namespace": "open",
+      "grounded_exact_aliases": 1,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
+    },
+    {
+      "origin": "unknown-export",
+      "provider_family": "unknown",
+      "namespace": "open",
+      "grounded_exact_aliases": 0,
+      "unlisted_behavior": "structural_mcp_then_persisted_semantic_type_then_fallback_raw_evidence"
     }
   ],
   "semantic_type_policies": [
@@ -68,70 +125,91 @@
       "semantic_type": "other",
       "card_kind": "fallback",
       "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": "the persisted semantic family is intentionally generic"
     },
     {
       "semantic_type": "file_read",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "card_kind": "file_read",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "file_write",
       "card_kind": "file_edit",
       "rendering_status": "launch",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "file_edit",
       "card_kind": "file_edit",
       "rendering_status": "launch",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "shell",
       "card_kind": "shell",
       "rendering_status": "launch",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "git",
       "card_kind": "shell",
       "rendering_status": "launch",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "search",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "card_kind": "search",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "web",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "card_kind": "web",
+      "rendering_status": "launch",
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "agent",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "card_kind": "task",
+      "rendering_status": "model_only",
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "subagent",
       "card_kind": "task",
       "rendering_status": "model_only",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": null
     },
     {
       "semantic_type": "thinking",
       "card_kind": "fallback",
       "rendering_status": "fallback",
-      "classification_basis": "persisted_semantic_type"
+      "classification_basis": "persisted_semantic_type",
+      "fallback_reason": "thinking is rendered from typed content blocks, not as a tool card"
     }
   ],
   "provider_semantic_coverage": [
+    {
+      "provider_family": "antigravity",
+      "semantic_types": [],
+      "exact_alias_count": 0
+    },
+    {
+      "provider_family": "beads",
+      "semantic_types": [],
+      "exact_alias_count": 0
+    },
     {
       "provider_family": "chatgpt",
       "semantic_types": [
@@ -140,6 +218,11 @@
         "web"
       ],
       "exact_alias_count": 3
+    },
+    {
+      "provider_family": "claude-ai",
+      "semantic_types": [],
+      "exact_alias_count": 0
     },
     {
       "provider_family": "claude-code",
@@ -174,11 +257,21 @@
       "exact_alias_count": 1
     },
     {
+      "provider_family": "grok",
+      "semantic_types": [],
+      "exact_alias_count": 0
+    },
+    {
       "provider_family": "hermes",
       "semantic_types": [
         "shell"
       ],
       "exact_alias_count": 2
+    },
+    {
+      "provider_family": "unknown",
+      "semantic_types": [],
+      "exact_alias_count": 0
     }
   ],
   "rows": [
@@ -231,8 +324,8 @@
       "provider_family": "claude-code",
       "tool_name": "Read",
       "semantic_type": "file_read",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "file_read",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_base.py"
     },
@@ -240,8 +333,8 @@
       "provider_family": "claude-code",
       "tool_name": "Grep",
       "semantic_type": "search",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "search",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_base.py"
     },
@@ -249,8 +342,8 @@
       "provider_family": "claude-code",
       "tool_name": "Glob",
       "semantic_type": "search",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "search",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_base.py"
     },
@@ -267,8 +360,8 @@
       "provider_family": "claude-code",
       "tool_name": "WebFetch",
       "semantic_type": "web",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "web",
+      "rendering_status": "launch",
       "evidence_kind": "classifier_contract",
       "evidence": "polylogue/archive/viewport/tools.py"
     },
@@ -276,8 +369,8 @@
       "provider_family": "claude-code",
       "tool_name": "WebSearch",
       "semantic_type": "web",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "web",
+      "rendering_status": "launch",
       "evidence_kind": "classifier_contract",
       "evidence": "polylogue/archive/viewport/tools.py"
     },
@@ -285,8 +378,8 @@
       "provider_family": "claude-code",
       "tool_name": "AskUserQuestion",
       "semantic_type": "agent",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "task",
+      "rendering_status": "model_only",
       "evidence_kind": "classifier_contract",
       "evidence": "polylogue/archive/viewport/tools.py"
     },
@@ -294,8 +387,8 @@
       "provider_family": "claude-code",
       "tool_name": "EnterPlanMode",
       "semantic_type": "agent",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "task",
+      "rendering_status": "model_only",
       "evidence_kind": "classifier_contract",
       "evidence": "polylogue/archive/viewport/tools.py"
     },
@@ -303,8 +396,8 @@
       "provider_family": "claude-code",
       "tool_name": "ExitPlanMode",
       "semantic_type": "agent",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "task",
+      "rendering_status": "model_only",
       "evidence_kind": "classifier_contract",
       "evidence": "polylogue/archive/viewport/tools.py"
     },
@@ -339,8 +432,8 @@
       "provider_family": "codex",
       "tool_name": "search",
       "semantic_type": "search",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "search",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_codex.py"
     },
@@ -357,8 +450,8 @@
       "provider_family": "codex",
       "tool_name": "tool_search_call",
       "semantic_type": "search",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "search",
+      "rendering_status": "launch",
       "evidence_kind": "parser_record_type",
       "evidence": "polylogue/sources/parsers/codex.py"
     },
@@ -366,8 +459,8 @@
       "provider_family": "codex",
       "tool_name": "web_search_call",
       "semantic_type": "web",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "web",
+      "rendering_status": "launch",
       "evidence_kind": "parser_record_type",
       "evidence": "polylogue/sources/parsers/codex.py"
     },
@@ -384,8 +477,8 @@
       "provider_family": "gemini-cli",
       "tool_name": "read_file",
       "semantic_type": "file_read",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "file_read",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_local_agent.py"
     },
@@ -420,8 +513,8 @@
       "provider_family": "chatgpt",
       "tool_name": "web",
       "semantic_type": "web",
-      "card_kind": "fallback",
-      "rendering_status": "fallback",
+      "card_kind": "web",
+      "rendering_status": "launch",
       "evidence_kind": "fixture_observed",
       "evidence": "tests/unit/sources/test_parsers_chatgpt.py"
     },

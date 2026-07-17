@@ -45,12 +45,21 @@
         "block_id": "b-use",
         "block_index": 0,
         "tool_name": "apply_patch",
-        "tool_id": "call-1"
+        "tool_id": "call-1",
+        "material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "apply_patch"
+        },
+        {
+          "label": "semantic family",
+          "value": "file_edit"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
         },
         {
           "label": "path",

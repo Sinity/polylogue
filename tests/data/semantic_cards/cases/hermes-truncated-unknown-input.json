@@ -42,12 +42,21 @@
         "block_id": "b-use",
         "block_index": 0,
         "tool_name": "mystery_tool",
-        "tool_id": "h1"
+        "tool_id": "h1",
+        "material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "mystery_tool"
+        },
+        {
+          "label": "semantic family",
+          "value": "other"
+        },
+        {
+          "label": "classification",
+          "value": "generic_fallback"
         }
       ],
       "previews": [
@@ -63,7 +72,8 @@
         }
       ],
       "caveats": [
-        "tool classification is unknown; raw evidence is shown without a guessed semantic card type",
+        "generic fallback policy: no persisted semantic_type, MCP identity, or grounded exact alias is present",
+        "raw evidence is shown without a guessed specialized card type",
         "tool input was retained as raw text because it was not valid JSON",
         "no structurally paired tool result is present"
       ],

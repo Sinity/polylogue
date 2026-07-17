@@ -24,12 +24,18 @@ MAP_SCHEMA_VERSION = "semantic-card-tool-map.v1"
 def build_json_document() -> dict[str, object]:
     rows = tool_mapping_rows()
     counts = Counter(row.rendering_status for row in rows)
-    providers = sorted({row.provider_family for row in rows})
+    policies = provider_namespace_documents()
+    providers = sorted({str(policy["provider_family"]) for policy in policies})
     return {
         "schema_version": MAP_SCHEMA_VERSION,
         "card_schema_version": CARD_SCHEMA_VERSION,
         "classification_policy": {
-            "precedence": ["persisted_semantic_type", "exact_provider_tool_alias", "fallback"],
+            "precedence": [
+                "structural_mcp_tool_identity",
+                "persisted_semantic_type",
+                "exact_provider_tool_alias",
+                "fallback",
+            ],
             "unknown_tool": "fallback_raw_evidence",
             "outcome_policy": "structural_fields_only",
             "null_outcome": "unknown",
@@ -37,7 +43,7 @@ def build_json_document() -> dict[str, object]:
         "provider_families": providers,
         "card_kinds": [item.value for item in SemanticCardKind],
         "status_counts": dict(sorted(counts.items())),
-        "provider_namespace_policies": provider_namespace_documents(),
+        "provider_namespace_policies": policies,
         "semantic_type_policies": semantic_type_policy_documents(),
         "provider_semantic_coverage": [
             {
@@ -61,13 +67,13 @@ def build_markdown() -> str:
         "# Semantic card tool map",
         "",
         "This is the review surface for the provider-neutral `semantic-card.v1` registry. ",
-        "Persisted semantic type wins, then a repository-grounded exact provider/tool alias. ",
-        "Provider namespaces are open: an unlisted tool always becomes a raw fallback card, ",
+        "Structural MCP identity wins, then persisted semantic type, then a repository-grounded ",
+        "exact provider/tool alias. Provider namespaces are open: an unlisted tool always becomes a raw fallback card, ",
         "and names or prose are never fuzzily classified.",
         "",
-        "`launch` means the CLI launch slice has a specialized card. `model_only` means the ",
-        "shared card model exists but public-surface completion is a follow-on. `fallback` ",
-        "is intentional raw evidence, not a missing hidden heuristic.",
+        "`launch` means the shared CLI/API/web renderer has a specialized card. `model_only` means ",
+        "the shared card is intentionally generic at the presentation leaf. `fallback` is intentional ",
+        "raw evidence, not a missing hidden heuristic.",
         "",
     ]
     lines.extend(
@@ -84,6 +90,22 @@ def build_markdown() -> str:
     )
     for policy in semantic_type_policy_documents():
         lines.append(f"| `{policy['semantic_type']}` | `{policy['card_kind']}` | `{policy['rendering_status']}` |")
+    lines.extend(
+        [
+            "",
+            "## Executable-origin policy",
+            "",
+            "Every `Origin` value has an explicit provider family and open-world fallback policy.",
+            "",
+            "| Origin | Provider family | Namespace | Grounded exact aliases | Unlisted behavior |",
+            "|---|---|---|---:|---|",
+        ]
+    )
+    for policy in provider_namespace_documents():
+        lines.append(
+            f"| `{policy['origin']}` | `{policy['provider_family']}` | `{policy['namespace']}` | "
+            f"{policy['grounded_exact_aliases']} | `{policy['unlisted_behavior']}` |"
+        )
     lines.extend(["", "## Provider exact-alias census", ""])
 
     for provider in sorted(grouped):
@@ -105,11 +127,12 @@ def build_markdown() -> str:
         [
             "## Gap-reading rules",
             "",
-            "- Every provider namespace is treated as open; the finite table is evidence-backed rather than aspirational.",
+            "- Every executable origin has an explicit open namespace; the exact-alias table is evidence-backed rather than aspirational.",
+            "- A structural `mcp__server__tool` identity is classified before provider aliases and exposes both server and tool coordinates.",
             "- A provider can emit tool names not listed here. Those cards preserve exact raw input and result evidence.",
             "- A persisted `semantic_type` can safely specialize a provider-private name because classification already happened upstream.",
             "- `NULL` structural result fields remain `unknown`; a success-like sentence is not a success signal.",
-            "- Web visual wiring, task deep links, richer attachment actions, and streaming cross-page pairing are bounded follow-ons.",
+            "- Cross-page pairing is orchestrated from a whole-session projection; a bounded storage-level pairing index remains a performance follow-on.",
             "",
         ]
     )

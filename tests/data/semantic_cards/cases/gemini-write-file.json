@@ -53,7 +53,7 @@
     {
       "schema_version": "semantic-card.v1",
       "kind": "file_edit",
-      "title": "File edit",
+      "title": "File write",
       "source": {
         "session_id": "fixture:gemini-write-file",
         "provider_family": "gemini-cli",
@@ -62,14 +62,24 @@
         "block_index": 0,
         "tool_name": "write_file",
         "tool_id": "g1",
+        "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "write_file"
+        },
+        {
+          "label": "semantic family",
+          "value": "file_write"
+        },
+        {
+          "label": "classification",
+          "value": "persisted_semantic_type"
         },
         {
           "label": "path",
