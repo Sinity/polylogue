@@ -90,6 +90,7 @@
    "checked_at": "2026-07-17T12:21:00+00:00",
    "snapshot": "b9052e09103502017c0f510ecc699aac395de23c",
    "status": "integrated_merged",
+   "state": "integrated_merged",
    "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
    "patch_lines": 923,
    "integration": "admitted after current-master reconciliation as PR #3019 / d42cc1497ee91fded8c46313a46e18733f9084ee; native Codex action-cardinality survivor is a query-law seed, not closure of the broad cross-surface/cancellation/receipt scope"
@@ -104,8 +105,9 @@
    "checked_at": "2026-07-17T14:01:00+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "status": "integrated_merged",
+   "state": "integrated_merged",
    "members": ["EVIDENCE.md", "HANDOFF.md", "PATCH.diff", "TESTS.md"],
-   "integration": "admitted after current-master reconciliation as PR #3012 / 876358610; bounded aggregate execution is proven, while shared resumable query transaction scope remains open"
+   "integration": "admitted after current-master reconciliation as PR #3012 / 876358610ebd8c7532d3d6865df6bc5fc01712b1; bounded aggregate execution is proven, while shared resumable query transaction scope remains open"
   }
  ]
 }
