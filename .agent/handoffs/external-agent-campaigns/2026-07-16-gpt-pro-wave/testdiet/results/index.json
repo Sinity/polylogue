@@ -12,7 +12,7 @@
    "checked_at": "2026-07-17T10:55:34+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "blocked",
+   "status": "integrated_merged",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -24,7 +24,8 @@
    "apply_detail": "patch applies cleanly",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "blocked"
+   "state": "integrated_merged",
+   "integration": "production defect reconciled against current master and admitted as PR #3022 / d1c08af640a07b27c3fb04185e34f4fda2f814ec; native-Codex corpus proves selector-only root CLI membership and total preserve the compiled boolean predicate"
   },
   {
    "job": "testdiet-02",

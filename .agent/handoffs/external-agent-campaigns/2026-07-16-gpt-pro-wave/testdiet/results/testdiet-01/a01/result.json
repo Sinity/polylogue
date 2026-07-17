@@ -5,7 +5,7 @@
   "job_id": "testdiet-01",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "blocked",
+  "state": "integrated_merged",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -22,12 +22,20 @@
       "polylogue_attachment_ref": null
     }
   ],
-  "triage": "package validation completed; dispatch deliberately blocked by missing foundation receipt",
-  "beads": [],
-  "worktree": null,
+  "triage": "reconciled against current master after the query-law substrate landed; the package's root CLI boolean-predicate forwarding defect remained real and its focused production hunk applied cleanly",
+  "beads": [
+    "polylogue-yeq.3"
+  ],
+  "worktree": "feature/fix/cli-boolean-predicate",
   "agent_handle": null,
-  "commits": [],
-  "pull_request": null,
-  "verification_receipts": [],
-  "notes": "valid draft package; blocked pending foundation-receipt.json and fresh foundation snapshot"
+  "commits": [
+    "3f43c3e95fda95e073b5b84bc8f4907e75209a55",
+    "d1c08af640a07b27c3fb04185e34f4fda2f814ec"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3022",
+  "verification_receipts": [
+    "devtools test tests/unit/cli/test_query_composition_laws.py tests/unit/cli/test_query_exec_laws.py: 86 passed",
+    "devtools verify --quick: 16 checks passed"
+  ],
+  "notes": "Admitted as a narrow production fix only. The added native-Codex corpus law exercises public Click root execution and fails if the final list_summaries call stops forwarding filter_kwargs: selector membership broadens from the two matching sessions to every archive session. The larger cross-surface/cancellation/workload-receipt scope remains open in polylogue-yeq.3."
 }
