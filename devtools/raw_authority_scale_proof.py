@@ -78,6 +78,7 @@ class RawAuthorityScaleScenario:
     direct_candidates: int
     expanded_candidates: int
     total_payload_bytes: int
+    component_cohorts: tuple[tuple[int, int, int], ...] | None = None
 
     def __post_init__(self) -> None:
         if self.components < 1:
@@ -88,6 +89,32 @@ class RawAuthorityScaleScenario:
             raise ValueError("scenario expanded candidates cannot be smaller than direct candidates")
         if self.total_payload_bytes < self.expanded_candidates * 256:
             raise ValueError("scenario payload budget is too small for valid JSONL evidence")
+        if self.component_cohorts is not None:
+            if not self.component_cohorts:
+                raise ValueError("scenario component cohorts cannot be empty")
+            if any(
+                raw_count < 1 or direct_candidate_count < 1 or direct_candidate_count > raw_count or component_count < 1
+                for raw_count, direct_candidate_count, component_count in self.component_cohorts
+            ):
+                raise ValueError("scenario component cohorts must contain positive valid counts")
+            if (
+                sum(component_count for _raw_count, _direct_count, component_count in self.component_cohorts)
+                != self.components
+            ):
+                raise ValueError("scenario component cohorts disagree with component count")
+            if (
+                sum(raw_count * component_count for raw_count, _direct_count, component_count in self.component_cohorts)
+                != self.expanded_candidates
+            ):
+                raise ValueError("scenario component cohorts disagree with expanded candidate count")
+            if (
+                sum(
+                    direct_candidate_count * component_count
+                    for _raw_count, direct_candidate_count, component_count in self.component_cohorts
+                )
+                != self.direct_candidates
+            ):
+                raise ValueError("scenario component cohorts disagree with direct candidate count")
 
     @classmethod
     def from_profile(cls, profile: object) -> RawAuthorityScaleScenario:
@@ -100,11 +127,36 @@ class RawAuthorityScaleScenario:
                 raise ValueError(f"scenario profile has no integral {field}")
             return value
 
+        cohort_payload = profile.get("component_cohort_distribution")
+        cohorts: tuple[tuple[int, int, int], ...] | None = None
+        if cohort_payload is not None:
+            if not isinstance(cohort_payload, list):
+                raise ValueError("scenario profile component cohorts must be a list")
+            parsed_cohorts: list[tuple[int, int, int]] = []
+            for item in cohort_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("scenario profile component cohort must be an object")
+                raw_count = item.get("component_raw_count")
+                direct_candidate_count = item.get("direct_candidate_count")
+                component_count = item.get("component_count")
+                if (
+                    not isinstance(raw_count, int)
+                    or isinstance(raw_count, bool)
+                    or not isinstance(direct_candidate_count, int)
+                    or isinstance(direct_candidate_count, bool)
+                    or not isinstance(component_count, int)
+                    or isinstance(component_count, bool)
+                ):
+                    raise ValueError("scenario profile component cohort values must be integral")
+                parsed_cohorts.append((raw_count, direct_candidate_count, component_count))
+            cohorts = tuple(parsed_cohorts)
+
         return cls(
             components=count("authority_component_count"),
             direct_candidates=count("candidate_count"),
             expanded_candidates=count("expanded_candidate_count"),
             total_payload_bytes=count("expanded_total_blob_bytes"),
+            component_cohorts=cohorts,
         )
 
 
@@ -140,6 +192,12 @@ def _component_counts(total: int, *, components: int) -> list[int]:
 
 def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tuple[int, int]]:
     """Return direct-candidate and pre-materialized sibling counts per component."""
+    if scenario.component_cohorts is not None:
+        return [
+            (direct_candidate_count, raw_count - direct_candidate_count)
+            for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
+            for _ in range(component_count)
+        ]
     direct = _component_counts(scenario.direct_candidates, components=scenario.components)
     siblings = _component_counts(
         scenario.expanded_candidates - scenario.direct_candidates,
@@ -150,7 +208,10 @@ def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tupl
 
 def _row_sizes(scenario: RawAuthorityScaleScenario, component_counts: list[int]) -> list[list[int]]:
     """Give every standalone raw a valid evidence budget, then spread the remainder."""
-    minimum_rows = [[256 * (revision + 1) for revision in range(count)] for count in component_counts]
+    minimum_rows = [
+        [256 * (revision + 1) for revision in range(count)] if scenario.component_cohorts is None else [256] * count
+        for count in component_counts
+    ]
     remaining = scenario.total_payload_bytes - sum(sum(rows) for rows in minimum_rows)
     if remaining < 0:
         raise ValueError("scenario payload budget cannot preserve the requested revision topology")
@@ -245,6 +306,27 @@ def _generated_archive_id(rows: list[tuple[str, int, str]]) -> str:
     }
     encoded = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     return f"raw-authority-scale:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _requested_shape(scenario: RawAuthorityScaleScenario, *, pass_limit: int) -> dict[str, object]:
+    """Serialize the scenario without exposing an implementation-only null field."""
+    payload: dict[str, object] = {
+        "components": scenario.components,
+        "direct_candidates": scenario.direct_candidates,
+        "expanded_candidates": scenario.expanded_candidates,
+        "total_payload_bytes": scenario.total_payload_bytes,
+        "pass_limit": pass_limit,
+    }
+    if scenario.component_cohorts is not None:
+        payload["component_cohort_distribution"] = [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "component_count": component_count,
+            }
+            for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
+        ]
+    return payload
 
 
 def _record_repair_pass(
@@ -377,7 +459,7 @@ def run_raw_authority_scale_proof(
                         native_id=session_native_id,
                         revision=member,
                         target_size=row_size,
-                        previous=previous,
+                        previous=previous if scenario.component_cohorts is None else None,
                     )
                     blob_hash, blob_size = publisher.write_from_path(payload_path)
                     payload_path.unlink()
@@ -483,7 +565,7 @@ def run_raw_authority_scale_proof(
     if prepare_only:
         prepared_report: dict[str, object] = {
             "archive_root": str(root),
-            "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+            "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
             "achieved_shape": achieved_shape,
             "admission_sample": asdict(admission_sample),
             "prepared_only": True,
@@ -494,6 +576,10 @@ def run_raw_authority_scale_proof(
         if not keep:
             shutil.rmtree(root)
         return prepared_report
+    if scenario.component_cohorts is not None:
+        raise ValueError(
+            "an exact cohort scenario is preparation-only until its terminal/deferred outcome variants are implemented"
+        )
     if scenario.expanded_candidates != scenario.direct_candidates:
         raise ValueError(
             "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
@@ -579,7 +665,7 @@ def run_raw_authority_scale_proof(
     )
     report: dict[str, object] = {
         "archive_root": str(root),
-        "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+        "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
         "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
         "passes": [asdict(item) for item in pass_receipts],
