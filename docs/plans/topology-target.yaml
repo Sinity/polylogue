@@ -41,7 +41,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 5883
+    loc: 5889
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -314,6 +314,11 @@ files:
   - path: polylogue/archive/query/evaluator.py
     loc: 173
     target: polylogue/archive/query/evaluator.py
+    owner: archive-query
+    reason: archive-domain query semantics
+  - path: polylogue/archive/query/execution_control.py
+    loc: 474
+    target: polylogue/archive/query/execution_control.py
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/expression.py
@@ -1497,7 +1502,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 4611
+    loc: 4632
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/lifecycle.py
@@ -2088,7 +2093,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1308
+    loc: 1321
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3737,7 +3742,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 11528
+    loc: 11547
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py

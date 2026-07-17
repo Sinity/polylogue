@@ -11,7 +11,7 @@ import json
 import math
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -1185,6 +1185,25 @@ class ArchiveStore:
                 conn.commit()
         except sqlite3.Error:
             return
+
+    def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
+        """Install a SQLite progress handler on the index read connection.
+
+        ``guard`` returning nonzero aborts the active statement with
+        ``sqlite3.OperationalError: interrupted``. Execution control
+        (polylogue-z9gh.1) uses this for cancellation/deadline enforcement;
+        the store deliberately exposes only this narrow hook rather than the
+        raw connection.
+        """
+        self._conn.set_progress_handler(guard, n_opcodes)
+
+    def interrupt_reads(self) -> None:
+        """Interrupt any statement active on the index read connection.
+
+        Safe to call from another thread (``sqlite3.Connection.interrupt``
+        is explicitly cross-thread callable).
+        """
+        self._conn.interrupt()
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db write connection, opening it lazily."""

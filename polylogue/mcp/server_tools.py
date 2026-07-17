@@ -301,6 +301,7 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         """Return terminal rows for explicit unit-source query expressions."""
 
         async def run() -> str:
+            from polylogue.archive.query.execution_control import QueryExecutionContext, execute_archive_read
             from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
 
             config = hooks.get_config()
@@ -313,10 +314,20 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                     )
             except ExpressionCompileError as exc:
                 return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
-            with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-                try:
-                    return hooks.json_payload(
-                        archive_query_unit_payload(
+            # Client disconnects surface as asyncio.CancelledError here;
+            # execute_archive_read translates that into shared cancellation
+            # state plus a connection interrupt — no MCP-local deadline or
+            # cancellation machinery (polylogue-z9gh.1).
+            ctx = QueryExecutionContext.create(
+                query_text=expression,
+                workload_class="interactive",
+                owner_ref="mcp.query_units",
+            )
+            try:
+                return hooks.json_payload(
+                    await execute_archive_read(
+                        mcp_archive_root(config),
+                        lambda archive: archive_query_unit_payload(
                             archive,
                             expression=expression,
                             limit=hooks.clamp_limit(limit),
@@ -348,10 +359,12 @@ def register_query_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                             min_words=min_words,
                             max_words=max_words,
                             message_type=message_type,
-                        )
+                        ),
+                        ctx=ctx,
                     )
-                except ExpressionCompileError as exc:
-                    return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
+                )
+            except ExpressionCompileError as exc:
+                return hooks.error_json(str(exc), code="invalid_query", tool="query_units")
 
         return await hooks.async_safe_call("query_units", run)
 

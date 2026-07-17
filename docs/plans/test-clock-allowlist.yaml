@@ -81,3 +81,5 @@ files:
     reason: "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
   - path: tests/unit/cli/test_daemon_golden_parity.py
     reason: "polylogue-20d.1 golden-parity test starts a real UDS daemon server in a background thread and polls its readiness with a bounded wall-clock deadline before comparing direct vs daemon-proxied CLI output; frozen_clock cannot substitute for waiting on real socket/thread startup."
+  - path: tests/unit/archive/query/test_execution_control.py
+    reason: "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."
