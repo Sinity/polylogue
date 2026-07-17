@@ -222,7 +222,7 @@ def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohort
         tmp_path,
         scenario=scenario,
         keep=True,
-        prepare_only=True,
+        pass_limit=2,
         max_io_full_avg10=None,
         max_memory_full_avg10=None,
     )
@@ -232,3 +232,30 @@ def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohort
         {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1},
         {"component_raw_count": 3, "direct_candidate_count": 2, "component_count": 1},
     ]
+    passes = cast(list[dict[str, object]], payload["passes"])
+    assert sum(cast(dict[str, int], item["plan_status_counts"])["terminal"] for item in passes) == 1
+
+
+def test_raw_authority_scale_proof_converges_with_explicit_deferred_cohort(tmp_path: Path) -> None:
+    scenario = RawAuthorityScaleScenario(
+        components=1,
+        direct_candidates=1,
+        expanded_candidates=2,
+        total_payload_bytes=2048,
+        component_cohorts=((2, 1, 1),),
+        terminal_sibling_outcome="deferred",
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        pass_limit=1,
+        keep=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    passes = cast(list[dict[str, object]], payload["passes"])
+    assert sum(cast(dict[str, int], item["plan_status_counts"])["deferred"] for item in passes) == 1
+    digests = cast(list[str], payload["fixed_point_digests"])
+    assert digests[0] == digests[1]
