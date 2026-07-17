@@ -123,6 +123,34 @@ def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
     assert "/private/source/session.jsonl" not in serialized
 
 
+def test_raw_authority_scale_profile_selects_candidates_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(3):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f'{{"type":"session_meta","payload":{{"id":"profile-{index}"}}}}\n'.encode(),
+                source_path=f"/private/source/profile-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+
+    original = repair._raw_materialization_candidate_ids
+    calls = 0
+
+    def counted(config: Config) -> repair.RawMaterializationCandidates:
+        nonlocal calls
+        calls += 1
+        return original(config)
+
+    monkeypatch.setattr(repair, "_raw_materialization_candidate_ids", counted)
+    profile = repair.raw_materialization_scale_profile(
+        Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    )
+
+    assert profile["candidate_count"] == 3
+    assert calls == 1
+
+
 def test_raw_authority_scale_proof_generates_exact_scenario_bytes_and_expansion(tmp_path: Path) -> None:
     scenario = RawAuthorityScaleScenario(
         components=2,
