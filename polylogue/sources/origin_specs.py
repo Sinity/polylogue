@@ -9,7 +9,7 @@ document export, and a reserved origin.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from polylogue.core.enums import Origin, Provider
@@ -25,6 +25,26 @@ from polylogue.declarations import (
 )
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
+OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
+
+
+@dataclass(frozen=True, slots=True)
+class OriginCompletenessMode:
+    """One material import mode projected into provider-completeness reports."""
+
+    package_ref: str
+    capture_mode: str
+    provider_wire: Provider | None
+    maturity: OriginCompletenessMaturity
+    detector_paths: tuple[str, ...]
+    raw_model_paths: tuple[str, ...]
+    parser_paths: tuple[str, ...]
+    normalizer_paths: tuple[str, ...]
+    fixture_paths: tuple[str, ...]
+    schema_paths: tuple[str, ...]
+    docs_paths: tuple[str, ...]
+    privacy_paths: tuple[str, ...]
+    caveats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +65,7 @@ class OriginSpec:
     coverage_refs: tuple[str, ...]
     fidelity_notes: tuple[str, ...]
     semantic_reparse: str
+    completeness_modes: tuple[OriginCompletenessMode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +412,229 @@ def _unknown_spec() -> OriginSpec:
     )
 
 
+def _completeness_mode(
+    package_ref: str,
+    capture_mode: str,
+    provider_wire: Provider | None,
+    maturity: OriginCompletenessMaturity,
+    *,
+    detector_paths: tuple[str, ...],
+    raw_model_paths: tuple[str, ...],
+    parser_paths: tuple[str, ...],
+    normalizer_paths: tuple[str, ...],
+    fixture_paths: tuple[str, ...],
+    schema_paths: tuple[str, ...],
+    docs_paths: tuple[str, ...],
+    privacy_paths: tuple[str, ...] = ("docs/provider-origin-identity.md",),
+    caveats: tuple[str, ...] = (),
+) -> OriginCompletenessMode:
+    return OriginCompletenessMode(
+        package_ref=package_ref,
+        capture_mode=capture_mode,
+        provider_wire=provider_wire,
+        maturity=maturity,
+        detector_paths=detector_paths,
+        raw_model_paths=raw_model_paths,
+        parser_paths=parser_paths,
+        normalizer_paths=normalizer_paths,
+        fixture_paths=fixture_paths,
+        schema_paths=schema_paths,
+        docs_paths=docs_paths,
+        privacy_paths=privacy_paths,
+        caveats=caveats,
+    )
+
+
+_ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
+    Origin.CLAUDE_CODE_SESSION: (
+        _completeness_mode(
+            "provider-package:claude-code-session/export-jsonl@v1",
+            "export-jsonl",
+            Provider.CLAUDE_CODE,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/claude/code_detection.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/providers/claude_code_record.py",),
+            parser_paths=("polylogue/sources/parsers/claude/code_parser.py",),
+            normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
+            fixture_paths=(
+                "tests/unit/sources/test_parsers_claude_code_artifacts.py",
+                "tests/unit/sources/test_assembly_claude_code_history.py",
+            ),
+            schema_paths=("polylogue/schemas/providers/claude-code/catalog.json",),
+            docs_paths=("docs/providers/claude-code.md",),
+        ),
+    ),
+    Origin.CODEX_SESSION: (
+        _completeness_mode(
+            "provider-package:codex-session/session-jsonl@v1",
+            "session-jsonl",
+            Provider.CODEX,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/codex.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/providers/codex.py",),
+            parser_paths=("polylogue/sources/parsers/codex.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_codex.py", "tests/data/codex_event_stream"),
+            schema_paths=("polylogue/schemas/providers/codex/catalog.json",),
+            docs_paths=("docs/providers/openai-codex.md",),
+        ),
+    ),
+    Origin.GEMINI_CLI_SESSION: (
+        _completeness_mode(
+            "provider-package:gemini-cli-session/local-agent-document@v1",
+            "local-agent-document",
+            Provider.GEMINI_CLI,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/local_agent.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/local_agent.py",),
+            parser_paths=("polylogue/sources/parsers/local_agent.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+            schema_paths=("polylogue/schemas/providers/gemini-cli/catalog.json",),
+            docs_paths=("docs/providers/README.md",),
+        ),
+    ),
+    Origin.HERMES_SESSION: (
+        _completeness_mode(
+            "provider-package:hermes-session/state-db@v1",
+            "state-db",
+            Provider.HERMES,
+            "accepted",
+            detector_paths=(
+                "polylogue/sources/parsers/hermes_state.py",
+                "polylogue/sources/dispatch.py",
+                "polylogue/sources/source_parsing.py",
+            ),
+            raw_model_paths=("polylogue/sources/parsers/hermes_state.py",),
+            parser_paths=("polylogue/sources/parsers/hermes_state.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
+            schema_paths=("polylogue/schemas/providers/hermes/state_db_v16.contract.json",),
+            docs_paths=("docs/providers/README.md", "docs/onboarding.md"),
+        ),
+    ),
+    Origin.ANTIGRAVITY_SESSION: (
+        _completeness_mode(
+            "provider-package:antigravity-session/language-server-export@v1",
+            "language-server-export",
+            Provider.ANTIGRAVITY,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/antigravity.py", "polylogue/sources/source_parsing.py"),
+            raw_model_paths=("polylogue/sources/parsers/antigravity.py",),
+            parser_paths=("polylogue/sources/parsers/antigravity.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=(
+                "tests/unit/sources/test_antigravity_language_server.py",
+                "tests/unit/sources/parsers/test_antigravity.py",
+            ),
+            schema_paths=("polylogue/schemas/providers/antigravity/catalog.json",),
+            docs_paths=("docs/architecture.md",),
+        ),
+    ),
+    Origin.BEADS_ISSUE: (
+        _completeness_mode(
+            "provider-package:beads-issue/issue-jsonl@v1",
+            "issue-jsonl",
+            Provider.BEADS,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/beads.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/beads.py",),
+            parser_paths=("polylogue/sources/parsers/beads.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
+            schema_paths=(),
+            docs_paths=("docs/architecture.md",),
+            caveats=("Beads is a non-chat issue artifact origin.",),
+        ),
+    ),
+    Origin.GROK_EXPORT: (
+        _completeness_mode(
+            "provider-package:grok-export/reserved@v1",
+            "reserved",
+            Provider.GROK,
+            "reserved",
+            detector_paths=(),
+            raw_model_paths=(),
+            parser_paths=(),
+            normalizer_paths=(),
+            fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+            schema_paths=(),
+            docs_paths=("docs/provider-origin-identity.md",),
+            caveats=("Reserved origin: parser admission has not been declared.",),
+        ),
+    ),
+    Origin.CHATGPT_EXPORT: (
+        _completeness_mode(
+            "provider-package:chatgpt-export/takeout-json@v1",
+            "takeout-json",
+            Provider.CHATGPT,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/chatgpt.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/chatgpt.py",),
+            parser_paths=("polylogue/sources/parsers/chatgpt.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_chatgpt.py", "tests/data/golden/chatgpt-simple.md"),
+            schema_paths=("polylogue/schemas/providers/chatgpt/catalog.json",),
+            docs_paths=("docs/providers/chatgpt.md",),
+        ),
+    ),
+    Origin.CLAUDE_AI_EXPORT: (
+        _completeness_mode(
+            "provider-package:claude-ai-export/export-json@v1",
+            "export-json",
+            Provider.CLAUDE_AI,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/claude/ai_parser.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/providers/claude_ai.py",),
+            parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
+            normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
+            schema_paths=("polylogue/schemas/providers/claude-ai/catalog.json",),
+            docs_paths=("docs/providers/claude-ai.md",),
+        ),
+    ),
+    Origin.AISTUDIO_DRIVE: (
+        _completeness_mode(
+            "provider-package:aistudio-drive/drive-export@v1",
+            "drive-like-export",
+            Provider.GEMINI,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/drive.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/providers/gemini_message.py",),
+            parser_paths=("polylogue/sources/parsers/drive.py",),
+            normalizer_paths=("polylogue/sources/parsers/drive_support.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
+            schema_paths=("polylogue/schemas/providers/gemini/catalog.json",),
+            docs_paths=("docs/providers/gemini.md",),
+        ),
+    ),
+    Origin.UNKNOWN_EXPORT: (
+        _completeness_mode(
+            "provider-package:browser-capture/live-receiver@v1",
+            "browser-capture-live-receiver",
+            None,
+            "proposed",
+            detector_paths=("polylogue/sources/parsers/browser_capture.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/browser_capture.py",),
+            parser_paths=("polylogue/sources/parsers/browser_capture.py",),
+            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
+            fixture_paths=(
+                "tests/unit/sources/test_browser_capture.py",
+                "tests/data/witnesses/browser-capture-sequence.json",
+            ),
+            schema_paths=(),
+            docs_paths=("docs/browser-capture.md",),
+            privacy_paths=("docs/provider-origin-identity.md", "docs/daemon-threat-model.md"),
+            caveats=("Browser capture maps captured page sessions onto provider-specific origins at parse time.",),
+        ),
+    ),
+}
+
+
+def _with_completeness_modes(spec: OriginSpec) -> OriginSpec:
+    return replace(spec, completeness_modes=_ORIGIN_COMPLETENESS_MODES[spec.origin])
+
+
 ORIGIN_SPEC_REGISTRY = OriginSpecRegistry()
 for _spec in (
     _claude_code_spec(),
@@ -405,7 +649,7 @@ for _spec in (
     _aistudio_drive_spec(),
     _unknown_spec(),
 ):
-    ORIGIN_SPEC_REGISTRY.register(_spec)
+    ORIGIN_SPEC_REGISTRY.register(_with_completeness_modes(_spec))
 ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
 
 

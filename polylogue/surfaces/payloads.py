@@ -298,7 +298,7 @@ class ImportExplainPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-ProviderCompletenessStatus = Literal["complete", "partial", "missing", "proposed"]
+ProviderCompletenessStatus = Literal["complete", "partial", "missing", "proposed", "reserved", "unsupported"]
 ContextTrustClass: TypeAlias = AssertionContextTrustClass
 CompletenessItemStatus = Literal["complete", "partial", "missing", "not_applicable"]
 
@@ -319,7 +319,7 @@ class ProviderPackageCompletenessRowPayload(SurfacePayloadModel):
     origin: str
     capture_mode: str
     provider_wire: str | None = None
-    maturity: Literal["accepted", "proposed"] = "accepted"
+    maturity: Literal["accepted", "proposed", "reserved", "unsupported"] = "accepted"
     detector: ProviderCompletenessItemPayload
     raw_model: ProviderCompletenessItemPayload
     parser: ProviderCompletenessItemPayload
@@ -345,6 +345,8 @@ class ProviderPackageCompletenessTotalsPayload(SurfacePayloadModel):
     partial: int = 0
     missing: int = 0
     proposed: int = 0
+    reserved: int = 0
+    unsupported: int = 0
     accepted_blocked: int = 0
 
 
