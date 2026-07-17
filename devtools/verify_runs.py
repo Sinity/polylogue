@@ -384,6 +384,40 @@ def _process_io_bytes(pid: int) -> dict[str, int]:
     return values
 
 
+def _cgroup_path(pid: int) -> str | None:
+    with contextlib.suppress(OSError):
+        for row in Path(f"/proc/{pid}/cgroup").read_text().splitlines():
+            parts = row.split(":", 2)
+            if len(parts) == 3 and parts[0] == "0":
+                return parts[2]
+    return None
+
+
+def _cgroup_int(path: str | None, name: str) -> int | None:
+    if path is None:
+        return None
+    with contextlib.suppress(OSError, ValueError):
+        return int((Path("/sys/fs/cgroup") / path.lstrip("/") / name).read_text().strip())
+    return None
+
+
+def _cgroup_io_bytes(path: str | None) -> dict[str, int] | None:
+    if path is None:
+        return None
+    totals = {"rbytes": 0, "wbytes": 0}
+    try:
+        rows = (Path("/sys/fs/cgroup") / path.lstrip("/") / "io.stat").read_text().splitlines()
+    except OSError:
+        return None
+    for row in rows:
+        for item in row.split()[1:]:
+            key, _, value = item.partition("=")
+            if key in totals:
+                with contextlib.suppress(ValueError):
+                    totals[key] += int(value)
+    return totals
+
+
 def _process_identity(pid: int) -> str:
     """Return a PID-reuse-safe identity for one sampled process."""
     try:
@@ -701,6 +735,8 @@ class ResourceSampler:
             for key in ("read_bytes", "write_bytes", "cancelled_write_bytes")
         }
         meminfo = _meminfo()
+        cgroup_path = _cgroup_path(self.root_pid)
+        cgroup_io = _cgroup_io_bytes(cgroup_path)
         sample: dict[str, Any] = {
             "updated_at": utc_now(),
             "event": event,
@@ -719,6 +755,12 @@ class ResourceSampler:
             "host_mem_total_kb": meminfo.get("MemTotal"),
             "host_swap_free_kb": meminfo.get("SwapFree"),
             "host_swap_total_kb": meminfo.get("SwapTotal"),
+            "cgroup_path": cgroup_path,
+            "cgroup_memory_current_bytes": _cgroup_int(cgroup_path, "memory.current"),
+            "cgroup_memory_peak_bytes": _cgroup_int(cgroup_path, "memory.peak"),
+            "cgroup_memory_swap_current_bytes": _cgroup_int(cgroup_path, "memory.swap.current"),
+            "cgroup_read_bytes": cgroup_io.get("rbytes") if cgroup_io else None,
+            "cgroup_write_bytes": cgroup_io.get("wbytes") if cgroup_io else None,
             "pressure_cpu": _pressure("cpu"),
             "pressure_io": _pressure("io"),
             "pressure_memory": _pressure("memory"),
@@ -773,6 +815,19 @@ class ResourceSampler:
             "tree_read_bytes_delta": delta("tree_read_bytes"),
             "tree_write_bytes_delta": delta("tree_write_bytes"),
             "tree_cancelled_write_bytes_delta": delta("tree_cancelled_write_bytes"),
+            "cgroup_path": first.get("cgroup_path") or last.get("cgroup_path"),
+            "peak_cgroup_memory_bytes": max(
+                (
+                    value
+                    for value in (first.get("cgroup_memory_peak_bytes"), last.get("cgroup_memory_peak_bytes"))
+                    if isinstance(value, int)
+                ),
+                default=None,
+            ),
+            "final_cgroup_memory_current_bytes": last.get("cgroup_memory_current_bytes"),
+            "final_cgroup_memory_swap_current_bytes": last.get("cgroup_memory_swap_current_bytes"),
+            "cgroup_read_bytes_delta": delta("cgroup_read_bytes"),
+            "cgroup_write_bytes_delta": delta("cgroup_write_bytes"),
             "peak_process_count": self.peak_process_count,
             "first_resource_sample": self.first_sample,
             "last_resource_sample": self.last_sample,
