@@ -9,6 +9,7 @@ document export, and a reserved origin.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -26,6 +27,27 @@ from polylogue.declarations import (
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
+ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
+
+
+@dataclass(frozen=True, slots=True)
+class OriginArtifactRule:
+    """Declared admission policy for one native artifact path family.
+
+    These rules deliberately describe paths, not a second parser registry:
+    the owning ``OriginSpec`` remains the one admission declaration and
+    consumers can distinguish session streams from evidence-bearing sidecars.
+    """
+
+    kind: str
+    path_pattern: str
+    parse_policy: ArtifactParsePolicy
+    parser_path: str | None
+    coverage_role: str
+    fidelity_note: str
+
+    def matches(self, source_path: str) -> bool:
+        return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +87,7 @@ class OriginSpec:
     coverage_refs: tuple[str, ...]
     fidelity_notes: tuple[str, ...]
     semantic_reparse: str
+    artifact_rules: tuple[OriginArtifactRule, ...] = ()
     completeness_modes: tuple[OriginCompletenessMode, ...] = ()
 
 
@@ -104,6 +127,9 @@ class OriginSpecRegistry:
                 raise ValueError(f"{spec.origin.value}: executable origin requires detector tightness")
             if not spec.parser_paths:
                 raise ValueError(f"{spec.origin.value}: executable origin requires parser binding")
+            for rule in spec.artifact_rules:
+                if rule.parse_policy != "raw-only" and rule.parser_path is None:
+                    raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
         elif spec.parser_paths or spec.stream_parser_path is not None:
             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
         self._kernel.register(spec.declaration)
@@ -199,7 +225,7 @@ def _claude_code_spec() -> OriginSpec:
         origin=origin,
         declaration=_declaration(origin, lifecycle="executable", discovery="Claude Code JSONL and sidecar admission."),
         lifecycle="executable",
-        acquisition_modes=("export-jsonl", "live-jsonl", "sidecar"),
+        acquisition_modes=("export-jsonl", "live-jsonl", "sidecar", "workflow-orchestration"),
         provider_wires=(Provider.CLAUDE_CODE,),
         collision_policy=None,
         detector_tightness=60,
@@ -212,8 +238,65 @@ def _claude_code_spec() -> OriginSpec:
         ),
         coverage_refs=("provider-package:claude-code-session/export-jsonl@v1",),
         fidelity_notes=("Streaming JSONL retains source ordering; sidecars require separate authority admission.",),
-        semantic_reparse="reparse when Claude Code parser or sidecar assembly fingerprints change",
+        semantic_reparse=(
+            "reparse Claude Code sessions and re-inventory workflow artifacts when the Claude parser, "
+            "orchestration artifact parser, or sidecar assembly fingerprint changes"
+        ),
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="workflow_run_snapshot",
+                path_pattern=r"(?:^|/)workflows/[^/]+\.json$",
+                parse_policy="fact",
+                parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                coverage_role="run_snapshot",
+                fidelity_note="Authoritative mutable workflow run snapshot; every observed revision is retained.",
+            ),
+            OriginArtifactRule(
+                kind="workflow_journal",
+                path_pattern=r"(?:^|/)subagents/workflows/[^/]+/journal\.jsonl$",
+                parse_policy="fact",
+                parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                coverage_role="journal",
+                fidelity_note="Append-only workflow journal; content keys and unresolved references remain provider evidence.",
+            ),
+            OriginArtifactRule(
+                kind="agent_transcript",
+                path_pattern=r"(?:^|/)subagents/(?:[^/]+/)*agent-[^/]+\.(?:jsonl|ndjson)$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+                coverage_role="attempt_transcript",
+                fidelity_note="Attempt transcript is a session only when provider workflow evidence links it to a run.",
+            ),
+            OriginArtifactRule(
+                kind="agent_sidecar_meta",
+                path_pattern=r"(?:^|/)subagents/(?:[^/]+/)*agent-[^/]+\.meta\.json$",
+                parse_policy="fact",
+                parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                coverage_role="attempt_meta",
+                fidelity_note="Agent metadata never fabricates a transcript pair; missing peers are coverage gaps.",
+            ),
+            OriginArtifactRule(
+                kind="adopt_manifest",
+                path_pattern=r"(?:^|/)jobs/[^/]+/adopt\.json$",
+                parse_policy="fact",
+                parser_path="polylogue/sources/parsers/claude/orchestration.py:parse_claude_orchestration_artifact",
+                coverage_role="adopt_manifest",
+                fidelity_note="Recovery manifest preserves resume/adoption evidence without asserting completed work.",
+            ),
+        ),
     )
+
+
+def artifact_rule_for_path(provider: Provider, source_path: str) -> OriginArtifactRule | None:
+    """Return the owning OriginSpec artifact rule for a native source path."""
+
+    for spec in ORIGIN_SPECS:
+        if provider not in spec.provider_wires:
+            continue
+        for rule in spec.artifact_rules:
+            if rule.matches(source_path):
+                return rule
+    return None
 
 
 def _chatgpt_spec() -> OriginSpec:
@@ -699,9 +782,12 @@ __all__ = [
     "ORIGIN_SPECS",
     "ORIGIN_SPEC_REGISTRY",
     "OriginLifecycle",
+    "OriginArtifactRule",
+    "ArtifactParsePolicy",
     "OriginSpec",
     "OriginSpecDiagnostic",
     "OriginSpecRegistry",
     "origin_specs",
+    "artifact_rule_for_path",
     "validate_dispatch_precedence",
 ]

@@ -138,6 +138,32 @@ def test_discover_sidecars_handles_missing_history_jsonl(tmp_path: Path) -> None
     assert sidecar_data["history_paste_index"] == {}
 
 
+def test_discover_sidecars_parses_declared_orchestration_artifacts_and_reports_gaps(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".claude" / "projects" / "p"
+    workflow_dir = project_dir / "workflows"
+    journal_dir = project_dir / "subagents" / "workflows" / "wf-54"
+    agent_dir = project_dir / "subagents"
+    workflow_dir.mkdir(parents=True)
+    journal_dir.mkdir(parents=True)
+    workflow = workflow_dir / "wf-54.json"
+    journal = journal_dir / "journal.jsonl"
+    transcript = agent_dir / "agent-a.jsonl"
+    workflow.write_text('{"runId":"wf-54","taskId":"task-7"}', encoding="utf-8")
+    journal.write_text('{"contentKey":"call-1","agentId":"agent-a"}\n', encoding="utf-8")
+    transcript.write_text(
+        '{"type":"user","sessionId":"agent-a","message":{"role":"user","content":"work"}}\n', encoding="utf-8"
+    )
+
+    sidecars = ClaudeCodeAssemblySpec().discover_sidecars([workflow, journal, transcript])
+
+    assert [(artifact.kind, artifact.facts[0].run_id) for artifact in sidecars["orchestration_artifacts"]] == [
+        ("workflow_run_snapshot", "wf-54"),
+        ("workflow_journal", "wf-54"),
+    ]
+    assert sidecars["orchestration_coverage"].gaps == ("missing agent metadata for transcript agent-a",)
+    assert sidecars["orchestration_parse_gaps"] == ()
+
+
 # ---------------------------------------------------------------------------
 # enrich_session: strong-identity matching by sessionId + timestamp.
 # ---------------------------------------------------------------------------

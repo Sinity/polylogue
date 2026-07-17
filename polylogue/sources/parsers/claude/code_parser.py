@@ -358,6 +358,54 @@ def _unique_background_start(locations: Sequence[tuple[int, int]]) -> tuple[int,
     return locations[0] if len(locations) == 1 else None
 
 
+def _workflow_invocation_events(
+    content_blocks: Sequence[ParsedContentBlock],
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    """Project provider-native Workflow calls without promoting child sessions.
+
+    Only the coordinator tool-use record establishes this invocation edge.  A
+    parent/child session relation remains insufficient evidence for Workflow
+    membership, so no agent transcript is inferred here.
+    """
+
+    events: list[ParsedSessionEvent] = []
+    for block in content_blocks:
+        if block.type is not BlockType.TOOL_USE or block.tool_name != "Workflow":
+            continue
+        tool_input = block.tool_input or {}
+        payload = {
+            key: value
+            for key, value in tool_input.items()
+            if key
+            in {
+                "runId",
+                "run_id",
+                "taskId",
+                "task_id",
+                "resumeFromRunId",
+                "resume_from_run_id",
+                "workflow",
+                "workflowName",
+                "scriptPath",
+                "scriptHash",
+                "labels",
+                "phases",
+            }
+        }
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_workflow_invocation",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload=payload,
+            )
+        )
+    return events
+
+
 def _parse_code_records(
     records: Iterable[object],
     fallback_id: str,
@@ -534,6 +582,13 @@ def _parse_code_records(
                 model_effort=msg_effort,
                 duration_ms=msg_duration_ms,
                 paste_spans=paste_spans,
+            )
+        )
+        session_events.extend(
+            _workflow_invocation_events(
+                content_blocks,
+                source_message_provider_id=provider_message_id,
+                timestamp=timestamp,
             )
         )
         if notification is not None:

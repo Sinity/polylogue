@@ -30,6 +30,13 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     grok = by_origin[Origin.GROK_EXPORT]
 
     assert claude.stream_parser_path is not None
+    assert {rule.kind for rule in claude.artifact_rules} == {
+        "workflow_run_snapshot",
+        "workflow_journal",
+        "agent_transcript",
+        "agent_sidecar_meta",
+        "adopt_manifest",
+    }
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")

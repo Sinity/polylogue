@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 
-from polylogue.core.enums import PasteBoundary
+from polylogue.core.enums import PasteBoundary, Provider
 from polylogue.logging import get_logger
 
 from .assembly import (
@@ -13,12 +13,18 @@ from .assembly import (
     ClaudeCodeSessionIndex,
     SidecarData,
 )
+from .origin_specs import artifact_rule_for_path
 from .parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
 from .parsers.claude.history import HistoryEntry, build_session_paste_index
 from .parsers.claude.index import (
     SessionIndexEntry,
     enrich_session_from_index,
     parse_sessions_index,
+)
+from .parsers.claude.orchestration import (
+    ClaudeOrchestrationArtifact,
+    inventory_claude_orchestration_artifacts,
+    parse_claude_orchestration_artifact,
 )
 
 logger = get_logger(__name__)
@@ -62,7 +68,29 @@ class ClaudeCodeAssemblySpec:
         for hist in history_indices.values():
             for session_id, history_entries in hist.items():
                 merged_history.setdefault(session_id, []).extend(history_entries)
-        return {"session_index": session_index, "history_paste_index": merged_history}
+        orchestration_paths = [
+            path
+            for path in source_paths
+            if (rule := artifact_rule_for_path(Provider.CLAUDE_CODE, str(path))) is not None
+            and rule.parse_policy == "fact"
+        ]
+        artifacts: list[ClaudeOrchestrationArtifact] = []
+        parse_gaps: list[str] = []
+        for path in orchestration_paths:
+            try:
+                artifact = parse_claude_orchestration_artifact(str(path), path.read_bytes())
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                parse_gaps.append(f"unparseable declared artifact {path}: {type(exc).__name__}")
+                continue
+            if artifact is not None:
+                artifacts.append(artifact)
+        return {
+            "session_index": session_index,
+            "history_paste_index": merged_history,
+            "orchestration_artifacts": tuple(artifacts),
+            "orchestration_coverage": inventory_claude_orchestration_artifacts(source_paths),
+            "orchestration_parse_gaps": tuple(parse_gaps),
+        }
 
     def enrich_session(
         self,

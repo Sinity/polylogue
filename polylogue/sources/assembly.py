@@ -19,6 +19,7 @@ from .parsers.base import ParsedSession
 if TYPE_CHECKING:
     from .parsers.claude.history import HistoryEntry
     from .parsers.claude.index import SessionIndexEntry
+    from .parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationCoverage
 
 ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
 ClaudeCodeHistoryPasteIndex: TypeAlias = dict[str, list["HistoryEntry"]]
@@ -28,6 +29,9 @@ CodexThreadNames: TypeAlias = dict[str, str]
 class _ClaudeCodeSidecarData(TypedDict, total=False):
     session_index: ClaudeCodeSessionIndex
     history_paste_index: ClaudeCodeHistoryPasteIndex
+    orchestration_artifacts: tuple[ClaudeOrchestrationArtifact, ...]
+    orchestration_coverage: ClaudeOrchestrationCoverage
+    orchestration_parse_gaps: tuple[str, ...]
 
 
 class _CodexSidecarData(TypedDict, total=False):
