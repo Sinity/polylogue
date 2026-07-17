@@ -69,7 +69,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 25
+_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 1
+_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
+_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -507,6 +509,10 @@ async def _periodic_raw_materialization_convergence_after(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
+        if _browser_capture_spool_has_pending_files():
+            logger.info("raw materialization: yielding to pending browser-capture spool files")
+            await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
+            continue
         try:
             materialized = await daemon_write_coordinator().run_sync(
                 "maintenance.raw_materialization",
@@ -630,7 +636,12 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
 
     recover_interrupted_raw_authority_frontier(config)
     try:
-        result = repair_raw_materialization(config, dry_run=False, raw_artifact_limit=limit)
+        result = repair_raw_materialization(
+            config,
+            dry_run=False,
+            raw_artifact_limit=limit,
+            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+        )
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")
     _emit_raw_materialization_pass(result)
@@ -638,6 +649,42 @@ def _drain_raw_materialization_once(*, limit: int = _RAW_MATERIALIZATION_CONVERG
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     return result.repaired_count + frontier_repaired
+
+
+def _browser_capture_spool_has_pending_files() -> bool:
+    """Whether live browser evidence is awaiting its normal ingest route."""
+    from polylogue.paths import browser_capture_spool_root
+    from polylogue.sources.live.batch import fingerprint_file
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+
+    spool = browser_capture_spool_root()
+    if not spool.exists():
+        return False
+    cursor_store = CursorStore(_active_index_db_path())
+    for path in spool.rglob("*.json"):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        cursor = cursor_store.get_record(path)
+        if cursor is None or cursor.excluded or cursor.failure_count:
+            return True
+        if (
+            cursor.parser_fingerprint != _PARSER_FINGERPRINT
+            or cursor.byte_size != stat.st_size
+            or cursor.st_dev != stat.st_dev
+            or cursor.st_ino != stat.st_ino
+            or cursor.mtime_ns != stat.st_mtime_ns
+            or cursor.content_fingerprint is None
+        ):
+            try:
+                fingerprint, _last_newline = fingerprint_file(path)
+            except OSError:
+                return True
+            if fingerprint != cursor.content_fingerprint:
+                return True
+    return False
 
 
 def _converge_raw_authority_frontier(config: Any, *, limit: int) -> int:

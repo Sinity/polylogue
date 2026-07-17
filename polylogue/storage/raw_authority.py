@@ -677,6 +677,40 @@ def raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
         }
 
 
+def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_bytes: int) -> set[str]:
+    """Return unchanged plans already deferred for this exact resource envelope.
+
+    Plan identity includes the raw and index preconditions.  A changed source
+    component therefore gets a new plan id and is immediately eligible; only
+    the same immutable plan is held out of periodic maintenance.
+    """
+    source_db = archive_root / "source.db"
+    if not source_db.is_file():
+        return set()
+    reason = f"resource-envelope:{max_payload_bytes}"
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
+        ).fetchone()
+        if exists is None:
+            return set()
+        return {
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT cp.plan_id
+                FROM raw_authority_census_plans AS cp
+                JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
+                WHERE cp.selected = 1
+                  AND cp.outcome_status = 'deferred'
+                  AND cp.reason = ?
+                  AND c.lifecycle_status IN ('completed', 'interrupted')
+                """,
+                (reason,),
+            )
+        }
+
+
 def unresolved_raw_authority_blockers(archive_root: Path) -> int:
     source_db = archive_root / "source.db"
     if not source_db.is_file():
@@ -1618,6 +1652,7 @@ __all__ = [
     "raw_authority_census_query_handle",
     "raw_authority_detail_query_handle",
     "raw_replay_plan_last_attempts",
+    "raw_replay_plan_deferred_for_envelope",
     "recover_interrupted_raw_authority_censuses",
     "read_raw_authority_census",
     "read_raw_authority_detail",

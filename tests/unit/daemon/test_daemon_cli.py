@@ -543,12 +543,19 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["restore_sample_size"] = sample_size
         return FakeRestoreResult()
 
-    def fake_repair_raw_materialization(config: Config, *, dry_run: bool, raw_artifact_limit: int) -> FakeResult:
+    def fake_repair_raw_materialization(
+        config: Config,
+        *,
+        dry_run: bool,
+        raw_artifact_limit: int,
+        max_payload_bytes: int,
+    ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
         calls["render_root"] = config.render_root
         calls["dry_run"] = dry_run
         calls["raw_artifact_limit"] = raw_artifact_limit
+        calls["max_payload_bytes"] = max_payload_bytes
         return FakeResult()
 
     def fake_recover(config: Config) -> tuple[str, ...]:
@@ -586,6 +593,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "render_root": tmp_path / "render",
         "dry_run": False,
         "raw_artifact_limit": 11,
+        "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
         "recover_archive_root": tmp_path / "archive",
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
@@ -955,6 +963,24 @@ def test_periodic_raw_materialization_convergence_waits_for_catch_up_complete(
     asyncio.run(exercise())
 
     assert calls == ["drain"]
+
+
+def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    async def fake_sleep(seconds: float) -> None:
+        assert seconds == daemon_cli._RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
+        raise asyncio.CancelledError
+
+    async def fail_run_sync(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("raw maintenance must not acquire the writer ahead of pending browser capture")
+
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: True)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
+    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
 
 
 def test_periodic_session_insight_convergence_waits_for_catch_up_complete(

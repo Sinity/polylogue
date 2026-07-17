@@ -62,6 +62,7 @@ from polylogue.storage.raw_authority import (
     build_raw_replay_plans,
     finalize_raw_authority_census,
     raw_replay_application_receipt,
+    raw_replay_plan_deferred_for_envelope,
     raw_replay_plan_last_attempts,
     record_raw_authority_census,
     record_raw_replay_outcome,
@@ -5456,9 +5457,12 @@ def repair_raw_materialization(
     source_family: str | None = None,
     source_root: Path | None = None,
     raw_artifact_limit: int | None = None,
+    max_payload_bytes: int = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
     progress_callback: ProgressCallback | None = None,
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority."""
+    if max_payload_bytes < 1:
+        raise ValueError("max_payload_bytes must be positive")
     archive_root = _raw_materialization_archive_root(config)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
@@ -5502,7 +5506,9 @@ def repair_raw_materialization(
     )
 
     relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
-    uncensused_raw_ids = set(uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids))
+    uncensused_raw_ids = set(
+        uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids, max_payload_bytes=max_payload_bytes)
+    )
     census_failed_raw_ids: set[str] = set()
     census_resource_blocked_raw_ids: set[str] = set()
     census_component_limit = (
@@ -5524,7 +5530,7 @@ def repair_raw_materialization(
                 census_historical_revision_evidence(
                     archive_root,
                     selected_raw_ids=[seed],
-                    max_payload_bytes=RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+                    max_payload_bytes=max_payload_bytes,
                 )
             except RawRevisionReplayResourceBlockedError as exc:
                 logger.warning(
@@ -5533,6 +5539,14 @@ def repair_raw_materialization(
                     exc,
                 )
                 census_resource_blocked_raw_ids.update(component)
+                from polylogue.sources.revision_backfill import record_resource_blocked_revision_census
+
+                record_resource_blocked_revision_census(
+                    archive_root,
+                    tuple(sorted(uncensused_raw_ids.intersection(component))),
+                    max_payload_bytes=max_payload_bytes,
+                    total_payload_bytes=exc.total_bytes,
+                )
             except Exception:
                 logger.exception("raw authority census failed for component containing %s", seed)
                 census_failed_raw_ids.update(component)
@@ -5544,7 +5558,9 @@ def repair_raw_materialization(
             source_root=source_root,
         )
         relevant_raw_ids = list(candidates.expanded_raw_ids or tuple(candidates.raw_ids))
-        uncensused_raw_ids = set(uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids))
+        uncensused_raw_ids = set(
+            uncensused_historical_revision_raw_ids(archive_root, relevant_raw_ids, max_payload_bytes=max_payload_bytes)
+        )
     census_pending_raw_ids = tuple(sorted(uncensused_raw_ids | census_failed_raw_ids))
     if census_pending_raw_ids:
         residual = _raw_authority_residual(candidates, census_pending_raw_ids=census_pending_raw_ids)
@@ -5583,14 +5599,11 @@ def repair_raw_materialization(
         )
         if census_resource_blocked_raw_ids:
             metrics["raw_materialization_resource_blocked_count"] = float(len(census_resource_blocked_raw_ids))
-            metrics["raw_materialization_execute_blob_limit_bytes"] = float(
-                RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
-            )
+            metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
             oversized = {
                 raw_id
                 for raw_id in census_resource_blocked_raw_ids
-                if _raw_materialization_component_blob_bytes(candidates, raw_id)
-                > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+                if _raw_materialization_component_blob_bytes(candidates, raw_id) > max_payload_bytes
             }
             if oversized:
                 metrics["raw_materialization_oversized_count"] = float(len(oversized))
@@ -5606,7 +5619,7 @@ def repair_raw_materialization(
         if census_resource_blocked_raw_ids:
             detail += (
                 f"; {len(census_resource_blocked_raw_ids):,} raw(s) belong to authority components whose "
-                f"aggregate payload exceeds {_format_bytes(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)}"
+                f"aggregate payload exceeds {_format_bytes(max_payload_bytes)}"
             )
         return _internal_derived_repair_result(
             "raw_materialization",
@@ -5624,12 +5637,16 @@ def repair_raw_materialization(
         component
         for component in ordered_components
         if sum(_raw_materialization_component_blob_bytes(candidates, member) for member in component)
-        > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        > max_payload_bytes
     ]
     all_blocked_component_raw_ids = {raw_id for component in all_blocked_components for raw_id in component}
     selected_components = (
         ordered_components[:raw_artifact_limit] if raw_artifact_limit is not None else ordered_components
     )
+    deferred_plan_ids = raw_replay_plan_deferred_for_envelope(archive_root, max_payload_bytes=max_payload_bytes)
+    selected_components = [
+        component for component in selected_components if plan_by_component[component].plan_id not in deferred_plan_ids
+    ]
     blocked_components = [
         component for component in selected_components if all_blocked_component_raw_ids.intersection(component)
     ]
@@ -5638,9 +5655,9 @@ def repair_raw_materialization(
         RawReplayPlanOutcome(
             plan_by_component[component].plan_id,
             component,
-            RawReplayPlanStatus.RETRYABLE,
-            "authority component exceeds the bounded replay resource envelope",
-            "retry the same plan after streaming/resource admission is available",
+            RawReplayPlanStatus.DEFERRED,
+            f"resource-envelope:{max_payload_bytes}",
+            "retry only after a larger resource envelope or changed source/index preconditions",
         )
         for component in blocked_components
     )
@@ -5675,12 +5692,12 @@ def repair_raw_materialization(
     metrics["raw_materialization_selected_blocked_component_count"] = float(len(blocked_components))
     if all_blocked_component_raw_ids:
         metrics["raw_materialization_resource_blocked_count"] = float(len(all_blocked_component_raw_ids))
-        metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
+        metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
     diagnostic_component_raw_ids = selected_component_raw_ids | all_blocked_component_raw_ids
     oversized_candidate_raw_ids = [
         raw_id
         for raw_id in diagnostic_component_raw_ids
-        if _raw_materialization_component_blob_bytes(candidates, raw_id) > RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        if _raw_materialization_component_blob_bytes(candidates, raw_id) > max_payload_bytes
     ]
     oversized_stream_safe_raw_ids = [
         raw_id for raw_id in oversized_candidate_raw_ids if _raw_materialization_stream_safe(candidates, raw_id)
@@ -5692,9 +5709,23 @@ def repair_raw_materialization(
             metrics.get("raw_materialization_resource_blocked_count", 0.0),
             float(len(oversized_raw_ids)),
         )
-        metrics["raw_materialization_execute_blob_limit_bytes"] = float(RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES)
+        metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
     if oversized_stream_safe_raw_ids:
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
+    if deferred_plan_ids:
+        metrics["raw_materialization_deferred_plan_count"] = float(len(deferred_plan_ids))
+    if not selected_components and deferred_plan_ids:
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=True,
+            detail=(
+                "Raw materialization has no newly admissible authority components; "
+                f"{len(deferred_plan_ids):,} unchanged plan(s) remain deferred for "
+                f"the {_format_bytes(max_payload_bytes)} envelope"
+            ),
+            metrics=metrics,
+        )
     selected_plan_ids = {plan_by_component[component].plan_id for component in selected_components}
     executable_plan_ids = {
         plan_by_component[component].plan_id
@@ -5883,7 +5914,7 @@ def repair_raw_materialization(
             part = backfill_historical_revision_evidence(
                 archive_root,
                 selected_raw_ids=[raw_id],
-                max_payload_bytes=RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+                max_payload_bytes=max_payload_bytes,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
@@ -5892,9 +5923,9 @@ def repair_raw_materialization(
             outcome = RawReplayPlanOutcome(
                 plan.plan_id,
                 component,
-                RawReplayPlanStatus.RETRYABLE,
-                "expanded authority component exceeded the bounded replay resource envelope",
-                "retry the same plan after streaming/resource admission is available",
+                RawReplayPlanStatus.DEFERRED,
+                f"resource-envelope:{max_payload_bytes}",
+                "retry only after a larger resource envelope or changed source/index preconditions",
             )
             record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
             execution_outcomes.append(outcome)
