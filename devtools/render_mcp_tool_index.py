@@ -2,7 +2,7 @@
 
 ``docs/mcp-reference.md`` hand-curates a representative sample of tools by
 category; that stays. This adds a generated appendix enumerating every
-registered tool name (``tests/infra/mcp.py:EXPECTED_TOOL_NAMES``), so each
+declared tool name (``polylogue.mcp.declarations.registry``), so each
 tool is individually reachable from the docs tree (polylogue-3tl.9's
 docs-coverage lint checks exactly this) without hand-duplicating the list.
 """
@@ -21,9 +21,9 @@ DEFAULT_DOC_PATH = Path("docs/mcp-reference.md")
 
 
 def _tool_names() -> tuple[str, ...]:
-    from tests.infra.mcp import EXPECTED_TOOL_NAMES
+    from polylogue.mcp.declarations.registry import declared_tool_names
 
-    return tuple(sorted(EXPECTED_TOOL_NAMES))
+    return tuple(sorted(declared_tool_names("admin")))
 
 
 def build_tool_index_section(tool_names: tuple[str, ...] | None = None) -> str:

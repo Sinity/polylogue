@@ -30,8 +30,7 @@ from polylogue.mcp.payloads import (
 from polylogue.mcp.query_contracts import MCPCharacterLimit, MCPToolLimit, MCPToolOffset
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -146,7 +145,7 @@ def _annotation_payload(row: dict[str, str]) -> MCPUserAnnotationPayload:
     )
 
 
-def register_personal_state_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_personal_state_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     """Register annotations, views, recall packs, workspaces, metadata and corrections."""
 
     @mcp.tool()

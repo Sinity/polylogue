@@ -47,12 +47,12 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "session_costs": {"session_id": _SYNTHETIC_CONV_ID},
     "cost_outlook": {"plan": "claude-pro"},
     "find_resume_candidates": {"repo_path": "/tmp/nonexistent"},
-    "aggregate_sessions": {"session_ids": "test:a,test:b"},
-    "compose_context_preamble": {"context": "{}"},
+    "aggregate_sessions": {},
+    "compose_context_preamble": {},
     "compare_sessions": {"session_ids": "test:a,test:b"},
-    "find_similar_sessions": {"query": "test"},
+    "find_similar_sessions": {"session_id": _SYNTHETIC_CONV_ID},
     "correlate_session": {"session_id": _SYNTHETIC_CONV_ID},
-    "correlate_sessions": {"session_ids": "test:a,test:b"},
+    "correlate_sessions": {"metric_x": "message_count", "metric_y": "word_count"},
     "session_tool_timing": {"session_id": _SYNTHETIC_CONV_ID},
     "facets": {"limit": 1},
     "neighbor_candidates": {"query": "test"},
@@ -72,7 +72,7 @@ _KNOWN_MINIMAL: dict[str, dict[str, object]] = {
     "cost_rollups": {"limit": 1},
     "tool_usage": {"limit": 1},
     "tool_call_latency_distribution": {"limit": 1},
-    "workflow_shape_distribution": {"limit": 1},
+    "workflow_shape_distribution": {},
     "find_stuck_sessions": {"limit": 1},
     "find_abandoned_sessions": {"limit": 1},
     "get_stats_by": {"group_by": "origin"},
@@ -131,13 +131,7 @@ def test_tool_returns_valid_response_envelope(tool_name: str, kwargs: dict[str, 
     tool = server._tool_manager._tools.get(tool_name)
     assert tool is not None, f"tool {tool_name!r} not registered on read-role server"
 
-    try:
-        result = invoke_surface(tool.fn, **kwargs)
-    except TypeError:
-        # Tools we don't have a known-good kwarg set for may require params
-        # we cannot synthesise. The wrapper handles this gracefully.
-        # We just verify it didn't crash the server.
-        return
+    result = invoke_surface(tool.fn, **kwargs)
 
     # Must be a string (JSON payload).
     assert isinstance(result, str), f"{tool_name}: expected str, got {type(result).__name__}"
@@ -208,9 +202,6 @@ def test_read_tools_have_known_minimal_kwargs() -> None:
     comprehensive.
     """
     uncovered = sorted(_READ_TOOL_NAMES - set(_KNOWN_MINIMAL))
-    # Tools that genuinely take no arguments and work fine are listed here.
-    NO_KWARGS_NEEDED: frozenset[str] = frozenset({"compose_context_preamble"})
-    uncovered = [t for t in uncovered if t not in NO_KWARGS_NEEDED]
     if uncovered:
         msg = (
             "New MCP read tools without _KNOWN_MINIMAL entry. "

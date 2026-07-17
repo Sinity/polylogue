@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jsonschema
 import pytest
 
+from polylogue.mcp.declarations.adapter import MCPRegistrationError
 from polylogue.operations import build_runtime_operation_catalog
 from polylogue.surfaces.payloads import (
     BulkTagMutationResult,
@@ -371,11 +372,14 @@ class TestMutationToolDiscovery:
         }
         assert personal_names
 
-        with patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar:
-            suppressed = cast(MCPServerUnderTest, build_server(role="admin"))
+        with (
+            patch("polylogue.mcp.server_mutation_tools.register_personal_state_tools") as registrar,
+            pytest.raises(MCPRegistrationError) as exc_info,
+        ):
+            build_server(role="admin")
 
         registrar.assert_called_once()
-        assert personal_names.isdisjoint(suppressed._tool_manager._tools), sorted(personal_names)
+        assert all(name in str(exc_info.value) for name in personal_names), sorted(personal_names)
 
     def test_every_mutation_tool_is_in_matrix(self) -> None:
         missing = MUTATION_TOOL_NAMES - set(TOOL_MATRIX.keys())

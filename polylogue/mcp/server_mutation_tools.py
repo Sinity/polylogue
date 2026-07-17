@@ -24,8 +24,7 @@ from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
 from polylogue.mcp.server_personal_state_tools import register_personal_state_tools
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 
@@ -39,7 +38,7 @@ def _none_if_empty(value: str | None) -> str | None:
     return value if value else None
 
 
-def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_mutation_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def capture_assertion_candidate(
         body_text: str,
@@ -411,7 +410,7 @@ def register_mutation_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("delete_session", run, session_id=session_id)
 
 
-def register_assertion_review_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_assertion_review_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     """Register promotion tools only for authenticated review capability."""
 
     @mcp.tool()

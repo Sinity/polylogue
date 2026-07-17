@@ -1662,6 +1662,26 @@ files:
     loc: 439
     target: polylogue/daemon/write_coordinator.py
     owner: stable
+  - path: polylogue/declarations/__init__.py
+    loc: 42
+    target: polylogue/declarations/__init__.py
+    owner: stable
+  - path: polylogue/declarations/derive.py
+    loc: 54
+    target: polylogue/declarations/derive.py
+    owner: stable
+  - path: polylogue/declarations/models.py
+    loc: 123
+    target: polylogue/declarations/models.py
+    owner: stable
+  - path: polylogue/declarations/registry.py
+    loc: 105
+    target: polylogue/declarations/registry.py
+    owner: stable
+  - path: polylogue/declarations/validation.py
+    loc: 62
+    target: polylogue/declarations/validation.py
+    owner: stable
   - path: polylogue/demo/__init__.py
     loc: 44
     target: polylogue/demo/__init__.py
@@ -2040,6 +2060,22 @@ files:
     loc: 34
     target: polylogue/mcp/cli.py
     owner: stable
+  - path: polylogue/mcp/declarations/__init__.py
+    loc: 57
+    target: polylogue/mcp/declarations/__init__.py
+    owner: stable
+  - path: polylogue/mcp/declarations/adapter.py
+    loc: 175
+    target: polylogue/mcp/declarations/adapter.py
+    owner: stable
+  - path: polylogue/mcp/declarations/models.py
+    loc: 225
+    target: polylogue/mcp/declarations/models.py
+    owner: stable
+  - path: polylogue/mcp/declarations/registry.py
+    loc: 3525
+    target: polylogue/mcp/declarations/registry.py
+    owner: stable
   - path: polylogue/mcp/insight_tool_contracts.py
     loc: 102
     target: polylogue/mcp/insight_tool_contracts.py
@@ -2057,27 +2093,27 @@ files:
     target: polylogue/mcp/query_contracts.py
     owner: stable
   - path: polylogue/mcp/server.py
-    loc: 93
+    loc: 96
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_context_tools.py
-    loc: 200
+    loc: 199
     target: polylogue/mcp/server_context_tools.py
     owner: stable
   - path: polylogue/mcp/server_insight_tools.py
-    loc: 791
+    loc: 790
     target: polylogue/mcp/server_insight_tools.py
     owner: stable
   - path: polylogue/mcp/server_maintenance_tools.py
-    loc: 304
+    loc: 303
     target: polylogue/mcp/server_maintenance_tools.py
     owner: stable
   - path: polylogue/mcp/server_mutation_tools.py
-    loc: 497
+    loc: 496
     target: polylogue/mcp/server_mutation_tools.py
     owner: stable
   - path: polylogue/mcp/server_personal_state_tools.py
-    loc: 675
+    loc: 674
     target: polylogue/mcp/server_personal_state_tools.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -2093,7 +2129,7 @@ files:
     target: polylogue/mcp/server_support.py
     owner: stable
   - path: polylogue/mcp/server_tools.py
-    loc: 1325
+    loc: 1302
     target: polylogue/mcp/server_tools.py
     owner: stable
   - path: polylogue/operations/__init__.py
@@ -3240,7 +3276,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 818
+    loc: 830
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3525,7 +3561,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
-    loc: 1411
+    loc: 1422
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py

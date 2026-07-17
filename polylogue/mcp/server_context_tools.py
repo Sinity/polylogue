@@ -12,8 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
-
+    from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
 _DEFAULT_MAX_SESSIONS = 5
@@ -30,7 +29,7 @@ def _detail_includes_messages(detail_level: str) -> bool:
     return _DETAIL_INCLUDES_MESSAGES.get(detail_level, True)
 
 
-def register_context_tools(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_context_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
     @mcp.tool()
     async def get_context_delivery(snapshot_ref: str, recipient_ref: str) -> str:
         """Read the exact persisted context image for its recorded recipient.

@@ -15,7 +15,7 @@ from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 from pydantic import BaseModel
 
@@ -33,6 +33,7 @@ from polylogue.core.errors import (
     SchemaVersionMismatchError,
 )
 from polylogue.logging import get_logger
+from polylogue.mcp.declarations.models import MCPRole, mcp_role_allows
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.services import RuntimeServices, build_runtime_services
 from polylogue.surfaces.payloads import serialize_surface_payload
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _runtime_services: RuntimeServices | None = None
 TResult = TypeVar("TResult")
-MCPRole = Literal["read", "write", "review", "admin"]
 MCP_RESPONSE_BUDGET_BYTES = 25_000
 _QUERY_ERROR_VALID_VALUES: dict[str, tuple[str, ...]] = {
     "sort": ("date", "tokens", "messages", "words", "longest", "random"),
@@ -124,8 +124,8 @@ class ServerCallbacks:
 
 def role_allows(role: MCPRole, required: MCPRole) -> bool:
     """Return whether an MCP server role allows the required capability."""
-    order: dict[MCPRole, int] = {"read": 0, "write": 1, "review": 2, "admin": 3}
-    return order[role] >= order[required]
+
+    return mcp_role_allows(role, required)
 
 
 def _extract_fenced_code(text: str, language: str = "") -> list[MCPFencedCodeBlock]:
