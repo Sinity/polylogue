@@ -8,7 +8,7 @@ import json
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ from polylogue.archive.query.source_freshness_surfaces import (
     source_freshness_cli,
     source_freshness_status_payload,
 )
+from tests.infra.frozen_clock import FrozenClock
 
 _FIXTURES = Path(__file__).parents[2] / "fixtures" / "source_freshness"
 _NOW = datetime(2026, 7, 15, 20, 30, tzinfo=UTC)
@@ -324,6 +325,46 @@ def test_named_source_stage_ladder(tmp_path: Path, stage: str) -> None:
     assert projection.receipt.exact_source is True
     assert projection.receipt.archive_wide_aggregates is False
     assert projection.receipt.unsafe_scan_rejections == ()
+
+
+@pytest.mark.frozen_clock_modules("polylogue.core.dates")
+def test_equivalent_observation_instants_produce_identical_freshness_receipts(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    """Clock, aware-offset, and declared-naive inputs yield one exact receipt."""
+
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=64)
+    _seed_cursor(root, source, observed_size=64, offset=64)
+    observed = datetime(2026, 7, 15, 20, 30, 0, 123456, tzinfo=UTC)
+    frozen_clock.set_time(observed.timestamp())
+
+    from_clock = project_named_source_freshness(root, source)
+    from_offset = project_named_source_freshness(
+        root,
+        source,
+        now=datetime(2026, 7, 15, 22, 30, 0, 123456, tzinfo=timezone(timedelta(hours=2))),
+    )
+    from_declared_naive_utc = project_named_source_freshness(
+        root,
+        source,
+        now=datetime(2026, 7, 15, 20, 30, 0, 123456),
+    )
+    with sqlite3.connect(root / "ops.db") as conn:
+        conn.execute(
+            "UPDATE ingest_cursor SET updated_at_ms = ? WHERE source_path = ?",
+            ("2026-07-15T22:20:00+02:00", str(source)),
+        )
+    from_offset_cursor_wire = project_named_source_freshness(root, source, now=observed)
+
+    assert from_clock == from_offset == from_declared_naive_utc == from_offset_cursor_wire
+    assert from_clock.observed_at == "2026-07-15T20:30:00.123456+00:00"
+    assert from_clock.cursor.age_ms == 600_123
+    assert from_clock.receipt.exact_source is True
+    assert from_clock.receipt.archive_wide_aggregates is False
+    assert from_clock.projection_sha256 == from_offset.projection_sha256
 
 
 def test_excluded_growing_source_is_degraded_before_idle_and_retains_reason(tmp_path: Path) -> None:

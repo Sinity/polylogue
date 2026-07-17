@@ -77,7 +77,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
 | Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 36 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 35 | 1 | `ok` |
 | Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
 | Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 

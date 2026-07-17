@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-08",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "triaged",
+  "provider": null,
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "ebedce449f63bd8f827cfecccd272abb3febe0b3a928f7fc760dd6635c50fd30",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "testdiet-08-chatgpt-normalization-r01.zip",
+      "sha256": "602019b069c47f9490ed31953a8cfd2bf1201d6ea6c14176a827155c8e6f9f66",
+      "size_bytes": 25012,
+      "custody_path": "testdiet/results/testdiet-08/a01/raw/testdiet-08-chatgpt-normalization-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "patch applies cleanly",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "created by triage-package.py; later integration evidence belongs in a new immutable receipt revision"
+}

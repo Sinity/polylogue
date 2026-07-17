@@ -1109,6 +1109,54 @@ def test_chatgpt_generation_timing_uses_one_authoritative_reasoning_owner() -> N
     }
 
 
+def test_chatgpt_generation_timing_is_invariant_to_equivalent_provider_timestamp_wires() -> None:
+    """Offset-equivalent provider times keep exact units and provenance.
+
+    This kills timezone-strip/local-wall calculations and the representative
+    duration-unit mutation that stores provider seconds as milliseconds
+    without multiplying by 1000.  It also prevents provider-reported elapsed
+    time from being relabeled as observed wall, inferred gap, or model compute.
+    """
+
+    def parse_timing(start: str, end: str) -> ParsedSession:
+        node = _branch_node("recap", "assistant", "summary", parent=None, children=[])
+        node["message"]["content"]["content_type"] = "reasoning_recap"
+        node["message"]["metadata"] = {
+            "reasoning_start_time": start,
+            "reasoning_end_time": end,
+            "finished_duration_sec": 5190,
+        }
+        return chatgpt_parse(
+            {"id": "equivalent-timing", "mapping": {"recap": node}, "current_node": "recap"},
+            "fallback-id",
+        )
+
+    utc_session = parse_timing(
+        "2026-07-15T20:30:00.123456Z",
+        "2026-07-15T21:56:30.123456Z",
+    )
+    offset_session = parse_timing(
+        "2026-07-15T22:30:00.123456+02:00",
+        "2026-07-16T06:56:30.123456+09:00",
+    )
+
+    assert utc_session.reported_duration_ms == offset_session.reported_duration_ms == 5_190_000
+    assert utc_session.messages[0].duration_ms == offset_session.messages[0].duration_ms == 5_190_000
+    assert utc_session.session_events == offset_session.session_events
+    assert len(utc_session.session_events) == 1
+    payload = utc_session.session_events[0].payload
+    assert payload == {
+        "state": "completed",
+        "evidence_source": "provider_native",
+        "fidelity": "exact",
+        "duration_semantics": "provider_reported_elapsed",
+        "elapsed_duration_ms": 5_190_000,
+        "started_at_ms": 1_784_147_400_123,
+        "ended_at_ms": 1_784_152_590_123,
+    }
+    assert not ({"wall_elapsed_ms", "displayed_elapsed_ms", "inferred_gap_ms", "model_compute_ms"} & payload.keys())
+
+
 @pytest.mark.parametrize(
     ("metadata", "expected_duration_ms"),
     [

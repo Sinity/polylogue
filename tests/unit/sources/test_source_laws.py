@@ -1537,7 +1537,11 @@ def test_claude_code_stream_payload_does_not_materialize_whole_stream(
 
     seen_record_counts: list[int] = []
 
-    def fake_stream_parse(records: Iterable[object], fallback_id: str) -> ParsedSession:
+    def fake_stream_parse(
+        records: Iterable[object],
+        fallback_id: str,
+        **_kwargs: object,
+    ) -> ParsedSession:
         assert not isinstance(records, list)
         seen_record_counts.append(sum(1 for _record in records))
         return ParsedSession(
@@ -1566,7 +1570,11 @@ def test_claude_code_stream_payload_splits_contiguous_session_groups(
 ) -> None:
     parsed_groups: list[tuple[str, list[str]]] = []
 
-    def fake_stream_parse(records: Iterable[object], fallback_id: str) -> ParsedSession:
+    def fake_stream_parse(
+        records: Iterable[object],
+        fallback_id: str,
+        **_kwargs: object,
+    ) -> ParsedSession:
         session_ids = [
             str(record.get("sessionId"))
             for record in records

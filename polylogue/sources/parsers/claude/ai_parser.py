@@ -4,26 +4,25 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import ValidationError
-
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
-from polylogue.sources.providers.claude_ai import ClaudeAISession
 
 from ..base import (
+    ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
+    ParsedSessionEvent,
     ParsedWebConstruct,
     attachment_from_meta,
-    content_blocks_from_segments,
 )
 from .common import (
-    _message_duration_ms,
+    _first_identity_field,
+    _first_string_field,
     _message_model_effort,
     _message_model_name,
-    extract_messages_from_chat_messages,
-    extract_text_from_segments,
+    _thinking_configuration,
+    normalize_chat_messages,
     normalize_timestamp,
 )
 
@@ -157,87 +156,116 @@ def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> Parse
     )
 
 
+def _session_timestamp(payload: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, (int, float, str)):
+            normalized = normalize_timestamp(value)
+            if normalized is not None:
+                return normalized
+    return None
+
+
+def _merge_session_attachments(
+    message_attachments: list[ParsedAttachment],
+    payload: Mapping[str, object],
+) -> list[ParsedAttachment]:
+    attachments = list(message_attachments)
+    top_level: list[object] = []
+    for key in ("attachments", "files"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            top_level.extend(value)
+    for index, meta in enumerate(top_level, start=1):
+        attachment = attachment_from_meta(meta, None, index)
+        if attachment is not None:
+            attachments.append(attachment)
+
+    merged: dict[str, ParsedAttachment] = {}
+    for candidate in attachments:
+        existing = merged.get(candidate.provider_attachment_id)
+        if existing is None:
+            merged[candidate.provider_attachment_id] = candidate
+            continue
+        preferred = candidate if candidate.inline_bytes is not None and existing.inline_bytes is None else existing
+        other = existing if preferred is candidate else candidate
+        merged[candidate.provider_attachment_id] = preferred.model_copy(
+            update={
+                "message_provider_id": preferred.message_provider_id or other.message_provider_id,
+                "name": preferred.name or other.name,
+                "mime_type": preferred.mime_type or other.mime_type,
+                "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
+                "provider_file_id": preferred.provider_file_id or other.provider_file_id,
+                "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
+            }
+        )
+    return list(merged.values())
+
+
 def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     if _looks_like_design_chat(payload):
         return _parse_design_chat(payload, fallback_id)
 
-    try:
-        conv = ClaudeAISession.model_validate(payload)
-    except ValidationError:
-        chat_msgs = payload.get("chat_messages") or []
-        if not isinstance(chat_msgs, list):
-            chat_msgs = []
-        messages, attachments = extract_messages_from_chat_messages(chat_msgs)
-        title = payload.get("title") or payload.get("name") or fallback_id
-        conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
-        return ParsedSession(
-            source_name=Provider.CLAUDE_AI,
-            provider_session_id=str(conv_id or fallback_id),
-            title=str(title),
-            session_kind=_session_kind(payload),
-            created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
-            updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
-            messages=messages,
-            active_leaf_message_provider_id=next(
-                (message.provider_message_id for message in messages if message.is_active_leaf),
-                None,
-            ),
-            attachments=attachments,
-            ingest_flags=_session_ingest_flags(payload),
+    raw_messages = payload.get("chat_messages")
+    chat_messages = raw_messages if isinstance(raw_messages, list) else []
+    created_at = _session_timestamp(payload, "created_at", "create_time", "timestamp")
+    updated_at = _session_timestamp(payload, "updated_at", "update_time")
+    session_model = _message_model_name(payload)
+    session_effort = _message_model_effort(payload)
+    active_leaf_message_provider_id = _first_identity_field(
+        payload,
+        "current_leaf_message_uuid",
+        "current_leaf_message_id",
+        "active_leaf_message_uuid",
+        "active_leaf_message_id",
+        "current_message_uuid",
+        "current_message_id",
+        "current_node",
+    )
+    normalized = normalize_chat_messages(
+        chat_messages,
+        session_model=session_model,
+        session_effort=session_effort,
+        session_thinking_configuration=_thinking_configuration(payload),
+        session_created_at=created_at,
+        session_updated_at=updated_at,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+    )
+
+    session_events = list(normalized.session_events)
+    provider_status = _first_string_field(payload, "status", "conversation_status")
+    if provider_status is not None:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="provider_session_status",
+                timestamp=updated_at or created_at,
+                payload={"status": provider_status},
+            )
         )
 
-    messages = []
-    attachments = []
-    message_position = 0
-    for msg in conv.chat_messages:
-        timestamp = normalize_timestamp(msg.created_at)
-        raw_message = msg.model_dump()
-        raw_content = raw_message.get("content")
-        text = msg.text or (extract_text_from_segments(raw_content) if isinstance(raw_content, list) else None)
-        if text:
-            content_blocks = content_blocks_from_segments(raw_content) if isinstance(raw_content, list) else []
-            if not content_blocks:
-                content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
-            messages.append(
-                ParsedMessage(
-                    provider_message_id=msg.uuid,
-                    role=msg.role_normalized,
-                    text=text,
-                    timestamp=timestamp,
-                    blocks=content_blocks,
-                    position=message_position,
-                    variant_index=0,
-                    is_active_path=True,
-                    model_name=_message_model_name(raw_message),
-                    model_effort=_message_model_effort(raw_message),
-                    duration_ms=_message_duration_ms(raw_message),
-                )
-            )
-            message_position += 1
-        for att_idx, meta in enumerate(msg.attachments + msg.files, start=1):
-            attachment = attachment_from_meta(meta, msg.uuid, att_idx)
-            if attachment:
-                attachments.append(attachment)
-    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
-
+    conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
+    title = payload.get("title") or payload.get("name") or fallback_id
     return ParsedSession(
         source_name=Provider.CLAUDE_AI,
-        provider_session_id=conv.uuid,
-        title=conv.title,
+        provider_session_id=conversation_id or fallback_id,
+        title=str(title),
         session_kind=_session_kind(payload),
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-        messages=messages,
-        active_leaf_message_provider_id=active_leaf_message_provider_id,
-        attachments=attachments,
-        ingest_flags=_session_ingest_flags(payload),
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=normalized.messages,
+        active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
+        attachments=_merge_session_attachments(normalized.attachments, payload),
+        session_events=session_events,
+        reported_duration_ms=normalized.reported_duration_ms,
+        models_used=normalized.models_used,
+        ingest_flags=list(
+            dict.fromkeys(
+                [
+                    *_session_ingest_flags(payload),
+                    *normalized.ingest_flags,
+                ]
+            )
+        ),
     )
 
 

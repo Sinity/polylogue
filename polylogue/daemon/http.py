@@ -820,6 +820,9 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),
+        "input_high_water_mark": getattr(prov, "input_high_water_mark", None),
+        "input_high_water_mark_source": getattr(prov, "input_high_water_mark_source", None),
+        "time_confidence": getattr(prov, "time_confidence", "unknown"),
     }
 
 
@@ -859,7 +862,7 @@ def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str,
     }
 
 
-def _profile_panel_payload(profile: Any) -> dict[str, object]:
+def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     """Project a ``SessionProfile`` into the JSON shape served by the reader.
 
     Uses :meth:`SessionProfile.to_dict` for fidelity to the substrate shape
@@ -870,6 +873,7 @@ def _profile_panel_payload(profile: Any) -> dict[str, object]:
         "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
         "materialized": True,
         "profile": body,
+        "provenance": _provenance_dict(provenance),
     }
 
 
@@ -878,6 +882,7 @@ def _empty_profile_panel_payload() -> dict[str, object]:
         "readiness_tag": "q-missing",
         "materialized": False,
         "profile": None,
+        "provenance": None,
     }
 
 
@@ -3251,6 +3256,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
+            from polylogue.insights.archive import SessionProfileInsight
             from polylogue.storage.insights.session.profiles import hydrate_session_profile
 
             try:
@@ -3264,7 +3270,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 # surface q-missing rather than 503 the whole envelope.
                 profile_record = None
             profile = hydrate_session_profile(profile_record) if profile_record is not None else None
-            panel = _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
+            profile_insight = (
+                SessionProfileInsight.from_record(profile_record, tier="evidence")
+                if profile_record is not None
+                else None
+            )
+            panel = (
+                _profile_panel_payload(profile, profile_insight.provenance)
+                if profile is not None and profile_insight is not None
+                else _empty_profile_panel_payload()
+            )
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
             # :func:`polylogue.insights.provenance.is_stale` helper so the
