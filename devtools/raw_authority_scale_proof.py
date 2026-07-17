@@ -81,6 +81,7 @@ class RawAuthorityScaleScenario:
     expanded_candidates: int
     total_payload_bytes: int
     component_cohorts: tuple[tuple[int, int, int], ...] | None = None
+    component_byte_cohorts: tuple[tuple[int, int, int, int], ...] | None = None
     terminal_sibling_outcome: str = "terminal"
 
     def __post_init__(self) -> None:
@@ -120,6 +121,52 @@ class RawAuthorityScaleScenario:
                 != self.direct_candidates
             ):
                 raise ValueError("scenario component cohorts disagree with direct candidate count")
+        if self.component_byte_cohorts is not None:
+            if not self.component_byte_cohorts:
+                raise ValueError("scenario component byte cohorts cannot be empty")
+            if any(
+                raw_count < 1
+                or direct_candidate_count < 1
+                or direct_candidate_count > raw_count
+                or upper_bound_blob_bytes < 1
+                or component_count < 1
+                for raw_count, direct_candidate_count, upper_bound_blob_bytes, component_count in self.component_byte_cohorts
+            ):
+                raise ValueError("scenario component byte cohorts must contain positive valid counts and byte bounds")
+            if (
+                sum(
+                    component_count
+                    for _raw_count, _direct_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.components
+            ):
+                raise ValueError("scenario component byte cohorts disagree with component count")
+            if (
+                sum(
+                    raw_count * component_count
+                    for raw_count, _direct_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.expanded_candidates
+            ):
+                raise ValueError("scenario component byte cohorts disagree with expanded candidate count")
+            if (
+                sum(
+                    direct_candidate_count * component_count
+                    for _raw_count, direct_candidate_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.direct_candidates
+            ):
+                raise ValueError("scenario component byte cohorts disagree with direct candidate count")
+            if self.component_cohorts is not None:
+                component_marginals: dict[tuple[int, int], int] = {}
+                for raw_count, direct_candidate_count, component_count in self.component_cohorts:
+                    component_marginals[(raw_count, direct_candidate_count)] = component_count
+                byte_marginals: dict[tuple[int, int], int] = {}
+                for raw_count, direct_candidate_count, _upper_bound, component_count in self.component_byte_cohorts:
+                    key = (raw_count, direct_candidate_count)
+                    byte_marginals[key] = byte_marginals.get(key, 0) + component_count
+                if byte_marginals != component_marginals:
+                    raise ValueError("scenario component and byte cohort marginals disagree")
 
     @classmethod
     def from_profile(cls, profile: object) -> RawAuthorityScaleScenario:
@@ -156,12 +203,33 @@ class RawAuthorityScaleScenario:
                 parsed_cohorts.append((raw_count, direct_candidate_count, component_count))
             cohorts = tuple(parsed_cohorts)
 
+        byte_cohort_payload = profile.get("component_byte_cohort_distribution")
+        byte_cohorts: tuple[tuple[int, int, int, int], ...] | None = None
+        if byte_cohort_payload is not None:
+            if not isinstance(byte_cohort_payload, list):
+                raise ValueError("scenario profile component byte cohorts must be a list")
+            parsed_byte_cohorts: list[tuple[int, int, int, int]] = []
+            for item in byte_cohort_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("scenario profile component byte cohort must be an object")
+                values = (
+                    item.get("component_raw_count"),
+                    item.get("direct_candidate_count"),
+                    item.get("upper_bound_blob_bytes"),
+                    item.get("component_count"),
+                )
+                if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+                    raise ValueError("scenario profile component byte cohort values must be integral")
+                parsed_byte_cohorts.append(cast(tuple[int, int, int, int], values))
+            byte_cohorts = tuple(parsed_byte_cohorts)
+
         return cls(
             components=count("authority_component_count"),
             direct_candidates=count("candidate_count"),
             expanded_candidates=count("expanded_candidate_count"),
             total_payload_bytes=count("expanded_total_blob_bytes"),
             component_cohorts=cohorts,
+            component_byte_cohorts=byte_cohorts,
             terminal_sibling_outcome=str(profile.get("terminal_sibling_outcome", "terminal")),
         )
 
@@ -198,6 +266,12 @@ def _component_counts(total: int, *, components: int) -> list[int]:
 
 def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tuple[int, int]]:
     """Return direct-candidate and pre-materialized sibling counts per component."""
+    if scenario.component_byte_cohorts is not None:
+        return [
+            (direct_candidate_count, raw_count - direct_candidate_count)
+            for raw_count, direct_candidate_count, _upper_bound, component_count in scenario.component_byte_cohorts
+            for _ in range(component_count)
+        ]
     if scenario.component_cohorts is not None:
         return [
             (direct_candidate_count, raw_count - direct_candidate_count)
@@ -212,20 +286,71 @@ def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tupl
     return list(zip(direct, siblings, strict=True))
 
 
-def _row_sizes(scenario: RawAuthorityScaleScenario, component_counts: list[int]) -> list[list[int]]:
-    """Give every standalone raw a valid evidence budget, then spread the remainder."""
+def _uses_independent_component_members(scenario: RawAuthorityScaleScenario) -> bool:
+    """Whether explicit cohort outcomes require standalone raw identities."""
+    return scenario.component_cohorts is not None or scenario.component_byte_cohorts is not None
+
+
+def _component_byte_upper_bounds(scenario: RawAuthorityScaleScenario) -> list[int] | None:
+    """Return one sanitized byte-bucket cap for each generated component."""
+    if scenario.component_byte_cohorts is None:
+        return None
+    return [
+        upper_bound_blob_bytes
+        for _raw_count, _direct_count, upper_bound_blob_bytes, component_count in scenario.component_byte_cohorts
+        for _ in range(component_count)
+    ]
+
+
+def _row_sizes(
+    scenario: RawAuthorityScaleScenario,
+    component_counts: list[int],
+    *,
+    component_byte_upper_bounds: list[int] | None,
+) -> list[list[int]]:
+    """Give each component a valid evidence budget while preserving byte buckets."""
     minimum_rows = [
-        [256 * (revision + 1) for revision in range(count)] if scenario.component_cohorts is None else [256] * count
+        [256 * (revision + 1) for revision in range(count)]
+        if not _uses_independent_component_members(scenario)
+        else [256] * count
         for count in component_counts
     ]
-    remaining = scenario.total_payload_bytes - sum(sum(rows) for rows in minimum_rows)
-    if remaining < 0:
+    minimum_component_bytes = [sum(rows) for rows in minimum_rows]
+    if component_byte_upper_bounds is None:
+        target_component_bytes = list(minimum_component_bytes)
+        remaining = scenario.total_payload_bytes - sum(target_component_bytes)
+        if remaining < 0:
+            raise ValueError("scenario payload budget cannot preserve the requested revision topology")
+        terminal_extra, remainder = divmod(remaining, scenario.components)
+        for component, target in enumerate(target_component_bytes):
+            target_component_bytes[component] = target + terminal_extra + (1 if component < remainder else 0)
+    else:
+        if len(component_byte_upper_bounds) != scenario.components:
+            raise ValueError("scenario component byte bounds disagree with component count")
+        target_component_bytes = []
+        capacities: list[int] = []
+        for minimum, upper_bound in zip(minimum_component_bytes, component_byte_upper_bounds, strict=True):
+            lower_bound = (upper_bound // 2) + 1
+            target = max(minimum, lower_bound)
+            if target > upper_bound:
+                raise ValueError("scenario byte bucket cannot fit the requested component topology")
+            target_component_bytes.append(target)
+            capacities.append(upper_bound - target)
+        remaining = scenario.total_payload_bytes - sum(target_component_bytes)
+        if remaining < 0 or remaining > sum(capacities):
+            raise ValueError("scenario payload budget cannot preserve the requested byte-bucket distribution")
+        for component, capacity in enumerate(capacities):
+            addition = min(remaining, capacity)
+            target_component_bytes[component] += addition
+            remaining -= addition
+        if remaining:
+            raise RuntimeError("component byte allocation did not consume its exact payload budget")
+    if sum(target_component_bytes) != scenario.total_payload_bytes:
         raise ValueError("scenario payload budget cannot preserve the requested revision topology")
-    terminal_extra, remainder = divmod(remaining, scenario.components)
     sizes: list[list[int]] = []
-    for component, minimums in enumerate(minimum_rows):
+    for minimums, target in zip(minimum_rows, target_component_bytes, strict=True):
         rows = list(minimums)
-        rows[-1] += terminal_extra + (1 if component < remainder else 0)
+        rows[-1] += target - sum(rows)
         sizes.append(rows)
     return sizes
 
@@ -331,6 +456,17 @@ def _requested_shape(scenario: RawAuthorityScaleScenario, *, pass_limit: int) ->
                 "component_count": component_count,
             }
             for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
+        ]
+        payload["terminal_sibling_outcome"] = scenario.terminal_sibling_outcome
+    if scenario.component_byte_cohorts is not None:
+        payload["component_byte_cohort_distribution"] = [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "upper_bound_blob_bytes": upper_bound_blob_bytes,
+                "component_count": component_count,
+            }
+            for raw_count, direct_candidate_count, upper_bound_blob_bytes, component_count in scenario.component_byte_cohorts
         ]
         payload["terminal_sibling_outcome"] = scenario.terminal_sibling_outcome
     return payload
@@ -442,6 +578,7 @@ def run_raw_authority_scale_proof(
     component_sizes = _row_sizes(
         scenario,
         [direct_count + sibling_count for direct_count, sibling_count in component_shape],
+        component_byte_upper_bounds=_component_byte_upper_bounds(scenario),
     )
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         publisher = archive._blob_publisher
@@ -466,7 +603,7 @@ def run_raw_authority_scale_proof(
                     source_label = f"scale-{component:05d}-member-{member:05d}"
                     row_native_id = (
                         session_native_id
-                        if scenario.component_cohorts is None
+                        if not _uses_independent_component_members(scenario)
                         else f"{session_native_id}-member-{member:05d}"
                     )
                     payload_path = temporary_root / f"{source_label}.jsonl"
@@ -475,7 +612,7 @@ def run_raw_authority_scale_proof(
                         native_id=row_native_id,
                         revision=member,
                         target_size=row_size,
-                        previous=previous if scenario.component_cohorts is None else None,
+                        previous=previous if not _uses_independent_component_members(scenario) else None,
                     )
                     blob_hash, blob_size = publisher.write_from_path(payload_path)
                     payload_path.unlink()
@@ -598,7 +735,7 @@ def run_raw_authority_scale_proof(
         if not keep:
             shutil.rmtree(root)
         return prepared_report
-    if scenario.expanded_candidates != scenario.direct_candidates and scenario.component_cohorts is None:
+    if scenario.expanded_candidates != scenario.direct_candidates and not _uses_independent_component_members(scenario):
         raise ValueError(
             "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
             "use prepare_only to inspect its exact topology until those outcome variants are implemented"
