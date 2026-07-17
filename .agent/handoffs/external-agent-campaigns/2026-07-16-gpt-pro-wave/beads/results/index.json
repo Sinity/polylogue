@@ -85,6 +85,24 @@
       "package_revision": "r01",
       "state": "subsumed_foundation_retained",
       "integration": "Current-master reconciliation at 66cee5e found the provisional MCP declaration/registration implementation already landed in PR #3004 / ed44be18f. This patch conflicts on the existing registry, adapters, server-family registration, and generated surfaces. Retain its 41-family trust/provenance/role lifecycle evidence for polylogue-t46.8.3; it does not complete tool retirement, URI/prompt surfaces, cold-model proof, telemetry, or t46.9 authorization receipts."
+    },
+    {
+      "job": "beads-05",
+      "workload": "beads",
+      "state": "superseded_by_revision",
+      "package_revision": "r01",
+      "artifact": "beads-05-semantic-transcript-r01.zip",
+      "sha256": "9014fa0efeed77fa51cae7b7e901a5e411ba362f7b5510e870aa93e6f7a862db",
+      "bytes": 59165
+    },
+    {
+      "job": "beads-05",
+      "workload": "beads",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "beads-05-semantic-transcript-r01(1).zip",
+      "sha256": "f5cb4b9126df7f7694b7a2a03270ce633d0a7bdb5064a4445975064bac9e57a7",
+      "bytes": 69996
     }
   ]
 }
