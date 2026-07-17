@@ -354,6 +354,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
     ),
     CommandSpec(
+        "lab pytest-witness-repetitions",
+        "verification lab",
+        "Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts.",
+        "devtools.pytest_witness_repetitions",
+        use_when=(
+            "Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog "
+            "lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary "
+            "managed pytest/supervisor path; failures and timeouts are retained rather than retried."
+        ),
+        examples=(
+            "devtools lab pytest-witness-repetitions",
+            "devtools lab pytest-witness-repetitions --attempts 2 --xdist-workers 3 --json",
+        ),
+    ),
+    CommandSpec(
         "bench ingest-amplification",
         "benchmarking",
         "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
