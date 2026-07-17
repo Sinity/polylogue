@@ -95,7 +95,7 @@ jobs:
             fi
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - name: Install dev dependencies (frozen lockfile)
@@ -366,7 +366,7 @@ jobs:
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: astral-sh/setup-uv@v8.3.0
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "3.13"
       - name: Generate CycloneDX SBOM from built wheel
