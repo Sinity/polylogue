@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -942,6 +942,7 @@ def test_read_view_temporal_projects_selected_summaries(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
+    """The real CLI JSON route canonicalizes offsets; removing the surface validator leaks them."""
     config = Config(
         archive_root=tmp_path,
         db_path=tmp_path / "index.db",
@@ -955,7 +956,7 @@ def test_read_view_temporal_projects_selected_summaries(
                 "id": "codex-session:abc",
                 "origin": "codex-session",
                 "title": "Temporal slice",
-                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 30, 13, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))),
             }
         ),
         SessionSummary.model_validate(
@@ -963,7 +964,7 @@ def test_read_view_temporal_projects_selected_summaries(
                 "id": "claude-code-session:def",
                 "origin": "claude-code-session",
                 "title": "Follow-up",
-                "created_at": datetime(2026, 6, 30, 9, 0, tzinfo=UTC),
+                "created_at": datetime(2026, 6, 30, 11, 0, tzinfo=timezone(timedelta(hours=2))),
             }
         ),
     ]
@@ -1006,6 +1007,10 @@ def test_read_view_temporal_projects_selected_summaries(
     assert [event["source_ref"] for event in window["events"]] == [
         "session:codex-session:abc",
         "session:claude-code-session:def",
+    ]
+    assert [event["occurred_at"] for event in window["events"]] == [
+        "2026-06-30T08:00:00Z",
+        "2026-06-30T09:00:00Z",
     ]
 
 

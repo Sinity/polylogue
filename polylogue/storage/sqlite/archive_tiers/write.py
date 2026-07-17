@@ -122,6 +122,10 @@ class ArchiveMessageRow:
     duration_ms: int = 0
     parent_message_id: str | None = None
     attachments: tuple[ArchiveAttachmentRow, ...] = ()
+    # Exact composition provenance for semantic transcript rendering. Parent
+    # rows retain their original source session when a prefix-sharing child is
+    # composed, so inherited evidence is not guessed from position.
+    source_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +167,11 @@ class ArchiveSessionEnvelope:
     # divergent tail when the parent's branch point was hard-deleted.
     lineage_complete: bool = True
     lineage_truncation_reason: LineageTruncationReason | None = None
+    # Bounded composition facts established during this exact archive read.
+    # ``none`` is explicit rather than NULL so callers can distinguish a root
+    # or ordinary child from an unavailable composition signal.
+    lineage_inheritance: str = "none"
+    lineage_branch_point_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,6 +947,7 @@ def read_archive_session_envelope(
                 duration_ms=int(message["duration_ms"] or 0),
                 parent_message_id=message["parent_message_id"],
                 attachments=tuple(attachments_by_message.get(message["message_id"], ())),
+                source_session_id=str(session["session_id"]),
             )
         )
 
@@ -955,8 +965,12 @@ def read_archive_session_envelope(
     # composed view includes that parent's transcript.
     lineage_complete = True
     lineage_truncation_reason: LineageTruncationReason | None = None
+    lineage_inheritance = "none"
+    lineage_branch_point_message_id: str | None = None
     edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
     if edge is not None:
+        lineage_inheritance = "prefix-sharing"
+        parent_session_id, lineage_branch_point_message_id = edge
         if _depth >= _MAX_LINEAGE_DEPTH:
             lineage_complete = False
             lineage_truncation_reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
@@ -966,14 +980,13 @@ def read_archive_session_envelope(
                 session["session_id"],
             )
         else:
-            parent_session_id, branch_point_message_id = edge
             parent_envelope = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1)
             parent_messages = parent_envelope.messages
             prefix: list[ArchiveMessageRow] = []
             found = False
             for parent_message in parent_messages:
                 prefix.append(parent_message)
-                if parent_message.message_id == branch_point_message_id:
+                if parent_message.message_id == lineage_branch_point_message_id:
                     found = True
                     break
             # Dangling branch point (parent message hard-deleted): keep this
@@ -1004,6 +1017,8 @@ def read_archive_session_envelope(
         messages=tuple(messages),
         lineage_complete=lineage_complete,
         lineage_truncation_reason=lineage_truncation_reason,
+        lineage_inheritance=lineage_inheritance,
+        lineage_branch_point_message_id=lineage_branch_point_message_id,
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
@@ -2079,9 +2094,9 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         SELECT session_id
         FROM sessions
         WHERE root_session_id = ? OR session_id = ?
-        ORDER BY sort_key_ms IS NULL, sort_key_ms, session_id
+        ORDER BY session_id != ?, sort_key_ms IS NULL, sort_key_ms, session_id
         """,
-        (root_session_id, root_session_id),
+        (root_session_id, root_session_id, root_session_id),
     ).fetchall()
     desired_session_ids = [str(row[0]) for row in session_rows]
     existing_thread = conn.execute(

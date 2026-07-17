@@ -302,24 +302,28 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             f"  stored/origin-priced cost: ${float(getattr(report, 'stored_provider_priced_usd', 0.0) or 0.0):,.2f}"
         )
         env.ui.console.print(
-            f"  catalog API-equivalent cost: ${float(getattr(report, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f}"
+            "  catalog API-equivalent cost: "
+            + _format_optional_usd(getattr(report, "catalog_api_equivalent_usd", None))
+        )
+        env.ui.console.print(
+            "  known catalog-priced subtotal: "
+            + _format_optional_usd(getattr(report, "catalog_priced_subtotal_usd", None))
         )
         env.ui.console.print(
             "  catalog subscription-credit cost (Claude Code Pro tier, non-authoritative): "
             f"${float(getattr(report, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
         )
         logical_catalog_api_equivalent_usd = getattr(report, "logical_catalog_api_equivalent_usd", None)
-        if logical_catalog_api_equivalent_usd is not None:
-            env.ui.console.print(
-                "  catalog API-equivalent cost "
-                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
-                f"${float(logical_catalog_api_equivalent_usd or 0.0):,.2f}"
-            )
-            env.ui.console.print(
-                "  catalog subscription-credit cost "
-                f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
-                f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
-            )
+        env.ui.console.print(
+            "  catalog API-equivalent cost "
+            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+            + _format_optional_usd(logical_catalog_api_equivalent_usd)
+        )
+        env.ui.console.print(
+            "  catalog subscription-credit cost "
+            f"({getattr(report, 'logical_pricing_grain', 'logical_session_model_high_water')}): "
+            f"${float(getattr(report, 'logical_subscription_credit_usd', 0.0) or 0.0):,.2f}"
+        )
         for lane in pricing_lanes:
             env.ui.console.print(
                 "    pricing lane "
@@ -328,7 +332,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
                 f"stored=${float(getattr(lane, 'stored_cost_usd', 0.0) or 0.0):,.2f} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
+                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
+                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
                 f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
         logical_pricing_lanes = tuple(getattr(report, "logical_pricing_lanes", ()))
@@ -339,7 +344,8 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
                 f"rows={getattr(lane, 'row_count', 0)} "
                 f"matched={getattr(lane, 'matched_model_row_count', 0)} "
                 f"unmatched={getattr(lane, 'unmatched_model_row_count', 0)} "
-                f"catalog=${float(getattr(lane, 'catalog_api_equivalent_usd', 0.0) or 0.0):,.2f} "
+                f"catalog={_format_optional_usd(getattr(lane, 'catalog_api_equivalent_usd', None))} "
+                f"catalog_subtotal={_format_optional_usd(getattr(lane, 'catalog_priced_subtotal_usd', None))} "
                 f"subscription_credit=${float(getattr(lane, 'subscription_credit_usd', 0.0) or 0.0):,.2f}"
             )
     if not origins:
@@ -400,6 +406,16 @@ def _render_usage_report(env: AppEnv, report: object) -> None:
             )
         if row.sample_stale_rollup_sessions:
             env.ui.console.print("    stale-rollup samples: " + ", ".join(row.sample_stale_rollup_sessions))
+
+
+def _format_optional_usd(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return "unknown"
+    try:
+        amount = float(value)
+    except ValueError:
+        return "unknown"
+    return f"${amount:,.2f}"
 
 
 def _usage_counter_line(counters: object) -> str:

@@ -213,24 +213,38 @@ def _record_origin_kind(item: dict[str, object]) -> str | None:
     return None
 
 
-def _is_claude_code_human_turn(
+def _claude_code_user_turn_origin(
     item: dict[str, object],
     *,
     role: Role,
     message_type: MessageType,
     content_blocks: Sequence[ParsedContentBlock],
-) -> bool:
-    """Return whether a Claude Code user-channel row is a provider-evidenced prompt."""
+    is_agent_session: bool,
+) -> MaterialOrigin | None:
+    """Return provider-evidenced origin for one plain Claude Code user turn.
+
+    Claude Code's top-level transcript gives a plain ``type=user`` row positive
+    interactive-prompt provenance once meta/context/tool-result shapes have been
+    excluded. Subagent JSONL uses the same wire shape for generated task
+    instructions, however. The ``agent-*`` artifact identity is therefore
+    required to keep an origin-less worker instruction out of authored-user
+    projections. An explicit ``origin.kind=human`` remains authoritative in
+    either artifact family.
+    """
     if item.get("type") != "user" or role is not Role.USER or message_type is not MessageType.MESSAGE:
-        return False
+        return None
     if item.get("isMeta") or item.get("isCompactSummary") or item.get("isVisibleInTranscriptOnly"):
-        return False
+        return None
     if item.get("toolUseResult") is not None:
-        return False
+        return None
     if any(block.type is BlockType.TOOL_RESULT for block in content_blocks):
-        return False
+        return None
     origin_kind = _record_origin_kind(item)
-    return origin_kind in (None, "human")
+    if origin_kind == "human":
+        return MaterialOrigin.HUMAN_AUTHORED
+    if origin_kind is None:
+        return MaterialOrigin.GENERATED_CONTEXT_PACK if is_agent_session else MaterialOrigin.HUMAN_AUTHORED
+    return None
 
 
 def _string_field(item: dict[str, object], key: str) -> str | None:
@@ -344,12 +358,24 @@ def _unique_background_start(locations: Sequence[tuple[int, int]]) -> tuple[int,
     return locations[0] if len(locations) == 1 else None
 
 
-def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSession:
-    """Parse Claude Code JSONL payloads into a canonical session model."""
+def _parse_code_records(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    record_index_start: int = 0,
+    seen_record_uuids: set[str] | None = None,
+) -> ParsedSession:
+    """Parse Claude Code JSONL payloads into a canonical session model.
+
+    ``record_index_start`` and ``seen_record_uuids`` are compact streaming
+    continuation state used when one provider-native session is split by
+    interleaved JSONL rows. They preserve eager-path fallback identifiers and
+    first-record-wins UUID semantics without retaining raw records.
+    """
     messages: list[ParsedMessage] = []
     created_at: str | None = None
     updated_at: str | None = None
-    seen_record_uuids: set[str] = set()
+    seen_uuids = seen_record_uuids if seen_record_uuids is not None else set()
     duplicate_uuid_count = 0
     first_duplicate_uuid: str | None = None
     first_duplicate_index: int | None = None
@@ -364,8 +390,10 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     models: set[str] = set()
     message_position = 0
     background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
+    is_agent = fallback_id.startswith("agent-")
+    is_acompact = fallback_id.startswith("agent-acompact-")
 
-    for index, item in enumerate(records, start=1):
+    for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
             continue
 
@@ -407,12 +435,12 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
 
         record_uuid = _string_field(item, "uuid")
         if record_uuid:
-            if record_uuid in seen_record_uuids:
+            if record_uuid in seen_uuids:
                 duplicate_uuid_count += 1
                 first_duplicate_uuid = first_duplicate_uuid or record_uuid
                 first_duplicate_index = first_duplicate_index or index
                 continue
-            seen_record_uuids.add(record_uuid)
+            seen_uuids.add(record_uuid)
 
         if not session_id:
             session_id = _string_field(item, "sessionId")
@@ -463,13 +491,16 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
             text=text,
             block_types=tuple(block.type for block in content_blocks),
         )
-        if material_origin is MaterialOrigin.UNKNOWN and _is_claude_code_human_turn(
-            item,
-            role=resolved_role,
-            message_type=message_type,
-            content_blocks=content_blocks,
-        ):
-            material_origin = MaterialOrigin.HUMAN_AUTHORED
+        if material_origin is MaterialOrigin.UNKNOWN:
+            evidenced_origin = _claude_code_user_turn_origin(
+                item,
+                role=resolved_role,
+                message_type=message_type,
+                content_blocks=content_blocks,
+                is_agent_session=is_agent,
+            )
+            if evidenced_origin is not None:
+                material_origin = evidenced_origin
         if not text and not content_blocks and record_type != "summary":
             keep_empty_human_turn = (
                 resolved_role is Role.USER
@@ -576,8 +607,6 @@ def _parse_code_records(records: Iterable[object], fallback_id: str) -> ParsedSe
     # parent linkage as a real subagent, so keep the composed id / parent link but
     # classify the relationship as a continuation. Slice C folds it into a typed
     # compaction boundary; here we at least stop counting it as a subagent.
-    is_agent = fallback_id.startswith("agent-")
-    is_acompact = fallback_id.startswith("agent-acompact-")
     parent_session_id: str | None = None
     if is_agent and session_id:
         composed_session_id = f"{session_id}:{fallback_id}"
@@ -645,8 +674,81 @@ def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_code_records(payload, fallback_id)
 
 
-def parse_code_stream(records: Iterable[object], fallback_id: str) -> ParsedSession:
-    return _parse_code_records(records, fallback_id)
+def _background_notification_from_event(
+    event: ParsedSessionEvent,
+) -> ClaudeCodeBackgroundTaskNotification | None:
+    if event.event_type != "background_task_completion":
+        return None
+    payload = event.payload
+    task_id = payload.get("task_id")
+    output_file = payload.get("output_file")
+    status = payload.get("status")
+    summary = payload.get("summary")
+    tool_use_id = payload.get("tool_use_id")
+    exit_code = payload.get("exit_code")
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    if not isinstance(output_file, str) or not output_file:
+        return None
+    if not isinstance(status, str) or not status:
+        return None
+    if not isinstance(summary, str) or not summary:
+        return None
+    if tool_use_id is not None and not isinstance(tool_use_id, str):
+        return None
+    if exit_code is not None and not isinstance(exit_code, int):
+        return None
+    return ClaudeCodeBackgroundTaskNotification(
+        task_id=task_id,
+        tool_use_id=tool_use_id,
+        output_file=output_file,
+        status=status,
+        summary=summary,
+        exit_code=exit_code,
+    )
 
 
-__all__ = ["parse_code", "parse_code_stream"]
+def reconcile_code_session_chunks(session: ParsedSession) -> ParsedSession:
+    """Finalize one Claude Code session after streaming chunk merge.
+
+    Eager parsing sees every background completion before projecting outcomes
+    and collapses duplicate/update notifications by provider join key. Streaming
+    chunks must perform the same final pass after non-contiguous chunks have
+    been merged, otherwise a late completion cannot update an earlier start and
+    event order/count diverges from ordinary parsing.
+    """
+    ordinary_events: list[ParsedSessionEvent] = []
+    completion_events: dict[tuple[str, str | None], ParsedSessionEvent] = {}
+    for event in session.session_events:
+        notification = _background_notification_from_event(event)
+        if notification is None:
+            ordinary_events.append(event)
+            continue
+        completion_events[(notification.task_id, notification.tool_use_id)] = event
+
+    final_events = list(completion_events.values())
+    notifications = [
+        notification
+        for event in final_events
+        if (notification := _background_notification_from_event(event)) is not None
+    ]
+    messages = _project_background_task_completions(session.messages, notifications)
+    return session.model_copy(update={"messages": messages, "session_events": [*ordinary_events, *final_events]})
+
+
+def parse_code_stream(
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    record_index_start: int = 0,
+    seen_record_uuids: set[str] | None = None,
+) -> ParsedSession:
+    return _parse_code_records(
+        records,
+        fallback_id,
+        record_index_start=record_index_start,
+        seen_record_uuids=seen_record_uuids,
+    )
+
+
+__all__ = ["parse_code", "parse_code_stream", "reconcile_code_session_chunks"]

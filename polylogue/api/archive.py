@@ -2999,7 +2999,7 @@ class PolylogueArchiveMixin:
         )
         return await execute_archive_read(
             _active_archive_root(self.config),
-            lambda archive: query_unit_envelope(archive, request),
+            lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
             ctx=ctx,
         )
 

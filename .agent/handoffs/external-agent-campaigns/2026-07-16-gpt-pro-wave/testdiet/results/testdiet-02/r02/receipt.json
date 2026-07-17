@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-02",
+  "package_revision": "r02",
+  "state": "rejected_validation_failed",
+  "provider": "chatgpt-pro",
+  "prompt_sha256": "ae5bd7ab7a5c151e3aa873264446cd21b42a2bc5d6527a00b36dc5b6cde6b0a3",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "artifact": {
+    "filename": "polylogue-convergence-liveness-handoff.zip",
+    "sha256": "079eedeefb6fcf830c023b1700692ed5b080fe3186dcf466067cb2684f1724e7",
+    "size_bytes": 8059,
+    "custody_path": "testdiet/results/testdiet-02/r02/raw/polylogue-convergence-liveness-handoff.zip"
+  },
+  "validation": [
+    "ZIP readback succeeded",
+    "release status declares INCOMPLETE/FAIL",
+    "base commit is unknown; no changed files or command results are present",
+    "the bundle has no production patch or payload"
+  ],
+  "admission": "No code, test, or Bead closure is admitted from this revision. The verified r01 production slice remains PR #3014."
+}

@@ -1,0 +1,130 @@
+{
+  "case_id": "chatgpt-web-fallback",
+  "claim": "Known but unsupported web tools remain raw fallback cards; the renderer does not invent a web card.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "chatgpt",
+  "session_id": "fixture:chatgpt-web",
+  "messages": [
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "web",
+          "tool_id": "c1",
+          "tool_input": {
+            "search_query": [
+              {
+                "q": "semantic transcript renderer"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "c1",
+          "text": "results returned",
+          "tool_result_is_error": false
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "web"
+    ],
+    "outcomes": [
+      "succeeded"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "web",
+      "title": "Web request",
+      "source": {
+        "session_id": "fixture:chatgpt-web",
+        "provider_family": "chatgpt",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "web",
+        "tool_id": "c1",
+        "material_origin": "unknown",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "web"
+        },
+        {
+          "label": "semantic family",
+          "value": "web"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
+        },
+        {
+          "label": "query",
+          "value": "semantic transcript renderer"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "result",
+          "text": "results returned",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "semantic transcript renderer",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "search_query": [
+            {
+              "q": "semantic transcript renderer"
+            }
+          ]
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "results returned",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-13",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "rejected_validation_failed",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "abc9641ff1f785d0606b49d06a70a73f0f0a196e5159249b25289928c79bd1e6",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "polylogue-output-injection-safety.zip",
+      "sha256": "34cdf6d724bd4d1591fad051dbea14016181309e3166dc3fe83ff7f086395c44",
+      "size_bytes": 91343599,
+      "custody_path": "/realm/inbox/download/polylogue-output-injection-safety.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "The 91 MB ZIP is a copied 3,071-member repository snapshot. Its final report says no supported coding agent was found; the claimed changes.patch is absent, so there is no apply-ready candidate. The downloaded snapshot is retained outside the Git campaign ledger to avoid recommitting a project copy.",
+  "beads": ["polylogue-u0dm"],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": ["ZIP member listing, final-report.txt, and absent changes.patch checked locally"],
+  "notes": "No code, test, or Bead-state change is admitted. A later package must contain the four required flat handoff members and a bounded apply-ready patch."
+}

@@ -36,4 +36,9 @@ class GeminiPart(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     text: str | None = None
-    # Can also contain inlineData, fileData, etc.
+    thought: bool = False
+    thoughtSignature: str | None = None
+    inlineData: dict[str, object] | None = None
+    fileData: dict[str, object] | None = None
+    executableCode: dict[str, object] | None = None
+    codeExecutionResult: dict[str, object] | None = None

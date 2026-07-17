@@ -1,25 +1,15 @@
-"""Web reader rendering for provider-neutral semantic transcript cards (#ap7).
+"""HTML backend for the provider-neutral semantic transcript document.
 
-The daemon session-detail routes (``daemon/http.py``,
-``_do_get_session``/``_do_archive_get_session``) attach a ``semantic_cards``
-array (and a ``semantic_card_suppressed`` flag) to every message payload,
-built by :mod:`polylogue.rendering.semantic_card_placement` from the exact
-same :class:`polylogue.rendering.semantic_card_models.SemanticCard` registry
-the CLI renders to Markdown (``cli/messages.py`` /
-``rendering/semantic_markdown.py``). This module is the HTML backend for that
-one shared registry: it turns ``SemanticCard.to_document()`` JSON straight
-into DOM, with no independent tool-classification logic of its own.
-
-Follows the existing reader-slice pattern (``web_shell_reader.py``,
-``web_shell_attachments.py``): a CSS block, a JS block installed as a
-``_polyXxxHtml`` hook that ``renderMessageBlocks`` calls when present, wired
-into ``web_shell.py`` through ``__SEMANTIC_CARD_CSS__``/``__SEMANTIC_CARD_JS__``
-placeholders.
+Daemon routes attach ``semantic_entries`` produced by the same pure renderer
+that the CLI presents as Markdown. This leaf formats those typed documents; it
+does not classify raw roles, prose, tool names, or outcomes.
 """
 
 from __future__ import annotations
 
 SEMANTIC_CARD_CSS = r"""
+.sem-entries { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.sem-session-entries { margin: 0 10px 8px; }
 .sem-cards { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
 .sem-card {
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -27,8 +17,12 @@ SEMANTIC_CARD_CSS = r"""
   border-left: 3px solid var(--role-tool);
 }
 .sem-card.sem-card-shell { border-left-color: var(--accent); }
+.sem-card.sem-card-file_read { border-left-color: var(--accent-soft); }
 .sem-card.sem-card-file_edit { border-left-color: var(--active); }
+.sem-card.sem-card-search { border-left-color: var(--role-user); }
+.sem-card.sem-card-web { border-left-color: var(--role-user); }
 .sem-card.sem-card-task { border-left-color: var(--warn); }
+.sem-card.sem-card-mcp { border-left-color: var(--role-tool); }
 .sem-card.sem-card-lineage { border-left-color: var(--text-dim); }
 .sem-card.sem-card-attachment { border-left-color: var(--text-dim); }
 .sem-card.sem-card-fallback { border-left-color: var(--border-strong); }
@@ -76,15 +70,30 @@ SEMANTIC_CARD_CSS = r"""
   margin: 4px 0 0; padding-left: 16px; font-size: var(--small); color: var(--text-dim);
 }
 .sem-card-caveats li { margin: 1px 0; }
+.sem-source { margin-top: 4px; font-size: 10px; color: var(--text-dim); }
+.sem-source summary { cursor: pointer; user-select: none; }
+.sem-source code { display: block; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+.sem-prose { min-width: 0; }
+.sem-prose-meta {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 3px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+}
+.sem-prose-meta .chip { padding: 0 4px; }
+.sem-notice {
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  background: var(--panel-subtle); color: var(--role-thinking);
+  padding: 5px 9px; font-size: var(--small);
+}
+.sem-notice strong { font-family: var(--font-mono); font-weight: 500; }
+.sem-notice details { margin-top: 2px; }
+.sem-notice code { display: block; white-space: pre-wrap; word-break: break-word; }
 """
 
 
-# Drop-in renderer for the ``renderMessageBlocks`` semantic-card hooks.
-# Exposes ``_polySemanticCardsHtml(m)`` (the public hook name the reader
-# slice looks up) plus its private helpers.
 SEMANTIC_CARD_JS = r"""
 var SEM_CARD_LABEL = {
-  shell: 'shell', file_edit: 'edit', task: 'task', lineage: 'lineage',
+  shell: 'shell', file_read: 'read', file_edit: 'edit', search: 'search',
+  web: 'web', task: 'task', mcp: 'mcp', lineage: 'lineage',
   attachment: 'attachment', fallback: 'tool'
 };
 
@@ -103,6 +112,7 @@ function _polySemCardOutcomeHtml(card) {
   var state = card.outcome.state || 'unknown';
   var label = state === 'succeeded' ? 'ok' : (state === 'failed' ? 'FAILED' : 'unknown');
   var bits = [];
+  if (typeof card.outcome.is_error === 'boolean') bits.push('is_error=' + card.outcome.is_error);
   if (typeof card.outcome.exit_code === 'number') bits.push('exit ' + card.outcome.exit_code);
   var title = bits.length ? (label + ' (' + bits.join(', ') + ')') : label;
   return '<span class="sem-outcome state-' + esc(state) + '" title="' + escAttr(title) + '">'
@@ -120,7 +130,9 @@ function _polySemCardFieldsHtml(card) {
 function _polySemCardPreviewHtml(preview) {
   var lines = preview.line_count || 0;
   var meta = lines + ' line' + (lines === 1 ? '' : 's');
-  if (preview.truncated) meta += ', truncated';
+  if (preview.omitted_lines) meta += ', ' + preview.omitted_lines + ' omitted';
+  if (preview.omitted_characters) meta += ', ' + preview.omitted_characters + ' chars omitted';
+  if (preview.encoding_replacements) meta += ', ' + preview.encoding_replacements + ' replacements';
   var body = preview.kind === 'diff'
     ? '<pre class="sem-diff">' + _polyDiffLinesHtml(preview.text) + '</pre>'
     : '<pre>' + esc(preview.text || '') + '</pre>';
@@ -140,6 +152,26 @@ function _polySemCardCaveatsHtml(card) {
   return '<ul class="sem-card-caveats">' + card.caveats.map(function(c) {
     return '<li>' + esc(c) + '</li>';
   }).join('') + '</ul>';
+}
+
+function _polySemSourceBits(source) {
+  source = source || {};
+  var keys = [
+    'session_id', 'provider_family', 'origin', 'message_id', 'block_id', 'block_index',
+    'tool_name', 'tool_id', 'attachment_id', 'material_origin', 'occurred_at', 'duration_ms',
+    'parent_message_id', 'variant_index', 'is_active_path', 'is_active_leaf', 'inherited_prefix',
+    'result_message_id', 'result_block_id', 'result_block_index', 'result_duration_ms',
+    'result_material_origin', 'result_inherited_prefix'
+  ];
+  return keys.filter(function(key) { return source[key] !== undefined && source[key] !== null; })
+    .map(function(key) { return key + '=' + String(source[key]); });
+}
+
+function _polySemSourceHtml(source) {
+  var bits = _polySemSourceBits(source);
+  if (!bits.length) return '';
+  return '<details class="sem-source"><summary>evidence</summary><code>'
+    + esc(bits.join('\n')) + '</code></details>';
 }
 
 function _polySemCardAnchor(card) {
@@ -178,10 +210,104 @@ function _polySemanticCardHtml(card) {
     +   _polySemCardFieldsHtml(card)
     +   previewsHtml
     +   _polySemCardCaveatsHtml(card)
+    +   _polySemSourceHtml(card.source)
     + '</div>';
 }
 
-// Exposed under the public hook name renderMessageBlocks looks up.
+function _polySemProseMetaBits(prose) {
+  var bits = [];
+  if (prose.block_type) bits.push(prose.block_type);
+  if (prose.language) bits.push(prose.language);
+  if (prose.material_origin) bits.push('material:' + prose.material_origin);
+  if (prose.variant_index !== undefined && prose.variant_index !== null) bits.push('variant:' + prose.variant_index);
+  if (prose.is_active_path === true) bits.push('active path');
+  if (prose.is_active_leaf === true) bits.push('active leaf');
+  if (prose.inherited_prefix === true) bits.push('inherited prefix');
+  return bits;
+}
+
+function _polySemanticProseHtml(prose, entryIndex) {
+  prose = prose || {};
+  var type = prose.block_type || '';
+  var text = prose.text || '';
+  var metaBits = _polySemProseMetaBits(prose);
+  var meta = metaBits.length
+    ? '<div class="sem-prose-meta">' + metaBits.map(function(bit) {
+        return '<span class="chip">' + esc(bit) + '</span>';
+      }).join('') + '</div>'
+    : '';
+  var body;
+  if (type === 'thinking' || type === 'reasoning') {
+    body = ''
+      + '<div class="msg-fold" onclick="togglePolyFold(this)">'
+      +   '<span class="fold-arrow"></span><span class="fold-label">[' + esc(type) + ']</span>'
+      +   '<span class="fold-meta">typed block</span>'
+      + '</div>'
+      + '<div class="msg-fold-body"><div class="msg-text">' + esc(text) + '</div></div>';
+  } else if (type === 'code') {
+    body = _polyCodeBlockHtml({lang: prose.language || 'code', body: text}, entryIndex || 0);
+  } else {
+    body = text ? '<div class="msg-text">' + esc(text) + '</div>' : '';
+  }
+  var sourceBits = _polySemSourceBits({
+    provider_family: prose.provider_family,
+    origin: prose.origin,
+    message_id: prose.message_id,
+    block_id: prose.block_id,
+    block_index: prose.block_index,
+    material_origin: prose.material_origin,
+    occurred_at: prose.occurred_at,
+    duration_ms: prose.duration_ms,
+    parent_message_id: prose.parent_message_id,
+    variant_index: prose.variant_index,
+    is_active_path: prose.is_active_path,
+    is_active_leaf: prose.is_active_leaf,
+    inherited_prefix: prose.inherited_prefix
+  });
+  var source = sourceBits.length
+    ? '<details class="sem-source"><summary>source</summary><code>' + esc(sourceBits.join('\n')) + '</code></details>'
+    : '';
+  return '<div class="sem-prose" data-semantic-block-type="' + escAttr(type) + '">'
+    + meta + body + source + '</div>';
+}
+
+function _polySemanticNoticeHtml(notice) {
+  notice = notice || {};
+  var count = Number(notice.count || ((notice.sources || []).length));
+  var label = notice.kind === 'empty_thinking' ? 'thinking absent' : (notice.kind || 'notice');
+  var refs = (notice.sources || []).map(function(source) {
+    var coord = source.block_id || ('index:' + source.block_index);
+    return 'message:' + source.message_id + '/block:' + coord + '/type:' + source.block_type;
+  });
+  var detail = refs.length
+    ? '<details><summary>' + esc(String(count)) + ' source coordinate' + (count === 1 ? '' : 's')
+      + '</summary><code>' + esc(refs.join('\n')) + '</code></details>'
+    : '';
+  return '<div class="sem-notice" data-notice-kind="' + escAttr(notice.kind || '') + '">'
+    + '<strong>' + esc(label) + '</strong> · ' + esc(String(count)) + ' typed block' + (count === 1 ? '' : 's')
+    + detail + '</div>';
+}
+
+function _polySemanticEntryHtml(entry, entryIndex) {
+  if (!entry) return '';
+  if (entry.entry_type === 'card' && entry.card) return _polySemanticCardHtml(entry.card);
+  if (entry.entry_type === 'prose' && entry.prose) return _polySemanticProseHtml(entry.prose, entryIndex);
+  if (entry.entry_type === 'notice' && entry.notice) return _polySemanticNoticeHtml(entry.notice);
+  return '';
+}
+
+function _polySemanticEntriesHtml(m) {
+  if (!m || !Array.isArray(m.semantic_entries)) return '';
+  return '<div class="sem-entries">' + m.semantic_entries.map(_polySemanticEntryHtml).join('') + '</div>';
+}
+
+function _polySemanticSessionEntriesHtml(c) {
+  if (!c || !Array.isArray(c.semantic_entries) || !c.semantic_entries.length) return '';
+  return '<div class="sem-entries sem-session-entries">'
+    + c.semantic_entries.map(_polySemanticEntryHtml).join('') + '</div>';
+}
+
+// Compatibility hook for consumers that still request card-only payloads.
 function _polySemanticCardsHtml(m) {
   if (!m || !Array.isArray(m.semantic_cards) || !m.semantic_cards.length) return '';
   return '<div class="sem-cards">' + m.semantic_cards.map(_polySemanticCardHtml).join('') + '</div>';

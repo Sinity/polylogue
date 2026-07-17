@@ -26,6 +26,7 @@ from polylogue.archive.query.execution_control import (
     QueryCancelledError,
     QueryExecutionContext,
     QueryTimeoutError,
+    QueryWorkBudgetExceededError,
     execute_archive_read,
     execute_archive_read_sync,
 )
@@ -356,6 +357,100 @@ def test_sync_deadline_aborts_for_http_route(tmp_path: Path) -> None:
     assert ctx.receipt.state == "timed_out"
 
 
+def test_runner_holds_one_read_snapshot_until_owned_cleanup(tmp_path: Path) -> None:
+    """All statements in one controlled call observe one SQLite snapshot.
+
+    Removing ``begin_read_snapshot`` makes the second SELECT observe the
+    concurrently committed row, while retaining the same connection alone is
+    insufficient under autocommit.
+    """
+
+    import sqlite3
+    from hashlib import sha256
+
+    root = _bootstrap_archive(tmp_path)
+    with ArchiveStore(root) as store:
+        store._conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            ("seed", "codex-session", sha256(b"seed").digest()),
+        )
+        store._conn.commit()
+
+    first_read = threading.Event()
+    writer_done = threading.Event()
+    writer_errors: list[BaseException] = []
+    owned_stores: list[ArchiveStore] = []
+
+    def _writer() -> None:
+        try:
+            assert first_read.wait(timeout=5)
+            with sqlite3.connect(root / "index.db", timeout=5.0) as conn:
+                conn.execute(
+                    "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+                    ("concurrent", "codex-session", sha256(b"concurrent").digest()),
+                )
+        except BaseException as exc:  # propagate worker failures to the test thread
+            writer_errors.append(exc)
+        finally:
+            writer_done.set()
+
+    def _read_twice(store: ArchiveStore) -> tuple[int, int]:
+        owned_stores.append(store)
+        first = int(store._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        first_read.set()
+        assert writer_done.wait(timeout=5)
+        second = int(store._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+        return first, second
+
+    writer = threading.Thread(target=_writer)
+    writer.start()
+    ctx = QueryExecutionContext.create(query_text="stable-snapshot", timeout_s=10.0)
+    observed = execute_archive_read_sync(
+        root,
+        _read_twice,
+        ctx=ctx,
+        controller=QueryAdmissionController(),
+    )
+    writer.join(timeout=5)
+
+    assert not writer_errors
+    assert observed == (1, 1)
+    with sqlite3.connect(root / "index.db") as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) == 2
+    assert ctx.receipt.state == "completed"
+    assert ctx.receipt.cleanup_complete is True
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        owned_stores[0]._conn.execute("SELECT 1")
+
+
+def test_sqlite_vm_work_budget_interrupts_deterministically_and_cleans_up(tmp_path: Path) -> None:
+    """Production dependencies: progress accounting, budget guard, typed abort.
+
+    Removing ``record_sqlite_progress`` or the budget branch in ``_abort_error``
+    changes this into a deadline timeout; removing cleanup leaves the receipt
+    false and the admission weight held.
+    """
+
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(
+        query_text="budgeted-expensive",
+        timeout_s=5.0,
+        sqlite_vm_step_budget=10_000,
+    )
+    controller = QueryAdmissionController()
+
+    with pytest.raises(QueryWorkBudgetExceededError):
+        execute_archive_read_sync(root, _expensive_work, ctx=ctx, controller=controller)
+
+    assert ctx.receipt.state == "work_budget_exceeded"
+    assert ctx.receipt.interrupted is True
+    assert ctx.receipt.sqlite_progress_callbacks == 5
+    assert ctx.receipt.sqlite_vm_steps_lower_bound == 10_000
+    assert ctx.receipt.sqlite_vm_step_budget == 10_000
+    assert ctx.receipt.cleanup_complete is True
+    assert controller.in_flight_weight == 0
+
+
 def test_interrupt_before_first_opcode_never_starts_statement(tmp_path: Path) -> None:
     root = _bootstrap_archive(tmp_path)
     ctx = QueryExecutionContext.create(query_text="pre-cancelled", timeout_s=None)
@@ -400,6 +495,65 @@ async def test_api_query_units_routes_through_execution_control(
 
     assert isinstance(envelope, QueryUnitEnvelope)
     assert seen == ["api.query_units"]
+
+
+async def test_api_multi_aggregate_receipt_reports_real_work_selection_and_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public route passes its one outer context into the SQL executor.
+
+    Removing surface-to-executor context propagation leaves page/selection
+    counters at zero; replacing the progress handler with a synthetic test
+    counter leaves the production VM-work fields at zero.
+    """
+
+    from polylogue import Polylogue
+    from polylogue.archive.query import execution_control as ec
+    from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+    from tests.infra.storage_records import SessionBuilder
+
+    _bootstrap_archive(tmp_path)
+    (
+        SessionBuilder(tmp_path / "index.db", "receipt")
+        .provider("claude-code")
+        .git_repository_url("polylogue")
+        .add_message("receipt-user", role="user", text="receipt aggregate")
+        .add_message("receipt-assistant-1", role="assistant", text="receipt aggregate")
+        .add_message("receipt-assistant-2", role="assistant", text="receipt aggregate")
+        .save()
+    )
+    monkeypatch.setattr(ec, "PROGRESS_GUARD_OPCODES", 50)
+    seen: list[QueryExecutionContext] = []
+    original_run = InterruptibleSQLiteRead.run
+
+    def _recording_run(self: InterruptibleSQLiteRead, *args: object, **kwargs: object) -> object:
+        seen.append(self._ctx)
+        return original_run(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(InterruptibleSQLiteRead, "run", _recording_run)
+
+    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    try:
+        envelope = await archive.query_units(
+            "messages where text:receipt | group by role, session.repo | count | sort by count desc"
+        )
+    finally:
+        await archive.close()
+
+    assert isinstance(envelope, QueryUnitAggregateEnvelope)
+    assert [(row.count, row.group_key) for row in envelope.items]
+    assert len(seen) == 1
+    ctx = seen[0]
+    assert ctx.owner_ref == "api.query_units"
+    assert ctx.workload_class == "scan"
+    assert ctx.receipt.state == "completed"
+    assert ctx.receipt.selected_rows_exact == 3
+    assert ctx.receipt.rows_emitted == 2
+    assert ctx.receipt.result_pages_emitted == 1
+    assert ctx.receipt.sqlite_progress_callbacks > 0
+    assert ctx.receipt.sqlite_vm_steps_lower_bound == ctx.receipt.sqlite_progress_callbacks * 50
+    assert ctx.receipt.cleanup_complete is True
 
 
 def test_queued_deadline_expiry_reports_timeout_not_cancellation() -> None:
@@ -519,3 +673,108 @@ async def test_api_query_units_classifies_aggregate_as_scan(tmp_path: Path, monk
         await archive.close()
 
     assert seen == ["scan"]
+
+
+def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C-03 through the shared runner and multi-aggregate production route.
+
+    The semantic result remains identical when the exact-session action bound is
+    removed, but the real SQLite VM-work receipt crosses the canary budget. This
+    kills a global-first relation mutation without duplicating query logic in a
+    test-side counter.
+    """
+
+    from hashlib import sha256
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.query import execution_control as ec
+    from polylogue.archive.query.expression import parse_unit_source_expression
+    from polylogue.archive.query.unit_results import query_unit_rows
+    from polylogue.core.enums import BlockType, Origin
+    from polylogue.surfaces.payloads import QueryUnitAggregateEnvelope
+
+    root = tmp_path / "archive"
+    target_session_id = "codex-session:target"
+    session_rows: list[tuple[str, str, bytes]] = []
+    message_rows: list[tuple[str, str, int, str, str, bytes]] = []
+    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
+    for index in range(512):
+        native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
+        session_id = f"codex-session:{native_id}"
+        message_id = f"{session_id}:m1"
+        tool_id = f"tool-{index:04d}"
+        session_rows.append((native_id, Origin.CODEX_SESSION.value, sha256(session_id.encode()).digest()))
+        message_rows.append(
+            (session_id, "m1", 0, Role.ASSISTANT.value, "message", sha256(message_id.encode()).digest())
+        )
+        block_rows.extend(
+            (
+                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
+                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+            )
+        )
+
+    with ArchiveStore(root) as facade:
+        facade._conn.executemany(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            session_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            message_rows,
+        )
+        facade._conn.executemany(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            block_rows,
+        )
+        facade._conn.commit()
+
+    source = parse_unit_source_expression(
+        f"actions where session.id:{target_session_id} | group by tool, session.origin | count"
+    )
+    assert source is not None
+    monkeypatch.setattr(ec, "PROGRESS_GUARD_OPCODES", 100)
+
+    def execute(ctx: QueryExecutionContext) -> QueryUnitAggregateEnvelope:
+        result = execute_archive_read_sync(
+            root,
+            lambda archive: query_unit_rows(
+                archive,
+                source,
+                query="c03-multi-aggregate",
+                limit=10,
+                execution_context=ctx,
+            ),
+            ctx=ctx,
+            controller=QueryAdmissionController(),
+        )
+        assert isinstance(result, QueryUnitAggregateEnvelope)
+        return result
+
+    bounded_ctx = QueryExecutionContext.create(query_text="c03-bounded", workload_class="scan", timeout_s=10.0)
+    bounded = execute(bounded_ctx)
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+        lambda **_kwargs: ("", "actions", []),
+    )
+    mutant_ctx = QueryExecutionContext.create(query_text="c03-global-first", workload_class="scan", timeout_s=10.0)
+    mutant = execute(mutant_ctx)
+
+    assert mutant.model_dump(mode="json") == bounded.model_dump(mode="json")
+    assert bounded_ctx.receipt.selected_rows_exact == 1
+    assert bounded_ctx.receipt.rows_emitted == 1
+    assert bounded_ctx.receipt.result_pages_emitted == 1
+    assert bounded_ctx.receipt.cleanup_complete is True
+    assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
+    assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000

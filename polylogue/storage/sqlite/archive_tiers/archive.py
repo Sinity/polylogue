@@ -128,6 +128,7 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -722,6 +723,32 @@ class ArchiveQueryUnitAggregateRow:
     count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitMultiAggregateRow:
+    """One losslessly addressable row from a multi-field aggregate page."""
+
+    unit: str
+    group_by: tuple[str, ...]
+    group_values: tuple[str, ...]
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitMultiAggregatePage:
+    """A bounded multi-field aggregate page plus exact full-result facts.
+
+    ``rows`` is bounded by the caller's page limit. ``denominator`` and the
+    per-field quality counters describe the complete matching row set rather
+    than merely the returned page, so page boundaries never change aggregate
+    meaning.
+    """
+
+    rows: tuple[ArchiveQueryUnitMultiAggregateRow, ...]
+    denominator: int
+    missing_counts: tuple[int, ...]
+    unknown_counts: tuple[int, ...]
+
+
 def _sql_string_literal(value: str) -> str:
     """Return a SQL single-quoted literal for a static in-repo token."""
 
@@ -1015,6 +1042,122 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
         raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
 
 
+@dataclass(frozen=True, slots=True)
+class _MultiAggregateFieldSQL:
+    """Closed SQL expressions for one multi-field aggregate dimension."""
+
+    value: str
+    missing: str
+    unknown: str
+
+
+def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> _MultiAggregateFieldSQL:
+    """Return lossless value and quality expressions for one group field.
+
+    Multi-field aggregation historically converted terminal rows back into
+    Python objects, where ``None`` became ``[missing]`` and literal ``unknown``
+    values remained distinguishable. Keep that contract while moving the work
+    into SQLite; do not conflate an empty string, a missing value, and an
+    explicit unknown token.
+    """
+
+    if field == "session.origin":
+        raw = "s.origin"
+    elif field == "session.repo":
+        raw = "s.git_repository_url"
+    else:
+        raw_fields = {
+            "message": {
+                "role": f"{row_alias}.role",
+                "type": f"{row_alias}.message_type",
+            },
+            "action": {
+                "tool": f"{row_alias}.tool_name",
+                "action": f"{row_alias}.semantic_type",
+                "type": f"{row_alias}.semantic_type",
+                "is_error": f"{row_alias}.is_error",
+                "exit_code": f"{row_alias}.exit_code",
+                "followup_class": f"{row_alias}.followup_class",
+            },
+            "block": {
+                "type": f"{row_alias}.block_type",
+                "tool": f"{row_alias}.tool_name",
+                "action": f"{row_alias}.semantic_type",
+            },
+            "file": {"path": f"{row_alias}.path"},
+            "assertion": {
+                "kind": f"{row_alias}.kind",
+                "status": f"{row_alias}.status",
+                "visibility": f"{row_alias}.visibility",
+                "author_kind": f"{row_alias}.author_kind",
+            },
+            "observed-event": {
+                "kind": f"{row_alias}.kind",
+                "delivery_state": f"{row_alias}.delivery_state",
+                "tool": f"json_extract({row_alias}.payload_json, '$.tool_name')",
+                "handler": f"json_extract({row_alias}.payload_json, '$.handler_kind')",
+                "status": f"json_extract({row_alias}.payload_json, '$.status')",
+            },
+            "delegation": {
+                "mapping_state": f"{row_alias}.mapping_state",
+                "result_status": f"{row_alias}.result_status",
+                "requested_model": f"{row_alias}.requested_model",
+                "dispatch_model": f"{row_alias}.dispatch_turn_model",
+                "child_model": f"{row_alias}.child_session_dominant_model",
+            },
+        }
+        if unit == "delegation" and field == "basis":
+            return _MultiAggregateFieldSQL(
+                value=(f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
+                missing="0",
+                unknown="0",
+            )
+        try:
+            raw = raw_fields[unit][field]
+        except KeyError as exc:
+            raise ValueError(f"unsupported {unit} multi-aggregate group field: {field}") from exc
+
+    assertion_defaults = {
+        "status": ASSERTION_DEFAULT_STATUS,
+        "visibility": ASSERTION_DEFAULT_VISIBILITY,
+        "author_kind": ASSERTION_DEFAULT_AUTHOR_KIND,
+    }
+    if unit == "assertion" and field in assertion_defaults:
+        value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(assertion_defaults[field])}) AS TEXT)"
+        missing = "0"
+    else:
+        value = f"CASE WHEN {raw} IS NULL THEN '[missing]' ELSE CAST({raw} AS TEXT) END"
+        missing = f"CASE WHEN {raw} IS NULL THEN 1 ELSE 0 END"
+    unknown = f"CASE WHEN {raw} IS NOT NULL AND LOWER(CAST({raw} AS TEXT)) = 'unknown' THEN 1 ELSE 0 END"
+    return _MultiAggregateFieldSQL(value=value, missing=missing, unknown=unknown)
+
+
+def _query_unit_multi_aggregate_order(
+    group_columns: Sequence[str],
+    sort: Literal["count", "key"] | None,
+    direction: Literal["asc", "desc"],
+) -> str:
+    """Return the stable ordering used by the former Python tuple sort."""
+
+    sql_direction = _query_unit_order_direction(direction)
+    key_order = ", ".join(f"{column} {sql_direction}" for column in group_columns)
+    if sort == "key":
+        return key_order
+    return f"count {sql_direction}, {key_order}"
+
+
+def _append_query_ctes(prefix_sql: str, *ctes: str) -> str:
+    """Append CTEs to an optional relation prefix that already starts WITH."""
+
+    body = ",\n".join(cte.strip() for cte in ctes)
+    prefix = prefix_sql.strip()
+    if not prefix:
+        return f"WITH {body}"
+    if not prefix.upper().startswith("WITH "):
+        raise ValueError("query relation prefix must start with WITH")
+    return f"{prefix},\n{body}"
+
+
 def _predicate_uses_unit_field(predicate: QueryPredicate, field_name: str, *, unit: str | None = None) -> bool:
     """Return whether a predicate subtree targets a unit-scoped field."""
 
@@ -1207,6 +1350,22 @@ class ArchiveStore:
         raw connection.
         """
         self._conn.set_progress_handler(guard, n_opcodes)
+
+    def clear_read_progress_guard(self) -> None:
+        """Remove the index connection's progress handler before ownership ends."""
+
+        self._conn.set_progress_handler(None, 0)
+
+    def begin_read_snapshot(self) -> None:
+        """Begin the owned read transaction used by one controlled query call."""
+
+        self._conn.execute("BEGIN")
+
+    def end_read_snapshot(self) -> None:
+        """Release the owned read snapshot without ever committing read work."""
+
+        if self._conn.in_transaction:
+            self._conn.rollback()
 
     def interrupt_reads(self) -> None:
         """Interrupt any statement active on the index read connection.
@@ -2343,17 +2502,67 @@ class ArchiveStore:
         conn: sqlite3.Connection,
         raw_ids: list[str],
     ) -> tuple[tuple[str, ...], ...]:
-        """Partition scheduling hints into transitive authority components."""
-        components: list[set[str]] = []
-        for raw_id in dict.fromkeys(raw_ids):
-            expanded, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, [raw_id])
-            component = set(expanded)
-            overlapping = [existing for existing in components if existing & component]
-            for existing in overlapping:
-                component.update(existing)
-                components.remove(existing)
-            components.append(component)
-        return tuple(tuple(sorted(component)) for component in sorted(components, key=lambda item: min(item)))
+        """Partition scheduling hints with one bulk authority-graph snapshot.
+
+        Re-expanding every direct candidate separately turns a large backlog
+        into thousands of overlapping recursive SQL walks.  Source paths and
+        logical membership keys are both undirected authority edges, so build
+        their connected components once and project only components containing
+        a scheduling hint.
+        """
+        hints = tuple(dict.fromkeys(raw_ids))
+        if not hints:
+            return ()
+
+        parent: dict[str, str] = {}
+
+        def find(raw_id: str) -> str:
+            root = parent.setdefault(raw_id, raw_id)
+            while root != parent[root]:
+                parent[root] = parent[parent[root]]
+                root = parent[root]
+            while raw_id != root:
+                next_raw_id = parent[raw_id]
+                parent[raw_id] = root
+                raw_id = next_raw_id
+            return root
+
+        def join(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        by_path: dict[str, str] = {}
+        by_key: dict[str, str] = {}
+        for raw_id, source_path, logical_source_key in conn.execute(
+            "SELECT raw_id, source_path, logical_source_key FROM raw_sessions"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            path = str(source_path or "")
+            if path:
+                prior = by_path.setdefault(path, raw_text)
+                join(prior, raw_text)
+            if logical_source_key is not None:
+                key = str(logical_source_key)
+                prior = by_key.setdefault(key, raw_text)
+                join(prior, raw_text)
+        for raw_id, logical_source_key in conn.execute(
+            "SELECT raw_id, logical_source_key FROM raw_session_memberships"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            key = str(logical_source_key)
+            prior = by_key.setdefault(key, raw_text)
+            join(prior, raw_text)
+
+        members: dict[str, list[str]] = {}
+        for raw_id in parent:
+            members.setdefault(find(raw_id), []).append(raw_id)
+        selected_roots = {find(raw_id) for raw_id in hints if raw_id in parent}
+        components = [tuple(sorted(members[root])) for root in selected_roots]
+        return tuple(sorted(components, key=lambda component: component[0]))
 
     def raw_membership_selection_components(self, raw_ids: list[str]) -> tuple[tuple[str, ...], ...]:
         return self.raw_membership_selection_components_sync(self._ensure_source_conn(), raw_ids)
@@ -7577,6 +7786,265 @@ class ArchiveStore:
             for row in rows
         ]
 
+    def query_unit_multi_counts(
+        self,
+        unit: str,
+        predicate: QueryPredicate,
+        *,
+        group_by: Sequence[str],
+        sort: Literal["count", "key"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> ArchiveQueryUnitMultiAggregatePage:
+        """Return one bounded multi-field count page with exact full-set facts.
+
+        The source relation is filtered and grouped inside one SQLite statement.
+        Python retains at most the requested aggregate page; it never pages the
+        selected row relation with OFFSET and never reconstructs the query
+        algorithm in application memory.
+        """
+
+        fields = tuple(str(field).strip() for field in group_by if str(field).strip())
+        if len(fields) < 2:
+            raise ValueError("multi-field aggregate counts require at least two group fields")
+        normalized_limit = max(int(limit), 0)
+        normalized_offset = max(int(offset), 0)
+        empty_page = ArchiveQueryUnitMultiAggregatePage(
+            rows=(),
+            denominator=0,
+            missing_counts=tuple(0 for _ in fields),
+            unknown_counts=tuple(0 for _ in fields),
+        )
+        if unit == "assertion" and not self.user_db_path.exists():
+            return empty_page
+        if unit == "assertion":
+            self._attach_user_tier_if_present()
+
+        row_alias = {
+            "message": "m",
+            "action": "a",
+            "block": "b",
+            "file": "f",
+            "assertion": "a",
+            "observed-event": "e",
+            "delegation": "d",
+        }.get(unit)
+        if row_alias is None:
+            raise ValueError(f"Query unit {unit!r} is not wired to SQL multi-aggregate counts")
+
+        active_session_filters = _session_filter_is_active(session_filters)
+        needs_session = (
+            unit != "observed-event"
+            or active_session_filters
+            or any(_query_unit_group_uses_session(field) for field in fields)
+            or _predicate_uses_session_scope(predicate)
+        )
+        session_alias = "s" if needs_session else None
+        clause, predicate_params = _structural_predicate_clause(
+            unit,
+            "a" if unit == "file" else row_alias,
+            predicate,
+            session_alias=session_alias,
+        )
+        where_clause = clause or "1=1"
+        session_clause = ""
+        session_params: list[object] = []
+        if needs_session and active_session_filters and session_filters is not None:
+            session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+
+        relation_params: list[object] = []
+        source_params: list[object] = []
+        prefix_sql = ""
+        selected_where_clause = where_clause
+        selected_session_clause = session_clause
+        if unit == "file":
+            file_rows_cte = f"""
+                file_rows AS (
+                    SELECT
+                        a.session_id,
+                        REPLACE(a.tool_path, char(92), '/') AS path
+                    FROM actions a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    JOIN messages m ON m.message_id = a.message_id
+                    WHERE a.tool_path IS NOT NULL
+                      AND a.tool_path != ''
+                      AND {where_clause}
+                      {session_clause}
+                    GROUP BY a.session_id, path
+                )
+            """
+            from_sql = "file_rows f JOIN sessions s ON s.session_id = f.session_id"
+            source_ctes = [file_rows_cte]
+            selected_where_clause = "1=1"
+            selected_session_clause = ""
+        else:
+            source_ctes = []
+            action_needs_followup = unit == "action" and (
+                "followup_class" in fields or _action_query_needs_followup_relation(predicate)
+            )
+            action_relation_name = "actions"
+            if unit == "action":
+                prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+                    predicate=predicate,
+                    include_followup=action_needs_followup,
+                )
+            from_sql_by_unit = {
+                "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
+                "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
+                "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
+                "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+                "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+                "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
+            }
+            from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
+            if unit == "observed-event":
+                source_where, source_params = observed_event_source_pushdown(predicate)
+                prefix_sql = observed_event_relation_sql(source_where=source_where)
+
+        field_sql = tuple(_query_unit_multi_group_field_sql(unit, row_alias, field) for field in fields)
+        group_columns = tuple(f"group_{index}" for index in range(len(fields)))
+        selected_columns = ",\n".join(
+            expression
+            for index, spec in enumerate(field_sql)
+            for expression in (
+                f"{spec.value} AS group_{index}",
+                f"{spec.missing} AS missing_{index}",
+                f"{spec.unknown} AS unknown_{index}",
+            )
+        )
+        grouped_quality_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"SUM(missing_{index}) AS group_missing_{index}",
+                f"SUM(unknown_{index}) AS group_unknown_{index}",
+            )
+        )
+        ranked_quality_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"SUM(group_missing_{index}) OVER () AS total_missing_{index}",
+                f"SUM(group_unknown_{index}) OVER () AS total_unknown_{index}",
+            )
+        )
+        stats_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"COALESCE(MAX(total_missing_{index}), 0) AS missing_{index}",
+                f"COALESCE(MAX(total_unknown_{index}), 0) AS unknown_{index}",
+            )
+        )
+        final_stats_columns = ",\n".join(
+            expression
+            for index in range(len(fields))
+            for expression in (
+                f"stats.missing_{index}",
+                f"stats.unknown_{index}",
+            )
+        )
+        final_group_columns = ",\n".join(f"page.group_{index}" for index in range(len(fields)))
+        group_column_list = ", ".join(group_columns)
+        order_clause = _query_unit_multi_aggregate_order(group_columns, sort, sort_direction)
+
+        selected_cte = f"""
+            selected AS (
+                SELECT
+                    {selected_columns}
+                FROM {from_sql}
+                WHERE {selected_where_clause}
+                {selected_session_clause}
+            )
+        """
+        grouped_cte = f"""
+            grouped AS (
+                SELECT
+                    {group_column_list},
+                    COUNT(*) AS count,
+                    {grouped_quality_columns}
+                FROM selected
+                GROUP BY {group_column_list}
+            )
+        """
+        ranked_cte = f"""
+            ranked AS (
+                SELECT
+                    grouped.*,
+                    SUM(count) OVER () AS denominator,
+                    {ranked_quality_columns},
+                    ROW_NUMBER() OVER (ORDER BY {order_clause}) AS ordinal
+                FROM grouped
+            )
+        """
+        page_cte = """
+            page AS (
+                SELECT *
+                FROM ranked
+                WHERE ordinal > ? AND ordinal <= ?
+            )
+        """
+        stats_cte = f"""
+            stats AS (
+                SELECT
+                    COALESCE(MAX(denominator), 0) AS denominator,
+                    {stats_columns}
+                FROM ranked
+            )
+        """
+        cte_sql = _append_query_ctes(
+            prefix_sql,
+            *source_ctes,
+            selected_cte,
+            grouped_cte,
+            ranked_cte,
+            page_cte,
+            stats_cte,
+        )
+        rows = self._conn.execute(
+            f"""
+            {cte_sql}
+            SELECT
+                stats.denominator,
+                {final_stats_columns},
+                {final_group_columns},
+                page.count,
+                page.ordinal
+            FROM stats
+            LEFT JOIN page ON 1 = 1
+            ORDER BY page.ordinal
+            """,
+            [
+                *relation_params,
+                *source_params,
+                *predicate_params,
+                *session_params,
+                normalized_offset,
+                normalized_offset + normalized_limit,
+            ],
+        ).fetchall()
+        if not rows:
+            return empty_page
+        stats_row = rows[0]
+        aggregate_rows = tuple(
+            ArchiveQueryUnitMultiAggregateRow(
+                unit=unit,
+                group_by=fields,
+                group_values=tuple(str(row[f"group_{index}"]) for index in range(len(fields))),
+                count=int(row["count"]),
+            )
+            for row in rows
+            if row["count"] is not None
+        )
+        return ArchiveQueryUnitMultiAggregatePage(
+            rows=aggregate_rows,
+            denominator=int(stats_row["denominator"]),
+            missing_counts=tuple(int(stats_row[f"missing_{index}"]) for index in range(len(fields))),
+            unknown_counts=tuple(int(stats_row[f"unknown_{index}"]) for index in range(len(fields))),
+        )
+
     def query_actions(
         self,
         predicate: QueryPredicate,
@@ -9144,6 +9612,9 @@ def _archive_provenance(materialization: ArchiveInsightMaterialization) -> Archi
         source_sort_key=(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
+        input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
+        time_confidence=time_confidence_for_source(materialization.input_high_water_mark_source),
     )
 
 
@@ -9154,6 +9625,9 @@ def _archive_inference_provenance(materialization: ArchiveInsightMaterialization
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         inference_version=materialization.materializer_version,
         inference_family="archive",
     )
@@ -9166,6 +9640,9 @@ def _archive_enrichment_provenance(materialization: ArchiveInsightMaterializatio
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         enrichment_version=materialization.materializer_version,
         enrichment_family="archive",
     )
@@ -9405,7 +9882,7 @@ def _session_profile_record_from_archive_row(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
         input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
-        input_high_water_mark_source=None,
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
         input_row_count=materialization.input_row_count,
         source_name=source_name,
         title=title,

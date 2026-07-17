@@ -1,0 +1,3 @@
+{"type":"user","uuid":"compact-u","sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:05:00Z","message":{"role":"user","content":"Plan the release."}}
+{"type":"assistant","uuid":"compact-a","parentUuid":"compact-u","sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:05:01Z","message":{"role":"assistant","model":"claude-sonnet-4-5-20250929","content":"I will inspect the checks."}}
+{"type":"summary","uuid":"compact-summary","parentUuid":"compact-a","sessionId":"claude-lineage-parent","timestamp":"2026-07-01T12:05:02Z","message":{"role":"system","content":"Compressed release context."}}

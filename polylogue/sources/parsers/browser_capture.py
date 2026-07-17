@@ -189,17 +189,177 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
             merged[candidate.provider_attachment_id] = candidate
-        elif candidate.inline_bytes is not None:
-            merged[candidate.provider_attachment_id] = candidate.model_copy(
-                update={
-                    "name": candidate.name or existing.name,
-                    "mime_type": candidate.mime_type or existing.mime_type,
-                    "message_provider_id": candidate.message_provider_id or existing.message_provider_id,
-                    "source_url": candidate.source_url or existing.source_url,
-                    "attachment_kind": existing.attachment_kind,
-                }
-            )
+            continue
+        # The native row remains authoritative for provider identity and file
+        # metadata. The browser projection contributes acquired bytes and can
+        # fill omissions, but must not replace native size/origin/file IDs.
+        merged[candidate.provider_attachment_id] = existing.model_copy(
+            update={
+                "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
+                "name": existing.name or candidate.name,
+                "mime_type": existing.mime_type or candidate.mime_type,
+                "size_bytes": existing.size_bytes if existing.size_bytes is not None else candidate.size_bytes,
+                "provider_file_id": existing.provider_file_id or candidate.provider_file_id,
+                "provider_drive_id": existing.provider_drive_id or candidate.provider_drive_id,
+                "upload_origin": existing.upload_origin or candidate.upload_origin,
+                "attachment_kind": existing.attachment_kind or candidate.attachment_kind,
+                "source_url": existing.source_url or candidate.source_url,
+                "caption": existing.caption or candidate.caption,
+                "inline_bytes": candidate.inline_bytes or existing.inline_bytes,
+            }
+        )
     return parsed.model_copy(update={"attachments": list(merged.values())})
+
+
+def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
+    """Use browser-envelope fields only when the native payload omitted them.
+
+    The envelope fields are projections of the same provider response/page and
+    must never create a second conversation identity or replace richer native
+    values. They are useful for current Claude responses that omit optional
+    title/model/timestamp fields from the embedded payload.
+    """
+
+    updates: dict[str, object] = {}
+    fallback_titles = {None, "", parsed.provider_session_id, envelope.session.provider_session_id}
+    if parsed.title in fallback_titles and envelope.session.title:
+        updates["title"] = envelope.session.title
+    if parsed.created_at is None and envelope.session.created_at is not None:
+        updates["created_at"] = envelope.session.created_at
+    if parsed.updated_at is None and envelope.session.updated_at is not None:
+        updates["updated_at"] = envelope.session.updated_at
+
+    envelope_model = envelope.session.model
+    if envelope_model:
+        messages = [
+            message if message.model_name is not None else message.model_copy(update={"model_name": envelope_model})
+            for message in parsed.messages
+        ]
+        if messages != parsed.messages:
+            updates["messages"] = messages
+        models_used = list(parsed.models_used)
+        if envelope_model not in models_used:
+            models_used.append(envelope_model)
+            updates["models_used"] = models_used
+        if not any(
+            event.event_type == "model_configuration" and event.source_message_provider_id is None
+            for event in parsed.session_events
+        ):
+            updates["session_events"] = [
+                *parsed.session_events,
+                ParsedSessionEvent(
+                    event_type="model_configuration",
+                    timestamp=envelope.session.updated_at or envelope.session.created_at,
+                    payload={"model": envelope_model},
+                ),
+            ]
+    return parsed.model_copy(update=updates) if updates else parsed
+
+
+def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
+    from polylogue.browser_capture.models import BrowserCaptureTurn
+
+    assert isinstance(turn, BrowserCaptureTurn)
+    raw: dict[str, object] = dict(turn.provider_meta)
+    # Typed envelope identity wins over any provider_meta echo.
+    raw.update(
+        {
+            "uuid": turn.provider_turn_id,
+            "sender": turn.role.value,
+            "text": turn.text,
+            "created_at": turn.timestamp,
+            "parent_message_uuid": turn.parent_turn_id,
+            "ordinal": turn.ordinal,
+        }
+    )
+    if turn.attachments:
+        raw["attachments"] = [
+            {
+                "id": attachment.provider_attachment_id,
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+                "size_bytes": attachment.size_bytes,
+            }
+            for attachment in turn.attachments
+        ]
+    return raw
+
+
+def _parse_claude_fallback_envelope(
+    envelope: BrowserCaptureEnvelope,
+    provider_session_id: str,
+) -> ParsedSession:
+    from polylogue.sources.parsers.claude.common import (
+        _first_identity_field,
+        _message_model_effort,
+        _thinking_configuration,
+        normalize_chat_messages,
+        normalize_timestamp,
+    )
+
+    created_at = normalize_timestamp(envelope.session.created_at) if envelope.session.created_at else None
+    updated_at = normalize_timestamp(envelope.session.updated_at) if envelope.session.updated_at else None
+    active_leaf_message_provider_id = _first_identity_field(
+        envelope.session.provider_meta,
+        "current_leaf_message_uuid",
+        "current_leaf_message_id",
+        "active_leaf_message_uuid",
+        "active_leaf_message_id",
+        "current_message_uuid",
+        "current_message_id",
+        "current_node",
+    )
+    normalized = normalize_chat_messages(
+        [_claude_fallback_turn_payload(turn) for turn in envelope.session.turns],
+        session_model=envelope.session.model,
+        session_effort=_message_model_effort(envelope.session.provider_meta),
+        session_thinking_configuration=_thinking_configuration(envelope.session.provider_meta),
+        session_created_at=created_at,
+        session_updated_at=updated_at,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+    )
+
+    attachments = [
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
+        )
+        for turn in envelope.session.turns
+        for attachment in turn.attachments
+    ]
+    attachments.extend(
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id,
+        )
+        for attachment in envelope.session.attachments
+    )
+    fidelity_flag = (
+        COMPACT_BROWSER_CAPTURE_INGEST_FLAG if _is_compact_native_capture(envelope) else DOM_FALLBACK_INGEST_FLAG
+    )
+    return ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id=provider_session_id,
+        title=envelope.session.title or envelope.provenance.page_title or provider_session_id,
+        session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=normalized.messages,
+        active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
+        attachments=attachments,
+        session_events=[*normalized.session_events, *_capture_session_events(envelope)],
+        reported_duration_ms=normalized.reported_duration_ms,
+        models_used=normalized.models_used,
+        ingest_flags=list(
+            dict.fromkeys(
+                [
+                    *normalized.ingest_flags,
+                    *_ingest_flags_for_browser_capture(envelope, provider_session_id),
+                    fidelity_flag,
+                ]
+            )
+        ),
+    )
 
 
 def _capture_interruption_session_events(envelope: BrowserCaptureEnvelope) -> list[ParsedSessionEvent]:
@@ -368,13 +528,22 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
-                _merge_envelope_attachments(parse_claude_ai(raw_provider_payload, provider_session_id), envelope),
+                _merge_envelope_attachments(
+                    _merge_envelope_native_metadata(
+                        parse_claude_ai(raw_provider_payload, provider_session_id),
+                        envelope,
+                    ),
+                    envelope,
+                ),
                 envelope,
                 provider_session_id,
                 has_native_payload=True,
             ),
             envelope,
         )
+
+    if envelope.session.provider is Provider.CLAUDE_AI:
+        return _parse_claude_fallback_envelope(envelope, provider_session_id)
 
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []

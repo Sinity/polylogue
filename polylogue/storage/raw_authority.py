@@ -1202,6 +1202,27 @@ def _raw_authority_census_receipt(conn: sqlite3.Connection, census_id: str) -> R
     )
 
 
+def latest_raw_authority_census_receipt(
+    archive_root: Path,
+    *,
+    scope: Mapping[str, object],
+) -> RawAuthorityCensusReceipt | None:
+    """Return the newest completed receipt for one exact scope without another ledger row."""
+    scope_json = _canonical_json(scope)
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            """
+            SELECT census_id
+            FROM raw_authority_censuses
+            WHERE lifecycle_status = 'completed' AND scope_json = ?
+            ORDER BY sequence_no DESC
+            LIMIT 1
+            """,
+            (scope_json,),
+        ).fetchone()
+        return _raw_authority_census_receipt(conn, str(row[0])) if row is not None else None
+
+
 def finalize_raw_authority_census(
     archive_root: Path,
     census_id: str,
@@ -1648,6 +1669,7 @@ __all__ = [
     "build_raw_replay_plan",
     "build_raw_replay_plans",
     "finalize_raw_authority_census",
+    "latest_raw_authority_census_receipt",
     "raw_replay_application_receipt",
     "raw_authority_census_query_handle",
     "raw_authority_detail_query_handle",

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-05",
+  "package_revision": "r02",
+  "state": "rejected_validation_failed",
+  "provider": "chatgpt-pro",
+  "prompt_sha256": "79f47419461ccf3a3398db6a79b00f10fc26a551ef59a06a5518aea24f3ceae5",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "artifact": {
+    "filename": "query-bounds-deliverables.tar.gz",
+    "sha256": "e0954c7f5002ad41d9af4eeb644437f8229f61b680070cff7d01e01f5962456a",
+    "size_bytes": 1863,
+    "custody_path": "testdiet/results/testdiet-05/r02/raw/query-bounds-deliverables.tar.gz"
+  },
+  "validation": [
+    "tar readback succeeded",
+    "STATUS is PARTIAL",
+    "the independent finalizer found no Git worktree and no executable test suite",
+    "the archive contains no patch or changed-file payload"
+  ],
+  "admission": "No code, test, or Bead closure is admitted from this revision. The verified r01 production slice remains PR #3012."
+}

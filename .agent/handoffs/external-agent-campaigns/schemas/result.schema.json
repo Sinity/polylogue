@@ -10,7 +10,7 @@
     "job_id": {"type": "string"},
     "attempt_id": {"type": "string", "pattern": "^a[0-9]{2}$"},
     "package_revision": {"type": ["string", "null"], "pattern": "^r[0-9]{2}$"},
-    "state": {"enum": ["prepared", "submitted", "running", "terminal", "acquired", "validated", "triaged", "integrating", "verified", "published", "rejected", "blocked"]},
+    "state": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
     "provider": {"type": ["string", "null"]},
     "provider_conversation_id": {"type": ["string", "null"]},
     "provider_turn_id": {"type": ["string", "null"]},

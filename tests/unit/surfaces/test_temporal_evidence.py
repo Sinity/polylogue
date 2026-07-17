@@ -71,6 +71,7 @@ def test_temporal_window_preserves_explicit_caveats() -> None:
 
 
 def test_temporal_window_computes_adjacent_phase_spans() -> None:
+    """The shared span builder labels gaps; removing or relabeling that field fails."""
     window = build_temporal_evidence_window(
         [
             _event("a", 9, 0, family="devloop-log", kind="focus", phase="Direction"),
@@ -83,6 +84,7 @@ def test_temporal_window_computes_adjacent_phase_spans() -> None:
         ("Direction", "Evidence", 900.0),
         ("Evidence", "Proof", 2700.0),
     ]
+    assert {span.duration_semantics for span in window.phase_spans} == {"inferred_event_gap"}
     assert window.caveats == ("window_bound_open",)
 
 

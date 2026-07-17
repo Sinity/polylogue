@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
@@ -32,6 +32,8 @@ class _GenerationTiming:
     ended_at_ms: int | None
     event_timestamp: str | None
     fidelity: str
+    related_message_provider_ids: frozenset[str]
+    duplicate_duration_message_provider_ids: frozenset[str]
 
 
 def _coerce_float(value: object) -> float | None:
@@ -99,7 +101,9 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     is authoritative, with a valid start/end delta as the derived fallback.
     """
 
-    candidates: dict[str, list[tuple[tuple[int, int, int, int], _GenerationTiming]]] = {}
+    candidates: dict[str, list[tuple[tuple[int, int, int, int, int], _GenerationTiming]]] = {}
+    related_message_ids: dict[str, set[str]] = {}
+    legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
     for position, (node_id, raw_node) in enumerate(mapping.items()):
         if not isinstance(raw_node, Mapping):
             continue
@@ -110,22 +114,58 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
         if not isinstance(raw_metadata, Mapping):
             continue
 
+        raw_author = raw_message.get("author")
+        raw_role = raw_author.get("role") if isinstance(raw_author, Mapping) else None
+        if raw_role not in {"assistant", "tool"}:
+            # Duration metadata on a human/system row is message-local evidence,
+            # not a ChatGPT generation lifecycle measurement.
+            continue
+
+        message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
+        message_id = str(message_id_raw)
+        branch_key = _generation_branch_key(mapping, str(node_id))
+        native_timing_field_names = (
+            "reasoning_start_time",
+            "reasoning_end_time",
+            "finished_duration_sec",
+        )
+        has_native_timing_field = any(field_name in raw_metadata for field_name in native_timing_field_names)
+        has_legacy_duration_field = "durationMs" in raw_metadata or "duration_ms" in raw_metadata
+        if has_native_timing_field or has_legacy_duration_field:
+            related_message_ids.setdefault(branch_key, set()).add(message_id)
+
         start_sec = _non_negative_finite_float(raw_metadata.get("reasoning_start_time"))
         end_sec = _non_negative_finite_float(raw_metadata.get("reasoning_end_time"))
         finished_sec = _non_negative_finite_float(raw_metadata.get("finished_duration_sec"))
+        legacy_duration_raw = raw_metadata.get("durationMs")
+        if legacy_duration_raw is None:
+            legacy_duration_raw = raw_metadata.get("duration_ms")
+        legacy_duration_ms = _non_negative_int(legacy_duration_raw)
+        if legacy_duration_ms is not None:
+            legacy_duration_by_message_id.setdefault(branch_key, {})[message_id] = legacy_duration_ms
+
+        has_valid_native_timing_value = any(value is not None for value in (start_sec, end_sec, finished_sec))
         if finished_sec is not None:
             elapsed_ms = round(finished_sec * 1000)
             fidelity = "exact"
+            source_rank = 3
         elif start_sec is not None and end_sec is not None and end_sec >= start_sec:
             elapsed_ms = round((end_sec - start_sec) * 1000)
             fidelity = "derived"
+            source_rank = 2
+        elif has_valid_native_timing_value and legacy_duration_ms is not None:
+            # Legacy duration remains a lifecycle fallback only when the same
+            # branch carries structured native lifecycle evidence. A bare
+            # durationMs/duration_ms field keeps its established message-local
+            # meaning and is not promoted into a synthetic generation event.
+            elapsed_ms = legacy_duration_ms
+            fidelity = "exact"
+            source_rank = 1
         else:
             continue
 
         content = raw_message.get("content")
         content_type = content.get("content_type") if isinstance(content, Mapping) else None
-        message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
-        message_id = str(message_id_raw)
         timing = _GenerationTiming(
             message_provider_id=message_id,
             elapsed_duration_ms=elapsed_ms,
@@ -133,17 +173,33 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             ended_at_ms=round(end_sec * 1000) if end_sec is not None else None,
             event_timestamp=str(end_sec) if end_sec is not None else None,
             fidelity=fidelity,
+            related_message_provider_ids=frozenset(),
+            duplicate_duration_message_provider_ids=frozenset(),
         )
         score = (
+            source_rank,
             int(content_type == "reasoning_recap"),
             int(start_sec is not None and end_sec is not None),
             int(raw_message.get("end_turn") is True),
             position,
         )
-        branch_key = _generation_branch_key(mapping, str(node_id))
         candidates.setdefault(branch_key, []).append((score, timing))
 
-    return [max(branch_candidates, key=lambda item: item[0])[1] for branch_candidates in candidates.values()]
+    timings: list[_GenerationTiming] = []
+    for branch_key, branch_candidates in candidates.items():
+        selected = max(branch_candidates, key=lambda item: item[0])[1]
+        timings.append(
+            replace(
+                selected,
+                related_message_provider_ids=frozenset(related_message_ids.get(branch_key, ())),
+                duplicate_duration_message_provider_ids=frozenset(
+                    message_provider_id
+                    for message_provider_id, duration_ms in legacy_duration_by_message_id.get(branch_key, {}).items()
+                    if duration_ms == selected.elapsed_duration_ms
+                ),
+            )
+        )
+    return timings
 
 
 def _string_value(payload: Mapping[str, object], *keys: str) -> str | None:
@@ -534,11 +590,19 @@ def extract_messages_from_mapping(
                 )
 
         model_slug: object = None
+        model_effort: str | None = None
         duration_raw: object = None
 
         # Extract message-level metadata from typed fields
         if isinstance(msg_metadata, dict):
             model_slug = msg_metadata.get("model_slug")
+            model_effort = _string_value(
+                msg_metadata,
+                "thinking_effort",
+                "reasoning_effort",
+                "model_effort",
+                "modelEffort",
+            )
             duration_raw = msg_metadata.get("durationMs")
             if duration_raw is None:
                 duration_raw = msg_metadata.get("duration_ms")
@@ -719,6 +783,7 @@ def extract_messages_from_mapping(
             variant_index=branch_index,
             is_active_path=node_id in active_path_id_set if active_path_ids else None,
             model_name=model_name,
+            model_effort=model_effort,
             duration_ms=duration_ms,
             sender_name=_string_value(author, "name") if isinstance(author, Mapping) else None,
             recipient=recipient,
@@ -782,16 +847,40 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     current_node = current_node if isinstance(current_node, str) else None
     messages, attachments = extract_messages_from_mapping(mapping, current_node)
     generation_timings = _extract_generation_timings(mapping)
+    emitted_message_ids = {message.provider_message_id for message in messages}
+    resolved_generation_timings: list[_GenerationTiming] = []
+    for timing in generation_timings:
+        if timing.message_provider_id in emitted_message_ids:
+            resolved_generation_timings.append(timing)
+            continue
+        fallback_owner_id = next(
+            (
+                message.provider_message_id
+                for message in reversed(messages)
+                if message.provider_message_id in timing.related_message_provider_ids
+            ),
+            None,
+        )
+        resolved_generation_timings.append(
+            replace(timing, message_provider_id=fallback_owner_id) if fallback_owner_id is not None else timing
+        )
+    generation_timings = resolved_generation_timings
     timing_by_message_id = {timing.message_provider_id: timing for timing in generation_timings}
-    if timing_by_message_id:
-        messages = [
-            message.model_copy(
-                update={"duration_ms": timing_by_message_id[message.provider_message_id].elapsed_duration_ms}
-            )
-            if message.provider_message_id in timing_by_message_id
-            else message
-            for message in messages
-        ]
+    duplicate_duration_message_ids = {
+        message_provider_id
+        for timing in generation_timings
+        for message_provider_id in timing.duplicate_duration_message_provider_ids
+    }
+    normalized_messages: list[ParsedMessage] = []
+    for message in messages:
+        resolved_timing = timing_by_message_id.get(message.provider_message_id)
+        if resolved_timing is not None:
+            normalized_messages.append(message.model_copy(update={"duration_ms": resolved_timing.elapsed_duration_ms}))
+        elif message.provider_message_id in duplicate_duration_message_ids:
+            normalized_messages.append(message.model_copy(update={"duration_ms": None}))
+        else:
+            normalized_messages.append(message)
+    messages = normalized_messages
     session_events = [
         ParsedSessionEvent(
             event_type="generation_lifecycle",

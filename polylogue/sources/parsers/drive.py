@@ -42,6 +42,25 @@ from .drive_support import (
 
 _logger = get_logger(__name__)
 
+_CHUNK_CONTENT_KEYS = frozenset(
+    {
+        "text",
+        "parts",
+        "executableCode",
+        "codeExecutionResult",
+        "driveDocument",
+        "driveImage",
+        "driveAudio",
+        "driveVideo",
+        "inlineFile",
+        "inlineImage",
+        "youtubeVideo",
+        "errorMessage",
+        "grounding",
+        "isThought",
+    }
+)
+
 
 def _collect_drive_docs(payload: object) -> list[JSONDocument | str]:
     return _collect_drive_docs_impl(payload)
@@ -122,6 +141,83 @@ def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
     return None
 
 
+def _usage_fields(chunk_obj: JSONDocument, *, role: Role) -> dict[str, int]:
+    token_count = _non_negative_int_field(chunk_obj, "tokenCount", "token_count")
+    if token_count is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    if role is Role.USER:
+        return {"input_tokens": token_count, "output_tokens": 0}
+    return {"input_tokens": 0, "output_tokens": token_count}
+
+
+def _branch_parent_provider_id(chunk_obj: JSONDocument) -> str | None:
+    branch_parent = chunk_obj.get("branchParent")
+    if isinstance(branch_parent, str) and branch_parent:
+        return branch_parent
+    branch_parent_obj = json_document(branch_parent)
+    return _string_field(branch_parent_obj, "id", "promptId", "messageId")
+
+
+def _branch_child_provider_id(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return _string_field(json_document(value), "id", "promptId", "messageId")
+
+
+def _branch_child_parent_map(chunks: Sequence[object]) -> dict[str, str]:
+    candidate_parents: dict[str, set[str]] = {}
+    for chunk in chunks:
+        chunk_obj = json_document(chunk)
+        parent_id = _string_field(chunk_obj, "id")
+        branch_children = chunk_obj.get("branchChildren")
+        if parent_id is None or not isinstance(branch_children, list):
+            continue
+        for child in branch_children:
+            child_id = _branch_child_provider_id(child)
+            if child_id is not None:
+                candidate_parents.setdefault(child_id, set()).add(parent_id)
+    return {child_id: next(iter(parents)) for child_id, parents in candidate_parents.items() if len(parents) == 1}
+
+
+def _instruction_text(payload: JSONDocument) -> str | None:
+    instruction = payload.get("systemInstruction")
+    if isinstance(instruction, str) and instruction:
+        return instruction
+    instruction_obj = json_document(instruction)
+    direct = _string_field(instruction_obj, "text", "content")
+    if direct is not None:
+        return direct
+    parts = instruction_obj.get("parts")
+    if not isinstance(parts, list):
+        return None
+    text_parts = [text for part in parts if (text := _string_field(json_document(part), "text", "content")) is not None]
+    return "\n".join(text_parts) or None
+
+
+def _model_config_event(
+    run_settings: JSONDocument,
+    *,
+    timestamp: str | None,
+) -> ParsedSessionEvent | None:
+    if not run_settings:
+        return None
+    event_payload: dict[str, object] = {"runSettings": dict(run_settings)}
+    model_name = _string_field(run_settings, "model", "modelName", "model_name")
+    if model_name is not None:
+        event_payload["model"] = model_name
+    return ParsedSessionEvent(
+        event_type="model_config",
+        timestamp=timestamp,
+        payload=event_payload,
+    )
+
+
+def _delivery_status(chunk_obj: JSONDocument) -> str | None:
+    if _string_field(chunk_obj, "errorMessage", "error_message") is not None:
+        return "error"
+    return _string_field(chunk_obj, "finishReason", "finish_reason")
+
+
 def _gemini_usage_event(
     chunk_obj: JSONDocument,
     *,
@@ -159,6 +255,8 @@ def _gemini_usage_event(
 
 def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedSession:
     runtime_provider = Provider.from_string(provider)
+    run_settings = json_document(payload.get("runSettings"))
+    default_model_name = _string_field(run_settings, "model", "modelName", "model_name")
     prompt = json_document(payload.get("chunkedPrompt"))
     chunks: Sequence[object] = ()
     if prompt:
@@ -177,6 +275,12 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     session_events: list[ParsedSessionEvent] = []
     attachments: list[ParsedAttachment] = []
     observed_timestamps: list[str | None] = []
+    models_used: set[str] = set()
+    if default_model_name is not None:
+        models_used.add(default_model_name)
+    if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
+        session_events.append(model_event)
+    branch_child_parents = _branch_child_parent_map(chunks)
     message_position = 0
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
@@ -193,6 +297,10 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
         message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
+        model_name = _string_field(chunk_obj, "model", "modelName", "model_name") or default_model_name
+        if model_name is not None:
+            models_used.add(model_name)
+        usage_fields = _usage_fields(chunk_obj, role=role)
         if usage_event := _gemini_usage_event(
             chunk_obj,
             role=role,
@@ -228,8 +336,18 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                 position=message_position,
                 variant_index=0,
                 is_active_path=True,
-                model_name=_string_field(chunk_obj, "model", "modelName", "model_name"),
+                parent_message_provider_id=(_branch_parent_provider_id(chunk_obj) or branch_child_parents.get(msg_id)),
+                input_tokens=usage_fields["input_tokens"],
+                output_tokens=usage_fields["output_tokens"],
+                model_name=model_name,
                 duration_ms=_non_negative_int_field(chunk_obj, "durationMs", "duration_ms", "elapsed_ms"),
+                delivery_status=_delivery_status(chunk_obj),
+                end_turn=(
+                    True
+                    if _string_field(chunk_obj, "finishReason", "finish_reason", "errorMessage", "error_message")
+                    is not None
+                    else None
+                ),
             )
         )
         message_position += 1
@@ -270,9 +388,44 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         session_events=session_events,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
+        instructions_text=_instruction_text(payload),
+        models_used=sorted(models_used),
     )
+
+
+def looks_like_chunk(payload: object) -> bool:
+    """Return whether a record has the minimum AI Studio chunk wire shape."""
+    chunk = json_document(payload)
+    role = chunk.get("role") or chunk.get("author")
+    return isinstance(role, str) and bool(role.strip()) and any(key in chunk for key in _CHUNK_CONTENT_KEYS)
+
+
+def _looks_like_chunks(value: object, *, allow_empty: bool) -> bool:
+    if not isinstance(value, list):
+        return False
+    if not value:
+        return allow_empty
+    return all(looks_like_chunk(item) for item in value)
+
+
+def has_chunk_container(payload: object) -> bool:
+    """Return whether an explicitly selected payload carries a chunk list.
+
+    This is intentionally more tolerant than :func:`looks_like`: explicit
+    provider routes should still salvage valid chunks from partially malformed
+    exports, while auto-detection must not claim generic ``chunks`` records.
+    """
+    record = json_document(payload)
+    prompt = json_document(record.get("chunkedPrompt"))
+    return isinstance(prompt.get("chunks"), list) or isinstance(record.get("chunks"), list)
 
 
 def looks_like(payload: object) -> bool:
     """Return True if payload looks like a Drive / Gemini chunkedPrompt export."""
-    return "chunkedPrompt" in json_document(payload)
+    record = json_document(payload)
+    prompt = json_document(record.get("chunkedPrompt"))
+    if prompt and _looks_like_chunks(prompt.get("chunks"), allow_empty=True):
+        return True
+    # Older exports expose ``chunks`` at the document top level. Unlike the
+    # named chunkedPrompt envelope, a bare empty list is too generic to detect.
+    return _looks_like_chunks(record.get("chunks"), allow_empty=False)

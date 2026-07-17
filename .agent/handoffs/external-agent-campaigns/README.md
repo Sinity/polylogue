@@ -11,8 +11,8 @@ subdirectories. A workload has:
   expected-result identities;
 - `briefs/`: concise job-specific source material;
 - `prompts/`: fully rendered prompts ready to paste or submit;
-- `results/index.json`: the append-only reconciliation ledger for returned
-  attempts and artifacts;
+- `results/index.json`: a rebuildable query projection of immutable returned
+  attempt/package receipts;
 - `results/README.md`: the on-disk result convention.
 
 The prompt renderer combines a workload's brief with the named shared contract:
@@ -64,7 +64,21 @@ Machine-readable shapes are documented by `schemas/campaign.schema.json` and
 `schemas/result.schema.json`. `campaign.json` is dispatch intent and should
 remain stable after launch. Per-attempt `result.json` is immutable evidence.
 `results/index.json` is a rebuildable reconciliation projection across those
-receipts.
+receipts. Its sole outcome field is `state`; it must never carry a second
+`status` field or independently adjudicate an artifact. Rebuild and verify it
+with:
+
+```bash
+python .agent/handoffs/external-agent-campaigns/reconcile_results.py \
+  .agent/handoffs/external-agent-campaigns/2026-07-16-gpt-pro-wave --check
+python .agent/handoffs/external-agent-campaigns/reconcile_results.py \
+  .agent/handoffs/external-agent-campaigns/2026-07-16-gpt-pro-wave --write
+```
+
+`result.json` is the immutable attempt form (`aNN`). `receipt.json` is the
+immutable package-revision form (`rNN`) for a revision without a separate
+provider attempt. The reconciler accepts both explicitly, rejects ambiguous
+identity mappings, and never rewrites either receipt.
 
 ## Attachment policy
 
@@ -77,3 +91,13 @@ provider upload/retrieval limit, privacy boundary, or irrelevance.
 Generated result packages must not copy the supplied repository/state archive
 back into their output. They contain only new analysis, patches, tests,
 evidence, and explanation.
+
+For any externally linked artifact, acquire it before triage with the generic
+URL custody command. It accepts HTTP(S) and file URLs, streams with a declared
+byte ceiling, hashes while writing, atomically publishes the raw artifact, and
+writes `acquisition.json`; it does not know a provider or browser workflow.
+
+```bash
+python .agent/handoffs/external-agent-campaigns/acquire_artifact.py WAVE_ROOT \
+  --workload WORKLOAD --job JOB --attempt aNN --url URL
+```

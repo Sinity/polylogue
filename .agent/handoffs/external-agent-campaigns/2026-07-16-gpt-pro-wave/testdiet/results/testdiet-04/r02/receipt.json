@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-04",
+  "package_revision": "r02",
+  "state": "evidence_only_no_candidate",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "artifact": {
+    "filename": "freshness.zip",
+    "sha256": "225ad872667e579b0d0b0975ff0f463f9e54acd5a07d29825084a93eae79b2b3",
+    "size_bytes": 6294,
+    "custody_path": "testdiet/results/testdiet-04/r02/raw.zip"
+  },
+  "validation": [
+    "ZIP CRC passed",
+    "manifest and required task specification present",
+    "solution.patch is zero bytes",
+    "manifest selected_candidate is null",
+    "manifest changed_paths is empty"
+  ],
+  "admission": "No code, test, or Bead-state change is admitted from this package. It is evidence that the delivery was structurally valid but contained no implementation candidate."
+}

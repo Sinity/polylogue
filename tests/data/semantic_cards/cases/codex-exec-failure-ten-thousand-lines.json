@@ -63,14 +63,24 @@
         "block_index": 0,
         "tool_name": "exec_command",
         "tool_id": "call-1",
+        "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
           "value": "exec_command"
+        },
+        {
+          "label": "semantic family",
+          "value": "shell"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
         },
         {
           "label": "command",

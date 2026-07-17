@@ -1,0 +1,188 @@
+{
+  "session_id": "fixture:empty-thinking-run",
+  "provider_family": "chatgpt",
+  "freeze_entries": true,
+  "messages": [
+    {
+      "id": "m-empty-a",
+      "role": "assistant",
+      "message_type": "message",
+      "origin": "chatgpt-export",
+      "material_origin": "assistant",
+      "occurred_at": "2026-07-17T08:00:00+00:00",
+      "duration_ms": 3,
+      "parent_id": "m-user",
+      "variant_index": 1,
+      "is_active_path": true,
+      "is_active_leaf": false,
+      "inherited_prefix": true,
+      "blocks": [
+        {
+          "id": "think-a",
+          "type": "thinking",
+          "text": ""
+        },
+        {
+          "id": "reason-a",
+          "type": "reasoning",
+          "text": "   "
+        }
+      ]
+    },
+    {
+      "id": "m-separator",
+      "role": "assistant",
+      "message_type": "message",
+      "origin": "chatgpt-export",
+      "material_origin": "assistant",
+      "blocks": [
+        {
+          "id": "text-separator",
+          "type": "text",
+          "text": "Visible answer."
+        }
+      ]
+    },
+    {
+      "id": "m-empty-b",
+      "role": "assistant",
+      "message_type": "message",
+      "origin": "chatgpt-export",
+      "material_origin": "assistant",
+      "blocks": [
+        {
+          "id": "reason-b",
+          "type": "reasoning",
+          "text": null
+        }
+      ]
+    },
+    {
+      "id": "m-thinking",
+      "role": "assistant",
+      "message_type": "message",
+      "origin": "chatgpt-export",
+      "material_origin": "assistant",
+      "blocks": [
+        {
+          "id": "think-b",
+          "type": "thinking",
+          "text": "A retained typed thought."
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 0,
+    "kinds": [],
+    "outcomes": [],
+    "entry_types": [
+      "notice",
+      "prose",
+      "notice",
+      "prose"
+    ],
+    "notice_counts": [
+      2,
+      1
+    ]
+  },
+  "expected_cards": [],
+  "expected_entries": [
+    {
+      "entry_type": "notice",
+      "notice": {
+        "kind": "empty_thinking",
+        "count": 2,
+        "sources": [
+          {
+            "message_id": "m-empty-a",
+            "block_index": 0,
+            "block_type": "thinking",
+            "block_id": "think-a",
+            "role": "assistant",
+            "message_type": "message",
+            "provider_family": "chatgpt",
+            "origin": "chatgpt-export",
+            "material_origin": "assistant",
+            "occurred_at": "2026-07-17T08:00:00+00:00",
+            "duration_ms": 3,
+            "parent_message_id": "m-user",
+            "variant_index": 1,
+            "is_active_path": true,
+            "is_active_leaf": false,
+            "inherited_prefix": true
+          },
+          {
+            "message_id": "m-empty-a",
+            "block_index": 1,
+            "block_type": "reasoning",
+            "block_id": "reason-a",
+            "role": "assistant",
+            "message_type": "message",
+            "provider_family": "chatgpt",
+            "origin": "chatgpt-export",
+            "material_origin": "assistant",
+            "occurred_at": "2026-07-17T08:00:00+00:00",
+            "duration_ms": 3,
+            "parent_message_id": "m-user",
+            "variant_index": 1,
+            "is_active_path": true,
+            "is_active_leaf": false,
+            "inherited_prefix": true
+          }
+        ]
+      }
+    },
+    {
+      "entry_type": "prose",
+      "prose": {
+        "message_id": "m-separator",
+        "role": "assistant",
+        "message_type": "message",
+        "provider_family": "chatgpt",
+        "origin": "chatgpt-export",
+        "material_origin": "assistant",
+        "text": "Visible answer.",
+        "block_id": "text-separator",
+        "block_index": 0,
+        "block_type": "text"
+      }
+    },
+    {
+      "entry_type": "notice",
+      "notice": {
+        "kind": "empty_thinking",
+        "count": 1,
+        "sources": [
+          {
+            "message_id": "m-empty-b",
+            "block_index": 0,
+            "block_type": "reasoning",
+            "block_id": "reason-b",
+            "role": "assistant",
+            "message_type": "message",
+            "provider_family": "chatgpt",
+            "origin": "chatgpt-export",
+            "material_origin": "assistant"
+          }
+        ]
+      }
+    },
+    {
+      "entry_type": "prose",
+      "prose": {
+        "message_id": "m-thinking",
+        "role": "assistant",
+        "message_type": "message",
+        "provider_family": "chatgpt",
+        "origin": "chatgpt-export",
+        "material_origin": "assistant",
+        "text": "A retained typed thought.",
+        "block_id": "think-b",
+        "block_index": 0,
+        "block_type": "thinking"
+      }
+    }
+  ]
+}

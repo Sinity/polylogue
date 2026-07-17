@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-11",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "rejected_validation_failed",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "e76582026e89b73fa70873e60ad46ed7b5c528cec16f6b292b1c7a54ba7e2156",
+  "snapshot_identity": null,
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "11-codex-normalization.zip",
+      "sha256": "00e03464a34e17733f4e18d15637bfd6fe4c9796d440daa51c8ce79d63546a57",
+      "size_bytes": 3041,
+      "custody_path": "testdiet/results/testdiet-11/a01/raw/11-codex-normalization.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "ZIP CRC is valid, but its sole member is the dispatched prompt rather than the required HANDOFF.md, PATCH.diff, TESTS.md, and EVIDENCE.md result package; the duplicate codex-normalization.zip has the same SHA-256.",
+  "beads": ["polylogue-2qx", "polylogue-2qx.1", "polylogue-ih67"],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": ["ZIP member listing and SHA-256 checked locally"],
+  "notes": "No source, test, or Bead-state change is admitted. This records failed delivery evidence only; a later complete r02 must have distinct raw custody and receipt identity."
+}

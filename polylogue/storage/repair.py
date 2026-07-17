@@ -61,6 +61,7 @@ from polylogue.storage.raw_authority import (
     RawReplayPlanStatus,
     build_raw_replay_plans,
     finalize_raw_authority_census,
+    latest_raw_authority_census_receipt,
     raw_replay_application_receipt,
     raw_replay_plan_deferred_for_envelope,
     raw_replay_plan_last_attempts,
@@ -3631,6 +3632,17 @@ def _raw_materialization_candidate_ids(
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        materialized_aliases = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                """
+                SELECT DISTINCT s.origin, s.native_id
+                FROM index_tier.sessions AS s
+                JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+                WHERE s.native_id IS NOT NULL
+                """
+            )
+        }
         params: list[object] = []
         raw_filter = ""
         if raw_artifact_id is not None:
@@ -3776,7 +3788,7 @@ def _raw_materialization_candidate_ids(
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
-            if _raw_materialized_by_source_path_native(conn, row):
+            if _raw_materialized_by_source_path_native(materialized_aliases, row):
                 continue
             if _raw_materialization_parsed_non_session_artifact(archive_root, row):
                 continue
@@ -4188,7 +4200,12 @@ def _unavailable_raw_materialization_backlog(reason: str) -> dict[str, object]:
     }
 
 
-def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
+def raw_materialization_replay_backlog(
+    config: Config,
+    *,
+    limit: int = 10,
+    _candidates: RawMaterializationCandidates | None = None,
+) -> dict[str, object]:
     """Return a read-only weighted backlog for raw source-to-index replay.
 
     The report uses the same candidate selector as ``repair_raw_materialization``
@@ -4207,7 +4224,7 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         ).fetchone()
     if source_ready is None:
         return _unavailable_raw_materialization_backlog("source_tier_uninitialized")
-    candidates = _raw_materialization_candidate_ids(config)
+    candidates = _candidates or _raw_materialization_candidate_ids(config)
     raw_ids_by_size = sorted(
         candidates.raw_ids,
         key=lambda raw_id: (-candidates.raw_blob_bytes.get(raw_id, 0), raw_id),
@@ -4300,13 +4317,19 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
     }
 
 
+def _histogram_upper_bound(value: int) -> int:
+    """Return the inclusive power-of-two bucket for a non-negative value."""
+    upper_bound = 1
+    while upper_bound < max(value, 1):
+        upper_bound *= 2
+    return upper_bound
+
+
 def _histogram(values: Sequence[int], *, field: str) -> list[dict[str, int]]:
     """Summarize numeric frontier shape without retaining identifying rows."""
     buckets: dict[int, int] = {}
     for value in values:
-        upper_bound = 1
-        while upper_bound < max(value, 1):
-            upper_bound *= 2
+        upper_bound = _histogram_upper_bound(value)
         buckets[upper_bound] = buckets.get(upper_bound, 0) + 1
     return [{field: upper_bound, "count": count} for upper_bound, count in sorted(buckets.items())]
 
@@ -4326,15 +4349,30 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     to retain with a synthetic workload receipt because it never includes raw
     ids, source paths, blob hashes, or payload-derived fields.
     """
-    backlog = raw_materialization_replay_backlog(config, limit=0)
+    candidates = _raw_materialization_candidate_ids(config)
+    backlog = raw_materialization_replay_backlog(config, limit=0, _candidates=candidates)
     if not bool(backlog["available"]):
         return {"available": False, "reason": backlog["reason"]}
-    candidates = _raw_materialization_candidate_ids(config)
     component_raw_counts = [len(component) for component in candidates.authority_components]
+    candidate_ids = set(candidates.raw_ids)
+    component_cohorts: dict[tuple[int, int], int] = {}
+    component_byte_cohorts: dict[tuple[int, int, int], int] = {}
+    for component in candidates.authority_components:
+        raw_count = len(component)
+        direct_candidate_count = len(candidate_ids.intersection(component))
+        key = (raw_count, direct_candidate_count)
+        component_cohorts[key] = component_cohorts.get(key, 0) + 1
     component_blob_bytes = [
         sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
         for component in candidates.authority_components
     ]
+    for component, blob_bytes in zip(candidates.authority_components, component_blob_bytes, strict=True):
+        byte_key = (
+            len(component),
+            len(candidate_ids.intersection(component)),
+            _histogram_upper_bound(blob_bytes),
+        )
+        component_byte_cohorts[byte_key] = component_byte_cohorts.get(byte_key, 0) + 1
     return {
         "available": True,
         "format": "raw-authority-scale-profile-v1",
@@ -4346,6 +4384,25 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
         "total_blob_bytes": _backlog_count(backlog, "total_blob_bytes"),
         "expanded_total_blob_bytes": _backlog_count(backlog, "expanded_total_blob_bytes"),
         "component_raw_count_histogram": _histogram(component_raw_counts, field="upper_bound_raw_count"),
+        "component_cohort_distribution": [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "component_count": count,
+            }
+            for (raw_count, direct_candidate_count), count in sorted(component_cohorts.items())
+        ],
+        "component_byte_cohort_distribution": [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "upper_bound_blob_bytes": upper_bound_blob_bytes,
+                "component_count": count,
+            }
+            for (raw_count, direct_candidate_count, upper_bound_blob_bytes), count in sorted(
+                component_byte_cohorts.items()
+            )
+        ],
         "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
         "residual_state_counts": {
             "missing_blob_count": _backlog_count(backlog, "missing_blob_count"),
@@ -4359,23 +4416,12 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     }
 
 
-def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
         return False
     for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
-        existing = conn.execute(
-            """
-            SELECT 1
-            FROM index_tier.sessions AS s
-            JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
-            WHERE s.origin = ?
-              AND s.native_id = ?
-            LIMIT 1
-            """,
-            (origin, native_id),
-        ).fetchone()
-        if existing is not None:
+        if (origin, native_id) in materialized_aliases:
             return True
     return False
 
@@ -5657,6 +5703,13 @@ def repair_raw_materialization(
             }
         )
         if census_resource_blocked_raw_ids:
+            resource_blocked_candidate_raw_ids = set(candidates.raw_ids).intersection(census_resource_blocked_raw_ids)
+            metrics["raw_materialization_executable_candidate_count"] = float(
+                len(set(candidates.raw_ids) - resource_blocked_candidate_raw_ids)
+            )
+            metrics["raw_materialization_resource_blocked_candidate_count"] = float(
+                len(resource_blocked_candidate_raw_ids)
+            )
             metrics["raw_materialization_resource_blocked_count"] = float(len(census_resource_blocked_raw_ids))
             metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
             oversized = {
@@ -5699,6 +5752,7 @@ def repair_raw_materialization(
         > max_payload_bytes
     ]
     all_blocked_component_raw_ids = {raw_id for component in all_blocked_components for raw_id in component}
+    resource_blocked_candidate_raw_ids = set(candidate_raw_ids).intersection(all_blocked_component_raw_ids)
     selected_components = (
         ordered_components[:raw_artifact_limit] if raw_artifact_limit is not None else ordered_components
     )
@@ -5750,6 +5804,10 @@ def repair_raw_materialization(
     metrics["raw_materialization_selected_executable_component_count"] = float(len(executable_components))
     metrics["raw_materialization_selected_blocked_component_count"] = float(len(blocked_components))
     if all_blocked_component_raw_ids:
+        metrics["raw_materialization_executable_candidate_count"] = float(
+            len(set(candidate_raw_ids) - resource_blocked_candidate_raw_ids)
+        )
+        metrics["raw_materialization_resource_blocked_candidate_count"] = float(len(resource_blocked_candidate_raw_ids))
         metrics["raw_materialization_resource_blocked_count"] = float(len(all_blocked_component_raw_ids))
         metrics["raw_materialization_execute_blob_limit_bytes"] = float(max_payload_bytes)
     diagnostic_component_raw_ids = selected_component_raw_ids | all_blocked_component_raw_ids
@@ -5773,7 +5831,17 @@ def repair_raw_materialization(
         metrics["raw_materialization_stream_oversized_count"] = float(len(oversized_stream_safe_raw_ids))
     if deferred_plan_ids:
         metrics["raw_materialization_deferred_plan_count"] = float(len(deferred_plan_ids))
-    if not selected_components and deferred_plan_ids:
+    scope = _raw_authority_scope(
+        raw_artifact_id=raw_artifact_id,
+        provider=provider,
+        source_family=source_family,
+        source_root=source_root,
+        raw_artifact_limit=raw_artifact_limit,
+    )
+    if not dry_run and not selected_components and deferred_plan_ids:
+        retained_census_receipt = latest_raw_authority_census_receipt(archive_root, scope=scope)
+        if retained_census_receipt is None:
+            raise RuntimeError("resource-deferred raw replay lacks a completed durable census receipt")
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
@@ -5784,6 +5852,7 @@ def repair_raw_materialization(
                 f"the {_format_bytes(max_payload_bytes)} envelope"
             ),
             metrics=metrics,
+            census_receipt=retained_census_receipt,
         )
     selected_plan_ids = {plan_by_component[component].plan_id for component in selected_components}
     executable_plan_ids = {
@@ -5804,13 +5873,7 @@ def repair_raw_materialization(
         executable_plan_ids=executable_plan_ids,
         mode="dry_run" if dry_run else "apply",
         quiescent=True,
-        scope=_raw_authority_scope(
-            raw_artifact_id=raw_artifact_id,
-            provider=provider,
-            source_family=source_family,
-            source_root=source_root,
-            raw_artifact_limit=raw_artifact_limit,
-        ),
+        scope=scope,
         residual=residual,
     )
     metrics["raw_materialization_census_sequence"] = float(census_receipt.sequence_no)
@@ -6120,6 +6183,7 @@ def repair_raw_materialization(
         and replay.adoption_deferred == 0
         and remaining.adoption_deferred == 0
         and remaining.byte_authority_pending == 0
+        and conservation_error_count == 0
         and not any(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
         and (
             raw_artifact_id is None

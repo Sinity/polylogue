@@ -14,7 +14,6 @@ from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.insights.topology import SessionTopology
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -33,7 +32,7 @@ class _FakeApi:
         raw_result: tuple[list[dict[str, object]], int] = ([], 0),
         paginate_messages: bool = False,
         session_origin: str = "codex-session",
-        topology: SessionTopology | None = None,
+        topology: object | None = None,
     ) -> None:
         self.messages_result = messages_result
         self.raw_result = raw_result
@@ -125,10 +124,18 @@ class _FakeApi:
         return self.raw_result
 
     async def get_session(self, session_id: str) -> object:
-        del session_id
-        return type("_FakeSession", (), {"origin": self.session_origin})()
+        return type(
+            "_FakeSession",
+            (),
+            {
+                "id": session_id,
+                "origin": self.session_origin,
+                "parent_id": None,
+                "branch_type": None,
+            },
+        )()
 
-    async def get_session_topology(self, session_id: str) -> SessionTopology | None:
+    async def get_session_topology(self, session_id: str) -> object | None:
         del session_id
         return self.topology
 

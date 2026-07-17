@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from polylogue.core.tool_identity import extract_mcp_server
 from polylogue.insights.archive import PaginatedInsightQuery
 from polylogue.insights.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
@@ -36,27 +37,6 @@ if TYPE_CHECKING:
 
 TOOL_USAGE_INSIGHT_VERSION = 1
 """Insight materializer version for ``tool_usage`` envelopes."""
-
-_MCP_TOOL_PREFIX = "mcp__"
-
-
-def extract_mcp_server(tool_name: str) -> str | None:
-    """Return the MCP server identity prefix of a tool name, if any.
-
-    MCP tool names follow the ``mcp__<server>__<tool>`` convention used by
-    Claude Code, Codex, and the Polylogue MCP catalog. The server segment
-    is the second underscored component. ``None`` is returned for tool
-    names that do not match this shape so downstream callers can keep the
-    coverage signal honest instead of inventing a synthetic server.
-    """
-
-    if not tool_name or not tool_name.startswith(_MCP_TOOL_PREFIX):
-        return None
-    remainder = tool_name[len(_MCP_TOOL_PREFIX) :]
-    if "__" not in remainder:
-        return None
-    server, _, _ = remainder.partition("__")
-    return server or None
 
 
 class ToolUsageEntry(ArchiveInsightModel):

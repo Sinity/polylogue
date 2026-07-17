@@ -6,17 +6,17 @@ import json
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, json_document
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
     return (
         isinstance(payload.get("sessionId"), str)
         and isinstance(payload.get("messages"), list)
-        and ("startTime" in payload or "lastUpdated" in payload or payload.get("kind") == "chat")
+        and ("startTime" in payload or "lastUpdated" in payload or payload.get("kind") in {"chat", "main", "subagent"})
     )
 
 
@@ -31,10 +31,16 @@ def looks_like_hermes(payload: JSONDocument) -> bool:
 def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     messages: list[ParsedMessage] = []
+    session_events: list[ParsedSessionEvent] = []
+    models_used: set[str] = set()
     for index, item in enumerate(_list(payload.get("messages")), start=1):
         parsed = _parse_gemini_message(item, index=index, position=len(messages))
         if parsed is not None:
             messages.append(parsed)
+            if parsed.model_name:
+                models_used.add(parsed.model_name)
+            if usage_event := _gemini_message_usage_event(item, parsed):
+                session_events.append(usage_event)
     messages = _mark_active_leaf(messages)
     return ParsedSession(
         source_name=Provider.GEMINI_CLI,
@@ -43,7 +49,14 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
+        branch_type=BranchType.SUBAGENT if payload.get("kind") == "subagent" else None,
+        session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+        models_used=sorted(models_used),
+        provider_project_ref=_string(payload.get("projectHash")),
+        working_directories=[
+            directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
+        ],
     )
 
 
@@ -93,20 +106,32 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     content_blocks = _content_blocks_from_content(record.get("content"))
     thoughts = _list(record.get("thoughts"))
     for thought_index, thought in enumerate(thoughts, start=1):
-        thought_text = _content_text(thought)
+        thought_record = json_document(thought)
+        thought_text = (
+            _string(thought_record.get("description"))
+            or _content_text(thought)
+            or _string(thought_record.get("subject"))
+        )
         if thought_text:
+            thought_metadata: dict[str, object] = {"index": thought_index}
+            for key in ("subject", "timestamp"):
+                value = thought_record.get(key)
+                if isinstance(value, str) and value:
+                    thought_metadata[key] = value
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.THINKING,
                     text=thought_text,
-                    metadata={"index": thought_index},
+                    metadata=thought_metadata,
                 )
             )
     for tool_index, tool_call in enumerate(_list(record.get("toolCalls")), start=1):
         tool_record = json_document(tool_call)
         if not tool_record:
             continue
-        content_blocks.append(_tool_use_block(tool_record, fallback_id=f"tool-{index}-{tool_index}"))
+        fallback_tool_id = f"tool-{index}-{tool_index}"
+        content_blocks.append(_tool_use_block(tool_record, fallback_id=fallback_tool_id))
+        content_blocks.extend(_tool_result_blocks(tool_record, fallback_id=fallback_tool_id))
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
@@ -205,27 +230,85 @@ def _non_negative_int(value: object) -> int | None:
 
 def _token_usage_fields(record: JSONDocument) -> dict[str, int]:
     usage = json_document(record.get("usage")) or json_document(record.get("tokens")) or record
-    input_tokens = _non_negative_int(usage.get("input_tokens") or usage.get("prompt_tokens")) or 0
-    explicit_output = (
-        usage.get("output_tokens")
-        or usage.get("completion_tokens")
-        or usage.get("generated_tokens")
-        or usage.get("total_tokens")
-        or usage.get("total")
+    gemini_wire_fields = {"input", "output", "cached", "thoughts", "tool"}
+    if any(key in usage for key in gemini_wire_fields):
+        input_with_cached = _first_non_negative_int(usage, "input") or 0
+        cache_read_tokens = _first_non_negative_int(usage, "cached") or 0
+        return {
+            "input_tokens": max(input_with_cached - cache_read_tokens, 0),
+            "output_tokens": _first_non_negative_int(usage, "output") or 0,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": 0,
+            "reasoning_output_tokens": _first_non_negative_int(usage, "thoughts") or 0,
+            "tool_output_tokens": _first_non_negative_int(usage, "tool") or 0,
+            "total_tokens": _first_non_negative_int(usage, "total") or 0,
+        }
+    input_tokens = _first_non_negative_int(usage, "input_tokens", "prompt_tokens") or 0
+    explicit_output = _first_non_negative_int(
+        usage,
+        "output_tokens",
+        "completion_tokens",
+        "generated_tokens",
+        "total_tokens",
+        "total",
     )
-    output_tokens = _non_negative_int(explicit_output) or 0
+    output_tokens = explicit_output or 0
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cache_read_tokens": _non_negative_int(usage.get("cache_read_tokens") or usage.get("cache_read_input_tokens"))
-        or 0,
-        "cache_write_tokens": _non_negative_int(
-            usage.get("cache_write_tokens")
-            or usage.get("cache_creation_input_tokens")
-            or usage.get("cache_write_input_tokens")
+        "cache_read_tokens": _first_non_negative_int(usage, "cache_read_tokens", "cache_read_input_tokens") or 0,
+        "cache_write_tokens": _first_non_negative_int(
+            usage,
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+            "cache_write_input_tokens",
         )
         or 0,
+        "reasoning_output_tokens": 0,
+        "tool_output_tokens": 0,
+        "total_tokens": _first_non_negative_int(usage, "total_tokens", "total") or 0,
     }
+
+
+def _first_non_negative_int(payload: JSONDocument, *keys: str) -> int | None:
+    for key in keys:
+        if key in payload:
+            value = _non_negative_int(payload.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedSessionEvent | None:
+    record = json_document(item)
+    raw_usage = json_document(record.get("usage")) or json_document(record.get("tokens"))
+    if not raw_usage:
+        return None
+    usage = _token_usage_fields(record)
+    last_usage = {
+        "input_tokens": usage["input_tokens"],
+        "output_tokens": usage["output_tokens"],
+        "cached_input_tokens": usage["cache_read_tokens"],
+        "cache_write_tokens": usage["cache_write_tokens"],
+        "reasoning_output_tokens": usage["reasoning_output_tokens"],
+        "total_tokens": usage["total_tokens"],
+    }
+    payload: dict[str, object] = {
+        "type": "message_usage",
+        "semantics": "per_message",
+        "last_token_usage": last_usage,
+        "wire_tokens": dict(raw_usage),
+    }
+    if usage["tool_output_tokens"]:
+        payload["tool_output_tokens"] = usage["tool_output_tokens"]
+    if message.model_name:
+        payload["model"] = message.model_name
+    return ParsedSessionEvent(
+        event_type="message_usage",
+        timestamp=message.timestamp,
+        source_message_provider_id=message.provider_message_id,
+        payload=payload,
+    )
 
 
 def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
@@ -273,13 +356,86 @@ def _tool_use_block(record: JSONDocument, *, fallback_id: str) -> ParsedContentB
     function = json_document(record.get("function"))
     tool_name = _string(record.get("name")) or _string(function.get("name")) or _string(record.get("type")) or "tool"
     tool_id = _string(record.get("id")) or _string(record.get("call_id")) or fallback_id
-    raw_input = record.get("arguments") if "arguments" in record else function.get("arguments")
+    if "args" in record:
+        raw_input = record.get("args")
+    elif "arguments" in record:
+        raw_input = record.get("arguments")
+    else:
+        raw_input = function.get("arguments")
+    metadata = _tool_metadata(record)
     return ParsedContentBlock(
         type=BlockType.TOOL_USE,
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=_tool_input(raw_input),
+        metadata=metadata or None,
     )
+
+
+def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[ParsedContentBlock]:
+    tool_id = _string(record.get("id")) or _string(record.get("call_id")) or fallback_id
+    status = _string(record.get("status"))
+    status_is_error = _status_is_error(status)
+    metadata = _tool_metadata(record)
+    blocks: list[ParsedContentBlock] = []
+    for result_item in _list(record.get("result")):
+        result_record = json_document(result_item)
+        function_response = json_document(result_record.get("functionResponse"))
+        if not function_response:
+            continue
+        response = json_document(function_response.get("response"))
+        output = _string(response.get("output"))
+        error = _string(response.get("error"))
+        text = output or error or _content_text(record.get("resultDisplay"))
+        if text is None and status is None:
+            continue
+        result_metadata = dict(metadata)
+        function_name = _string(function_response.get("name"))
+        if function_name:
+            result_metadata["function_name"] = function_name
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=_string(function_response.get("id")) or tool_id,
+                text=text or f"[{status}]",
+                metadata=result_metadata or None,
+                is_error=True if error else status_is_error,
+            )
+        )
+    if blocks:
+        return blocks
+    display_text = _content_text(record.get("resultDisplay"))
+    if display_text is None and status is None:
+        return []
+    return [
+        ParsedContentBlock(
+            type=BlockType.TOOL_RESULT,
+            tool_id=tool_id,
+            text=display_text or f"[{status or 'error'}]",
+            metadata=metadata or None,
+            is_error=status_is_error,
+        )
+    ]
+
+
+def _tool_metadata(record: JSONDocument) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    for key in ("status", "timestamp", "description", "displayName", "renderOutputAsMarkdown"):
+        value = record.get(key)
+        if isinstance(value, (str, bool)):
+            metadata[key] = value
+    return metadata
+
+
+def _status_is_error(status: str | None) -> bool | None:
+    if status is None:
+        return None
+    normalized = status.strip().lower()
+    if normalized in {"success", "succeeded", "ok", "completed"}:
+        return False
+    if any(marker in normalized for marker in ("error", "fail", "timeout", "cancel", "blocked")):
+        return True
+    return None
 
 
 def _tool_input(value: object) -> dict[str, object]:

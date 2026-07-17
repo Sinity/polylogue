@@ -5,7 +5,7 @@
   "job_id": "testdiet-02",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "blocked",
+  "state": "integrated_merged",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -22,12 +22,12 @@
       "polylogue_attachment_ref": null
     }
   ],
-  "triage": "package validation completed; dispatch deliberately blocked by missing foundation receipt",
-  "beads": [],
-  "worktree": null,
+  "triage": "reconciled after the required foundation landed; the restart/debt recovery production slice was admitted",
+  "beads": ["polylogue-5vbs"],
+  "worktree": "feature/daemon/convergence-recovery",
   "agent_handle": null,
-  "commits": [],
-  "pull_request": null,
-  "verification_receipts": [],
-  "notes": "valid draft package; blocked pending foundation-receipt.json and fresh foundation snapshot"
+  "commits": ["76ad3e1379bde4829650392e459cd4804abb721d"],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3014",
+  "verification_receipts": ["focused convergence tests: 54 passed"],
+  "notes": "Admitted as the real restart/debt recovery slice. The remaining missing live FTS-debt feeder is intentionally not claimed complete."
 }

@@ -5,7 +5,7 @@
   "job_id": "analysis-02",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "acquired",
+  "state": "integrated_campaign_contract",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -29,5 +29,5 @@
   "commits": [],
   "pull_request": null,
   "verification_receipts": [],
-  "notes": "analysis retained for current-source adjudication"
+  "notes": "Admitted to polylogue-yyvg.6: distinct funnel identities, immutable event receipts, mission shape, custody, and generic product-boundary requirements; no campaign ontology enters product code."
 }

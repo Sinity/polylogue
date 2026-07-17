@@ -34,6 +34,7 @@ from polylogue.scenarios.workload import (
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier
 from polylogue.storage import repair
+from polylogue.storage.raw_authority import RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
@@ -44,9 +45,11 @@ class RawAuthorityScalePass:
     number: int
     mode: str
     candidate_count: int
+    executable_candidate_count: int
     repaired_count: int
     executable_component_count: int
     fixed_point: bool
+    plan_status_counts: dict[str, int]
     wall_ms: int
     peak_rss_bytes: int
     peak_pss_bytes: int | None
@@ -78,6 +81,9 @@ class RawAuthorityScaleScenario:
     direct_candidates: int
     expanded_candidates: int
     total_payload_bytes: int
+    component_cohorts: tuple[tuple[int, int, int], ...] | None = None
+    component_byte_cohorts: tuple[tuple[int, int, int, int], ...] | None = None
+    terminal_sibling_outcome: str = "terminal"
 
     def __post_init__(self) -> None:
         if self.components < 1:
@@ -88,6 +94,80 @@ class RawAuthorityScaleScenario:
             raise ValueError("scenario expanded candidates cannot be smaller than direct candidates")
         if self.total_payload_bytes < self.expanded_candidates * 256:
             raise ValueError("scenario payload budget is too small for valid JSONL evidence")
+        if self.terminal_sibling_outcome not in {"terminal", "deferred"}:
+            raise ValueError("scenario terminal sibling outcome must be terminal or deferred")
+        if self.component_cohorts is not None:
+            if not self.component_cohorts:
+                raise ValueError("scenario component cohorts cannot be empty")
+            if any(
+                raw_count < 1 or direct_candidate_count < 1 or direct_candidate_count > raw_count or component_count < 1
+                for raw_count, direct_candidate_count, component_count in self.component_cohorts
+            ):
+                raise ValueError("scenario component cohorts must contain positive valid counts")
+            if (
+                sum(component_count for _raw_count, _direct_count, component_count in self.component_cohorts)
+                != self.components
+            ):
+                raise ValueError("scenario component cohorts disagree with component count")
+            if (
+                sum(raw_count * component_count for raw_count, _direct_count, component_count in self.component_cohorts)
+                != self.expanded_candidates
+            ):
+                raise ValueError("scenario component cohorts disagree with expanded candidate count")
+            if (
+                sum(
+                    direct_candidate_count * component_count
+                    for _raw_count, direct_candidate_count, component_count in self.component_cohorts
+                )
+                != self.direct_candidates
+            ):
+                raise ValueError("scenario component cohorts disagree with direct candidate count")
+        if self.component_byte_cohorts is not None:
+            if not self.component_byte_cohorts:
+                raise ValueError("scenario component byte cohorts cannot be empty")
+            if any(
+                raw_count < 1
+                or direct_candidate_count < 1
+                or direct_candidate_count > raw_count
+                or upper_bound_blob_bytes < 1
+                or component_count < 1
+                for raw_count, direct_candidate_count, upper_bound_blob_bytes, component_count in self.component_byte_cohorts
+            ):
+                raise ValueError("scenario component byte cohorts must contain positive valid counts and byte bounds")
+            if (
+                sum(
+                    component_count
+                    for _raw_count, _direct_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.components
+            ):
+                raise ValueError("scenario component byte cohorts disagree with component count")
+            if (
+                sum(
+                    raw_count * component_count
+                    for raw_count, _direct_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.expanded_candidates
+            ):
+                raise ValueError("scenario component byte cohorts disagree with expanded candidate count")
+            if (
+                sum(
+                    direct_candidate_count * component_count
+                    for _raw_count, direct_candidate_count, _upper_bound, component_count in self.component_byte_cohorts
+                )
+                != self.direct_candidates
+            ):
+                raise ValueError("scenario component byte cohorts disagree with direct candidate count")
+            if self.component_cohorts is not None:
+                component_marginals: dict[tuple[int, int], int] = {}
+                for raw_count, direct_candidate_count, component_count in self.component_cohorts:
+                    component_marginals[(raw_count, direct_candidate_count)] = component_count
+                byte_marginals: dict[tuple[int, int], int] = {}
+                for raw_count, direct_candidate_count, _upper_bound, component_count in self.component_byte_cohorts:
+                    key = (raw_count, direct_candidate_count)
+                    byte_marginals[key] = byte_marginals.get(key, 0) + component_count
+                if byte_marginals != component_marginals:
+                    raise ValueError("scenario component and byte cohort marginals disagree")
 
     @classmethod
     def from_profile(cls, profile: object) -> RawAuthorityScaleScenario:
@@ -100,11 +180,58 @@ class RawAuthorityScaleScenario:
                 raise ValueError(f"scenario profile has no integral {field}")
             return value
 
+        cohort_payload = profile.get("component_cohort_distribution")
+        cohorts: tuple[tuple[int, int, int], ...] | None = None
+        if cohort_payload is not None:
+            if not isinstance(cohort_payload, list):
+                raise ValueError("scenario profile component cohorts must be a list")
+            parsed_cohorts: list[tuple[int, int, int]] = []
+            for item in cohort_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("scenario profile component cohort must be an object")
+                raw_count = item.get("component_raw_count")
+                direct_candidate_count = item.get("direct_candidate_count")
+                component_count = item.get("component_count")
+                if (
+                    not isinstance(raw_count, int)
+                    or isinstance(raw_count, bool)
+                    or not isinstance(direct_candidate_count, int)
+                    or isinstance(direct_candidate_count, bool)
+                    or not isinstance(component_count, int)
+                    or isinstance(component_count, bool)
+                ):
+                    raise ValueError("scenario profile component cohort values must be integral")
+                parsed_cohorts.append((raw_count, direct_candidate_count, component_count))
+            cohorts = tuple(parsed_cohorts)
+
+        byte_cohort_payload = profile.get("component_byte_cohort_distribution")
+        byte_cohorts: tuple[tuple[int, int, int, int], ...] | None = None
+        if byte_cohort_payload is not None:
+            if not isinstance(byte_cohort_payload, list):
+                raise ValueError("scenario profile component byte cohorts must be a list")
+            parsed_byte_cohorts: list[tuple[int, int, int, int]] = []
+            for item in byte_cohort_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("scenario profile component byte cohort must be an object")
+                values = (
+                    item.get("component_raw_count"),
+                    item.get("direct_candidate_count"),
+                    item.get("upper_bound_blob_bytes"),
+                    item.get("component_count"),
+                )
+                if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+                    raise ValueError("scenario profile component byte cohort values must be integral")
+                parsed_byte_cohorts.append(cast(tuple[int, int, int, int], values))
+            byte_cohorts = tuple(parsed_byte_cohorts)
+
         return cls(
             components=count("authority_component_count"),
             direct_candidates=count("candidate_count"),
             expanded_candidates=count("expanded_candidate_count"),
             total_payload_bytes=count("expanded_total_blob_bytes"),
+            component_cohorts=cohorts,
+            component_byte_cohorts=byte_cohorts,
+            terminal_sibling_outcome=str(profile.get("terminal_sibling_outcome", "terminal")),
         )
 
 
@@ -131,6 +258,14 @@ def _write_payload(path: Path, *, native_id: str, revision: int, target_size: in
             remaining -= amount
 
 
+def _independent_payload(*, native_id: str, target_size: int) -> bytes:
+    """Build one bounded standalone JSONL raw without a disk staging file."""
+    header = f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'.encode()
+    if target_size < len(header):
+        raise ValueError("scenario payload allocation cannot preserve valid JSONL evidence")
+    return header + (b" " * (target_size - len(header)))
+
+
 def _component_counts(total: int, *, components: int) -> list[int]:
     counts = [0] * components
     for index in range(total):
@@ -140,6 +275,18 @@ def _component_counts(total: int, *, components: int) -> list[int]:
 
 def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tuple[int, int]]:
     """Return direct-candidate and pre-materialized sibling counts per component."""
+    if scenario.component_byte_cohorts is not None:
+        return [
+            (direct_candidate_count, raw_count - direct_candidate_count)
+            for raw_count, direct_candidate_count, _upper_bound, component_count in scenario.component_byte_cohorts
+            for _ in range(component_count)
+        ]
+    if scenario.component_cohorts is not None:
+        return [
+            (direct_candidate_count, raw_count - direct_candidate_count)
+            for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
+            for _ in range(component_count)
+        ]
     direct = _component_counts(scenario.direct_candidates, components=scenario.components)
     siblings = _component_counts(
         scenario.expanded_candidates - scenario.direct_candidates,
@@ -148,17 +295,77 @@ def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tupl
     return list(zip(direct, siblings, strict=True))
 
 
-def _row_sizes(scenario: RawAuthorityScaleScenario, component_counts: list[int]) -> list[list[int]]:
-    """Give every standalone raw a valid evidence budget, then spread the remainder."""
-    minimum_rows = [[256 * (revision + 1) for revision in range(count)] for count in component_counts]
-    remaining = scenario.total_payload_bytes - sum(sum(rows) for rows in minimum_rows)
-    if remaining < 0:
+def _uses_independent_component_members(scenario: RawAuthorityScaleScenario) -> bool:
+    """Whether explicit cohort outcomes require standalone raw identities."""
+    return scenario.component_cohorts is not None or scenario.component_byte_cohorts is not None
+
+
+def _component_byte_upper_bounds(scenario: RawAuthorityScaleScenario) -> list[int] | None:
+    """Return one sanitized byte-bucket cap for each generated component."""
+    if scenario.component_byte_cohorts is None:
+        return None
+    return [
+        upper_bound_blob_bytes
+        for _raw_count, _direct_count, upper_bound_blob_bytes, component_count in scenario.component_byte_cohorts
+        for _ in range(component_count)
+    ]
+
+
+def _row_sizes(
+    scenario: RawAuthorityScaleScenario,
+    component_counts: list[int],
+    *,
+    component_byte_upper_bounds: list[int] | None,
+) -> list[list[int]]:
+    """Give each component a valid evidence budget while preserving byte buckets."""
+    minimum_rows = [
+        [256 * (revision + 1) for revision in range(count)]
+        if not _uses_independent_component_members(scenario)
+        else [256] * count
+        for count in component_counts
+    ]
+    minimum_component_bytes = [sum(rows) for rows in minimum_rows]
+    if component_byte_upper_bounds is None:
+        target_component_bytes = list(minimum_component_bytes)
+        remaining = scenario.total_payload_bytes - sum(target_component_bytes)
+        if remaining < 0:
+            raise ValueError("scenario payload budget cannot preserve the requested revision topology")
+        terminal_extra, remainder = divmod(remaining, scenario.components)
+        for component, target in enumerate(target_component_bytes):
+            target_component_bytes[component] = target + terminal_extra + (1 if component < remainder else 0)
+    else:
+        if len(component_byte_upper_bounds) != scenario.components:
+            raise ValueError("scenario component byte bounds disagree with component count")
+        target_component_bytes = []
+        capacities: list[int] = []
+        for minimum, upper_bound in zip(minimum_component_bytes, component_byte_upper_bounds, strict=True):
+            lower_bound = (upper_bound // 2) + 1
+            target = max(minimum, lower_bound)
+            if target > upper_bound:
+                raise ValueError("scenario byte bucket cannot fit the requested component topology")
+            target_component_bytes.append(target)
+            capacities.append(upper_bound - target)
+        remaining = scenario.total_payload_bytes - sum(target_component_bytes)
+        if remaining < 0 or remaining > sum(capacities):
+            raise ValueError("scenario payload budget cannot preserve the requested byte-bucket distribution")
+        for component, capacity in enumerate(capacities):
+            addition = min(remaining, capacity)
+            target_component_bytes[component] += addition
+            remaining -= addition
+        if remaining:
+            raise RuntimeError("component byte allocation did not consume its exact payload budget")
+    if sum(target_component_bytes) != scenario.total_payload_bytes:
         raise ValueError("scenario payload budget cannot preserve the requested revision topology")
-    terminal_extra, remainder = divmod(remaining, scenario.components)
     sizes: list[list[int]] = []
-    for component, minimums in enumerate(minimum_rows):
+    for minimums, target in zip(minimum_rows, target_component_bytes, strict=True):
         rows = list(minimums)
-        rows[-1] += terminal_extra + (1 if component < remainder else 0)
+        extra_bytes = target - sum(rows)
+        if _uses_independent_component_members(scenario):
+            extra_per_member, remainder = divmod(extra_bytes, len(rows))
+            for member in range(len(rows)):
+                rows[member] += extra_per_member + (1 if member < remainder else 0)
+        else:
+            rows[-1] += extra_bytes
         sizes.append(rows)
     return sizes
 
@@ -247,12 +454,46 @@ def _generated_archive_id(rows: list[tuple[str, int, str]]) -> str:
     return f"raw-authority-scale:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _requested_shape(scenario: RawAuthorityScaleScenario, *, pass_limit: int) -> dict[str, object]:
+    """Serialize the scenario without exposing an implementation-only null field."""
+    payload: dict[str, object] = {
+        "components": scenario.components,
+        "direct_candidates": scenario.direct_candidates,
+        "expanded_candidates": scenario.expanded_candidates,
+        "total_payload_bytes": scenario.total_payload_bytes,
+        "pass_limit": pass_limit,
+    }
+    if scenario.component_cohorts is not None:
+        payload["component_cohort_distribution"] = [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "component_count": component_count,
+            }
+            for raw_count, direct_candidate_count, component_count in scenario.component_cohorts
+        ]
+        payload["terminal_sibling_outcome"] = scenario.terminal_sibling_outcome
+    if scenario.component_byte_cohorts is not None:
+        payload["component_byte_cohort_distribution"] = [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "upper_bound_blob_bytes": upper_bound_blob_bytes,
+                "component_count": component_count,
+            }
+            for raw_count, direct_candidate_count, upper_bound_blob_bytes, component_count in scenario.component_byte_cohorts
+        ]
+        payload["terminal_sibling_outcome"] = scenario.terminal_sibling_outcome
+    return payload
+
+
 def _record_repair_pass(
     *,
     number: int,
     mode: str,
     config: Config,
     pass_limit: int,
+    max_payload_bytes: int,
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
     before = _process_sample()
@@ -260,12 +501,14 @@ def _record_repair_pass(
     result = repair.repair_raw_materialization(
         config,
         raw_artifact_limit=pass_limit,
+        max_payload_bytes=max_payload_bytes,
         dry_run=mode == "dry_run",
     )
     wall_ms = int((time.perf_counter() - started) * 1000)
     after = _process_sample()
     metrics = result.metrics
     candidate_value = metrics.get("raw_materialization_candidate_count")
+    executable_candidate_value = metrics.get("raw_materialization_executable_candidate_count", candidate_value)
     if (
         not isinstance(candidate_value, int | float)
         or isinstance(candidate_value, bool)
@@ -275,6 +518,14 @@ def _record_repair_pass(
         raise RuntimeError(
             "raw-authority scale proof requires a non-negative integral raw-materialization candidate count"
         )
+    if (
+        not isinstance(executable_candidate_value, int | float)
+        or isinstance(executable_candidate_value, bool)
+        or not float(executable_candidate_value).is_integer()
+        or executable_candidate_value < 0
+        or executable_candidate_value > candidate_value
+    ):
+        raise RuntimeError("raw-authority scale proof requires a bounded integral executable-candidate count")
     if result.census_receipt is None:
         raise RuntimeError("raw-authority scale proof requires a census receipt for every replay pass")
     receipt = result.census_receipt
@@ -286,9 +537,14 @@ def _record_repair_pass(
             number=number,
             mode=receipt.mode,
             candidate_count=int(candidate_value),
+            executable_candidate_count=int(executable_candidate_value),
             repaired_count=result.repaired_count,
             executable_component_count=int(metrics.get("raw_materialization_selected_executable_component_count", 0)),
             fixed_point=receipt.fixed_point,
+            plan_status_counts={
+                status.value: sum(outcome.status is status for outcome in result.plan_outcomes)
+                for status in RawReplayPlanStatus
+            },
             wall_ms=wall_ms,
             peak_rss_bytes=max(_rss_bytes(), before.rss_bytes, after.rss_bytes),
             peak_pss_bytes=max(value for value in (before.pss_bytes, after.pss_bytes) if value is not None)
@@ -314,12 +570,15 @@ def run_raw_authority_scale_proof(
     pass_limit: int = 4,
     keep: bool = False,
     prepare_only: bool = False,
+    max_payload_bytes: int = repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
     max_io_full_avg10: float | None = 2.0,
     max_memory_full_avg10: float | None = 2.0,
 ) -> dict[str, object]:
     """Exercise real authority census/replay and emit a stable receipt payload."""
     if pass_limit < 1:
         raise ValueError("pass_limit must be positive")
+    if max_payload_bytes < 1:
+        raise ValueError("max_payload_bytes must be positive")
     if scenario is None:
         if components < 1 or raws < components:
             raise ValueError("require components >= 1 and raws >= components")
@@ -341,6 +600,17 @@ def run_raw_authority_scale_proof(
         max_io_full_avg10=max_io_full_avg10,
         max_memory_full_avg10=max_memory_full_avg10,
     )
+    generation_samples = [admission_sample]
+
+    def check_generation_pressure() -> None:
+        sample = _process_sample()
+        _assert_admission(
+            sample,
+            max_io_full_avg10=max_io_full_avg10,
+            max_memory_full_avg10=max_memory_full_avg10,
+        )
+        generation_samples.append(sample)
+
     root = workdir.expanduser().resolve() / "raw-authority-scale-proof"
     if root.exists():
         shutil.rmtree(root)
@@ -349,6 +619,7 @@ def run_raw_authority_scale_proof(
     component_sizes = _row_sizes(
         scenario,
         [direct_count + sibling_count for direct_count, sibling_count in component_shape],
+        component_byte_upper_bounds=_component_byte_upper_bounds(scenario),
     )
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         publisher = archive._blob_publisher
@@ -371,23 +642,34 @@ def run_raw_authority_scale_proof(
                 previous: Path | None = None
                 for member, (row_size, terminalized) in enumerate(zip(row_sizes, row_kinds, strict=True)):
                     source_label = f"scale-{component:05d}-member-{member:05d}"
-                    payload_path = temporary_root / f"{source_label}.jsonl"
-                    _write_payload(
-                        payload_path,
-                        native_id=session_native_id,
-                        revision=member,
-                        target_size=row_size,
-                        previous=previous,
+                    row_native_id = (
+                        session_native_id
+                        if not _uses_independent_component_members(scenario)
+                        else f"{session_native_id}-member-{member:05d}"
                     )
-                    blob_hash, blob_size = publisher.write_from_path(payload_path)
-                    payload_path.unlink()
+                    if _uses_independent_component_members(scenario):
+                        blob_hash, blob_size = publisher.write_from_bytes(
+                            _independent_payload(native_id=row_native_id, target_size=row_size)
+                        )
+                    else:
+                        payload_path = temporary_root / f"{source_label}.jsonl"
+                        _write_payload(
+                            payload_path,
+                            native_id=row_native_id,
+                            revision=member,
+                            target_size=row_size,
+                            previous=previous,
+                        )
+                        blob_hash, blob_size = publisher.write_from_path(payload_path)
+                        payload_path.unlink()
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
-                    pending_rows.append((session_native_id, source_path, blob_hash, blob_size, terminalized, component))
+                    pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))
                     generated_rows.append((source_label, member, blob_hash))
                     if len(pending_rows) < 128:
                         continue
                     publisher.flush()
+                    check_generation_pressure()
                     with source_conn:
                         for (
                             row_native_id,
@@ -417,7 +699,7 @@ def run_raw_authority_scale_proof(
                                         INSERT INTO raw_revision_applications (
                                             decision_id, raw_id, session_id, logical_source_key,
                                             source_revision, acquisition_generation, decision, detail, decided_at_ms
-                                        ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)
                                         """,
                                         (
                                             f"synthetic-terminal:{raw_id}",
@@ -425,12 +707,23 @@ def run_raw_authority_scale_proof(
                                             f"codex-session:{row_native_id}",
                                             f"synthetic:authority-component:{row_component:05d}",
                                             row_hash,
+                                            "ambiguous"
+                                            if scenario.terminal_sibling_outcome == "terminal"
+                                            else "deferred",
+                                            f"synthetic {scenario.terminal_sibling_outcome} sibling",
                                         ),
                                     )
                             acquired_at_ms += 1
                     pending_rows.clear()
+                    check_generation_pressure()
+                    # Publication atomically moves prepared blobs.  Continue
+                    # the prefix chain from the now-stable final blob rather
+                    # than the moved temporary path, so large components can
+                    # flush without retaining thousands of prepared blobs.
+                    previous = publisher.blob_path(blob_hash)
             if pending_rows:
                 publisher.flush()
+                check_generation_pressure()
                 with source_conn:
                     for (
                         row_native_id,
@@ -460,7 +753,7 @@ def run_raw_authority_scale_proof(
                                     INSERT INTO raw_revision_applications (
                                         decision_id, raw_id, session_id, logical_source_key,
                                         source_revision, acquisition_generation, decision, detail, decided_at_ms
-                                    ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)
                                     """,
                                     (
                                         f"synthetic-terminal:{raw_id}",
@@ -468,9 +761,12 @@ def run_raw_authority_scale_proof(
                                         f"codex-session:{row_native_id}",
                                         f"synthetic:authority-component:{row_component:05d}",
                                         row_hash,
+                                        "ambiguous" if scenario.terminal_sibling_outcome == "terminal" else "deferred",
+                                        f"synthetic {scenario.terminal_sibling_outcome} sibling",
                                     ),
                                 )
                         acquired_at_ms += 1
+                check_generation_pressure()
         staging.rmdir()
     archive_id = _generated_archive_id(generated_rows)
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
@@ -478,9 +774,10 @@ def run_raw_authority_scale_proof(
     if prepare_only:
         prepared_report: dict[str, object] = {
             "archive_root": str(root),
-            "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+            "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
             "achieved_shape": achieved_shape,
             "admission_sample": asdict(admission_sample),
+            "generation_samples": [asdict(sample) for sample in generation_samples],
             "prepared_only": True,
         }
         (root / "raw-authority-scale-preflight.json").write_text(
@@ -489,7 +786,7 @@ def run_raw_authority_scale_proof(
         if not keep:
             shutil.rmtree(root)
         return prepared_report
-    if scenario.expanded_candidates != scenario.direct_candidates:
+    if scenario.expanded_candidates != scenario.direct_candidates and not _uses_independent_component_members(scenario):
         raise ValueError(
             "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
             "use prepare_only to inspect its exact topology until those outcome variants are implemented"
@@ -501,9 +798,10 @@ def run_raw_authority_scale_proof(
             mode="apply",
             config=config,
             pass_limit=pass_limit,
+            max_payload_bytes=max_payload_bytes,
         )
         pass_receipts.append(pass_receipt)
-        if pass_receipt.candidate_count == 0:
+        if pass_receipt.executable_candidate_count == 0:
             break
     else:
         raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
@@ -514,8 +812,9 @@ def run_raw_authority_scale_proof(
             mode="dry_run",
             config=config,
             pass_limit=pass_limit,
+            max_payload_bytes=max_payload_bytes,
         )
-        if pass_receipt.candidate_count != 0:
+        if pass_receipt.executable_candidate_count != 0:
             raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
         pass_receipts.append(pass_receipt)
         fixed_point_digests.append(digest)
@@ -568,15 +867,17 @@ def run_raw_authority_scale_proof(
             f"requested_direct_candidates={scenario.direct_candidates}",
             f"requested_expanded_candidates={scenario.expanded_candidates}",
             f"requested_payload_bytes={scenario.total_payload_bytes}",
+            f"resource_envelope_bytes={max_payload_bytes}",
             "repair_raw_materialization combines census and replay; its measured resource totals are recorded once on replay.",
             "This receipt is a generated projection; only an explicit July-15-sized invocation is production-shaped evidence.",
         ),
     )
     report: dict[str, object] = {
         "archive_root": str(root),
-        "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+        "requested_shape": _requested_shape(scenario, pass_limit=pass_limit),
         "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
+        "generation_samples": [asdict(sample) for sample in generation_samples],
         "passes": [asdict(item) for item in pass_receipts],
         "fixed_point_digests": fixed_point_digests,
         "receipt": receipt.to_payload(),
@@ -599,6 +900,12 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         help="Read an aggregate scale profile produced by --capture-profile and generate that synthetic shape.",
     )
     parser.add_argument("--pass-limit", type=int, default=4)
+    parser.add_argument(
+        "--max-payload-bytes",
+        type=int,
+        default=repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+        help="Bound each authority component replay; deferred components remain typed residual debt.",
+    )
     parser.add_argument("--keep", action="store_true")
     parser.add_argument(
         "--prepare-only",
@@ -635,6 +942,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         pass_limit=args.pass_limit,
         keep=args.keep,
         prepare_only=args.prepare_only,
+        max_payload_bytes=args.max_payload_bytes,
         max_io_full_avg10=pressure_limit,
         max_memory_full_avg10=memory_limit,
     )
@@ -643,8 +951,13 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         import sys
 
         out = sys.stdout
-    receipt = cast(dict[str, object], payload["receipt"])
-    print(json.dumps(payload, indent=2, sort_keys=True) if args.json else receipt["receipt_id"], file=out)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    elif args.prepare_only:
+        print(payload["archive_root"], file=out)
+    else:
+        receipt = cast(dict[str, object], payload["receipt"])
+        print(receipt["receipt_id"], file=out)
     return 0
 
 

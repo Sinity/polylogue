@@ -396,6 +396,7 @@ def register_query_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
                                 expression=effective_expression,
                                 limit=clamped_limit,
                                 offset=clamped_offset,
+                                execution_context=transaction.context,
                                 origin=origin,
                                 exclude_origin=exclude_origin,
                                 tag=tag,

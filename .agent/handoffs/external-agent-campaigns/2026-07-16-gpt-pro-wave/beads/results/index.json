@@ -1,92 +1,108 @@
 {
- "schema_version": 1,
- "campaign_id": "gpt-pro-wave-2026-07-16",
- "workload_id": "beads",
- "attempts": [
-  {
-   "job": "beads-01",
-   "workload": "beads",
-   "zip": "polylogue-config-closure.zip",
-   "sha256": "dcef7122d477232585c6169d5306d5dc30ce9924ab86dda92915c95c2c4dcd26",
-   "bytes": 35210095,
-   "checked_at": "2026-07-17T10:55:00+00:00",
-   "status": "rejected_incomplete",
-   "problems": [
-    "zero-byte patch",
-    "copied 162 MB repository snapshot",
-    "remote verification lacks project dependencies"
-   ],
-   "integration": "raw package retained; no implementation is authorized from it",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "rejected"
-  },
-  {
-   "job": "beads-02",
-   "workload": "beads",
-   "artifact": "PATCH.diff",
-   "sha256": "59d40d9e39f4cd97b35ef7c3e47f9efa9a0153c4766e091a7609091ba4397592",
-   "bytes": 781283,
-   "checked_at": "2026-07-17T10:56:00+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "status": "recovered_incomplete_package",
-   "patch_applies": true,
-   "problems": [
-    "missing required HANDOFF.md",
-    "missing required TESTS.md",
-    "missing required EVIDENCE.md",
-    "no provider result ZIP or verified conversation export"
-   ],
-   "integration": "MCP algebra foundation candidate; must be reconciled with beads-03/04 on current master",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "verified"
-  },
-  {
-   "job": "beads-03",
-   "workload": "beads",
-   "zip": "beads-03-mcp-read-migration-r01.zip",
-   "sha256": "195e7f898c298c29a39006247e2836e981b51549ce92ba46a43db938c4365830",
-   "bytes": 76818,
-   "checked_at": "2026-07-17T10:55:16+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "problems": [],
-   "status": "triaged",
-   "members": [
-    "EVIDENCE.md",
-    "HANDOFF.md",
-    "PATCH.diff",
-    "TESTS.md"
-   ],
-   "patch_lines": 20870,
-   "patch_applies": true,
-   "apply_detail": "patch applies cleanly",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "validated"
-  },
-  {
-   "job": "beads-04",
-   "workload": "beads",
-   "zip": "beads-04-mcp-context-migration-r01.zip",
-   "sha256": "fe1c8a99a89372da83db8068ec97fa2bec671302248696bd99e6d907de13d8a9",
-   "bytes": 40602,
-   "checked_at": "2026-07-17T10:55:25+00:00",
-   "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
-   "problems": [],
-   "status": "triaged",
-   "members": [
-    "EVIDENCE.md",
-    "HANDOFF.md",
-    "PATCH.diff",
-    "TESTS.md"
-   ],
-   "patch_lines": 4143,
-   "patch_applies": true,
-   "apply_detail": "patch applies cleanly",
-   "attempt_id": "a01",
-   "package_revision": "r01",
-   "state": "validated"
-  }
- ]
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "attempts": [
+    {
+      "job": "beads-01",
+      "workload": "beads",
+      "zip": "polylogue-config-closure.zip",
+      "sha256": "dcef7122d477232585c6169d5306d5dc30ce9924ab86dda92915c95c2c4dcd26",
+      "bytes": 35210095,
+      "checked_at": "2026-07-17T10:55:00+00:00",
+      "problems": [
+        "zero-byte patch",
+        "copied 162 MB repository snapshot",
+        "remote verification lacks project dependencies"
+      ],
+      "integration": "raw package retained; no implementation is authorized from it",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "rejected"
+    },
+    {
+      "job": "beads-02",
+      "workload": "beads",
+      "artifact": "PATCH.diff",
+      "sha256": "59d40d9e39f4cd97b35ef7c3e47f9efa9a0153c4766e091a7609091ba4397592",
+      "bytes": 781283,
+      "checked_at": "2026-07-17T10:56:00+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "patch_applies": true,
+      "problems": [
+        "missing required HANDOFF.md",
+        "missing required TESTS.md",
+        "missing required EVIDENCE.md",
+        "no provider result ZIP or verified conversation export"
+      ],
+      "integration": "Current-master reconciliation found the recovered standalone diff is the same declaration/registration foundation now landed in PR #3004 / ed44be18f. It conflicts on the existing registry, adapters, generated equivalence, and server registration paths. Retain it as historical/proof input to polylogue-t46.8.2; it does not complete default-profile collapse, read-tool retirement, or bounded transaction adoption.",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "subsumed_foundation_retained"
+    },
+    {
+      "job": "beads-03",
+      "workload": "beads",
+      "zip": "beads-03-mcp-read-migration-r01.zip",
+      "sha256": "195e7f898c298c29a39006247e2836e981b51549ce92ba46a43db938c4365830",
+      "bytes": 76818,
+      "checked_at": "2026-07-17T10:55:16+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "problems": [],
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "patch_lines": 20870,
+      "patch_applies": true,
+      "apply_detail": "patch applies cleanly",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "subsumed_foundation_retained",
+      "integration": "Current-master reconciliation at 47fe1cb found the MCP-specific declaration/registration implementation already landed in PR #3004 / ed44be18f. Both this patch and the recovered beads-02 prerequisite now conflict on the same registry, adapters, generated equivalence, and server registration paths. Retain the package's read-family equivalence and representative production-route tests as implementation input for polylogue-t46.8.2; it does not complete the required 10-15 tool default-profile collapse or read-tool retirement."
+    },
+    {
+      "job": "beads-04",
+      "workload": "beads",
+      "zip": "beads-04-mcp-context-migration-r01.zip",
+      "sha256": "fe1c8a99a89372da83db8068ec97fa2bec671302248696bd99e6d907de13d8a9",
+      "bytes": 40602,
+      "checked_at": "2026-07-17T10:55:25+00:00",
+      "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
+      "problems": [],
+      "members": [
+        "EVIDENCE.md",
+        "HANDOFF.md",
+        "PATCH.diff",
+        "TESTS.md"
+      ],
+      "patch_lines": 4143,
+      "patch_applies": true,
+      "apply_detail": "patch applies cleanly",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "state": "subsumed_foundation_retained",
+      "integration": "Current-master reconciliation at 66cee5e found the provisional MCP declaration/registration implementation already landed in PR #3004 / ed44be18f. This patch conflicts on the existing registry, adapters, server-family registration, and generated surfaces. Retain its 41-family trust/provenance/role lifecycle evidence for polylogue-t46.8.3; it does not complete tool retirement, URI/prompt surfaces, cold-model proof, telemetry, or t46.9 authorization receipts."
+    },
+    {
+      "job": "beads-05",
+      "workload": "beads",
+      "state": "superseded_by_revision",
+      "package_revision": "r01",
+      "artifact": "beads-05-semantic-transcript-r01.zip",
+      "sha256": "9014fa0efeed77fa51cae7b7e901a5e411ba362f7b5510e870aa93e6f7a862db",
+      "bytes": 59165
+    },
+    {
+      "job": "beads-05",
+      "workload": "beads",
+      "state": "integrated_merged",
+      "package_revision": "r02",
+      "artifact": "beads-05-semantic-transcript-r01(1).zip",
+      "sha256": "f5cb4b9126df7f7694b7a2a03270ce633d0a7bdb5064a4445975064bac9e57a7",
+      "bytes": 69996
+    }
+  ]
 }

@@ -5,7 +5,7 @@
   "job_id": "analysis-03",
   "attempt_id": "a01",
   "package_revision": "r01",
-  "state": "acquired",
+  "state": "adjudicated_forensic_snapshot",
   "provider": "chatgpt-pro",
   "provider_conversation_id": null,
   "provider_turn_id": null,
@@ -29,5 +29,5 @@
   "commits": [],
   "pull_request": null,
   "verification_receipts": [],
-  "notes": "analysis retained for current-master review"
+  "notes": "Useful as historical branch/closure forensics only; its proposed baseline and stale-branch actions are superseded by current master and current Bead authority."
 }

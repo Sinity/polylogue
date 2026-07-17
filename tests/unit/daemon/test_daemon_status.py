@@ -21,6 +21,7 @@ from polylogue.daemon.status import (
     format_daemon_status_lines,
 )
 from polylogue.daemon.status_snapshot import (
+    STATUS_SNAPSHOT_STATE_FAMILY,
     configure_runtime_components,
     get_status_snapshot_payload,
     refresh_status_snapshot,
@@ -84,6 +85,13 @@ def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeyp
     snapshot = result["status_snapshot"]
     assert isinstance(snapshot, dict)
     assert snapshot["state"] == "fresh"
+    state_evidence = cast(dict[str, Any], snapshot["state_evidence"])
+    state_freshness = cast(dict[str, Any], state_evidence["freshness"])
+    assert state_evidence["family"] == STATUS_SNAPSHOT_STATE_FAMILY.family
+    assert state_evidence["value_state"] == "known"
+    assert state_evidence["value"] == "fresh"
+    assert state_evidence["definition_ref"] == STATUS_SNAPSHOT_STATE_FAMILY.definition_ref.format()
+    assert state_freshness["state"] == "fresh"
     writer = result["daemon_write_coordinator"]
     assert isinstance(writer, dict)
     assert "active_actor" in writer
@@ -159,6 +167,14 @@ def test_status_snapshot_stale_healthy_authority_fails_closed(monkeypatch: pytes
     stale_guard = cast(dict[str, Any], stale["claim_guard"])
     stale_converged = cast(dict[str, Any], stale_guard["converged"])
     assert stale_snapshot["state"] == "stale"
+    stale_evidence = cast(dict[str, Any], stale_snapshot["state_evidence"])
+    stale_freshness = cast(dict[str, Any], stale_evidence["freshness"])
+    assert stale_evidence["value_state"] == "known"
+    assert stale_evidence["value"] == "stale"
+    assert stale_freshness["state"] == "stale"
+    assert stale_freshness["cause"] == "snapshot-age-exceeded-30s"
+    assert stale_freshness["last_good_at"] == stale_snapshot["captured_at"]
+    assert stale_freshness["last_good_evidence_refs"] == stale_evidence["evidence_refs"]
     assert stale["ok"] is False
     assert stale_frontier["overall_status"] == "unknown"
     assert stale_component["state"] == "unknown"
@@ -183,6 +199,12 @@ def test_status_snapshot_minimal_refresh_stays_request_safe(
     status_snapshot = snapshot.payload["status_snapshot"]
     assert isinstance(status_snapshot, dict)
     assert status_snapshot["state"] == "minimal"
+    state_evidence = cast(dict[str, Any], status_snapshot["state_evidence"])
+    state_freshness = cast(dict[str, Any], state_evidence["freshness"])
+    assert state_evidence["value_state"] == "known"
+    assert state_evidence["value"] == "minimal"
+    assert state_freshness["state"] == "unavailable"
+    assert state_freshness["cause"] == "rich-status-unavailable"
     assert snapshot.payload["ok"] is False
     frontier = snapshot.payload["raw_frontier_integrity"]
     assert isinstance(frontier, dict)

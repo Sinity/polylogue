@@ -45,6 +45,7 @@ class NamedSourceFreshnessStatusPayload(TypedDict):
     excluded: bool
     failure_count: int
     pending_bytes: int | None
+    byte_lag: dict[str, object]
     unobserved_growth_bytes: int | None
     cursor_ahead_bytes: int | None
     observed_size_ahead_bytes: int | None
@@ -86,6 +87,7 @@ def source_freshness_status_payload(
         "excluded": freshness.cursor.excluded,
         "failure_count": freshness.cursor.failure_count,
         "pending_bytes": freshness.cursor.pending_bytes,
+        "byte_lag": freshness.byte_lag.to_dict(),
         "unobserved_growth_bytes": freshness.cursor.unobserved_growth_bytes,
         "cursor_ahead_bytes": freshness.cursor.cursor_ahead_bytes,
         "observed_size_ahead_bytes": freshness.cursor.observed_size_ahead_bytes,
@@ -120,6 +122,9 @@ def render_source_freshness_status(freshness: NamedSourceFreshness) -> str:
         or (freshness.fts.reason if not freshness.fts.converged else None)
         or (freshness.insights.reason if not freshness.insights.converged else None)
     )
+    byte_lag = (
+        str(freshness.byte_lag.value) if freshness.byte_lag.value_state == "known" else freshness.byte_lag.value_state
+    )
     lines = [
         (
             f"{freshness.source_path}: stage={freshness.stage.value} "
@@ -130,8 +135,12 @@ def render_source_freshness_status(freshness: NamedSourceFreshness) -> str:
             f"cursor_observed={freshness.cursor.observed_size_bytes} "
             f"cursor_offset={freshness.cursor.byte_offset} "
             f"excluded={str(freshness.cursor.excluded).lower()} "
-            f"pending_bytes={freshness.cursor.pending_bytes} "
+            f"pending_bytes={byte_lag} "
             f"cursor_ahead_bytes={freshness.cursor.cursor_ahead_bytes}"
+        ),
+        (
+            f"  byte_lag_evidence={freshness.byte_lag.freshness.state} "
+            f"definition={freshness.byte_lag.definition_ref.format()}"
         ),
         (
             "  raw="

@@ -74,6 +74,10 @@ from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
     semantic_card_placement_for_messages,
 )
+from polylogue.rendering.semantic_cards import (
+    lineage_descriptor_from_archive_envelope,
+    lineage_descriptor_from_session,
+)
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import (
@@ -817,6 +821,9 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),
+        "input_high_water_mark": getattr(prov, "input_high_water_mark", None),
+        "input_high_water_mark_source": getattr(prov, "input_high_water_mark_source", None),
+        "time_confidence": getattr(prov, "time_confidence", "unknown"),
     }
 
 
@@ -856,7 +863,7 @@ def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str,
     }
 
 
-def _profile_panel_payload(profile: Any) -> dict[str, object]:
+def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     """Project a ``SessionProfile`` into the JSON shape served by the reader.
 
     Uses :meth:`SessionProfile.to_dict` for fidelity to the substrate shape
@@ -867,6 +874,7 @@ def _profile_panel_payload(profile: Any) -> dict[str, object]:
         "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
         "materialized": True,
         "profile": body,
+        "provenance": _provenance_dict(provenance),
     }
 
 
@@ -875,6 +883,7 @@ def _empty_profile_panel_payload() -> dict[str, object]:
         "readiness_tag": "q-missing",
         "materialized": False,
         "profile": None,
+        "provenance": None,
     }
 
 
@@ -2870,7 +2879,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # file-edit / task / attachment registry the CLI renders to Markdown
         # (``cli/messages.py``), projected per-message for the web reader.
         card_placement = semantic_card_placement_for_messages(
-            conv.messages.to_list(), session_id=session_id, provider_family=conv.origin
+            conv.messages.to_list(),
+            session_id=session_id,
+            provider_family=conv.origin,
+            lineage=lineage_descriptor_from_session(conv),
         )
         return {
             "id": session_id,
@@ -2895,6 +2907,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
                     "material_origin": _material_origin_value(msg),
+                    "duration_ms": msg.duration_ms,
+                    "parent_message_id": msg.parent_id,
+                    "variant_index": msg.branch_index,
                     "word_count": msg.word_count,
                     "has_tool_use": bool(msg.has_tool_use) if hasattr(msg, "has_tool_use") else False,
                     "has_thinking": bool(msg.has_thinking) if hasattr(msg, "has_thinking") else False,
@@ -2903,6 +2918,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         msg.text,
                         has_paste=bool(msg.has_paste) if hasattr(msg, "has_paste") else False,
                     ),
+                    "semantic_entries": card_placement.entries_for(str(msg.id)),
                     "semantic_cards": card_placement.cards_for(str(msg.id)),
                     "semantic_card_suppressed": card_placement.is_suppressed(str(msg.id)),
                     "attachments": [
@@ -2913,6 +2929,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 for msg in conv.messages
             ],
             "attachments": session_attachments,
+            "semantic_entries": list(card_placement.session_entries),
             "tags": conv.tags,
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
@@ -2949,6 +2966,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._archive_message_payload(
                 session_id,
                 message,
+                semantic_entries=card_placement.entries_for(str(message.message_id)),
                 semantic_cards=card_placement.cards_for(str(message.message_id)),
                 semantic_card_suppressed=card_placement.is_suppressed(str(message.message_id)),
             )
@@ -2986,11 +3004,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "word_count": word_count,
             "messages": messages,
             "attachments": session_attachments,
+            "semantic_entries": list(card_placement.session_entries),
             "tags": list(summary.tags),
-            "branch_type": None,
-            "parent_id": None,
-            "repo": None,
-            "cwd_display": None,
+            "branch_type": envelope.branch_type,
+            "parent_id": envelope.parent_session_id,
+            "repo": envelope.git_repository_url,
+            "cwd_display": next(iter(envelope.working_directories), None),
             "model": None,
             "flags": None,
             "summary": None,
@@ -2998,21 +3017,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
 
     def _archive_semantic_card_placement(self, envelope: ArchiveSessionEnvelope) -> SemanticCardPlacement:
-        """Build the same semantic-card index as the DB-backed path (#ap7).
+        """Place the archive's exact composed rows through the shared renderer."""
 
-        Reuses the archive→domain message conversion (``api.archive``) so the
-        card registry sees the exact ``Message``/block shape the CLI and the
-        DB-backed reader already build cards from — one registry, one
-        classification path, two output backends.
-        """
-
-        from polylogue.api.archive import _archive_message_to_domain
-        from polylogue.core.enums import Origin
-
-        origin = Origin.from_string(envelope.origin)
-        messages = [_archive_message_to_domain(message, origin=origin) for message in envelope.messages]
         return semantic_card_placement_for_messages(
-            messages, session_id=envelope.session_id, provider_family=envelope.origin
+            envelope.messages,
+            session_id=envelope.session_id,
+            provider_family=envelope.origin,
+            lineage=lineage_descriptor_from_archive_envelope(envelope),
         )
 
     def _archive_message_attachments(self, session_id: str, message: ArchiveMessageRow) -> list[dict[str, object]]:
@@ -3032,6 +3043,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         session_id: str,
         message: ArchiveMessageRow,
         *,
+        semantic_entries: Sequence[JSONDocument] = (),
         semantic_cards: Sequence[JSONDocument] = (),
         semantic_card_suppressed: bool = False,
     ) -> dict[str, object]:
@@ -3048,11 +3060,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "timestamp": message.occurred_at,
             "message_type": message.message_type,
             "material_origin": message.material_origin,
+            "duration_ms": message.duration_ms,
+            "parent_message_id": message.parent_message_id,
+            "variant_index": message.variant_index,
+            "is_active_path": message.is_active_path,
+            "is_active_leaf": message.is_active_leaf,
+            "source_session_id": message.source_session_id,
+            "inherited_prefix": (
+                message.source_session_id != session_id if message.source_session_id is not None else None
+            ),
             "word_count": message.word_count,
             "has_tool_use": bool(message.has_tool_use),
             "has_thinking": bool(message.has_thinking),
             "has_paste_evidence": has_paste,
             "paste_spans": envelope_paste_spans(text, has_paste=has_paste),
+            "semantic_entries": list(semantic_entries),
             "semantic_cards": list(semantic_cards),
             "semantic_card_suppressed": semantic_card_suppressed,
             "attachments": self._archive_message_attachments(session_id, message),
@@ -3260,6 +3282,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
+            from polylogue.insights.archive import SessionProfileInsight
             from polylogue.storage.insights.session.profiles import hydrate_session_profile
 
             try:
@@ -3273,7 +3296,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 # surface q-missing rather than 503 the whole envelope.
                 profile_record = None
             profile = hydrate_session_profile(profile_record) if profile_record is not None else None
-            panel = _profile_panel_payload(profile) if profile is not None else _empty_profile_panel_payload()
+            profile_insight = (
+                SessionProfileInsight.from_record(profile_record, tier="evidence")
+                if profile_record is not None
+                else None
+            )
+            panel = (
+                _profile_panel_payload(profile, profile_insight.provenance)
+                if profile is not None and profile_insight is not None
+                else _empty_profile_panel_payload()
+            )
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
             # :func:`polylogue.insights.provenance.is_stale` helper so the
@@ -3548,7 +3580,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             payload = execute_archive_read_sync(
                 archive_root,
-                lambda archive: query_unit_envelope(archive, request),
+                lambda archive: query_unit_envelope(archive, request, execution_context=ctx),
                 ctx=ctx,
                 read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
             )
@@ -3940,6 +3972,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             offset=offset,
         )
         session_id = str(conv_id)
+        session = await poly.get_session(conv_id)
+        source_messages = session.messages.to_list() if session is not None else messages
+        placement = semantic_card_placement_for_messages(
+            source_messages,
+            session_id=session_id,
+            provider_family=session.origin if session is not None else None,
+            lineage=lineage_descriptor_from_session(session) if session is not None else None,
+        )
         return {
             "messages": [
                 {
@@ -3952,10 +3992,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                     "message_type": _message_type_value(msg),
                     "material_origin": _material_origin_value(msg),
+                    "duration_ms": msg.duration_ms,
+                    "parent_message_id": msg.parent_id,
+                    "variant_index": msg.branch_index,
                     "word_count": msg.word_count,
+                    "has_tool_use": bool(msg.has_tool_use),
+                    "has_thinking": bool(msg.has_thinking),
+                    "has_paste_evidence": bool(msg.has_paste),
+                    "paste_spans": envelope_paste_spans(msg.text, has_paste=bool(msg.has_paste)),
+                    "semantic_entries": placement.entries_for(str(msg.id)),
+                    "semantic_cards": placement.cards_for(str(msg.id)),
+                    "semantic_card_suppressed": placement.is_suppressed(str(msg.id)),
+                    "attachments": [
+                        attachment_to_envelope(att, session_id=session_id, message_id=msg.id)
+                        for att in (msg.attachments or [])
+                    ],
                 }
                 for msg in messages
             ],
+            "semantic_entries": list(placement.session_entries),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -3981,8 +4036,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return {"messages": [], "total": 0, "limit": limit, "offset": offset}
         messages = list(envelope.messages)
         page = messages[offset : offset + limit]
+        placement = self._archive_semantic_card_placement(envelope)
         return {
-            "messages": [self._archive_message_payload(envelope.session_id, message) for message in page],
+            "messages": [
+                self._archive_message_payload(
+                    envelope.session_id,
+                    message,
+                    semantic_entries=placement.entries_for(str(message.message_id)),
+                    semantic_cards=placement.cards_for(str(message.message_id)),
+                    semantic_card_suppressed=placement.is_suppressed(str(message.message_id)),
+                )
+                for message in page
+            ],
+            "semantic_entries": list(placement.session_entries),
             "total": len(messages),
             "limit": limit,
             "offset": offset,

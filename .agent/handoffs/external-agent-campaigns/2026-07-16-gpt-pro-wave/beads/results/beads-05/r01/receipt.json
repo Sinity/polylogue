@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-05",
+  "package_revision": "r01",
+  "state": "superseded_by_revision",
+  "provider": "chatgpt-pro",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "artifact": {
+    "filename": "beads-05-semantic-transcript-r01.zip",
+    "sha256": "9014fa0efeed77fa51cae7b7e901a5e411ba362f7b5510e870aa93e6f7a862db",
+    "size_bytes": 59165,
+    "custody_path": "/realm/inbox/download/beads-05-semantic-transcript-r01.zip"
+  },
+  "validation": [
+    "ZIP member listing confirms HANDOFF.md, PATCH.diff, TESTS.md, and EVIDENCE.md",
+    "PATCH.diff contains 7,126 lines across semantic transcript, storage, CLI, and web-reader routes",
+    "the declared snapshot is f654480cadb7cc4c194704e24dfd483199547b35",
+    "the ZIP does not attest a provider turn, capture reference, or exact dispatched-prompt hash; those fields remain unknown rather than inferred from the current campaign prompt"
+  ],
+  "admission": "The revision is retained as positive design and test evidence, but it is superseded by the cohesive r02 revision. Its intended ordered semantic transcript, structural tool pairing, bounded lineage/attachment provenance, and compact empty-thinking behaviour were admitted from r02 after current-master reconciliation as PR #3016. Do not apply this older broad patch on top of the merged implementation."
+}

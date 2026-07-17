@@ -272,6 +272,7 @@ def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() ->
 
 
 def test_browser_capture_preserves_live_and_native_generation_measurements() -> None:
+    """Browser parsing keeps three duration meanings; collapsing them or naming compute fails."""
     payload = _capture_payload()
     session_payload = payload["session"]
     assert isinstance(session_payload, dict)
@@ -344,6 +345,12 @@ def test_browser_capture_preserves_live_and_native_generation_measurements() -> 
         "dom_control",
         "dom_duration_control",
     ]
+    assert [event.payload["duration_semantics"] for event in lifecycle] == [
+        "provider_reported_elapsed",
+        "dom_observed_wall",
+        "provider_ui_elapsed",
+    ]
+    assert all(event.payload["duration_semantics"] != "model_compute" for event in lifecycle)
     assert lifecycle[0].payload["elapsed_duration_ms"] == 5_190_000
     assert lifecycle[1].payload["wall_elapsed_ms"] == 0
     assert lifecycle[2].payload["displayed_elapsed_ms"] == 5_190_000

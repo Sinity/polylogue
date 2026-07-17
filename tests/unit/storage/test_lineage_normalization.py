@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import aiosqlite
@@ -144,6 +145,18 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
         "hi there",
         "child diverges here",
         "child reply",
+    ]
+    # Production dependency: read_archive_session_envelope records exact
+    # composition provenance instead of making renderers infer a prefix from
+    # message position. Removing source_session_id or the bounded edge facts
+    # makes these assertions fail.
+    assert envelope.lineage_inheritance == "prefix-sharing"
+    assert envelope.lineage_branch_point_message_id == link["branch_point_message_id"]
+    assert [message.source_session_id for message in envelope.messages] == [
+        parent_id,
+        parent_id,
+        child_id,
+        child_id,
     ]
 
     conn.close()
@@ -584,6 +597,202 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
         (child_id,),
     ).fetchall()
     assert [row[0] for row in physical] == ["c0", "c1", "c2", "c3"]
+    conn.close()
+
+
+def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> None:
+    """A dangling cut propagates through descendants without substituting a prefix.
+
+    The child has a valid branch point in its immediate parent, but that parent
+    itself inherits through a now-missing root branch point.  The real composed
+    read route must preserve the reachable parent and child tails, mark the
+    complete lineage as incomplete, and leave both physical tails and links
+    intact for a later authoritative re-ingest to repair.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    root = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="root",
+        messages=[
+            _msg("r0", Role.USER, "root prompt", 0),
+            _msg("r1", Role.ASSISTANT, "root reply", 1),
+        ],
+    )
+    root_id = write_parsed_session_to_archive(conn, root)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        parent_session_provider_id="root",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("p0", Role.USER, "root prompt", 0),
+            _msg("p1", Role.ASSISTANT, "root reply", 1),
+            _msg("p2", Role.USER, "parent tail", 2),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "root prompt", 0),
+            _msg("c1", Role.ASSISTANT, "root reply", 1),
+            _msg("c2", Role.USER, "parent tail", 2),
+            _msg("c3", Role.ASSISTANT, "child tail", 3),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    before_physical = conn.execute(
+        "SELECT session_id, native_id, position, variant_index FROM messages "
+        "WHERE session_id IN (?, ?) ORDER BY session_id, position, variant_index",
+        (parent_id, child_id),
+    ).fetchall()
+    before_links = conn.execute(
+        "SELECT src_session_id, resolved_dst_session_id, branch_point_message_id, inheritance, status "
+        "FROM session_links WHERE src_session_id IN (?, ?) ORDER BY src_session_id",
+        (parent_id, child_id),
+    ).fetchall()
+
+    # This is the failure shape: the parent edge still resolves to the root
+    # session, but its branch-point message disappeared.  Do not rewrite a
+    # resolved edge as 'unresolved': the typed degradation belongs on the
+    # composed read result while its known relation remains queryable.
+    conn.execute("DELETE FROM messages WHERE message_id = ?", (f"{root_id}:r1",))
+    conn.commit()
+
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert [message.blocks[0].text for message in envelope.messages] == ["parent tail", "child tail"]
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    assert (
+        conn.execute(
+            "SELECT session_id, native_id, position, variant_index FROM messages "
+            "WHERE session_id IN (?, ?) ORDER BY session_id, position, variant_index",
+            (parent_id, child_id),
+        ).fetchall()
+        == before_physical
+    )
+    assert (
+        conn.execute(
+            "SELECT src_session_id, resolved_dst_session_id, branch_point_message_id, inheritance, status "
+            "FROM session_links WHERE src_session_id IN (?, ?) ORDER BY src_session_id",
+            (parent_id, child_id),
+        ).fetchall()
+        == before_links
+    )
+    conn.close()
+
+
+def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The full writer transaction cannot expose replacement/link mixed state.
+
+    Inject after the real graph-resolution phase, where replacement rows, link
+    resolution, stale-cut repair, and projections have all had a chance to
+    mutate.  The failed replacement must leave the earlier physical rows,
+    relation row, and composed read exactly intact; the same input can then be
+    retried repeatedly with one converged state.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        updated_at="2027-01-01T00:00:01Z",
+        messages=[
+            _msg("p0", Role.USER, "root", 0),
+            _msg("p1", Role.ASSISTANT, "parent v1", 1),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "root", 0),
+            _msg("c1", Role.ASSISTANT, "parent v1", 1),
+            _msg("c2", Role.USER, "child tail", 2),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    def _state() -> tuple[list[tuple[object, ...]], tuple[object, ...], list[str | None], bool, str | None]:
+        physical = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT session_id, native_id, position, variant_index FROM messages "
+                "WHERE session_id IN (?, ?) ORDER BY session_id, position, variant_index",
+                (parent_id, child_id),
+            ).fetchall()
+        ]
+        link = tuple(
+            conn.execute(
+                "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
+                "FROM session_links WHERE src_session_id = ?",
+                (child_id,),
+            ).fetchone()
+        )
+        envelope = read_archive_session_envelope(conn, child_id)
+        return (
+            physical,
+            link,
+            [message.blocks[0].text for message in envelope.messages],
+            envelope.lineage_complete,
+            envelope.lineage_truncation_reason,
+        )
+
+    before = _state()
+    replacement = parent.model_copy(
+        update={
+            "updated_at": "2027-01-01T00:00:02Z",
+            "messages": [
+                _msg("p0", Role.USER, "root", 0),
+                _msg("p1", Role.ASSISTANT, "parent v2", 1),
+            ],
+        }
+    )
+    real_resolve = _write_module._resolve_session_graph
+    fired = {"count": 0}
+
+    def _fail_after_graph_resolution(
+        conn_inner: sqlite3.Connection,
+        session_id: str,
+        native_id: str,
+        origin: str,
+        *,
+        cache: dict[str, list[tuple[str, str]]] | None = None,
+        add_timing: Callable[[str, float], None] | None = None,
+    ) -> None:
+        real_resolve(
+            conn_inner,
+            session_id,
+            native_id,
+            origin,
+            cache=cache,
+            add_timing=add_timing,
+        )
+        fired["count"] += 1
+        raise RuntimeError("fault after graph resolution")
+
+    monkeypatch.setattr(_write_module, "_resolve_session_graph", _fail_after_graph_resolution)
+    with pytest.raises(RuntimeError, match="fault after graph resolution"):
+        write_parsed_session_to_archive(conn, replacement)
+    assert fired["count"] == 1, "fault injection did not reach graph resolution"
+    assert _state() == before
+
+    monkeypatch.setattr(_write_module, "_resolve_session_graph", real_resolve)
+    write_parsed_session_to_archive(conn, replacement)
+    after_retry = _state()
+    assert after_retry[2:] == (["root", "parent v2", "child tail"], True, None)
+    write_parsed_session_to_archive(conn, replacement)
+    assert _state() == after_retry
     conn.close()
 
 

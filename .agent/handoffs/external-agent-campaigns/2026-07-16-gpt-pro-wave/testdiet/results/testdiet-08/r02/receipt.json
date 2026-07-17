@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-08",
+  "package_revision": "r02",
+  "state": "integrated_merged",
+  "artifact": {"filename": "testdiet-08-chatgpt-normalization-r01.zip", "sha256": "602019b069c47f9490ed31953a8cfd2bf1201d6ea6c14176a827155c8e6f9f66", "size_bytes": 25012, "custody_path": "testdiet/results/testdiet-08/a01/raw/testdiet-08-chatgpt-normalization-r01.zip"},
+  "local_adjudication": "Current ChatGPT parser now preserves native timing, model effort, branch identity, browser-native preference, and exact raw replacement under real-route laws.",
+  "beads": ["polylogue-2qx", "polylogue-2qx.1"],
+  "merge_commit": "1d3145afa5f07a8f90ffceefc33ba425c877a8ad",
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3044",
+  "verification": "Focused new-law set and devtools verify --quick passed.",
+  "scope": "ChatGPT normalization slice; OriginSpec remains the wider declaration program."
+}

@@ -2790,6 +2790,7 @@ class TestBooleanQueryExpression:
                 caller_offset=0,
                 fetch_limit=11,
                 session_filters=None,
+                execution_context=None,
             )
 
     def test_terminal_source_pipeline_sort_desc_executes_before_limit(

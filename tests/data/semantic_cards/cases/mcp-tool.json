@@ -1,27 +1,21 @@
 {
-  "case_id": "chatgpt-web-fallback",
-  "claim": "Known but unsupported web tools remain raw fallback cards; the renderer does not invent a web card.",
-  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
-  "provider_family": "chatgpt",
-  "session_id": "fixture:chatgpt-web-fallback",
+  "session_id": "fixture:mcp-tool",
+  "provider_family": "antigravity",
   "messages": [
     {
       "id": "m-use",
       "role": "assistant",
       "message_type": "tool_use",
-      "text": null,
+      "origin": "antigravity-session",
       "blocks": [
         {
           "id": "b-use",
           "type": "tool_use",
-          "tool_name": "web",
-          "tool_id": "c1",
+          "tool_name": "mcp__github__get_issue",
+          "tool_id": "mcp-1",
           "tool_input": {
-            "search_query": [
-              {
-                "q": "semantic transcript renderer"
-              }
-            ]
+            "name": "polylogue",
+            "id": 395
           }
         }
       ]
@@ -30,13 +24,13 @@
       "id": "m-result",
       "role": "tool",
       "message_type": "tool_result",
-      "text": null,
+      "origin": "antigravity-session",
       "blocks": [
         {
           "id": "b-result",
           "type": "tool_result",
-          "tool_id": "c1",
-          "text": "results returned",
+          "tool_id": "mcp-1",
+          "text": "issue loaded",
           "tool_result_is_error": false
         }
       ]
@@ -45,7 +39,7 @@
   "expected_contract": {
     "card_count": 1,
     "kinds": [
-      "fallback"
+      "mcp"
     ],
     "outcomes": [
       "succeeded"
@@ -54,31 +48,54 @@
   "expected_cards": [
     {
       "schema_version": "semantic-card.v1",
-      "kind": "fallback",
-      "title": "Tool evidence · web",
+      "kind": "mcp",
+      "title": "MCP tool call",
       "source": {
-        "session_id": "fixture:chatgpt-web-fallback",
-        "provider_family": "chatgpt",
+        "session_id": "fixture:mcp-tool",
+        "provider_family": "antigravity",
+        "origin": "antigravity-session",
         "message_id": "m-use",
         "block_id": "b-use",
         "block_index": 0,
-        "tool_name": "web",
-        "tool_id": "c1",
+        "tool_name": "mcp__github__get_issue",
+        "tool_id": "mcp-1",
+        "material_origin": "unknown",
         "result_message_id": "m-result",
         "result_block_id": "b-result",
-        "result_block_index": 0
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
       },
       "fields": [
         {
           "label": "tool",
-          "value": "web"
+          "value": "mcp__github__get_issue"
+        },
+        {
+          "label": "semantic family",
+          "value": "other"
+        },
+        {
+          "label": "classification",
+          "value": "mcp_tool_identity"
+        },
+        {
+          "label": "MCP server",
+          "value": "github"
+        },
+        {
+          "label": "MCP tool",
+          "value": "get_issue"
+        },
+        {
+          "label": "target",
+          "value": "polylogue"
         }
       ],
       "previews": [
         {
           "kind": "input",
-          "text": "{\n  \"search_query\": [\n    {\n      \"q\": \"semantic transcript renderer\"\n    }\n  ]\n}",
-          "line_count": 7,
+          "text": "{\n  \"id\": 395,\n  \"name\": \"polylogue\"\n}",
+          "line_count": 4,
           "omitted_lines": 0,
           "omitted_characters": 0,
           "truncated": false,
@@ -87,7 +104,7 @@
         },
         {
           "kind": "result",
-          "text": "results returned",
+          "text": "issue loaded",
           "line_count": 1,
           "omitted_lines": 0,
           "omitted_characters": 0,
@@ -96,24 +113,20 @@
           "encoding_replacements": 0
         }
       ],
-      "caveats": [
-        "tool classification is unknown; raw evidence is shown without a guessed semantic card type"
-      ],
+      "caveats": [],
+      "summary": "github/get_issue",
       "outcome": {
         "state": "succeeded",
         "is_error": false
       },
       "raw_evidence": {
         "tool_input": {
-          "search_query": [
-            {
-              "q": "semantic transcript renderer"
-            }
-          ]
+          "name": "polylogue",
+          "id": 395
         },
         "result_preview": {
           "kind": "raw_result",
-          "text": "results returned",
+          "text": "issue loaded",
           "line_count": 1,
           "omitted_lines": 0,
           "omitted_characters": 0,
