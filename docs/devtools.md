@@ -143,6 +143,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab projections` | Render the authored scenario-bearing verification projections. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
+| `devtools lab pytest-witness-repetitions` | Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
 | `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
