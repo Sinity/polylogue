@@ -5,6 +5,7 @@ let messageListener;
 let installedListener;
 let activatedListener;
 let updatedListener;
+let removedListener;
 let alarmListener;
 let stored;
 let sessionStored;
@@ -21,6 +22,7 @@ function installChromeMock(storagePatch = {}) {
   installedListener = null;
   activatedListener = null;
   updatedListener = null;
+  removedListener = null;
   alarmListener = null;
   fetchCalls = [];
   sessionStored = {};
@@ -117,6 +119,11 @@ function installChromeMock(storagePatch = {}) {
       onUpdated: {
         addListener: vi.fn((fn) => {
           updatedListener = fn;
+        }),
+      },
+      onRemoved: {
+        addListener: vi.fn((fn) => {
+          removedListener = fn;
         }),
       },
       query: vi.fn(async () => tabs),
@@ -690,6 +697,33 @@ describe("background receiver diagnostics", () => {
     expect(chatGptTabs).toHaveLength(1);
     expect(globalThis.chrome.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
     expect(globalThis.chrome.scripting.executeScript.mock.calls.every(([details]) => details.target.tabId === 99)).toBe(true);
+  });
+
+  it("does not replace a provider transport tab once the operator activates it", async () => {
+    await loadBackground();
+    const transportKey = "polylogueProviderTransportTab:chatgpt";
+    const takenKey = "polylogueProviderTransportOperatorTaken:chatgpt";
+    tabs = [{ id: 99, url: "https://chatgpt.com/", active: true, status: "complete" }];
+    sessionStored = { [transportKey]: 99 };
+
+    alarmListener({ name: "polylogueBackfillTransportCleanup:chatgpt:99" });
+    await vi.waitFor(() => expect(sessionStored[takenKey]).toBe(99));
+    expect(globalThis.chrome.tabs.remove).not.toHaveBeenCalledWith(99);
+
+    const started = await sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+    });
+
+    expect(started.ok).toBe(true);
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.get).toHaveBeenCalledWith(99));
+    expect(globalThis.chrome.tabs.create.mock.calls.filter(([request]) => request.url === "https://chatgpt.com/")).toHaveLength(0);
+
+    tabs = [];
+    removedListener(99);
+    await vi.waitFor(() => expect(sessionStored[transportKey]).toBeUndefined());
+    expect(sessionStored[takenKey]).toBeUndefined();
   });
 
   it("retries coordinator initialization after recovery storage fails once", async () => {
