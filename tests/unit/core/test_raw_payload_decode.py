@@ -33,6 +33,21 @@ def test_sample_jsonl_payload_accepts_lone_surrogates_via_stdlib_fallback(tmp_pa
     assert any(sample.get("text") == "broken \udce2 surrogate" for sample in dict_samples)
 
 
+def test_raw_json_payload_preserves_utf8_encoded_lone_surrogates(tmp_path: Path) -> None:
+    """Historical provider bytes may encode a lone UTF-16 surrogate directly."""
+    path = tmp_path / "surrogate.json"
+    path.write_bytes(b'{"text":"broken \xed\xa0\x80 provider value"}')
+
+    envelope = build_raw_payload_envelope(
+        path,
+        source_path=str(path),
+        fallback_provider="hermes",
+    )
+
+    payload = _as_dict(envelope.payload)
+    assert payload["text"] == "broken \ud800 provider value"
+
+
 def test_build_raw_payload_envelope_reports_first_bad_jsonl_line(tmp_path: Path) -> None:
     path = tmp_path / "broken.jsonl"
     path.write_text('{"ok": 1}\n{"broken": \n{"ok": 2}\n', encoding="utf-8")

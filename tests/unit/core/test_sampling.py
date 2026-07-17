@@ -391,6 +391,37 @@ class TestLoadSamplesFromDb:
             bad_raw_id: "payload_decode_failed",
         }
 
+    def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="hermes-session",
+            source_path="/tmp/hermes/verification_evidence.db",
+            raw_content=b"SQLite format 3\x00\x10\x00\x02\x02",
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "hermes",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert all(unit.raw_id != raw_id for unit in units)
+        target_outcomes = [outcome for outcome in outcomes if outcome["raw_id"] == raw_id]
+        assert target_outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "intentionally_excluded",
+                "artifact_kind": "metadata_document",
+                "source_path": "/tmp/hermes/verification_evidence.db",
+                "reason": "artifact_taxonomy:Hermes SQLite evidence sidecar",
+            }
+        ]
+
 
 class TestLoadSamplesFromSessions:
     def test_nonexistent_dir_returns_empty(self, tmp_path: Path) -> None:

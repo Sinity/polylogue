@@ -12,6 +12,7 @@ from typing import Literal, TypeAlias, overload
 import ijson
 from ijson.common import ObjectBuilder
 
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.enums import Origin, Provider
@@ -281,6 +282,20 @@ def _iter_schema_units_from_db(
                 break
             for row in batch:
                 raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
+
+                path_classification = classify_artifact_path(
+                    row.source_path,
+                    provider=row.provider_token or source_name,
+                )
+                if path_classification is not None and not path_classification.schema_eligible:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason=f"artifact_taxonomy:{path_classification.reason}",
+                        artifact_kind=path_classification.kind.value,
+                    )
+                    continue
 
                 if row.validation_status == "failed":
                     _record_terminal(
