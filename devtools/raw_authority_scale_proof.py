@@ -453,10 +453,15 @@ def run_raw_authority_scale_proof(
                 previous: Path | None = None
                 for member, (row_size, terminalized) in enumerate(zip(row_sizes, row_kinds, strict=True)):
                     source_label = f"scale-{component:05d}-member-{member:05d}"
+                    row_native_id = (
+                        session_native_id
+                        if scenario.component_cohorts is None
+                        else f"{session_native_id}-member-{member:05d}"
+                    )
                     payload_path = temporary_root / f"{source_label}.jsonl"
                     _write_payload(
                         payload_path,
-                        native_id=session_native_id,
+                        native_id=row_native_id,
                         revision=member,
                         target_size=row_size,
                         previous=previous if scenario.component_cohorts is None else None,
@@ -465,7 +470,7 @@ def run_raw_authority_scale_proof(
                     payload_path.unlink()
                     previous = publisher.blob_path(blob_hash)
                     source_path = component_source_path
-                    pending_rows.append((session_native_id, source_path, blob_hash, blob_size, terminalized, component))
+                    pending_rows.append((row_native_id, source_path, blob_hash, blob_size, terminalized, component))
                     generated_rows.append((source_label, member, blob_hash))
                     if len(pending_rows) < 128:
                         continue

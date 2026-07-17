@@ -212,10 +212,10 @@ def test_raw_authority_scale_proof_keeps_prefix_chain_across_blob_flushes(tmp_pa
 def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohorts(tmp_path: Path) -> None:
     scenario = RawAuthorityScaleScenario(
         components=2,
-        direct_candidates=2,
+        direct_candidates=3,
         expanded_candidates=4,
         total_payload_bytes=4096,
-        component_cohorts=((1, 1, 1), (3, 1, 1)),
+        component_cohorts=((1, 1, 1), (3, 2, 1)),
     )
 
     payload = run_raw_authority_scale_proof(
@@ -230,5 +230,5 @@ def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohort
     achieved = cast(dict[str, object], payload["achieved_shape"])
     assert achieved["component_cohort_distribution"] == [
         {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1},
-        {"component_raw_count": 3, "direct_candidate_count": 1, "component_count": 1},
+        {"component_raw_count": 3, "direct_candidate_count": 2, "component_count": 1},
     ]
