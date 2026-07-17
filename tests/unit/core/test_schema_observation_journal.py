@@ -257,6 +257,23 @@ def test_journal_flushes_private_ingest_before_replay(tmp_path: Path) -> None:
             assert reader.execute("SELECT COUNT(*) FROM samples").fetchone() == (2,)
 
 
+def test_large_single_unit_commits_sample_batches_before_unit_finishes(tmp_path: Path) -> None:
+    """One transcript cannot turn the complete private WAL budget into one transaction."""
+    unit = SchemaUnit(
+        cluster_payload={},
+        schema_samples=[{"payload": "x" * (1024 * 1024)} for _ in range(33)],
+        artifact_kind="session_record_stream",
+        exact_structure_id="large-stream",
+        profile_tokens=("field:payload",),
+    )
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        journal.append_unit(unit)
+
+        with sqlite3.connect(journal.path) as reader:
+            committed_samples = reader.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        assert 0 < committed_samples < len(unit.schema_samples)
+
+
 def test_selective_membership_replay_uses_units_before_samples(tmp_path: Path) -> None:
     """Package replay must not scan every sample before applying its package filter."""
     with ObservationJournal.create(root=tmp_path / "journals") as journal:
