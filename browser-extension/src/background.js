@@ -2304,6 +2304,12 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
 }
 
 async function pollBrowserActionsOnce() {
+  // Browser-action polling is autonomous work.  An unpaired profile has no
+  // trusted receiver identity, so it must remain entirely local instead of
+  // turning the wake alarm into recurring unauthenticated receiver traffic.
+  if (!(await storedReceiverPairing())?.receiver_id) {
+    return { actions: [], skipped: true, reason: "receiver_unpaired" };
+  }
   const ownerInstanceId = await browserActionExecutorId();
   const claimed = await getJson(`/v1/browser-actions?claim_by=${encodeURIComponent(ownerInstanceId)}`)
     .catch(() => ({ actions: [] }));
