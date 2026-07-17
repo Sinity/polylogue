@@ -408,12 +408,22 @@ def _clear_polylogue_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _reclaim_passing_test_tmp_path: None,
+    request: pytest.FixtureRequest,
 ) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.sqlite.connection import _clear_connection_cache
 
     _clear_connection_cache()
+
+    # The daemon's structural-fault gate is intentionally process-local in
+    # production, but tests simulate that fault routinely.  Reset it on both
+    # sides of every test so a simulated mismatch cannot silently turn a later
+    # live-ingest or demo test into an all-skipped batch.
+    from polylogue.core.degraded import clear_degraded
+
+    clear_degraded()
+    request.addfinalizer(clear_degraded)
 
     # Clear search runtime state to prevent monkeypatched package-level search
     # adapters and cached results from leaking across tests.
