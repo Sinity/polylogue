@@ -29,6 +29,7 @@ def _make_candidate(
     c.terminal_state = terminal_state
     c.summary = summary
     c.origin = origin
+    c.overlap_basis = None
     return c
 
 
@@ -111,6 +112,44 @@ class TestComposeContextPreambleHappyPath:
         assert sessions[0]["origin"] == "claude-code-session"
 
     @pytest.mark.asyncio
+    async def test_recent_sessions_project_overlap_basis(self, mcp_server: MCPServerUnderTest) -> None:
+        """SessionStart context keeps the ranking explanation instead of dropping it."""
+        from polylogue.insights.resume import ResumeOverlapBasis, ResumePathOverlap
+
+        candidate = _make_candidate()
+        candidate.overlap_basis = ResumeOverlapBasis(
+            dir=(
+                ResumePathOverlap(
+                    candidate_path="polylogue/pipeline/runner.py",
+                    recent_file="polylogue/pipeline/service.py",
+                ),
+            ),
+            dead_excluded=("polylogue/lib/models.py",),
+        )
+
+        with (
+            patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,
+            patch("subprocess.run", return_value=_mock_subprocess_failure()),
+        ):
+            mock_poly = make_polylogue_mock()
+            mock_poly.find_resume_candidates = AsyncMock(return_value=(candidate,))
+            mock_get_poly.return_value = mock_poly
+
+            raw = await invoke_surface_async(
+                mcp_server._tool_manager._tools["compose_context_preamble"].fn,
+                repo_path=".",
+            )
+
+        basis = json.loads(raw)["recent_related_sessions"][0]["overlap_basis"]
+        assert basis["dir"] == [
+            {
+                "candidate_path": "polylogue/pipeline/runner.py",
+                "recent_file": "polylogue/pipeline/service.py",
+            }
+        ]
+        assert basis["dead_excluded"] == ["polylogue/lib/models.py"]
+
+    @pytest.mark.asyncio
     async def test_candidate_without_logical_session_id_falls_back(self, mcp_server: MCPServerUnderTest) -> None:
         """When logical_session_id is absent, session_id is used."""
         c = MagicMock()
@@ -121,6 +160,7 @@ class TestComposeContextPreambleHappyPath:
         c.terminal_state = None
         c.summary = None
         c.origin = None
+        c.overlap_basis = None
 
         with (
             patch("polylogue.mcp.server._get_polylogue") as mock_get_poly,

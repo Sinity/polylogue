@@ -99,3 +99,26 @@ def test_continue_candidates_json_repeats_recent_files(cli_workspace: dict[str, 
     assert result_payload["total"] >= 1
     assert result_payload["candidates"][0]["logical_session_id"] == NID_CONTINUE_ROOT
     assert "score_breakdown" in result_payload["candidates"][0]
+    assert "overlap_basis" in result_payload["candidates"][0]
+
+
+def test_continue_candidates_terminal_renders_overlap_basis(cli_workspace: dict[str, Path]) -> None:
+    _seed_continuation_session(cli_workspace["db_path"])
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "continue",
+            "--candidates",
+            "--repo",
+            "/workspace/polylogue",
+            "--recent",
+            "/workspace/polylogue/polylogue/cli/query_verbs.py",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "[overlap exact=" in result.output
+    assert " dir=" in result.output
+    assert " dead-excluded=" in result.output

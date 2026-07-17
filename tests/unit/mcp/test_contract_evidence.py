@@ -238,6 +238,8 @@ class TestToolErrorEnvelopes:
             ResumeBrief,
             ResumeFacts,
             ResumeInferences,
+            ResumeOverlapBasis,
+            ResumePathOverlap,
             ResumeProvenance,
         )
 
@@ -245,6 +247,15 @@ class TestToolErrorEnvelopes:
             session_id="conv-123",
             facts=ResumeFacts(session_id="conv-123", origin="claude-code", message_count=2),
             inferences=ResumeInferences(),
+            overlap_basis=ResumeOverlapBasis(
+                dir=(
+                    ResumePathOverlap(
+                        candidate_path="polylogue/pipeline/runner.py",
+                        recent_file="polylogue/pipeline/service.py",
+                    ),
+                ),
+                dead_excluded=("polylogue/lib/models.py",),
+            ),
             provenance=ResumeProvenance(
                 materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
                 computed_at="2026-05-17T00:00:00+00:00",
@@ -260,18 +271,47 @@ class TestToolErrorEnvelopes:
             result = invoke_surface(
                 mcp_server._tool_manager._tools["get_resume_brief"].fn,
                 session_id="conv-123",
+                repo_path="/workspace/polylogue",
+                recent_files=("polylogue/pipeline/service.py",),
             )
 
         payload = json.loads(result)
         assert payload["session_id"] == "conv-123"
         assert payload["provenance"]["materializer_version"] == RESUME_BRIEF_MATERIALIZER_VERSION
         assert "conv-123" in payload["provenance"]["cited_session_ids"]
+        assert payload["overlap_basis"]["dir"] == [
+            {
+                "candidate_path": "polylogue/pipeline/runner.py",
+                "recent_file": "polylogue/pipeline/service.py",
+            }
+        ]
+        assert payload["overlap_basis"]["dead_excluded"] == ["polylogue/lib/models.py"]
+        mock_poly.resume_brief.assert_awaited_once_with(
+            "conv-123",
+            related_limit=6,
+            repo_path="/workspace/polylogue",
+            recent_files=("polylogue/pipeline/service.py",),
+        )
+
+    def test_get_resume_brief_rejects_context_without_repo(
+        self,
+        mcp_server: MCPServerUnderTest,
+    ) -> None:
+        result = invoke_surface(
+            mcp_server._tool_manager._tools["get_resume_brief"].fn,
+            session_id="conv-123",
+            recent_files=("polylogue/pipeline/service.py",),
+        )
+
+        body = _structured_error(result)
+        assert body["code"] == "invalid_argument"
+        assert "repo_path is required" in body["message"]
 
     def test_find_resume_candidates_returns_ranked_envelope(
         self,
         mcp_server: MCPServerUnderTest,
     ) -> None:
-        from polylogue.insights.resume import ResumeCandidate
+        from polylogue.insights.resume import ResumeCandidate, ResumeOverlapBasis, ResumePathOverlap
 
         candidate = ResumeCandidate(
             logical_session_id="root",
@@ -281,6 +321,15 @@ class TestToolErrorEnvelopes:
             terminal_state="question_left",
             workflow_shape="agentic_loop",
             file_overlap=("polylogue/daemon/convergence.py",),
+            overlap_basis=ResumeOverlapBasis(
+                exact=(
+                    ResumePathOverlap(
+                        candidate_path="polylogue/daemon/convergence.py",
+                        recent_file="polylogue/daemon/convergence.py",
+                    ),
+                ),
+                dead_excluded=("polylogue/daemon/legacy.py",),
+            ),
             score=0.91,
             score_breakdown={"recency": 1.0, "file_overlap": 0.4},
             brief_url="polylogue://resume/root",
@@ -302,6 +351,10 @@ class TestToolErrorEnvelopes:
         assert payload["total"] == 1
         assert payload["candidates"][0]["logical_session_id"] == "root"
         assert payload["candidates"][0]["score_breakdown"]["recency"] == 1.0
+        assert payload["candidates"][0]["overlap_basis"]["exact"][0]["candidate_path"] == (
+            "polylogue/daemon/convergence.py"
+        )
+        assert payload["candidates"][0]["overlap_basis"]["dead_excluded"] == ["polylogue/daemon/legacy.py"]
         mock_poly.find_resume_candidates.assert_awaited_once()
 
     def test_bulk_tag_validation_returns_structured_error(

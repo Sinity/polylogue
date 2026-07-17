@@ -6357,7 +6357,7 @@
         "notes": "This route is intentionally budgeted context/orientation, not an exhaustive archive relation."
       },
       "deprecation_state": "retained",
-      "description": "Get a typed resume brief for one archived session.",
+      "description": "Get a typed resume brief, optionally explaining current-work path overlap.",
       "field_discovery": [
         "action_affordances"
       ],
@@ -6397,7 +6397,7 @@
           }
         ],
         "declaration_id": "mcp.tool.get_resume_brief",
-        "discovery_text": "Get a typed resume brief for one archived session.",
+        "discovery_text": "Get a typed resume brief, optionally explaining current-work path overlap.",
         "examples": [
           {
             "arguments": [

@@ -3388,6 +3388,25 @@ class ContextPreambleLineage(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ContextPreamblePathOverlap(SurfacePayloadModel):
+    """One candidate-to-current path match used by resume ranking."""
+
+    candidate_path: str
+    recent_file: str
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ContextPreambleOverlapBasis(SurfacePayloadModel):
+    """Explainable file evidence behind a related-session ranking."""
+
+    exact: list[ContextPreamblePathOverlap] = Field(default_factory=list)
+    dir: list[ContextPreamblePathOverlap] = Field(default_factory=list)
+    dead_excluded: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class ContextPreambleSession(SurfacePayloadModel):
     """A recent related session for the context preamble."""
 
@@ -3397,6 +3416,7 @@ class ContextPreambleSession(SurfacePayloadModel):
     terminal_state: str | None = None
     summary: str | None = None
     origin: str | None = None
+    overlap_basis: ContextPreambleOverlapBasis | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -3556,6 +3576,8 @@ __all__ = [
     "ContextPreambleBlackboardNote",
     "ContextPreambleIssue",
     "ContextPreambleLineage",
+    "ContextPreambleOverlapBasis",
+    "ContextPreamblePathOverlap",
     "ContextPreambleProjectState",
     "ContextPreambleSession",
     "SessionNeighborCandidatePayload",

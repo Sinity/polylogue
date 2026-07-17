@@ -786,7 +786,7 @@ _TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "get_resume_brief",
-        "Get a typed resume brief for one archived session.",
+        "Get a typed resume brief, optionally explaining current-work path overlap.",
         "polylogue.mcp.server_insight_tools",
         "register_insight_tools",
         "read",

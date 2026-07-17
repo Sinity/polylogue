@@ -14,6 +14,7 @@ from polylogue.surfaces.payloads import (
     ContextPreambleAssertionGuidance,
     ContextPreambleGuidance,
     ContextPreambleLineage,
+    ContextPreambleOverlapBasis,
     ContextPreambleProjectState,
     ContextPreambleQuotedEvidence,
     ContextPreambleSession,
@@ -24,6 +25,17 @@ if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
 
 logger = get_logger(__name__)
+
+
+def _candidate_overlap_basis(candidate: object) -> ContextPreambleOverlapBasis | None:
+    basis = getattr(candidate, "overlap_basis", None)
+    model_dump = getattr(basis, "model_dump", None)
+    if not callable(model_dump):
+        return None
+    raw = model_dump(mode="json")
+    if not isinstance(raw, dict):
+        return None
+    return ContextPreambleOverlapBasis.model_validate(raw)
 
 
 async def build_context_preamble_payload(
@@ -85,6 +97,7 @@ async def build_context_preamble_payload(
                     terminal_state=getattr(c, "terminal_state", None),
                     summary=getattr(c, "summary", None),
                     origin=getattr(c, "origin", None),
+                    overlap_basis=_candidate_overlap_basis(c),
                 )
             )
     except Exception as exc:

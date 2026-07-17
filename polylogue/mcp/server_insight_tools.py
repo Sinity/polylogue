@@ -256,18 +256,36 @@ def register_insight_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> None:
         return await hooks.async_safe_call("session_profile", run, session_id=session_id)
 
     @mcp.tool()
-    async def get_resume_brief(session_id: str, related_limit: int = 6) -> str:
+    async def get_resume_brief(
+        session_id: str,
+        related_limit: int = 6,
+        repo_path: str | None = None,
+        recent_files: tuple[str, ...] = (),
+    ) -> str:
         """Get a typed resume brief for one archived session.
 
         The brief composes already-materialized session insights (profile,
         enrichment, work events, phases, work thread) into a handoff
         payload. Provenance fields cite the session, message, work-event,
-        and phase IDs that contributed.
+        and phase IDs that contributed. When current repository context is
+        supplied, ``overlap_basis`` explains the exact, directory-recovered,
+        and dead-excluded file evidence used by resume ranking.
         """
 
         async def run() -> str:
+            if repo_path is None and recent_files:
+                return hooks.error_json(
+                    "repo_path is required when recent_files are supplied.",
+                    code="invalid_argument",
+                    tool="get_resume_brief",
+                )
             poly = hooks.get_polylogue()
-            brief = await poly.resume_brief(session_id, related_limit=related_limit)
+            brief = await poly.resume_brief(
+                session_id,
+                related_limit=related_limit,
+                repo_path=repo_path,
+                recent_files=recent_files,
+            )
             if brief is None:
                 return hooks.error_json("Session not found", code="not_found", session_id=session_id)
             return hooks.json_payload(brief, exclude_none=False)
