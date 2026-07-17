@@ -1776,7 +1776,7 @@ files:
     target: polylogue/insights/authored_payloads.py
     owner: stable
   - path: polylogue/insights/claude_workflow_evidence.py
-    loc: 157
+    loc: 176
     target: polylogue/insights/claude_workflow_evidence.py
     owner: stable
   - path: polylogue/insights/cohorts.py
@@ -1960,8 +1960,12 @@ files:
     target: polylogue/insights/transforms.py
     owner: stable
   - path: polylogue/insights/work_evidence.py
-    loc: 211
+    loc: 213
     target: polylogue/insights/work_evidence.py
+    owner: stable
+  - path: polylogue/insights/work_reconciliation.py
+    loc: 102
+    target: polylogue/insights/work_reconciliation.py
     owner: stable
   - path: polylogue/logging.py
     loc: 238

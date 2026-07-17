@@ -27,6 +27,7 @@ WorkEvidenceNodeKind = Literal[
     "artifact",
     "actor",
     "execution-context",
+    "effect",
 ]
 WorkEvidenceEdgeKind = Literal[
     "invoked",
@@ -54,6 +55,7 @@ _NODE_REF_KINDS: Final[dict[WorkEvidenceNodeKind, frozenset[str]]] = {
     "artifact": frozenset({"artifact"}),
     "actor": frozenset({"actor"}),
     "execution-context": frozenset({"execution-context"}),
+    "effect": frozenset({"commit", "github-issue", "github-pr", "check-run", "artifact"}),
 }
 
 
