@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
@@ -36,3 +38,40 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: 
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
     assert not artifact.root.joinpath("private-mutation.txt").exists()
+
+
+def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    original = build_seeded_archive(cache_root=cache_root)
+    index_path = original.root / "index.db"
+    index_path.chmod(index_path.stat().st_mode | os.W_OK)
+    index_path.unlink()
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.root == original.root
+    assert rebuilt.root.joinpath("index.db").is_file()
+    assert rebuilt.manifest.key == original.manifest.key
+    assert rebuilt.manifest.profile_id == original.manifest.profile_id
+    assert rebuilt.manifest.recipe_id == original.manifest.recipe_id
+    assert rebuilt.facts == original.facts
+    assert not (rebuilt.root.stat().st_mode & os.W_OK)
+
+
+def test_seeded_archive_failure_never_publishes_partial_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    async def fail_parse(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected ingest failure")
+
+    monkeypatch.setattr(artifacts, "parse_sources_archive", fail_parse)
+
+    with pytest.raises(RuntimeError, match="injected ingest failure"):
+        build_seeded_archive(cache_root=tmp_path / "cache")
+
+    cache_root = tmp_path / "cache"
+    assert not list((cache_root / "artifacts").iterdir())
+    assert not list((cache_root / ".staging").iterdir())
