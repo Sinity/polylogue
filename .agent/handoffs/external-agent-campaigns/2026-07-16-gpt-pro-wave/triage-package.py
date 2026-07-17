@@ -197,9 +197,11 @@ def main() -> int:
             raise SystemExit(f"error: immutable receipt already exists: {receipt_path}")
         raw_dir.mkdir(parents=True, exist_ok=True)
         custody = raw_dir / zp.name
-        if custody.exists():
+        adopted = zp.resolve() == custody.resolve()
+        if custody.exists() and not adopted:
             raise SystemExit(f"error: immutable raw artifact already exists: {custody}")
-        shutil.copy2(zp, custody)
+        if not adopted:
+            shutil.copy2(zp, custody)
         receipt = {
             "schema_version": 1,
             "campaign_id": _load_campaign_id(args.workload),
