@@ -112,14 +112,17 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
 
-def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, object]:
+def raw_materialization_readiness_snapshot(
+    active_archive: Path,
+    *,
+    classify_gaps: bool = True,
+) -> dict[str, object]:
     """Return compact raw→index materialization readiness for an archive root.
 
-    This function is used by status/readiness surfaces and must stay cheap on
-    large archives. It classifies only cheap structural explanations for
-    raw-id join gaps: rows already materialized by provider/source aliases and
-    parsed sidecar/metadata artifacts. Remaining gaps are daemon convergence
-    input, not an operator maintenance workflow.
+    Exact classification may inspect every raw-id gap and is therefore reserved
+    for explicit diagnostic reads. ``classify_gaps=False`` keeps the aggregate
+    counters and durable authority state but marks all unclassified gaps as
+    unchecked, which is the bounded periodic-status contract.
     """
     source_db = active_archive / "source.db"
     index_db = active_archive / "index.db"
@@ -131,7 +134,6 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             raw_columns = _table_columns(conn, "source", "raw_sessions")
             session_columns = _table_columns(conn, "main", "sessions")
-            raw_select_columns = _raw_gap_select_columns(raw_columns)
             row = conn.execute(
                 """
                 WITH raw_rows AS (
@@ -192,34 +194,38 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
                 LIMIT 16
                 """
             ).fetchall()
-            gap_rows = conn.execute(
-                f"""
-                WITH raw_rows AS (
-                    SELECT
-                        {raw_select_columns},
-                        EXISTS (
-                            SELECT 1
-                            FROM main.sessions s
-                            WHERE s.raw_id = r.raw_id
-                        ) AS is_materialized
-                    FROM source.raw_sessions r
-                    WHERE COALESCE(r.validation_status, '') != 'skipped'
+            classified_counts: Counter[str] = Counter()
+            parse_failed_origins: set[str] = set()
+            if classify_gaps:
+                raw_select_columns = _raw_gap_select_columns(raw_columns)
+                gap_rows = conn.execute(
+                    f"""
+                    WITH raw_rows AS (
+                        SELECT
+                            {raw_select_columns},
+                            EXISTS (
+                                SELECT 1
+                                FROM main.sessions s
+                                WHERE s.raw_id = r.raw_id
+                            ) AS is_materialized
+                        FROM source.raw_sessions r
+                        WHERE COALESCE(r.validation_status, '') != 'skipped'
+                    )
+                    SELECT *
+                    FROM raw_rows
+                    WHERE NOT is_materialized
+                    """,
+                ).fetchall()
+                classified_counts, parse_failed_origins = _classify_raw_gap_rows(
+                    conn,
+                    active_archive,
+                    gap_rows,
+                    raw_columns=raw_columns,
+                    session_columns=session_columns,
+                    has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
+                    has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
+                    has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
                 )
-                SELECT *
-                FROM raw_rows
-                WHERE NOT is_materialized
-                """,
-            ).fetchall()
-            classified_counts, parse_failed_origins = _classify_raw_gap_rows(
-                conn,
-                active_archive,
-                gap_rows,
-                raw_columns=raw_columns,
-                session_columns=session_columns,
-                has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
-                has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
-                has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
-            )
             adoption_deferred_count = 0
             if _table_columns(conn, "main", "raw_revision_applications"):
                 adoption_deferred_count = int(
@@ -390,7 +396,7 @@ def raw_materialization_readiness_snapshot(active_archive: Path) -> dict[str, ob
     critical = actionable
     affected_actionable = parse_failed
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
-    classification = "cheap_projection" if classified or adoption_deferred_count else "not_run"
+    classification = "cheap_projection" if classify_gaps and (classified or adoption_deferred_count) else "not_run"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
         "raw_id_join_gap": raw_id_join_gap_count,

@@ -1936,7 +1936,7 @@ def _component_from_live_ingest(summary: LiveIngestAttemptSummary) -> ComponentR
     )
 
 
-def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
+def _raw_materialization_readiness_info(*, classify_gaps: bool = True) -> RawMaterializationReadiness:
     """Summarize acquired-but-not-materialized raw evidence for readiness.
 
     This is intentionally cheaper than the full archive-debt endpoint: daemon
@@ -1944,7 +1944,11 @@ def _raw_materialization_readiness_info() -> RawMaterializationReadiness:
     not silently diverge, but normal status reads must not open raw blobs or run
     the exact classifier over large archives.
     """
-    payload = raw_materialization_readiness_snapshot(archive_root())
+    payload = (
+        raw_materialization_readiness_snapshot(archive_root())
+        if classify_gaps
+        else raw_materialization_readiness_snapshot(archive_root(), classify_gaps=False)
+    )
     return RawMaterializationReadiness.model_validate(payload)
 
 
@@ -2000,6 +2004,7 @@ def build_daemon_status(
     browser_capture_spool_path: Path | None = None,
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
+    include_exact_raw_materialization_readiness: bool = True,
 ) -> DaemonStatus:
     """Build a typed DaemonStatus from durable component state."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2017,7 +2022,9 @@ def build_daemon_status(
     storage_info = _archive_storage_info()
     fts = _fts_readiness_info()
     freshness = _insight_freshness_info()
-    raw_materialization_readiness = _raw_materialization_readiness_info()
+    raw_materialization_readiness = _raw_materialization_readiness_info(
+        classify_gaps=include_exact_raw_materialization_readiness
+    )
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog = _raw_replay_backlog_info(include=include_raw_replay_backlog)
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
@@ -2207,6 +2214,7 @@ def daemon_status_payload(
     browser_capture_spool_path: Path | None = None,
     include_browser_capture_spool_path: bool = False,
     include_raw_replay_backlog: bool = True,
+    include_exact_raw_materialization_readiness: bool = True,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict)."""
     watch_sources = sources if sources is not None else default_sources()
@@ -2232,6 +2240,7 @@ def daemon_status_payload(
         browser_capture_enabled=browser_capture_enabled,
         browser_capture_spool_path=browser_capture_spool_path,
         include_raw_replay_backlog=include_raw_replay_backlog,
+        include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
     )
     archive_debt = _archive_debt_status_summary()
 

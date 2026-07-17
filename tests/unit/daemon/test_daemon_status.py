@@ -318,7 +318,10 @@ def test_status_snapshot_refresh_default_builds_rich_payload(monkeypatch: pytest
 
     snapshot = refresh_status_snapshot()
 
-    build.assert_called_once_with(include_raw_replay_backlog=False)
+    build.assert_called_once_with(
+        include_raw_replay_backlog=False,
+        include_exact_raw_materialization_readiness=False,
+    )
     assert snapshot.payload["checked_at"] == "rich"
     assert snapshot.payload["raw_materialization_readiness"] == {"total": 2}
 

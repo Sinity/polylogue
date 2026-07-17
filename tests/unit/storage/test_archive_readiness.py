@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
@@ -118,7 +120,10 @@ def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -
     assert raw_materialization_ready(snapshot) is True
 
 
-def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path: Path) -> None:
+def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     with sqlite3.connect(source_db) as conn:
@@ -215,6 +220,17 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(tmp_path
         "revision-application-terminal": 1,
         "adoption_deferred": 1,
     }
+
+    def fail_if_classified(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("bounded readiness must not classify individual raw gaps")
+
+    monkeypatch.setattr("polylogue.storage.archive_readiness._classify_raw_gap_rows", fail_if_classified)
+    aggregate = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+
+    assert aggregate["classification"] == "not_run"
+    assert aggregate["classified"] == 0
+    assert aggregate["unchecked"] == 9
+    assert aggregate["actionable"] == 0
 
 
 def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_path: Path) -> None:
