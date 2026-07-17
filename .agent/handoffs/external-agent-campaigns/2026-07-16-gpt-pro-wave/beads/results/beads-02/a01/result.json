@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "beads",
+  "job_id": "beads-02",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "verified",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "53138d8a95f6e6f05ad01e9bdda1af5c7902352da49357b5ded6c23a0461a8c0",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "PATCH.diff",
+      "sha256": "59d40d9e39f4cd97b35ef7c3e47f9efa9a0153c4766e091a7609091ba4397592",
+      "size_bytes": 781283,
+      "custody_path": "beads/results/beads-02/a01/raw/PATCH.diff",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "locally inspected and checksum-validated",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [
+    "ed44be18f448c31f9fa5b9289c75da7eee99b131"
+  ],
+  "pull_request": "https://github.com/Sinity/polylogue/pull/3004",
+  "verification_receipts": [],
+  "notes": "incomplete package; its bounded MCP foundation was integrated as PR #3004"
+}

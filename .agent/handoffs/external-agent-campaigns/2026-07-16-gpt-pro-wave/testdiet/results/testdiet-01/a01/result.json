@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-01",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "blocked",
+  "provider": "chatgpt-pro",
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "f58121bcbefa042ba05e8f1c5d00016fb9eb49fe22b99a7c1c4d2e28f5bebcaf",
+  "snapshot_identity": "f654480cadb7cc4c194704e24dfd483199547b35",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "testdiet-01-query-algebra-cardinality-r01.zip",
+      "sha256": "365cb58bf6e1135bc210b62ae422fb5009825cd3f505db0c3adcb41ccd00d2e5",
+      "size_bytes": 21998,
+      "custody_path": "testdiet/results/testdiet-01/a01/raw/testdiet-01-query-algebra-cardinality-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "package validation completed; dispatch deliberately blocked by missing foundation receipt",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "valid draft package; blocked pending foundation-receipt.json and fresh foundation snapshot"
+}

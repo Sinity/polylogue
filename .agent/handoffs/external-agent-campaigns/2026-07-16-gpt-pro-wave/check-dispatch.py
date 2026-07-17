@@ -6,17 +6,18 @@ may this job be dispatched right now, and if not, exactly which gate is unmet?
 
 Gates checked
 -------------
-1. **foundation** dependency: a job depending on the literal token
-   ``foundation`` requires ``foundation-receipt.json`` at the wave root::
+1. **foundation** gate: every Test Diet job requires
+   ``foundation-receipt.json`` at the wave root::
 
        {"merged_commit": "<sha>", "verified_at": "<iso8601>", "notes": "..."}
 
    The receipt is written manually (or by the test-harness agent) once the
    local Test Diet foundation is merged to master. The commit must exist in
    the repository.
-2. **job dependencies**: ``depends_on: ["testdiet-02", ...]`` requires a
-   recorded attempt for that job in the workload's ``results/index.json``
-   with status in ``delivered | triaged | integrated | accepted``.
+2. **job dependencies**: ``depends_on: ["testdiet-02", ...]`` require an
+   immutable per-attempt ``result.json`` for that job in state
+   ``verified | published``. The `index.json` ledger is a projection and is
+   never dispatch authority.
 3. **context manifest freshness** (testdiet only): every file listed in
    ``testdiet/context/MANIFEST.sha256`` must hash to its recorded value.
    The manifest's own SHA-256 is printed so it can be compared against the
@@ -48,7 +49,7 @@ from pathlib import Path
 
 WAVE_ROOT = Path(__file__).resolve().parent
 WORKLOADS = ("testdiet", "beads", "analysis", "deep-research")
-SATISFYING_STATUSES = {"delivered", "triaged", "integrated", "accepted"}
+SATISFYING_STATES = {"verified", "published"}
 
 
 def _load_json(path: Path) -> dict:
@@ -128,11 +129,15 @@ def manifest_self_hash() -> str:
     return hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
-def load_attempt_index(workload: str) -> dict[str, list[dict]]:
-    index = _load_json(WAVE_ROOT / workload / "results" / "index.json")
+def load_attempt_receipts(workload: str) -> dict[str, list[dict]]:
     by_job: dict[str, list[dict]] = {}
-    for attempt in index.get("attempts", []):
-        by_job.setdefault(attempt.get("job", "?"), []).append(attempt)
+    results = WAVE_ROOT / workload / "results"
+    for receipt_path in results.glob("*/a[0-9][0-9]/result.json"):
+        receipt = _load_json(receipt_path)
+        job_id = receipt.get("job_id")
+        if not job_id:
+            raise SystemExit(f"error: receipt has no job_id: {receipt_path}")
+        by_job.setdefault(job_id, []).append(receipt)
     return by_job
 
 
@@ -196,18 +201,19 @@ def main() -> int:
     any_blocked = False
     for workload in workloads:
         campaign = _load_json(WAVE_ROOT / workload / "campaign.json")
-        attempts = load_attempt_index(workload)
+        attempts = load_attempt_receipts(workload)
         for job in campaign.get("jobs", []):
             job_id = job["id"]
             if args.job and job_id != args.job:
                 continue
             unmet: list[str] = []
+            if workload == "testdiet" and not foundation_ok:
+                unmet.append(foundation_msg)
             for dep in job.get("depends_on", []):
                 if dep == "foundation":
-                    if not foundation_ok:
-                        unmet.append(foundation_msg)
-                elif not any(a.get("status") in SATISFYING_STATUSES for a in attempts.get(dep, [])):
-                    unmet.append(f"dependency {dep} has no attempt with status in {sorted(SATISFYING_STATUSES)}")
+                    continue
+                if not any(a.get("state") in SATISFYING_STATES for a in attempts.get(dep, [])):
+                    unmet.append(f"dependency {dep} has no result receipt with state in {sorted(SATISFYING_STATES)}")
             if workload == "testdiet" and not manifest_ok:
                 unmet.extend(manifest_problems[:3])
             prior = len(attempts.get(job_id, []))
