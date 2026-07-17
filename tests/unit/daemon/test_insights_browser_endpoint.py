@@ -172,6 +172,7 @@ class TestEmptyPayloads:
         assert payload["readiness_tag"] == "q-missing"
         assert payload["materialized"] is False
         assert payload["profile"] is None
+        assert payload["provenance"] is None
 
     def test_empty_work_event_panel_is_q_missing(self) -> None:
         payload = _work_event_panel_payload([])

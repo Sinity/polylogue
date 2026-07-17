@@ -11,11 +11,22 @@ from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field
 
 from polylogue.surfaces.payloads import SurfacePayloadModel
+
+
+def _canonical_public_instant(value: datetime) -> datetime:
+    """Require an aware instant and use one UTC representation at surfaces."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+_PublicInstant = Annotated[datetime, AfterValidator(_canonical_public_instant)]
 
 
 class TemporalBucket(str, Enum):
@@ -29,7 +40,7 @@ class TemporalEvidenceEvent(SurfacePayloadModel):
     """One timestamped occurrence from any evidence family."""
 
     event_id: str
-    occurred_at: datetime
+    occurred_at: _PublicInstant
     family: str
     kind: str
     label: str
@@ -37,17 +48,11 @@ class TemporalEvidenceEvent(SurfacePayloadModel):
     evidence_refs: tuple[str, ...] = ()
     phase: str | None = None
 
-    @model_validator(mode="after")
-    def _require_timezone(self) -> TemporalEvidenceEvent:
-        if self.occurred_at.tzinfo is None:
-            raise ValueError("occurred_at must be timezone-aware")
-        return self
-
 
 class TemporalCountBucket(SurfacePayloadModel):
     """Count of events for one bucket/family/kind coordinate."""
 
-    bucket_start: datetime
+    bucket_start: _PublicInstant
     family: str
     kind: str
     count: int = Field(ge=0)
@@ -58,9 +63,10 @@ class TemporalPhaseSpan(SurfacePayloadModel):
 
     from_phase: str
     to_phase: str
-    start_at: datetime
-    end_at: datetime
+    start_at: _PublicInstant
+    end_at: _PublicInstant
     duration_seconds: float = Field(ge=0)
+    duration_semantics: Literal["inferred_event_gap"] = "inferred_event_gap"
     start_event_id: str
     end_event_id: str
 
@@ -68,7 +74,7 @@ class TemporalPhaseSpan(SurfacePayloadModel):
 class TemporalActivityBand(SurfacePayloadModel):
     """Dense activity bucket with compositional family/kind counts."""
 
-    bucket_start: datetime
+    bucket_start: _PublicInstant
     event_count: int = Field(ge=0)
     family_counts: dict[str, int] = Field(default_factory=dict)
     kind_counts: dict[str, int] = Field(default_factory=dict)
@@ -77,8 +83,8 @@ class TemporalActivityBand(SurfacePayloadModel):
 class TemporalEvidenceWindow(SurfacePayloadModel):
     """Composable temporal projection over selected evidence events."""
 
-    since: datetime | None = None
-    until: datetime | None = None
+    since: _PublicInstant | None = None
+    until: _PublicInstant | None = None
     bucket: TemporalBucket = TemporalBucket.HOUR
     events: tuple[TemporalEvidenceEvent, ...] = ()
     event_count: int = Field(ge=0)
@@ -100,22 +106,22 @@ def build_temporal_evidence_window(
 ) -> TemporalEvidenceWindow:
     """Build a deterministic temporal window from already-selected events."""
 
-    _validate_bound("since", since)
-    _validate_bound("until", until)
+    normalized_since = _normalize_bound("since", since)
+    normalized_until = _normalize_bound("until", until)
     selected = tuple(
         sorted(
-            (event for event in events if _in_window(event, since=since, until=until)),
+            (event for event in events if _in_window(event, since=normalized_since, until=normalized_until)),
             key=lambda event: (event.occurred_at, event.event_id),
         )
     )
     family_counts = Counter(event.family for event in selected)
     kind_counts = Counter(event.kind for event in selected)
     caveat_list = list(caveats)
-    if since is None or until is None:
+    if normalized_since is None or normalized_until is None:
         caveat_list.append("window_bound_open")
     return TemporalEvidenceWindow(
-        since=since,
-        until=until,
+        since=normalized_since,
+        until=normalized_until,
         bucket=bucket,
         events=selected,
         event_count=len(selected),
@@ -206,13 +212,16 @@ def action_row_to_temporal_event(row: Any) -> TemporalEvidenceEvent | None:
 
 def _timezone_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
-def _validate_bound(name: str, value: datetime | None) -> None:
-    if value is not None and value.tzinfo is None:
+def _normalize_bound(name: str, value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")
+    return value.astimezone(UTC)
 
 
 def _in_window(event: TemporalEvidenceEvent, *, since: datetime | None, until: datetime | None) -> bool:

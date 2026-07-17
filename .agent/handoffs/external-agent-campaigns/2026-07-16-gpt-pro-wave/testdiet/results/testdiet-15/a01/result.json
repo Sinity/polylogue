@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-15",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "triaged",
+  "provider": null,
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "b4d70f0aefec8c50c429005c7c33a0a70ae5c2d116089d6f25ec8f3e9813d180",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "testdiet-15-temporal-equivalence-r01.zip",
+      "sha256": "693fa6b09b9d69d6662a576ed1195ef9ea0836ab0a796a8241d826165b92b5b5",
+      "size_bytes": 24864,
+      "custody_path": "testdiet/results/testdiet-15/a01/raw/testdiet-15-temporal-equivalence-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "patch applies cleanly",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "created by triage-package.py; later integration evidence belongs in a new immutable receipt revision"
+}

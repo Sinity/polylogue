@@ -79,10 +79,9 @@ def _chat_message(
     created_at: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    # ``ClaudeAISession`` validation in ``parsers/claude/ai_parser.py``
-    # is strict; payloads that don't fit the pydantic model fall through to
-    # the loose extractor. We exercise the loose path here so the catalog
-    # stays focused on parser behavior independent of validator drift.
+    # The shared Claude normalizer accepts structured content with or without
+    # a duplicated top-level text field. Keep this catalog focused on block
+    # behavior rather than coupling it to a strict validator shape.
     text = " ".join(seg.get("text", "") for seg in content if seg.get("type") == "text").strip() or None
     msg: dict[str, Any] = {
         "uuid": uuid,

@@ -129,7 +129,7 @@ def is_stream_record_provider(source_path: str | None, provider: str | Provider 
 
 
 def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
-    return "chunkedPrompt" in record or isinstance(record.get("chunks"), list)
+    return drive.looks_like(record)
 
 
 def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
@@ -174,6 +174,12 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
 
     first_record = _payload_record(payloads[0])
     if first_record is not None:
+        # A one-document Gemini CLI JSON file reaches detection as a
+        # one-element sequence on the stream path. Preserve the established
+        # Claude-Code-before-Codex sequence ordering while restoring this
+        # stronger local-session discriminator ahead of weaker family shapes.
+        if len(payloads) == 1 and local_agent.looks_like_gemini_cli(first_record):
+            return Provider.GEMINI_CLI
         if browser_capture.looks_like(first_record):
             return _detect_provider_from_record(first_record)
         if beads.looks_like(first_record):
@@ -284,7 +290,7 @@ def _schema_guided_payload(
 
 def _looks_like_chunked_session(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and (drive.looks_like(record) or isinstance(record.get("chunks"), list))
+    return record is not None and drive.has_chunk_container(record)
 
 
 def _looks_like_chunked_session_list(payloads: PayloadSequence) -> bool:
@@ -443,6 +449,10 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
             update={
                 "title": existing.title if existing.title != existing.provider_session_id else session.title,
                 "created_at": min(created_values) if created_values else None,
+                "parent_session_provider_id": (
+                    existing.parent_session_provider_id or session.parent_session_provider_id
+                ),
+                "branch_type": existing.branch_type or session.branch_type,
                 "updated_at": max(updated_values) if updated_values else None,
                 "messages": messages,
                 "active_leaf_message_provider_id": active_leaf_message_provider_id,
@@ -455,7 +465,11 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "ingest_flags": sorted({*existing.ingest_flags, *session.ingest_flags}),
             }
         )
-    return list(merged.values())
+    sessions = list(merged.values())
+    return [
+        claude.reconcile_code_session_chunks(session) if session.source_name is Provider.CLAUDE_CODE else session
+        for session in sessions
+    ]
 
 
 def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -> Iterator[ParsedSession]:
@@ -465,14 +479,17 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
     grouping semantics for already-materialized payloads. Raw JSONL ingest and
     repair, however, can be multi-GiB; for that path we split only on contiguous
     ``sessionId`` changes and feed each group to the provider parser as an
-    iterator. That keeps memory proportional to the parsed session currently
-    being written rather than to every raw JSON record in the source blob.
+    iterator. Per-session record-index and UUID continuation state retains no
+    raw payload bytes; its size is proportional to unique record identifiers and
+    makes an interleaved stream semantically identical to eager grouping.
     """
 
     iterator = iter(payloads)
     lookahead: object = _NO_LOOKAHEAD
     pending_prefix: list[object] = []
     first_group = True
+    record_counts_by_session: dict[str, int] = {}
+    seen_record_uuids_by_session: dict[str, set[str]] = {}
 
     def next_item() -> object:
         nonlocal lookahead
@@ -502,13 +519,18 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
         prefix = pending_prefix
         pending_prefix = []
 
+        group_record_count = 0
+
         def group_records(
             prefix: list[object] = prefix,
             first: object = first,
             group_session_id: str = group_session_id,
         ) -> Iterator[object]:
-            nonlocal lookahead
-            yield from prefix
+            nonlocal group_record_count, lookahead
+            for prefix_item in prefix:
+                group_record_count += 1
+                yield prefix_item
+            group_record_count += 1
             yield first
             for item in iterator:
                 record = _payload_record(item)
@@ -516,9 +538,19 @@ def _claude_code_stream_sessions(payloads: Iterable[object], fallback_id: str) -
                 if session_id is not None and session_id != group_session_id:
                     lookahead = item
                     return
+                group_record_count += 1
                 yield item
 
-        yield claude.parse_code_stream(group_records(), group_fallback_id)
+        record_index_start = record_counts_by_session.get(group_session_id, 0)
+        seen_record_uuids = seen_record_uuids_by_session.setdefault(group_session_id, set())
+        session = claude.parse_code_stream(
+            group_records(),
+            group_fallback_id,
+            record_index_start=record_index_start,
+            seen_record_uuids=seen_record_uuids,
+        )
+        record_counts_by_session[group_session_id] = record_index_start + group_record_count
+        yield session
 
 
 def _bundle_record_specs(
@@ -580,6 +612,12 @@ def _lower_drive_like_payload(
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
+        if (
+            payloads
+            and any(drive.looks_like_chunk(item) for item in payloads)
+            and not any(_looks_like_chunked_session(item) for item in payloads)
+        ):
+            return [_chunked_prompt_spec(provider, payloads, fallback_id)]
         if _looks_like_chunked_session_list(payloads):
             nested_specs: list[LoweredPayloadSpec] = []
             for index, item in enumerate(payloads):
@@ -593,7 +631,22 @@ def _lower_drive_like_payload(
                     )
                 )
             return nested_specs
-        return [_chunked_prompt_spec(provider, payloads, fallback_id)]
+        # Drive exports and full-ingest streams can add one or more list/document
+        # wrappers around session records. Recurse through those containers, but
+        # never reinterpret arbitrary records as raw chunks: that would revive
+        # the loose ``chunks`` detector this route is meant to replace.
+        nested_specs = []
+        for index, item in enumerate(payloads):
+            nested_specs.extend(
+                _lower_payload_specs(
+                    provider,
+                    item,
+                    fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                    depth=depth + 1,
+                    schema_resolution=schema_resolution,
+                )
+            )
+        return nested_specs
 
     record = _payload_record(shaped_payload)
     if record is None:
@@ -674,16 +727,15 @@ def _lower_payload_specs(
     if record is not None and (sessions := _record_sessions(record)):
         lowered_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(sessions):
-            if item_record := _payload_record(item):
-                lowered_specs.extend(
-                    _lower_payload_specs(
-                        runtime_provider,
-                        item_record,
-                        f"{fallback_id}-{index}",
-                        depth=depth + 1,
-                        schema_resolution=schema_resolution,
-                    )
+            lowered_specs.extend(
+                _lower_payload_specs(
+                    runtime_provider,
+                    item,
+                    f"{fallback_id}-{index}",
+                    depth=depth + 1,
+                    schema_resolution=schema_resolution,
                 )
+            )
         return lowered_specs
 
     if runtime_provider in BUNDLE_PROVIDERS:

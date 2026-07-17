@@ -128,6 +128,7 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -9461,6 +9462,9 @@ def _archive_provenance(materialization: ArchiveInsightMaterialization) -> Archi
         source_sort_key=(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
+        input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
+        time_confidence=time_confidence_for_source(materialization.input_high_water_mark_source),
     )
 
 
@@ -9471,6 +9475,9 @@ def _archive_inference_provenance(materialization: ArchiveInsightMaterialization
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         inference_version=materialization.materializer_version,
         inference_family="archive",
     )
@@ -9483,6 +9490,9 @@ def _archive_enrichment_provenance(materialization: ArchiveInsightMaterializatio
         materialized_at=base.materialized_at,
         source_updated_at=base.source_updated_at,
         source_sort_key=base.source_sort_key,
+        input_high_water_mark=base.input_high_water_mark,
+        input_high_water_mark_source=base.input_high_water_mark_source,
+        time_confidence=base.time_confidence,
         enrichment_version=materialization.materializer_version,
         enrichment_family="archive",
     )
@@ -9722,7 +9732,7 @@ def _session_profile_record_from_archive_row(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
         input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
-        input_high_water_mark_source=None,
+        input_high_water_mark_source=materialization.input_high_water_mark_source,
         input_row_count=materialization.input_row_count,
         source_name=source_name,
         title=title,

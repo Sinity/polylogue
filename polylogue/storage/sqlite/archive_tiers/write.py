@@ -2080,9 +2080,9 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
         SELECT session_id
         FROM sessions
         WHERE root_session_id = ? OR session_id = ?
-        ORDER BY sort_key_ms IS NULL, sort_key_ms, session_id
+        ORDER BY session_id != ?, sort_key_ms IS NULL, sort_key_ms, session_id
         """,
-        (root_session_id, root_session_id),
+        (root_session_id, root_session_id, root_session_id),
     ).fetchall()
     desired_session_ids = [str(row[0]) for row in session_rows]
     existing_thread = conn.execute(

@@ -23,6 +23,7 @@ Strategies are organized by domain:
 - sources: JSON wire-format container strategies
 - site: Static site generation strategies
 - summaries: Session summary strategies
+- temporal: Independent instant oracle + equivalent-offset cases
 - cli: CLI output and query mutation strategies
 """
 
@@ -151,6 +152,13 @@ from tests.infra.strategies.summaries import (
     session_summary_batch_strategy,
     session_summary_spec_strategy,
 )
+from tests.infra.strategies.temporal import (
+    EquivalentInstantCase,
+    equivalent_instant_case_strategy,
+    standard_datetime,
+    standard_epoch_microseconds,
+    wire_datetime,
+)
 
 __all__ = [
     # Messages (dict-based wire-format)
@@ -267,4 +275,10 @@ __all__ = [
     "fts5_match_text_strategy",
     "search_query_strategy",
     "search_with_since_strategy",
+    # Temporal
+    "EquivalentInstantCase",
+    "equivalent_instant_case_strategy",
+    "standard_datetime",
+    "standard_epoch_microseconds",
+    "wire_datetime",
 ]

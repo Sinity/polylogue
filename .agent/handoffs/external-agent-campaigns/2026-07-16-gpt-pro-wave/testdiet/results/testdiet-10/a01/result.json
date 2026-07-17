@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "campaign_id": "gpt-pro-wave-2026-07-16",
+  "workload_id": "testdiet",
+  "job_id": "testdiet-10",
+  "attempt_id": "a01",
+  "package_revision": "r01",
+  "state": "triaged",
+  "provider": null,
+  "provider_conversation_id": null,
+  "provider_turn_id": null,
+  "polylogue_session_ref": null,
+  "prompt_sha256": "192f4e206f88ce6b76a49bdbf3d2097acef6ed638311c6b9a8538a43d8dec779",
+  "snapshot_identity": "b9052e09103502017c0f510ecc699aac395de23c",
+  "supersedes_attempt_id": null,
+  "artifacts": [
+    {
+      "filename": "testdiet-10-claude-web-normalization-r01.zip",
+      "sha256": "b73e7d46d640dcfbf9a3feec7842ee4ed029e19ef7fe36b49413ef98bffdb91f",
+      "size_bytes": 32845,
+      "custody_path": "testdiet/results/testdiet-10/a01/raw/testdiet-10-claude-web-normalization-r01.zip",
+      "polylogue_attachment_ref": null
+    }
+  ],
+  "triage": "patch applies cleanly",
+  "beads": [],
+  "worktree": null,
+  "agent_handle": null,
+  "commits": [],
+  "pull_request": null,
+  "verification_receipts": [],
+  "notes": "created by triage-package.py; later integration evidence belongs in a new immutable receipt revision"
+}

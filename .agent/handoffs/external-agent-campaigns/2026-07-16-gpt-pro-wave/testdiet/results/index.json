@@ -50,6 +50,96 @@
       "integration": "admitted after current-master reconciliation as PR #3014 / 76ad3e1379bde4829650392e459cd4804abb721d; real restart/debt recovery proof landed, while the missing live FTS-debt feeder remains explicit residual scope"
     },
     {
+      "job": "testdiet-03",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-03-rebuild-equivalence-r01.zip",
+      "sha256": "c3843babc8fc0126401e471c9eaee1db26ad5ccdcabf0e1697d01157e591e47e",
+      "bytes": 26025
+    },
+    {
+      "job": "testdiet-07",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-07-public-fact-parity-r01.zip",
+      "sha256": "95e7bbdfa984daca703160d154a36c39e01e35c23643debf60180b6b9962acbd",
+      "bytes": 24694
+    },
+    {
+      "job": "testdiet-08",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-08-chatgpt-normalization-r01.zip",
+      "sha256": "602019b069c47f9490ed31953a8cfd2bf1201d6ea6c14176a827155c8e6f9f66",
+      "bytes": 25012
+    },
+    {
+      "job": "testdiet-09",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-09-claude-code-normalization-r01.zip",
+      "sha256": "ff1220a65cfa3e882d4887e257a68cfadd34e686f77042fd6a35058912646047",
+      "bytes": 25182
+    },
+    {
+      "job": "testdiet-10",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-10-claude-web-normalization-r01.zip",
+      "sha256": "b73e7d46d640dcfbf9a3feec7842ee4ed029e19ef7fe36b49413ef98bffdb91f",
+      "bytes": 32845
+    },
+    {
+      "job": "testdiet-11",
+      "workload": "testdiet",
+      "state": "rejected_validation_failed",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "11-codex-normalization.zip",
+      "sha256": "00e03464a34e17733f4e18d15637bfd6fe4c9796d440daa51c8ce79d63546a57",
+      "bytes": 3041
+    },
+    {
+      "job": "testdiet-12",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-12-gemini-drive-normalization-r01.zip",
+      "sha256": "5d3b0e9e8f6813ef28690dfa3889822f86c6fd156033d6c12c936eed77133e3e",
+      "bytes": 32474
+    },
+    {
+      "job": "testdiet-13",
+      "workload": "testdiet",
+      "state": "rejected_validation_failed",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "polylogue-output-injection-safety.zip",
+      "sha256": "34cdf6d724bd4d1591fad051dbea14016181309e3166dc3fe83ff7f086395c44",
+      "bytes": 91343599
+    },
+    {
+      "job": "testdiet-15",
+      "workload": "testdiet",
+      "state": "triaged",
+      "attempt_id": "a01",
+      "package_revision": "r01",
+      "artifact": "testdiet-15-temporal-equivalence-r01.zip",
+      "sha256": "693fa6b09b9d69d6662a576ed1195ef9ea0836ab0a796a8241d826165b92b5b5",
+      "bytes": 24864
+    },
+    {
       "job": "testdiet-01",
       "workload": "testdiet",
       "zip": "testdiet-01/r02/raw.zip",
