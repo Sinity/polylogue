@@ -1,5 +1,5 @@
 import preact from '@preact/preset-vite';
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite';
 import { fileURLToPath, URL } from 'node:url';
 
 const daemonUrl = process.env.POLYLOGUE_DAEMON_URL ?? 'http://127.0.0.1:8787';
@@ -36,10 +36,8 @@ export default defineConfig({
       },
     },
   },
-  test: {
-    environment: 'jsdom',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
-    setupFiles: ['./src/test/setup.ts'],
-    restoreMocks: true,
-  },
 });
+
+// Vitest configuration lives in ./vitest.config.ts (single source of truth for
+// the test include/setup/environment so it is shared by every src/**/*.test.*
+// file regardless of which feature added it).

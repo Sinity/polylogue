@@ -13,6 +13,7 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
@@ -20,7 +21,8 @@
     "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
+    "useUnknownInCatchVariables": true,
     "types": ["vitest/globals", "node"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "tests", "*.config.ts"]
 }

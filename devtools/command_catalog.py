@@ -148,6 +148,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "render webui-design-system",
+        "generated surfaces",
+        "Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence.",
+        "devtools.render_webui_design_system",
+        use_when=(
+            "Refresh or verify browser design-system contracts after changing the Python theme "
+            "palette, the public Origin enum, or evidence-state vocabulary."
+        ),
+        examples=(
+            "devtools render webui-design-system",
+            "devtools render webui-design-system --check",
+        ),
+    ),
+    CommandSpec(
         "render devtools-reference",
         "generated surfaces",
         "Render the command catalog inside docs/devtools.md.",

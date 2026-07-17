@@ -261,7 +261,8 @@ test.describe.serial('first-party daemon credentials', () => {
     const valid = await credential(context);
     const list = await directBrowserFetch(page, '/api/sessions?limit=1');
     const sessions = (list.body.sessions ?? list.body.items ?? []) as Array<{ id: string }>;
-    const target = sessions[0].id;
+    expect(sessions).not.toHaveLength(0);
+    const target = sessions[0]!.id;
     let foreign: APIRequestContext | undefined;
     try {
       foreign = await request.newContext({
