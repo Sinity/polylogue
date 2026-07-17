@@ -1194,6 +1194,22 @@ async function ensureTrustedReceiver() {
   return health;
 }
 
+// A page capture reads authenticated provider data before its envelope can be
+// submitted to the receiver.  Do not begin that irreversible read merely to
+// discover later that this browser has never established a receiver identity.
+// `checkReceiverHealth` remains available for pairing diagnostics; this guard
+// is specifically the admission boundary for automatic provider-native work.
+async function requirePairedTrustedReceiver() {
+  const pairing = await storedReceiverPairing();
+  if (!pairing?.receiver_id || !pairing?.api_schema) {
+    const error = new Error("receiver_unpaired");
+    error.code = "receiver_unpaired";
+    error.status = 401;
+    throw error;
+  }
+  return ensureTrustedReceiver();
+}
+
 async function postJson(path, payload, serializedBody = null, timeoutMs = null, requireReceiverRequestId = false) {
   await ensureTrustedReceiver();
   const settings = await receiverSettings();
@@ -1662,6 +1678,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
   if (reason !== "popup_sync_open_tabs" && !(await automaticCaptureEnabled())) {
     return { ok: false, skipped: true, reason: "automatic_capture_paused" };
   }
+  if (reason !== "popup_sync_open_tabs") await requirePairedTrustedReceiver();
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
   if (
@@ -1790,6 +1807,7 @@ async function captureProviderConversation(
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
     throw new Error("exact_provider_capture_invalid_session_id");
   }
+  await requirePairedTrustedReceiver();
   return withProviderTransportOperation(provider, async () => {
     const transport = await providerTab(provider);
     await ensureCaptureScripts(transport.tab);

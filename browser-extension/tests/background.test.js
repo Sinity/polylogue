@@ -1560,8 +1560,21 @@ describe("background receiver diagnostics", () => {
   it("captures an automatically detected missing conversation and records the decision timeline", async () => {
     expect(activatedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-auto-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
     globalThis.fetch = vi.fn(async (url, options) => {
       fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({
+          ok: true,
+          receiver_id: "rx-auto-capture",
+          api_schema: "polylogue-browser-capture/v1",
+        });
+      }
       if (String(url).endsWith("/v1/browser-captures")) {
         return responseJson({
           provider: "chatgpt",
@@ -1606,7 +1619,9 @@ describe("background receiver diagnostics", () => {
 
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
     await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123");
+    expect(fetchCalls.map((call) => call.url)).toContain(
+      "http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
+    );
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled();
@@ -1641,12 +1656,27 @@ describe("background receiver diagnostics", () => {
 
   it("recaptures an archived Claude conversation until that provider has freshness convergence", async () => {
     tabs = [{ id: 42, url: "https://claude.ai/chat/claude-freshness", title: "Claude" }];
-    globalThis.fetch = vi.fn(async () => responseJson({
-      provider: "claude-ai",
-      provider_session_id: "claude-freshness",
-      state: "archived",
-      captured: true,
-    }));
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-claude-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({
+          ok: true,
+          receiver_id: "rx-claude-capture",
+          api_schema: "polylogue-browser-capture/v1",
+        });
+      }
+      return responseJson({
+        provider: "claude-ai",
+        provider_session_id: "claude-freshness",
+        state: "archived",
+        captured: true,
+      });
+    });
 
     activatedListener({ tabId: 42 });
 
@@ -1659,7 +1689,20 @@ describe("background receiver diagnostics", () => {
 
   it("captures a missing conversation once during automatic reconciliation", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-missing-on-start", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-auto-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
     globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({
+          ok: true,
+          receiver_id: "rx-auto-capture",
+          api_schema: "polylogue-browser-capture/v1",
+        });
+      }
       if (String(url).includes("/v1/archive-state")) {
         return responseJson({
           provider: "chatgpt",
@@ -1677,6 +1720,25 @@ describe("background receiver diagnostics", () => {
       type: "polylogue.capturePage",
       reason: "auto_capture_missing",
     }));
+  });
+
+  it("does not read a provider conversation from an unpaired freshness hint", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "unpaired-freshness",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+
+    await vi.waitFor(() => expect(
+      stored.polylogueCaptureFreshnessQueue.entries["chatgpt:unpaired-freshness"]?.last_error,
+    ).toBe("receiver_unpaired"));
+    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   it("does not fetch a missing conversation while automatic capture is paused", async () => {
@@ -1767,16 +1829,31 @@ describe("background receiver diagnostics", () => {
 
   it("records a held decision when automatic capture is throttled", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-123", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-throttle",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
     const now = vi.spyOn(Date, "now");
     now.mockReturnValue(100000);
     await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
     now.mockReturnValue(105000);
-    globalThis.fetch = vi.fn(async () => responseJson({
-      provider: "chatgpt",
-      provider_session_id: "conv-123",
-      state: "missing",
-      captured: false,
-    }));
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({
+          ok: true,
+          receiver_id: "rx-throttle",
+          api_schema: "polylogue-browser-capture/v1",
+        });
+      }
+      return responseJson({
+        provider: "chatgpt",
+        provider_session_id: "conv-123",
+        state: "missing",
+        captured: false,
+      });
+    });
 
     activatedListener({ tabId: 42 });
 
