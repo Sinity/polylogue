@@ -4316,13 +4316,19 @@ def raw_materialization_replay_backlog(
     }
 
 
+def _histogram_upper_bound(value: int) -> int:
+    """Return the inclusive power-of-two bucket for a non-negative value."""
+    upper_bound = 1
+    while upper_bound < max(value, 1):
+        upper_bound *= 2
+    return upper_bound
+
+
 def _histogram(values: Sequence[int], *, field: str) -> list[dict[str, int]]:
     """Summarize numeric frontier shape without retaining identifying rows."""
     buckets: dict[int, int] = {}
     for value in values:
-        upper_bound = 1
-        while upper_bound < max(value, 1):
-            upper_bound *= 2
+        upper_bound = _histogram_upper_bound(value)
         buckets[upper_bound] = buckets.get(upper_bound, 0) + 1
     return [{field: upper_bound, "count": count} for upper_bound, count in sorted(buckets.items())]
 
@@ -4349,13 +4355,23 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     component_raw_counts = [len(component) for component in candidates.authority_components]
     candidate_ids = set(candidates.raw_ids)
     component_cohorts: dict[tuple[int, int], int] = {}
+    component_byte_cohorts: dict[tuple[int, int, int], int] = {}
     for component in candidates.authority_components:
-        key = (len(component), len(candidate_ids.intersection(component)))
+        raw_count = len(component)
+        direct_candidate_count = len(candidate_ids.intersection(component))
+        key = (raw_count, direct_candidate_count)
         component_cohorts[key] = component_cohorts.get(key, 0) + 1
     component_blob_bytes = [
         sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
         for component in candidates.authority_components
     ]
+    for component, blob_bytes in zip(candidates.authority_components, component_blob_bytes, strict=True):
+        byte_key = (
+            len(component),
+            len(candidate_ids.intersection(component)),
+            _histogram_upper_bound(blob_bytes),
+        )
+        component_byte_cohorts[byte_key] = component_byte_cohorts.get(byte_key, 0) + 1
     return {
         "available": True,
         "format": "raw-authority-scale-profile-v1",
@@ -4374,6 +4390,17 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
                 "component_count": count,
             }
             for (raw_count, direct_candidate_count), count in sorted(component_cohorts.items())
+        ],
+        "component_byte_cohort_distribution": [
+            {
+                "component_raw_count": raw_count,
+                "direct_candidate_count": direct_candidate_count,
+                "upper_bound_blob_bytes": upper_bound_blob_bytes,
+                "component_count": count,
+            }
+            for (raw_count, direct_candidate_count, upper_bound_blob_bytes), count in sorted(
+                component_byte_cohorts.items()
+            )
         ],
         "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
         "residual_state_counts": {

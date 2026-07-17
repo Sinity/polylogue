@@ -121,6 +121,14 @@ def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
     assert profile["component_cohort_distribution"] == [
         {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1}
     ]
+    assert profile["component_byte_cohort_distribution"] == [
+        {
+            "component_raw_count": 1,
+            "direct_candidate_count": 1,
+            "upper_bound_blob_bytes": 64,
+            "component_count": 1,
+        }
+    ]
     serialized = str(profile)
     assert "private-native-id" not in serialized
     assert "/private/source/session.jsonl" not in serialized
@@ -259,3 +267,49 @@ def test_raw_authority_scale_proof_converges_with_explicit_deferred_cohort(tmp_p
     assert sum(cast(dict[str, int], item["plan_status_counts"])["deferred"] for item in passes) == 1
     digests = cast(list[str], payload["fixed_point_digests"])
     assert digests[0] == digests[1]
+
+
+def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp_path: Path) -> None:
+    expected = [
+        {
+            "component_raw_count": 1,
+            "direct_candidate_count": 1,
+            "upper_bound_blob_bytes": 1024,
+            "component_count": 1,
+        },
+        {
+            "component_raw_count": 3,
+            "direct_candidate_count": 2,
+            "upper_bound_blob_bytes": 8192,
+            "component_count": 1,
+        },
+    ]
+    scenario = RawAuthorityScaleScenario.from_profile(
+        {
+            "format": "raw-authority-scale-profile-v1",
+            "authority_component_count": 2,
+            "candidate_count": 3,
+            "expanded_candidate_count": 4,
+            "expanded_total_blob_bytes": 6_000,
+            "component_cohort_distribution": [
+                {"component_raw_count": 1, "direct_candidate_count": 1, "component_count": 1},
+                {"component_raw_count": 3, "direct_candidate_count": 2, "component_count": 1},
+            ],
+            "component_byte_cohort_distribution": expected,
+        }
+    )
+
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        keep=True,
+        pass_limit=2,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    requested = cast(dict[str, object], payload["requested_shape"])
+    achieved = cast(dict[str, object], payload["achieved_shape"])
+    assert requested["component_byte_cohort_distribution"] == expected
+    assert achieved["component_byte_cohort_distribution"] == expected
+    assert achieved["expanded_total_blob_bytes"] == 6_000
