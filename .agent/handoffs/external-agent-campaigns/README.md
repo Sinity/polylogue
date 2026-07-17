@@ -91,3 +91,13 @@ provider upload/retrieval limit, privacy boundary, or irrelevance.
 Generated result packages must not copy the supplied repository/state archive
 back into their output. They contain only new analysis, patches, tests,
 evidence, and explanation.
+
+For any externally linked artifact, acquire it before triage with the generic
+URL custody command. It accepts HTTP(S) and file URLs, streams with a declared
+byte ceiling, hashes while writing, atomically publishes the raw artifact, and
+writes `acquisition.json`; it does not know a provider or browser workflow.
+
+```bash
+python .agent/handoffs/external-agent-campaigns/acquire_artifact.py WAVE_ROOT \
+  --workload WORKLOAD --job JOB --attempt aNN --url URL
+```
