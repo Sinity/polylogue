@@ -1979,6 +1979,37 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
     assert [outcome.status.value for outcome in result.plan_outcomes].count("executed") == 2
 
 
+def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success flag must not conceal a mutated before/after plan algebra."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"conservation"}}\n',
+            source_path="conservation.jsonl",
+            acquired_at_ms=1,
+        )
+
+    original = repair_mod._raw_replay_conservation_metrics
+
+    def corrupt_outcome_algebra(*args: object, **kwargs: object) -> tuple[int, int, int]:
+        plans, carried_forward, _errors = original(*args, **kwargs)
+        return plans, carried_forward, 1
+
+    monkeypatch.setattr(repair_mod, "_raw_replay_conservation_metrics", corrupt_outcome_algebra)
+    result = repair_mod.repair_raw_materialization(_config(tmp_path))
+
+    assert result.repaired_count == 1
+    assert result.metrics["raw_materialization_plan_conservation_error_count"] == 1.0
+    assert result.success is False
+
+
 def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: Path) -> None:
     """One revision-heavy source must not consume the whole daemon batch."""
     from polylogue.core.enums import Provider

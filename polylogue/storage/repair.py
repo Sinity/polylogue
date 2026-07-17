@@ -6138,6 +6138,7 @@ def repair_raw_materialization(
         and replay.adoption_deferred == 0
         and remaining.adoption_deferred == 0
         and remaining.byte_authority_pending == 0
+        and conservation_error_count == 0
         and not any(outcome.status is RawReplayPlanStatus.REJECTED_STALE for outcome in plan_outcomes)
         and (
             raw_artifact_id is None
