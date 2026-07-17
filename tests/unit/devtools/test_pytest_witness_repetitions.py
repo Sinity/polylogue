@@ -107,4 +107,26 @@ def test_repetitions_retain_timeout_without_retry(tmp_path: Path) -> None:
     assert not receipt.ok
     assert len(receipt.attempts) == len(WITNESSES) * 2
     assert receipt.attempts[0].status == "timed_out"
-    assert "exceeded" in (receipt.attempts[0].failure or "")
+    assert "15s" in (receipt.attempts[0].failure or "")
+
+
+def test_repetitions_fail_a_completed_attempt_over_the_evidence_bound(tmp_path: Path) -> None:
+    calls = 0
+
+    def runner(
+        command: Sequence[str], root: Path, _env: dict[str, str], _timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        _write_managed_run(root, ordinal=calls, nodeid=command[4])
+        run = root / ".cache" / "verify" / "runs" / f"run-{calls}" / "run.json"
+        payload = json.loads(run.read_text(encoding="utf-8"))
+        payload["steps"][0]["duration_s"] = 10.1
+        run.write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    receipt = run_repetitions(source_root=tmp_path, attempts_per_mode=1, timeout_s=10, runner=runner)
+
+    assert not receipt.ok
+    assert receipt.attempts[0].status == "passed"
+    assert receipt.attempts[0].duration_s == 10.1

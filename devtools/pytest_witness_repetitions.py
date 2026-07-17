@@ -27,6 +27,7 @@ from devtools import repo_root
 
 _CACHE_ROOT = Path(".cache") / "pytest-witness-repetitions"
 _WORKER_RE = re.compile(r"\[(gw\d+)\]")
+_OWNER_SHUTDOWN_GRACE_S = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,8 +189,11 @@ def _receipt_from_run(
     report_path = step.get("report_path")
     report = _read_json(root / report_path) if isinstance(report_path, str) else None
     node_duration, worker_id = _node_metadata(report, nodeid)
-    containment_path = step.get("containment_path")
-    containment = _read_json(root / containment_path) if isinstance(containment_path, str) else None
+    containment_path = run_dir / "steps" / "01-pytest-focused" / "containment.json"
+    containment = _read_json(containment_path)
+    if containment is None:
+        current_path = step.get("containment_path")
+        containment = _read_json(root / current_path) if isinstance(current_path, str) else None
     archive_root_scope = containment.get("tmpfs_cleanup_path") if containment else None
     if not isinstance(archive_root_scope, str):
         archive_root_scope = None
@@ -201,7 +205,7 @@ def _receipt_from_run(
         worker_id,
         archive_root_scope,
         archive_root_cleaned,
-        str(run_dir / "steps" / "01-pytest-focused" / "containment.json"),
+        str(containment_path),
         process_group_cleaned,
     )
 
@@ -226,7 +230,7 @@ def _attempt(
     env = os.environ.copy()
     env["POLYLOGUE_PYTEST_WORKERS"] = str(workers)
     try:
-        completed = runner(command, root, env, timeout_s)
+        completed = runner(command, root, env, timeout_s + _OWNER_SHUTDOWN_GRACE_S)
         completed_run_dir = _single_new_run(root, before)
         duration_s, node_duration_s, worker_id, archive_scope, archive_cleaned, containment, group_cleaned = (
             _receipt_from_run(completed_run_dir, root=root, nodeid=witness.nodeid)
@@ -287,7 +291,10 @@ def _attempt(
             containment_receipt=containment,
             process_group_cleaned=group_cleaned,
             awaited_lifecycle=witness.awaited_lifecycle,
-            failure=f"managed invocation exceeded {timeout_s:g}s: {exc}",
+            failure=(
+                f"managed invocation did not finish within {timeout_s + _OWNER_SHUTDOWN_GRACE_S:g}s "
+                f"(including {timeout_s:g}s evidence bound): {exc}"
+            ),
         )
 
 
