@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -242,6 +243,57 @@ def test_journal_replays_lone_surrogate_provider_values_without_utf8_failure(tmp
     with ObservationJournal.create(root=tmp_path / "journals") as journal:
         journal.append_unit(unit)
         assert list(journal.iter_units()) == [unit]
+
+
+def test_journal_flushes_private_ingest_before_replay(tmp_path: Path) -> None:
+    """A long generation may observe indefinitely without making one giant WAL."""
+    root = tmp_path / "journals"
+    with ObservationJournal.create(root=root) as journal:
+        journal.append_unit(_unit())
+        journal.flush()
+
+        with sqlite3.connect(journal.path) as reader:
+            assert reader.execute("SELECT COUNT(*) FROM units").fetchone() == (1,)
+            assert reader.execute("SELECT COUNT(*) FROM samples").fetchone() == (2,)
+
+
+def test_selective_membership_replay_uses_units_before_samples(tmp_path: Path) -> None:
+    """Package replay must not scan every sample before applying its package filter."""
+    with ObservationJournal.create(root=tmp_path / "journals") as journal:
+        for index in range(32):
+            unit_id = journal.append_unit(
+                SchemaUnit(
+                    cluster_payload={},
+                    schema_samples=[{"index": index}],
+                    artifact_kind="session_record_stream",
+                    exact_structure_id=f"shape-{index}",
+                    profile_tokens=("field:index",),
+                ),
+                retain_cluster_payload=False,
+            )
+            journal.assign_profile_family(unit_id, "selected" if index == 0 else "other")
+            journal.assign_package_family(unit_id, "selected" if index == 0 else "other")
+        journal.flush()
+
+        where, parameters = journal._membership_where(
+            profile_family_id="selected",
+            package_family_id="selected",
+            artifact_kind="session_record_stream",
+        )
+        plan = [
+            str(row[-1])
+            for row in journal._connection.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT units.*, samples.position, samples.sample_json "
+                "FROM units JOIN samples ON samples.unit_id = units.unit_id "
+                f"WHERE {where} ORDER BY samples.unit_id, samples.position",
+                parameters,
+            )
+        ]
+
+        assert any("SEARCH units USING INDEX units_package_family_idx" in detail for detail in plan)
+        assert any("SEARCH samples USING PRIMARY KEY (unit_id=?)" in detail for detail in plan)
+        assert list(journal.memberships(package_family_id="selected"))[0].unit.schema_samples == [{"index": 0}]
 
 
 def test_journal_cleanup_runs_for_exceptions(tmp_path: Path) -> None:

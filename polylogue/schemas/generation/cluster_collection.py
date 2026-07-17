@@ -105,6 +105,10 @@ def collect_cluster_analysis(
         for unit in observed_units:
             observe_summary(unit)
             journal.append_unit(unit, retain_cluster_payload=False)
+        # The following phases replay the journal repeatedly. Commit its final
+        # ingest batch first so reads do not repeatedly traverse one enormous
+        # writer WAL instead of the checkpointable journal database.
+        journal.flush()
 
     coarse_clusters: list[_ClusterAccumulator] = []
     ordered_summaries: Iterable[tuple[object, _ProfileSummary]]

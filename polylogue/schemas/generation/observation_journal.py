@@ -28,6 +28,8 @@ _JOURNAL_FORMAT = 1
 _DEFAULT_STALE_AGE_S = 24 * 60 * 60
 _ROOT_MODE = 0o700
 _FILE_MODE = 0o600
+_COMMIT_UNIT_LIMIT = 1_024
+_COMMIT_PAYLOAD_BYTES_LIMIT = 32 * 1024 * 1024
 _DISTINCT_UNIT_COLUMNS = frozenset({"bundle_scope", "exact_structure_id", "profile_family_id"})
 DistinctUnitColumn = Literal["bundle_scope", "exact_structure_id", "profile_family_id"]
 _SCOPE_KEY_SQL = (
@@ -161,7 +163,28 @@ class ObservationJournal:
         self.path = path
         self._connection = connection
         self._closed = False
+        self._pending_unit_count = 0
+        self._pending_payload_bytes = 0
         self._previous_signal_handlers: dict[signal.Signals, object] = {}
+
+    def _record_pending_write(self, payload_bytes: int = 0) -> None:
+        """Bound one private WAL transaction without changing observations.
+
+        The journal is only a run-scoped staging spool: nothing becomes a
+        generated package until the enclosing generation returns successfully.
+        Committing batches therefore changes neither output atomicity nor
+        evidence semantics, but prevents a full archive from becoming one
+        uncheckpointable WAL transaction.
+        """
+        self._pending_payload_bytes += payload_bytes
+        if self._pending_unit_count >= _COMMIT_UNIT_LIMIT or self._pending_payload_bytes >= _COMMIT_PAYLOAD_BYTES_LIMIT:
+            self.flush()
+
+    def flush(self) -> None:
+        """Commit pending private journal evidence before a replay phase."""
+        self._connection.commit()
+        self._pending_unit_count = 0
+        self._pending_payload_bytes = 0
 
     def _handle_termination(self, signum: int, frame: FrameType | None) -> NoReturn:
         """Turn ordinary termination into stack unwinding through ``__exit__``."""
@@ -281,7 +304,7 @@ class ObservationJournal:
 
                 CREATE INDEX units_artifact_kind_idx ON units(artifact_kind, unit_id);
                 CREATE INDEX units_bundle_scope_idx ON units(bundle_scope, unit_id);
-                CREATE INDEX units_profile_family_idx ON units(profile_family_id, unit_id);
+                CREATE INDEX units_profile_family_idx ON units(profile_family_id, artifact_kind, unit_id);
                 CREATE INDEX units_package_family_idx ON units(package_family_id, package_selected, artifact_kind, unit_id);
                 CREATE INDEX profile_summaries_family_idx
                     ON profile_summaries(profile_family_id, artifact_kind, profile_tokens_json);
@@ -299,6 +322,17 @@ class ObservationJournal:
 
     def append_unit(self, unit: SchemaUnit, *, retain_cluster_payload: bool = True) -> int:
         """Append one canonical unit and its independently replayable samples."""
+        cluster_payload_json = _canonical_json(unit.cluster_payload if retain_cluster_payload else {})
+        profile_tokens_json = _canonical_json(list(unit.profile_tokens))
+        sample_payload_bytes = 0
+
+        def sample_rows() -> Iterator[tuple[int, bytes]]:
+            nonlocal sample_payload_bytes
+            for position, sample in enumerate(unit.schema_samples):
+                sample_json = _canonical_json(sample)
+                sample_payload_bytes += len(sample_json)
+                yield position, sample_json
+
         cursor = self._connection.execute(
             """
             INSERT INTO units(
@@ -308,7 +342,7 @@ class ObservationJournal:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                _canonical_json(unit.cluster_payload if retain_cluster_payload else {}),
+                cluster_payload_json,
                 unit.artifact_kind,
                 unit.session_id,
                 unit.raw_id,
@@ -316,7 +350,7 @@ class ObservationJournal:
                 unit.bundle_scope,
                 unit.observed_at,
                 unit.exact_structure_id,
-                _canonical_json(list(unit.profile_tokens)),
+                profile_tokens_json,
                 len(unit.schema_samples),
             ),
         )
@@ -325,8 +359,10 @@ class ObservationJournal:
         unit_id = cursor.lastrowid
         self._connection.executemany(
             "INSERT INTO samples(unit_id, position, sample_json) VALUES (?, ?, ?)",
-            ((unit_id, position, _canonical_json(sample)) for position, sample in enumerate(unit.schema_samples)),
+            ((unit_id, position, sample_json) for position, sample_json in sample_rows()),
         )
+        self._pending_unit_count += 1
+        self._record_pending_write(len(cluster_payload_json) + len(profile_tokens_json) + sample_payload_bytes)
         return unit_id
 
     def record_terminal(
@@ -345,6 +381,9 @@ class ObservationJournal:
             VALUES (?, ?, ?, ?, ?)
             """,
             (raw_id, status, artifact_kind, source_path, reason),
+        )
+        self._record_pending_write(
+            sum(len(value.encode("utf-8")) for value in (raw_id, artifact_kind, source_path, reason) if value)
         )
 
     def observe_profile_summary(self, unit: SchemaUnit, *, dominant_keys: Sequence[str]) -> None:
@@ -387,6 +426,9 @@ class ObservationJournal:
                     profile_tokens_json,
                 ),
             )
+        self._record_pending_write(
+            len(profile_tokens_json) + sum(len(key.encode("utf-8")) for key in dominant_keys[:20])
+        )
 
     def iter_profile_summaries(self) -> Iterator[_ProfileSummary]:
         """Replay exact summaries in deterministic clustering priority order."""
@@ -783,7 +825,7 @@ class ObservationJournal:
         joined_query = (
             "SELECT units.*, samples.position AS replay_position, "
             "samples.sample_json AS replay_sample_json "
-            "FROM samples CROSS JOIN units ON units.unit_id = samples.unit_id "
+            "FROM units JOIN samples ON samples.unit_id = units.unit_id "
             f"WHERE {where} ORDER BY samples.unit_id, samples.position"
         )
         current_row: sqlite3.Row | None = None
@@ -1005,7 +1047,7 @@ class ObservationJournal:
             return
         self._closed = True
         try:
-            self._connection.commit()
+            self.flush()
         finally:
             try:
                 self._connection.close()
