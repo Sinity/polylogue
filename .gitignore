@@ -67,6 +67,8 @@ webui/test-results/
 
 # Legacy build-tool defaults that may still appear at the repo root
 dist/
+!polylogue/daemon/static/dist/
+!polylogue/daemon/static/dist/**
 
 # Agent workspace: track reusable scaffold, ignore live state/artifacts
 .agent/*

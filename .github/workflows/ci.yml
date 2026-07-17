@@ -128,6 +128,11 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci
         working-directory: webui
+      - run: npm test
+        working-directory: webui
+      - run: npm run build
+        working-directory: webui
+      - run: git diff --exit-code -- polylogue/daemon/static/dist
       - run: npm run install:e2e-browser:ci
         working-directory: webui
       - run: npm run test:e2e

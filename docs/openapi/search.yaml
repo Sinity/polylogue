@@ -2989,6 +2989,20 @@ x-polylogue-route-contracts:
   response_contract: text/html web shell
   notes: HTML bootstrap only; shell JavaScript obtains an HttpOnly first-party credential before /api calls.
 - method: GET
+  pattern: /app
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic archive overview HTML
+  notes: SSR-first WebUI v2 strangler mount; Preact enhances only bounded continuation controls.
+- method: GET
+  pattern: /app/assets/:asset
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: manifest-governed immutable Vite asset
+  notes: Only content-hashed files named by the packaged Vite manifest are served.
+- method: GET
   pattern: /s/:session_id
   kind: browser_shell
   stability: shell_supported

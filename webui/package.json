@@ -2,13 +2,33 @@
   "name": "polylogue-webui",
   "private": true,
   "version": "0.0.0",
+  "description": "Polylogue progressive WebUI islands and browser contract tests",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
+    "build": "npm run typecheck && vite build",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "install:e2e-browser": "playwright install chromium",
     "install:e2e-browser:ci": "playwright install --with-deps chromium",
     "test:e2e": "playwright test"
   },
+  "dependencies": {
+    "preact": "10.29.7"
+  },
   "devDependencies": {
     "@playwright/test": "1.61.1",
-    "typescript": "5.9.3"
-  }
+    "@preact/preset-vite": "2.10.2",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/preact": "3.2.4",
+    "@types/node": "24.10.1",
+    "jsdom": "27.2.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  },
+  "packageManager": "npm@10.9.2"
 }
