@@ -30,6 +30,8 @@ _ROOT_MODE = 0o700
 _FILE_MODE = 0o600
 _COMMIT_UNIT_LIMIT = 1_024
 _COMMIT_PAYLOAD_BYTES_LIMIT = 32 * 1024 * 1024
+_SAMPLE_INSERT_BATCH_ROWS = 512
+_SAMPLE_INSERT_BATCH_BYTES = 1024 * 1024
 _DISTINCT_UNIT_COLUMNS = frozenset({"bundle_scope", "exact_structure_id", "profile_family_id"})
 DistinctUnitColumn = Literal["bundle_scope", "exact_structure_id", "profile_family_id"]
 _SCOPE_KEY_SQL = (
@@ -324,15 +326,6 @@ class ObservationJournal:
         """Append one canonical unit and its independently replayable samples."""
         cluster_payload_json = _canonical_json(unit.cluster_payload if retain_cluster_payload else {})
         profile_tokens_json = _canonical_json(list(unit.profile_tokens))
-        sample_payload_bytes = 0
-
-        def sample_rows() -> Iterator[tuple[int, bytes]]:
-            nonlocal sample_payload_bytes
-            for position, sample in enumerate(unit.schema_samples):
-                sample_json = _canonical_json(sample)
-                sample_payload_bytes += len(sample_json)
-                yield position, sample_json
-
         cursor = self._connection.execute(
             """
             INSERT INTO units(
@@ -357,12 +350,31 @@ class ObservationJournal:
         if cursor.lastrowid is None:
             raise RuntimeError("Observation journal did not return a unit identity")
         unit_id = cursor.lastrowid
-        self._connection.executemany(
-            "INSERT INTO samples(unit_id, position, sample_json) VALUES (?, ?, ?)",
-            ((unit_id, position, sample_json) for position, sample_json in sample_rows()),
-        )
+
+        sample_rows: list[tuple[int, bytes]] = []
+        sample_payload_bytes = 0
+
+        def write_sample_batch() -> None:
+            nonlocal sample_payload_bytes
+            if not sample_rows:
+                return
+            self._connection.executemany(
+                "INSERT INTO samples(unit_id, position, sample_json) VALUES (?, ?, ?)",
+                ((unit_id, position, sample_json) for position, sample_json in sample_rows),
+            )
+            self._record_pending_write(sample_payload_bytes)
+            sample_rows.clear()
+            sample_payload_bytes = 0
+
+        for position, sample in enumerate(unit.schema_samples):
+            sample_json = _canonical_json(sample)
+            sample_rows.append((position, sample_json))
+            sample_payload_bytes += len(sample_json)
+            if len(sample_rows) >= _SAMPLE_INSERT_BATCH_ROWS or sample_payload_bytes >= _SAMPLE_INSERT_BATCH_BYTES:
+                write_sample_batch()
+        write_sample_batch()
         self._pending_unit_count += 1
-        self._record_pending_write(len(cluster_payload_json) + len(profile_tokens_json) + sample_payload_bytes)
+        self._record_pending_write(len(cluster_payload_json) + len(profile_tokens_json))
         return unit_id
 
     def record_terminal(
