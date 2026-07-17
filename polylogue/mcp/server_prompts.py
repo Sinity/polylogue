@@ -12,10 +12,10 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from typing_extensions import TypedDict
 
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.mcp.archive_support import archive_query_filters, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -23,7 +23,11 @@ if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.mcp.server_support import ServerCallbacks
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
 
@@ -199,20 +203,39 @@ def _archive_prompt_session_by_id(archive: ArchiveStore, token: str) -> PromptSe
         return None
 
 
-def _prompt_sessions_from_config(hooks: Any, spec: SessionQuerySpec) -> list[PromptSession]:
+async def _prompt_sessions_from_config(hooks: Any, spec: SessionQuerySpec) -> list[PromptSession]:
     config = hooks.get_config()
     try:
-        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-            return _archive_prompt_sessions(archive, spec)
+        return await run_archive_read(
+            mcp_archive_root(config),
+            operation="prompt.sessions",
+            arguments={
+                "query": spec.query_terms,
+                "limit": spec.limit,
+                "offset": spec.offset,
+                "origins": spec.origins,
+                "since": spec.since,
+            },
+            work=lambda archive: _archive_prompt_sessions(archive, spec),
+            page_size=spec.limit,
+            offset=spec.offset,
+            projection="prompt-session",
+            stable_order="date,session_id",
+        )
     except sqlite3.OperationalError:
         return []
 
 
-def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession | None:
+async def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSession | None:
     config = hooks.get_config()
     try:
-        with ArchiveStore.open_existing(mcp_archive_root(config)) as archive:
-            return _archive_prompt_session_by_id(archive, token)
+        return await run_archive_read(
+            mcp_archive_root(config),
+            operation="prompt.session",
+            arguments={"session_id": token},
+            work=lambda archive: _archive_prompt_session_by_id(archive, token),
+            projection="prompt-session",
+        )
     except sqlite3.OperationalError:
         return None
 
@@ -257,7 +280,7 @@ Envelope:
             since=since,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         error_contexts: list[ErrorContextPayload] = []
         for conv in convs:
@@ -298,7 +321,7 @@ Error contexts:
             since=week_ago,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         by_origin: dict[str, int] = {}
         total_messages = 0
@@ -326,7 +349,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
     @mcp.prompt()
     async def extract_code(language: str = "", limit: int = 50) -> str:
         spec = MCPSessionQueryRequest(limit=limit).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         code_snippets: list[ExtractedCodeSnippetPayload] = []
         for conv in convs:
@@ -356,8 +379,8 @@ Code snippets:
 
     @mcp.prompt()
     async def compare_sessions(id1: str, id2: str) -> str:
-        conv1 = _prompt_session_by_id_from_config(hooks, id1)
-        conv2 = _prompt_session_by_id_from_config(hooks, id2)
+        conv1 = await _prompt_session_by_id_from_config(hooks, id1)
+        conv2 = await _prompt_session_by_id_from_config(hooks, id2)
 
         return f"""Compare these two sessions and analyze:
 
@@ -379,7 +402,7 @@ Session 2:
             origin=origin,
             limit=limit,
         ).build_spec(hooks.clamp_limit)
-        convs = _prompt_sessions_from_config(hooks, spec)
+        convs = await _prompt_sessions_from_config(hooks, spec)
 
         summaries: list[SessionPatternPayload] = []
         for conv in convs:

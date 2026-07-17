@@ -6,6 +6,7 @@ import json
 
 import click
 
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_path
 
 
@@ -23,8 +24,6 @@ from polylogue.paths import archive_file_set_root_for_paths, archive_root, db_pa
 )
 def archive_read_command(query: str | None, origin: str | None, limit: int, output_format: str) -> None:
     """Read index sessions from the archive."""
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
     root = archive_file_set_root_for_paths(archive_root_path=archive_root(), db_anchor=db_path())
     index_db_path = root / "index.db"
     if not index_db_path.exists():
@@ -35,7 +34,14 @@ def archive_read_command(query: str | None, origin: str | None, limit: int, outp
             click.echo(f"Blocked: {message}", err=True)
         raise SystemExit(1)
 
-    with ArchiveStore.open_existing(root) as archive:
+    with archive_read_context(
+        root,
+        operation="cli.maintenance.archive_read",
+        arguments={"query": query, "origin": origin, "limit": limit},
+        page_size=limit,
+        projection=output_format,
+        workload_class="scan" if query else "interactive",
+    ) as archive:
         if query is not None:
             hits = archive.search_summaries(query, limit=limit, origin=origin)
             if output_format == "json":

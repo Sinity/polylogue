@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from polylogue.archive.query.execution_control import (
+    InterruptibleSQLiteRead,
     QueryAdmissionController,
     QueryExecutionContext,
     WorkloadClass,
@@ -200,4 +202,112 @@ class QueryTransaction:
         )
 
 
-__all__ = ["QueryContinuation", "QueryResultPage", "QueryTransaction", "QueryTransactionRequest"]
+def _page_size(value: int | None) -> int:
+    return max(1, int(value)) if value is not None else 1
+
+
+async def run_archive_read(
+    archive_root: Path,
+    *,
+    operation: str,
+    arguments: Mapping[str, object],
+    work: Callable[[ArchiveStore], T],
+    page_size: int | None = None,
+    offset: int = 0,
+    projection: str = "default",
+    stable_order: str = "canonical",
+    workload_class: WorkloadClass = "interactive",
+    admission_weight: int = 1,
+    controller: QueryAdmissionController | None = None,
+) -> T:
+    """Run one named read through the shared transaction boundary."""
+    transaction = QueryTransaction(
+        archive_root,
+        QueryTransactionRequest(
+            operation=operation,
+            arguments=dict(arguments),
+            page_size=_page_size(page_size),
+            offset=max(0, offset),
+            projection=projection,
+            stable_order=stable_order,
+        ),
+        workload_class=workload_class,
+        admission_weight=admission_weight,
+        controller=controller,
+    )
+    return await transaction.run(work)
+
+
+def run_archive_read_sync(
+    archive_root: Path,
+    *,
+    operation: str,
+    arguments: Mapping[str, object],
+    work: Callable[[ArchiveStore], T],
+    page_size: int | None = None,
+    offset: int = 0,
+    projection: str = "default",
+    stable_order: str = "canonical",
+    workload_class: WorkloadClass = "interactive",
+    admission_weight: int = 1,
+    controller: QueryAdmissionController | None = None,
+) -> T:
+    """Run one named read through the shared transaction boundary synchronously."""
+    transaction = QueryTransaction(
+        archive_root,
+        QueryTransactionRequest(
+            operation=operation,
+            arguments=dict(arguments),
+            page_size=_page_size(page_size),
+            offset=max(0, offset),
+            projection=projection,
+            stable_order=stable_order,
+        ),
+        workload_class=workload_class,
+        admission_weight=admission_weight,
+        controller=controller,
+    )
+    return transaction.run_sync(work)
+
+
+@contextmanager
+def archive_read_context(
+    archive_root: Path,
+    *,
+    operation: str,
+    arguments: Mapping[str, object],
+    page_size: int | None = None,
+    offset: int = 0,
+    projection: str = "default",
+    stable_order: str = "canonical",
+    workload_class: WorkloadClass = "interactive",
+    admission_weight: int = 1,
+) -> Iterator[ArchiveStore]:
+    """Expose one controlled store to callers already running in a worker thread."""
+    transaction = QueryTransaction(
+        archive_root,
+        QueryTransactionRequest(
+            operation=operation,
+            arguments=dict(arguments),
+            page_size=_page_size(page_size),
+            offset=max(0, offset),
+            projection=projection,
+            stable_order=stable_order,
+        ),
+        workload_class=workload_class,
+        admission_weight=admission_weight,
+    )
+    reader = InterruptibleSQLiteRead(transaction.context)
+    with reader.open_context(archive_root) as archive:
+        yield archive
+
+
+__all__ = [
+    "QueryContinuation",
+    "QueryResultPage",
+    "QueryTransaction",
+    "QueryTransactionRequest",
+    "archive_read_context",
+    "run_archive_read",
+    "run_archive_read_sync",
+]

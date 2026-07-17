@@ -359,6 +359,37 @@ class InterruptibleSQLiteRead:
                 self._store = None
             store.close()
 
+    @contextmanager
+    def open_context(self, archive_root: Path, *, read_timeout: float = 5.0) -> Iterator[ArchiveStore]:
+        """Yield the controlled store for already-threaded synchronous surfaces."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        ctx = self._ctx
+        with default_admission_controller().admit_blocking(ctx):
+            store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+            with self._store_lock:
+                self._store = store
+            try:
+                store.set_read_progress_guard(
+                    lambda: 1 if ctx.should_abort() else 0,
+                    n_opcodes=PROGRESS_GUARD_OPCODES,
+                )
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                ctx.receipt.state = "running"
+                yield store
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                ctx.receipt.state = "completed"
+            except Exception as exc:
+                ctx.receipt.state = "failed"
+                ctx.receipt.error = f"{type(exc).__name__}"
+                raise
+            finally:
+                with self._store_lock:
+                    self._store = None
+                store.close()
+
 
 def _is_interrupt_error(exc: Exception) -> bool:
     import sqlite3

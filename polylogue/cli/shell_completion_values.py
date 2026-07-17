@@ -37,6 +37,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_sources,
 )
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import active_index_db_path
@@ -90,13 +91,17 @@ def _run_completion(action: ArchiveCompletionAction) -> list[CompletionItem]:
     Any failure (missing/locked database, unexpected schema) degrades to an
     empty list so completion never raises into the shell.
     """
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
     index_db = active_index_db_path()
     if not index_db.exists():
         return []
     try:
-        with ArchiveStore.open_existing(index_db.parent, read_only=True) as archive:
+        with archive_read_context(
+            index_db.parent,
+            operation="cli.completion",
+            arguments={"action": getattr(action, "__name__", "completion")},
+            page_size=_MAX_VALUE_COMPLETIONS,
+            projection="completion",
+        ) as archive:
             return list(action(archive))
     except Exception:
         return []

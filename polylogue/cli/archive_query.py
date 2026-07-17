@@ -39,6 +39,7 @@ from polylogue.archive.query.spec import (
     normalize_action_terms,
     parse_query_date,
 )
+from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
@@ -142,7 +143,12 @@ def execute_delete_by_session_ids(
     config = load_effective_config(env)
     archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
-    with ArchiveStore.open_existing(archive_root) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.delete.resolve",
+        arguments={"session_ids": session_ids, "dry_run": dry_run},
+        projection="delete-preview",
+    ) as archive:
         _emit_delete(env, archive, tuple(session_ids), params=params)
 
 
@@ -371,7 +377,22 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         raise click.UsageError("Root query cannot combine delete with --set.")
 
     db_open_started_at = perf_counter()
-    with ArchiveStore.open_existing(archive_root) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.root_query",
+        arguments={
+            "query": query,
+            "unit_source": unit_source_query,
+            "limit": limit,
+            "offset": page_offset,
+            "params": params,
+        },
+        page_size=limit,
+        offset=page_offset,
+        projection=output_format,
+        stable_order=sort or "date,session_id",
+        workload_class="scan" if unit_source is not None or params.get("stats_only") else "interactive",
+    ) as archive:
         env.record_timing("db-open", db_open_started_at)
         if unit_source is not None:
             if any(

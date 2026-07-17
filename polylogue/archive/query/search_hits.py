@@ -273,17 +273,28 @@ async def search_hits_for_plan(
         return []
 
     from polylogue.archive.query.archive_execution import archive_search_hits
+    from polylogue.archive.query.transaction import run_archive_read
     from polylogue.paths import archive_file_set_root_for_paths
 
     archive_root = archive_file_set_root_for_paths(
         archive_root_path=config.archive_root,
         db_anchor=config.db_path,
     )
-    paired, resolved_lane = archive_search_hits(
-        plan,
-        archive_root=archive_root,
-        config=config,
-        default_limit=plan.limit or search_limit(plan),
+    paired, resolved_lane = await run_archive_read(
+        archive_root,
+        operation="archive.query.search-hits-for-plan",
+        arguments={"plan": plan, "default_limit": plan.limit or search_limit(plan)},
+        work=lambda archive: archive_search_hits(
+            plan,
+            archive_root=archive_root,
+            config=config,
+            default_limit=plan.limit or search_limit(plan),
+            archive=archive,
+        ),
+        page_size=plan.limit or search_limit(plan),
+        offset=plan.offset,
+        projection="search-hits",
+        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
     )
     query_terms = (query_text,) if query_text else ()
     terms = search_terms(query_terms)

@@ -298,6 +298,7 @@ def archive_session_list_payload(
             archive_root=resolved_archive_root,
             config=config,
             default_limit=default_limit,
+            archive=archive,
         )
         match_counts: dict[str, int] = {}
         summaries_by_id: dict[str, ArchiveSessionSummary] = {}
@@ -433,6 +434,7 @@ def archive_search_payload(
             archive_root=resolved_archive_root,
             config=config,
             default_limit=limit,
+            archive=archive,
         )
         return build_search_envelope(
             tuple(archive_search_hit_payload(hit, archive=archive) for hit, _summary in pairs),
