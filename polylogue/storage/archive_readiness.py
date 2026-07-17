@@ -107,6 +107,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "unchecked",
         "affected_unchecked",
         "raw_authority_frontier_blocking_count",
+        "raw_authority_blocker_count",
         "raw_authority_pending_census_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)

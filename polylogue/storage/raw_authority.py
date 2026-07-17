@@ -778,6 +778,32 @@ def record_raw_authority_census(
     scope_json = _canonical_json(scope)
     residual_json = _canonical_json(residual)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
+        # A frontier preview authorizes an immutable execution exactly once.
+        # This runs in the census INSERT transaction, so two offline callers
+        # cannot both turn one unchanged preview into execution receipts.
+        if mode == "apply" and scope.get("schema") == "polylogue.raw-authority-frontier-scope.v1":
+            preview_census_id = scope.get("preview_census_id")
+            if isinstance(preview_census_id, str) and preview_census_id and selected_plan_ids:
+                placeholders = ",".join("?" for _ in selected_plan_ids)
+                duplicate = conn.execute(
+                    f"""
+                    SELECT existing.census_id
+                    FROM raw_authority_censuses AS existing
+                    JOIN raw_authority_census_plans AS cp ON cp.census_id = existing.census_id
+                    WHERE existing.mode = 'apply'
+                      AND json_extract(existing.scope_json, '$.schema') =
+                          'polylogue.raw-authority-frontier-scope.v1'
+                      AND json_extract(existing.scope_json, '$.preview_census_id') = ?
+                      AND cp.selected = 1
+                      AND cp.plan_id IN ({placeholders})
+                    LIMIT 1
+                    """,
+                    (preview_census_id, *sorted(selected_plan_ids)),
+                ).fetchone()
+                if duplicate is not None:
+                    raise RuntimeError(
+                        f"raw authority frontier preview plan is already claimed by census {duplicate[0]}"
+                    )
         previous = conn.execute(
             """
             SELECT census_id, sequence_no, inventory_digest, residual_digest,
@@ -1367,8 +1393,8 @@ def recover_interrupted_raw_authority_censuses(
             JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
             WHERE c.lifecycle_status = 'planned'
               AND cp.selected = 1 AND cp.outcome_recorded = 0
-              AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
-                  'polylogue.raw-authority-frontier-plan.v1'
+              AND COALESCE(json_extract(c.scope_json, '$.schema'), '') !=
+                  'polylogue.raw-authority-frontier-scope.v1'
             ORDER BY c.sequence_no, cp.ordinal
             """
         ).fetchall()
@@ -1379,15 +1405,8 @@ def recover_interrupted_raw_authority_censuses(
                 SELECT census_id, scope_json
                 FROM raw_authority_censuses
                 WHERE lifecycle_status = 'planned'
-                  AND EXISTS (
-                      SELECT 1
-                      FROM raw_authority_census_plans AS cp
-                      JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
-                      WHERE cp.census_id = raw_authority_censuses.census_id
-                        AND cp.selected = 1 AND cp.outcome_recorded = 0
-                        AND COALESCE(json_extract(p.authority_witness_json, '$.schema'), '') !=
-                            'polylogue.raw-authority-frontier-plan.v1'
-                  )
+                  AND COALESCE(json_extract(scope_json, '$.schema'), '') !=
+                      'polylogue.raw-authority-frontier-scope.v1'
                 ORDER BY sequence_no
                 """
             )

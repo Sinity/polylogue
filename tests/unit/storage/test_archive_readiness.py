@@ -38,6 +38,16 @@ def test_raw_materialization_readiness_requires_completed_frontier_census() -> N
     )
 
 
+def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:
+    readiness = {
+        "available": True,
+        "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "raw_authority_blocker_count": 1,
+    }
+
+    assert raw_materialization_ready(readiness) is False
+
+
 def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -> None:
     """An applied repair must not remain blocked by its immutable preflight."""
     initialize_active_archive_root(tmp_path)

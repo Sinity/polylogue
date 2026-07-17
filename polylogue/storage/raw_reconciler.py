@@ -1381,22 +1381,13 @@ def recover_interrupted_raw_authority_frontier(config: Config) -> tuple[str, ...
                 receipt,
             )
             record_raw_replay_outcome(root, census_id, outcome)
-        elif related and all(
-            item.state in {RawAuthorityFrontierState.PROVEN_CURRENT, RawAuthorityFrontierState.SUPERSEDED}
-            for item in related
-        ):
-            outcome = RawReplayPlanOutcome(
-                plan.plan_id,
-                plan.input_raw_ids,
-                RawReplayPlanStatus.EXECUTED,
-                "interrupted application recovered from typed terminal frontier states",
-                "none",
-                receipt,
-            )
-            record_raw_replay_outcome(root, census_id, outcome)
         else:
             from polylogue.storage.raw_authority import reject_stale_raw_replay_plan
 
+            # Terminal-looking frontier items do not prove this exact immutable
+            # strategy ran: ordinary ingest may have terminalized only part of
+            # a multi-input plan.  Without its strategy receipt, never mint an
+            # EXECUTED outcome during crash recovery.
             reject_stale_raw_replay_plan(root, census_id, plan, receipt)
         recovered.append(plan.plan_id)
     post_state_counts = _state_counts(current_items)
