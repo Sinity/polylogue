@@ -1047,39 +1047,6 @@ class CursorStore:
             )
         )
 
-    def rebase_authoritative_observation(
-        self,
-        path: Path,
-        *,
-        expected: CursorRecord,
-        stat: os.stat_result,
-        tail_hash: str,
-    ) -> bool:
-        """Adopt a new stat observation after proving the accepted prefix.
-
-        A filesystem remount can change ``st_dev`` while leaving the inode,
-        bytes, and timestamps intact.  The watcher verifies the whole accepted
-        prefix in that situation.  Persisting the new observation is essential:
-        without it every later restart repeats the same proof for every file.
-        The compare-and-replace mutation refuses to overwrite a concurrent
-        append or ingest cursor update.
-        """
-
-        return bool(
-            self.rebase_authoritative_observations(
-                (
-                    CursorObservationRebase(
-                        path=path,
-                        expected=expected,
-                        st_dev=stat.st_dev,
-                        st_ino=stat.st_ino,
-                        mtime_ns=stat.st_mtime_ns,
-                        tail_hash=tail_hash,
-                    ),
-                )
-            )
-        )
-
     def rebase_authoritative_observations(self, rebases: Iterable[CursorObservationRebase]) -> int:
         """Persist a catch-up batch of already-proved observation rebases.
 
