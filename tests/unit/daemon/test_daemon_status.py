@@ -1379,6 +1379,13 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch(
+            "polylogue.daemon.status._raw_materialization_readiness_info",
+            return_value=status_module.RawMaterializationReadiness(
+                available=True,
+                raw_authority_frontier={"lifecycle_status": "completed"},
+            ),
+        ),
     ):
         status = build_daemon_status(sources=())
 
@@ -1466,7 +1473,10 @@ def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "ops"],
     )
-    raw_readiness = status_module.RawMaterializationReadiness(available=True)
+    raw_readiness = status_module.RawMaterializationReadiness(
+        available=True,
+        raw_authority_frontier={"lifecycle_status": "completed"},
+    )
     daemon_guard = status_module._daemon_claim_guard(
         archive_storage=storage,
         raw_materialization_readiness=raw_readiness,

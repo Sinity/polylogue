@@ -465,7 +465,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["aggregate_verdict"] == "ready"
+    assert payload["aggregate_verdict"] == "degraded"
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
@@ -475,7 +475,8 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_tag_rollups",
         "archive_coverage",
     }
-    assert insights["session_profiles"]["verdict"] == "ready"
+    assert insights["session_profiles"]["verdict"] == "degraded"
+    assert json_int(insights["session_profiles"]["degraded_count"]) == 2
     assert json_int(insights["session_work_events"]["row_count"]) >= 1
 
 
@@ -516,8 +517,8 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Insight Readiness: ready" in result.output
-    assert "session_profiles: ready" in result.output
+    assert "Insight Readiness: degraded" in result.output
+    assert "session_profiles: degraded" in result.output
 
 
 def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:

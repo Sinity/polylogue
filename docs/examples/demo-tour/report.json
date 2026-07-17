@@ -276,7 +276,7 @@
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 2,
+        "observed": 1,
         "ok": true
       },
       {
@@ -616,7 +616,7 @@
         "construct_id": "error_terminal_state_rows",
         "label": "Error terminal-state rows",
         "minimum": 1,
-        "observed": 2,
+        "observed": 1,
         "ok": true
       },
       {
