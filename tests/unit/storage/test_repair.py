@@ -1686,10 +1686,11 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
 
     result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
 
-    assert result.success is True
-    assert result.repaired_count == 1
+    assert result.success is False
+    assert result.repaired_count == 0
     assert result.metrics["raw_materialization_stream_oversized_count"] == 1.0
-    assert result.metrics.get("raw_materialization_resource_blocked_count", 0.0) == 0.0
+    assert result.metrics["raw_materialization_resource_blocked_count"] == 1.0
+    assert "1 replay candidate(s) remain" in result.detail
 
 
 def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(

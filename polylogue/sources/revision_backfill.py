@@ -183,8 +183,7 @@ def _census_historical_revision_evidence(
                 payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in rows])
                 total_payload_bytes = sum(payload_sizes.values())
                 oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                stream_safe = all(_retained_raw_is_stream_safe(archive, raw_id) for raw_id in payload_sizes)
-                if (oversized or total_payload_bytes > max_payload_bytes) and not stream_safe:
+                if oversized or total_payload_bytes > max_payload_bytes:
                     blocked_ids = oversized or list(payload_sizes)
                     raise RawRevisionReplayResourceBlockedError(
                         sorted(blocked_ids), max_payload_bytes, total_payload_bytes
@@ -520,11 +519,6 @@ def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> li
         fallback_id,
         source_path=source_path,
     )
-
-
-def _retained_raw_is_stream_safe(archive: ArchiveStore, raw_id: str) -> bool:
-    provider, _blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
-    return is_stream_record_provider(source_path, str(provider))
 
 
 __all__ = [

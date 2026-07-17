@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, BinaryIO, cast
@@ -90,6 +91,27 @@ def test_historical_classifier_quarantines_unprovable_authority(payloads: list[b
     )
     assert decisions
     assert {decision.authority for decision in decisions} == {RawRevisionAuthority.QUARANTINED}
+
+
+@pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
+def test_streamed_historical_classifier_matches_eager_ambiguous_authority(payloads: list[bytes]) -> None:
+    def stream_revision(index: int, payload: bytes) -> HistoricalRawRevisionStream:
+        return HistoricalRawRevisionStream(
+            raw_id=f"raw-{index}",
+            payload_size=len(payload),
+            open_payload=lambda: BytesIO(payload),
+        )
+
+    eager = classify_historical_full_revisions(
+        [HistoricalRawRevision(f"raw-{index}", payload) for index, payload in enumerate(payloads)]
+    )
+    streamed = classify_historical_full_revision_streams(
+        [stream_revision(index, payload) for index, payload in enumerate(payloads)]
+    )
+
+    assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
+        (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
+    }
 
 
 def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:
