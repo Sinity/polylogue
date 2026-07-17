@@ -160,6 +160,7 @@ class QueryTransaction:
         workload_class: WorkloadClass = "interactive",
         admission_weight: int = 1,
         controller: QueryAdmissionController | None = None,
+        read_timeout: float = 5.0,
     ) -> None:
         self.request = request
         self.context = QueryExecutionContext.create(
@@ -178,6 +179,7 @@ class QueryTransaction:
         )
         self.archive_root = archive_root
         self.controller = controller
+        self.read_timeout = read_timeout
         self.result_ref = (
             "result:"
             + hashlib.sha256(f"{request.query_ref}:{request.projection}:{request.stable_order}".encode()).hexdigest()[
@@ -191,6 +193,7 @@ class QueryTransaction:
             work,
             ctx=self.context,
             controller=self.controller,
+            read_timeout=self.read_timeout,
         )
 
     def run_sync(self, work: Callable[[ArchiveStore], T]) -> T:
@@ -199,6 +202,7 @@ class QueryTransaction:
             work,
             ctx=self.context,
             controller=self.controller,
+            read_timeout=self.read_timeout,
         )
 
 

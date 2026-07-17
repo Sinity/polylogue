@@ -8069,14 +8069,52 @@ class ArchiveStore:
         else:
             order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), a.tool_use_block_id"
         clause, params = _structural_predicate_clause("action", "a", predicate, session_alias="s")
-        prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
-            predicate=predicate,
-            include_followup=True,
-        )
+        clause = clause or "1=1"
         session_clause = ""
         session_params: list[object] = []
         if session_filters:
             session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+        if _action_query_needs_followup_relation(predicate):
+            # A follow-up-class predicate needs the derived relation to decide
+            # membership. Keep that compatibility path until the derived
+            # relation has its own selective index.
+            prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+                predicate=predicate,
+                include_followup=True,
+            )
+            outer_clause = clause
+            outer_session_clause = session_clause
+            outer_paging = "LIMIT ? OFFSET ?"
+            query_params = [*relation_params, *params, *session_params, normalized_limit, normalized_offset]
+        else:
+            # Follow-up detail is part of the row projection, but ordinary
+            # action predicates do not need it to choose the page. Select the
+            # ordered page from the indexed base relation first, then derive
+            # follow-up detail for only those rows. The old shape ran the
+            # correlated follow-up CTE over every archive action before this
+            # LIMIT/OFFSET, turning a selective MCP read into an archive-wide
+            # materialization.
+            selected_actions_cte = f"""
+                selected_actions AS (
+                    SELECT a.*
+                    FROM actions a
+                    JOIN sessions s ON s.session_id = a.session_id
+                    JOIN messages m ON m.message_id = a.message_id
+                    WHERE {clause}
+                    {session_clause}
+                    ORDER BY {order_by}
+                    LIMIT ? OFFSET ?
+                )
+            """
+            followup_ctes = _ACTION_FOLLOWUP_RELATION_SQL.strip().removeprefix("WITH ")
+            prefix_sql = (
+                f"WITH {selected_actions_cte},\n{followup_ctes.replace('FROM actions a', 'FROM selected_actions a', 1)}"
+            )
+            action_relation_name = "action_rows"
+            outer_clause = "1=1"
+            outer_session_clause = ""
+            outer_paging = ""
+            query_params = [*params, *session_params, normalized_limit, normalized_offset]
         rows = self._conn.execute(
             f"""
             {prefix_sql}
@@ -8100,12 +8138,12 @@ class ArchiveStore:
             FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
-            WHERE {clause}
-            {session_clause}
+            WHERE {outer_clause}
+            {outer_session_clause}
             ORDER BY {order_by}
-            LIMIT ? OFFSET ?
+            {outer_paging}
             """,
-            [*relation_params, *params, *session_params, normalized_limit, normalized_offset],
+            query_params,
         ).fetchall()
         return [_archive_action_query_row(row) for row in rows]
 
