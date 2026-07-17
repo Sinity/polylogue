@@ -108,6 +108,36 @@ See [Proof Artifacts](docs/proof-artifacts.md) for bounded claims and their evid
 - a private-archive claim-versus-evidence field finding with its sampling and calibration caveats;
 - an honesty anti-demo that returns `not_supported` for evidence the archive does not contain.
 
+## What it captures
+
+Public query and read surfaces use `origin` (the source family, e.g. `codex-session`); `provider_wire` is an internal parser/schema coordinate, not a public filter. "Complete" below means the importer package has a detector, parser, fixtures, schema mapping, and query/read coverage — it does not mean every provider field is lossless. Check the live registry yourself from a source checkout with `devtools lab provider completeness --json`; it currently reports 8 accepted-complete origins, `grok-export` as a reserved token with no wired parser, and a proposed browser-capture-live-receiver mode.
+
+| Public origin | Accepted input | Fidelity boundary | Verify against your own archive |
+|---|---|---|---|
+| `claude-code-session` | Claude Code export JSONL | Roles, prose, thinking, tool calls/results, structural errors, file/git actions, subagent and compaction records | `polylogue --origin claude-code-session read --all --limit 1 --format json` |
+| `codex-session` | Codex session JSONL across three auto-detected format generations | Roles, prose, session metadata, normalized tool-call pairing for supported records; fidelity varies by generation | `polylogue --origin codex-session read --all --limit 1 --format json` |
+| `chatgpt-export` | ChatGPT Takeout `sessions.json`, message lists, or JSONL | Message text, roles, ordering, session metadata; attachment metadata only, no binaries; usage is estimate-only | `polylogue --origin chatgpt-export read --all --limit 1 --format json` |
+| `claude-ai-export` | Claude.ai export JSON or ZIP | Typed message IDs, text, sender, timestamps, normalized blocks; attachment metadata only; usage is estimate-only | `polylogue --origin claude-ai-export read --all --limit 1 --format json` |
+| `aistudio-drive` | Google AI Studio / Drive-style export | Ordered prompt chunks, attachment references; Drive acquisition can store attachment bytes but needs OAuth | `polylogue --origin aistudio-drive read --all --limit 1 --format json` |
+| `gemini-cli-session` | Gemini CLI local-agent document | Normalized sessions/messages and supported action evidence; usage coverage is partial | `polylogue --origin gemini-cli-session read --all --limit 1 --format json` |
+| `antigravity-session` | Antigravity language-server export | Normalized sessions and messages from accepted export shapes; no provider usage | `polylogue --origin antigravity-session read --all --limit 1 --format json` |
+| `hermes-session` | Hermes `state.db` | Sessions, messages, exact usage where state counters exist. A separate NeMo Relay ATIF-v1.7 trajectory importer (`polylogue/sources/parsers/hermes_spans.py`) maps top-level and message-only steps exactly, infers tool/observation/subagent shapes, and leaves approval/error decisions absent rather than fabricated | `polylogue --origin hermes-session read --all --limit 1 --format json` |
+
+The seeded demo corpus (`demo receipts` / `demo tour` above) only populates five of these origins — `claude-code-session`, `codex-session`, `chatgpt-export`, `claude-ai-export`, and `aistudio-drive`. The `--origin` read commands for `gemini-cli-session`, `antigravity-session`, and `hermes-session` return zero rows against the demo archive; those three packages are verified by their own parser unit tests under `tests/unit/sources/` (e.g. `test_antigravity_language_server.py`, `parsers/test_hermes_spans.py`) rather than the demo world, and become populated once you import real data from those sources.
+
+Detector and parser decisions for any file are inspectable before import — this never touches the archive:
+
+```bash
+polylogue import path/to/export.jsonl --explain --format json
+```
+
+An input that matches no provider-specific shape still imports through a generic fallback (`detected_origin: unknown-export`, best-effort message extraction only; the current CLI does not accept `unknown-export` as a public `--origin` filter value):
+
+```bash
+printf '%s\n' '{"id":"fallback-demo","messages":[{"role":"user","content":"hello"}]}' > /tmp/polylogue-fallback-demo.json
+polylogue import /tmp/polylogue-fallback-demo.json --explain --format json
+```
+
 ## The model
 
 ```mermaid
@@ -175,6 +205,36 @@ Other surfaces use the same archive and query substrate:
 - browser-capture extension and local receiver — opt-in capture for supported web chats;
 - OpenTelemetry-shaped import and export projections.
 
+## MCP and agent integration
+
+`polylogue-mcp` is a standalone stdio server over the same local archive — not a `polylogue` subcommand, and it never mutates without an elevated role. It currently registers 104 tools across search/list/get, insights, corrections, correlation, and postmortem categories; the default `read` role exposes 66 of them (mutation, candidate-review, and maintenance tools require `write`, `review`, or `admin`). Verify both the runtime roles and the exact registered count yourself:
+
+```bash
+polylogue-mcp --help
+devtools render all --check   # regenerates and checks docs/mcp-reference.md against the live registry
+```
+
+```json
+{
+  "mcpServers": {
+    "polylogue": {
+      "command": "polylogue-mcp",
+      "args": ["--role", "read"]
+    }
+  }
+}
+```
+
+See [MCP Integration](docs/mcp-integration.md) for setup and [MCP Reference](docs/mcp-reference.md) for the generated tool catalog.
+
+## Search boundaries
+
+Ordinary queries use the lexical FTS lane by default; `--semantic` and `--retrieval-lane hybrid` are explicit opt-ins that require embeddings (`polylogue ops embed status`). FTS indexes message prose, thinking/reasoning text, tool-result output, tool names, and selected path fields — it does **not** index full `Write` tool-input content or `Edit` old/new bodies. Search those through the unindexed action-evidence predicate instead, which scans stored action inputs directly (against the seeded demo archive from [Run the first proof](#run-the-first-proof), this matches a captured file edit):
+
+```bash
+polylogue 'actions where tool:edit AND text:"shared_clock"'
+```
+
 References:
 
 - [Getting Started](docs/getting-started.md)
@@ -227,6 +287,15 @@ bd list --status open
 ```
 
 Do not infer roadmap state from GitHub Issues.
+
+## Limitations
+
+- Provider fidelity is uneven — see [What it captures](#what-it-captures) and verify per-origin with `devtools lab provider completeness --json` before relying on any single provider being lossless.
+- Rebuilding derived tiers is not free: embedding backfill can call an external provider. Check estimated cost first with `polylogue ops embed preflight --max-sessions 10 --format json`.
+- Cost output is an evidence model, not a billing reconciliation. Run `polylogue analyze usage --detail full --format json --limit 0` to see missing-model coverage, provider-vs-catalog-vs-subscription-credit lanes, and caveats side by side.
+- Polylogue does not reconstruct an ambient desktop timeline (window focus, independent shell history, browser-tab activity) — the archive schema has no tables for those domains today: `grep -h "CREATE TABLE" polylogue/storage/sqlite/archive_tiers/*.py | grep -iE "window|focus|shell_history|browser_tab|activitywatch" | wc -l` returns `0`.
+- `grok-export` is a reserved origin token with no wired parser; browser capture is a proposed capture mode, not an accepted-complete package.
+- Polylogue is pre-1.0. There is no long-term-support branch — check `polylogue --version` and the release channel before depending on a documented surface.
 
 ## Development
 
