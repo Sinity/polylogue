@@ -3459,7 +3459,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.archive.query.expression import ExpressionCompileError
         from polylogue.archive.query.spec import clamp_query_limit
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         expression = self._get_param(params, "expression") or ""
         limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
@@ -3505,8 +3504,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
 
-        with ArchiveStore.open_existing(archive_root, read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S) as archive:
-            payload = query_unit_envelope(archive, request)
+        from polylogue.archive.query.execution_control import (
+            QueryExecutionContext,
+            QueryTimeoutError,
+            classify_unit_expression_workload,
+            execute_archive_read_sync,
+        )
+
+        # The handler thread is dedicated, so the read runs in place; the
+        # execution context supplies the deadline and shares the process-wide
+        # admission controller with the async surfaces (polylogue-z9gh.1).
+        ctx = QueryExecutionContext.create(
+            query_text=expression,
+            workload_class=classify_unit_expression_workload(expression),
+            owner_ref="http.query_units",
+        )
+        try:
+            payload = execute_archive_read_sync(
+                archive_root,
+                lambda archive: query_unit_envelope(archive, request),
+                ctx=ctx,
+                read_timeout=_ARCHIVE_READER_BUSY_TIMEOUT_S,
+            )
+        except QueryTimeoutError:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
+            return
 
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json"))
 

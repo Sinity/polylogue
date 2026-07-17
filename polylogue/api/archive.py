@@ -2904,8 +2904,12 @@ class PolylogueArchiveMixin:
         message_type: str | None = None,
     ) -> QueryUnitResultEnvelope:
         """Execute a terminal unit-source query."""
+        from polylogue.archive.query.execution_control import (
+            QueryExecutionContext,
+            classify_unit_expression_workload,
+            execute_archive_read,
+        )
         from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         request = query_unit_request(
             expression=expression,
@@ -2942,8 +2946,16 @@ class PolylogueArchiveMixin:
             max_words=max_words,
             message_type=message_type,
         )
-        with ArchiveStore.open_existing(_active_archive_root(self.config)) as archive:
-            return query_unit_envelope(archive, request)
+        ctx = QueryExecutionContext.create(
+            query_text=expression,
+            workload_class=classify_unit_expression_workload(expression),
+            owner_ref="api.query_units",
+        )
+        return await execute_archive_read(
+            _active_archive_root(self.config),
+            lambda archive: query_unit_envelope(archive, request),
+            ctx=ctx,
+        )
 
     async def export_otel(
         self,
