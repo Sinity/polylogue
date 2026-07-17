@@ -36,6 +36,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab schema roundtrip",
     "lab snapshot read-surface",
     "lab test-economics",
+    "lab testmon-proof",
 )
 
 CATEGORY_ORDER: tuple[str, ...] = (
@@ -339,6 +340,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools lab test-economics --json",
             "devtools lab test-economics --write docs/test-economics.md",
         ),
+    ),
+    CommandSpec(
+        "lab testmon-proof",
+        "verification lab",
+        "Prove real testmon affected selection against a semantic production mutation.",
+        "devtools.testmon_mutation_proof",
+        use_when=(
+            "Validate the affected-test harness itself: a disposable copy of a real Polylogue module "
+            "and existing route test is seeded, semantically mutated, edge-severed, restored, and checked "
+            "for bounded unrelated-change selection."
+        ),
+        examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
     ),
     CommandSpec(
         "bench ingest-amplification",
