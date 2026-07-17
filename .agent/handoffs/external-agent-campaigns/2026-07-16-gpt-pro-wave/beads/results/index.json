@@ -51,7 +51,7 @@
    "checked_at": "2026-07-17T10:55:16+00:00",
    "snapshot": "f654480cadb7cc4c194704e24dfd483199547b35",
    "problems": [],
-   "status": "triaged",
+  "status": "subsumed_foundation_retained",
    "members": [
     "EVIDENCE.md",
     "HANDOFF.md",
@@ -63,7 +63,8 @@
    "apply_detail": "patch applies cleanly",
    "attempt_id": "a01",
    "package_revision": "r01",
-   "state": "validated"
+  "state": "subsumed_foundation_retained",
+  "integration": "Current-master reconciliation at 47fe1cb found the MCP-specific declaration/registration implementation already landed in PR #3004 / ed44be18f. Both this patch and the recovered beads-02 prerequisite now conflict on the same registry, adapters, generated equivalence, and server registration paths. Retain the package's read-family equivalence and representative production-route tests as implementation input for polylogue-t46.8.2; it does not complete the required 10-15 tool default-profile collapse or read-tool retirement."
   },
   {
    "job": "beads-04",
