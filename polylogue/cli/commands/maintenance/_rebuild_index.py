@@ -15,6 +15,7 @@ import click
 from polylogue.config import Config
 from polylogue.logging import configure_logging
 from polylogue.paths import archive_root, render_root
+from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _count_source_raw_sessions(root: Path) -> int:
@@ -28,7 +29,7 @@ def _count_source_raw_sessions(root: Path) -> int:
 
 def _missing_index_raw_ids(root: Path) -> list[str]:
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = ArchiveLocation.resolve(root).active_index_path
     if not source_db.exists() or not index_db.exists():
         return []
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
@@ -96,7 +97,7 @@ def _rebuild_index_selection_plan(
     limit: int,
 ) -> dict[str, object]:
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = ArchiveLocation.resolve(root).active_index_path
     if not source_db.exists():
         return {
             "archive_root": str(root),
@@ -334,6 +335,7 @@ def rebuild_index_command(
         raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
 
     root = archive_root()
+    location = ArchiveLocation.resolve(root)
     raw_count = _count_source_raw_sessions(root)
     if raw_count == 0:
         payload = {
@@ -415,7 +417,12 @@ def rebuild_index_command(
 
     generation_store = IndexGenerationStore(root)
     with RebuildLease(root):
-        active_config = Config(archive_root=root, render_root=render_root(), sources=[], db_path=root / "index.db")
+        active_config = Config(
+            archive_root=root,
+            render_root=render_root(),
+            sources=[],
+            db_path=location.active_index_path,
+        )
         daemon_pid = running_daemon_pid(active_config)
         if daemon_pid is not None:
             raise click.ClickException(f"offline rebuild refused while polylogued PID {daemon_pid} is running")

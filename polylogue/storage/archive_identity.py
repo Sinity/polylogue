@@ -20,6 +20,79 @@ TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
 )
 
 
+class ArchiveLocationError(RuntimeError):
+    """A configured archive does not name one coherent active file set."""
+
+
+@dataclass(frozen=True)
+class ArchiveLocation:
+    """Resolved archive topology with the active index kept distinct from its root.
+
+    A split-tier installation intentionally keeps durable tiers under the
+    configured root while an atomic pointer selects an index generation
+    elsewhere.  Treating the parent directory of that index as the archive
+    root silently invents sibling tier paths; treating ``root/index.db`` as
+    authoritative silently bypasses a promoted generation.  This value is the
+    one place where those two facts are joined.
+    """
+
+    configured_root: Path
+    configured_tiers: tuple[TierFileIdentity, ...]
+    active_index: TierFileIdentity
+    active_pointer: Path | None
+    shadow_index: TierFileIdentity | None
+
+    @classmethod
+    def resolve(cls, root: Path) -> ArchiveLocation:
+        configured_root = root.absolute()
+        configured = tuple(
+            TierFileIdentity.resolve(name, configured_root / filename) for name, filename in TIER_FILENAMES
+        )
+        configured_index = next(tier for tier in configured if tier.name == "index")
+        pointer_file = configured_root / ".index-active-pointer"
+        pointer: Path | None = None
+        if pointer_file.exists():
+            raw = pointer_file.read_text(encoding="utf-8").strip()
+            candidate = Path(raw)
+            if not candidate.is_absolute() or candidate.name != "index.db":
+                raise ArchiveLocationError(f"invalid active index pointer: {candidate}")
+            pointer = candidate
+        active_index = TierFileIdentity.resolve("index", pointer or configured_index.configured_path)
+        shadow_index: TierFileIdentity | None = None
+        if pointer is not None and configured_index.exists and not configured_index.same_file(active_index):
+            shadow_index = configured_index
+        return cls(
+            configured_root=configured_root,
+            configured_tiers=configured,
+            active_index=active_index,
+            active_pointer=pointer,
+            shadow_index=shadow_index,
+        )
+
+    def configured_tier(self, name: ArchiveTierName) -> TierFileIdentity:
+        return next(tier for tier in self.configured_tiers if tier.name == name)
+
+    def active_tier(self, name: ArchiveTierName) -> TierFileIdentity:
+        return self.active_index if name == "index" else self.configured_tier(name)
+
+    @property
+    def active_index_path(self) -> Path:
+        return self.active_index.configured_path
+
+    @property
+    def active_generation(self) -> str:
+        return self.active_index.stable_id
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "configured_root": str(self.configured_root),
+            "active_pointer": str(self.active_pointer) if self.active_pointer is not None else None,
+            "active_index": self.active_index.as_dict(),
+            "configured_tiers": [tier.as_dict() for tier in self.configured_tiers],
+            "shadow_index": self.shadow_index.as_dict() if self.shadow_index is not None else None,
+        }
+
+
 @dataclass(frozen=True)
 class TierFileIdentity:
     name: ArchiveTierName
@@ -86,6 +159,18 @@ class ArchiveIdentity:
         index = next(tier for tier in tiers if tier.name == "index")
         return cls(root, tiers, index.stable_id, generation_owner, generation_state)
 
+    @classmethod
+    def resolve_location(
+        cls,
+        location: ArchiveLocation,
+        *,
+        generation_owner: str | None = None,
+        generation_state: Literal["active", "inactive"] = "active",
+    ) -> ArchiveIdentity:
+        tiers = tuple(location.active_tier(name) for name, _filename in TIER_FILENAMES)
+        index = next(tier for tier in tiers if tier.name == "index")
+        return cls(location.configured_root, tiers, index.stable_id, generation_owner, generation_state)
+
     def tier(self, name: ArchiveTierName) -> TierFileIdentity:
         return next(tier for tier in self.tiers if tier.name == name)
 
@@ -126,16 +211,18 @@ class ArchiveIdentityConflictError(RuntimeError):
 
 
 def archive_identity_conflicts(*, configured_root: Path, active_root: Path) -> tuple[ArchiveIdentity, ...]:
-    configured = ArchiveIdentity.resolve(configured_root)
-    active = ArchiveIdentity.resolve(active_root)
-    if configured_root.resolve(strict=False) == active_root.resolve(strict=False):
+    configured_location = ArchiveLocation.resolve(configured_root)
+    active_location = ArchiveLocation.resolve(active_root)
+    configured = ArchiveIdentity.resolve_location(configured_location)
+    active = ArchiveIdentity.resolve_location(active_location)
+    if configured.active_generation == active.active_generation:
         return ()
     return (configured,) if configured.conflicts_with(active) else ()
 
 
 def assert_writable_archive_identity(*, configured_root: Path, active_root: Path) -> ArchiveIdentity:
     """Fail before bootstrap when one durable archive has two active indexes."""
-    active = ArchiveIdentity.resolve(active_root)
+    active = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(active_root))
     conflicts = archive_identity_conflicts(configured_root=configured_root, active_root=active_root)
     if conflicts:
         configured = conflicts[0]

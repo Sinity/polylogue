@@ -7,7 +7,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from polylogue.paths import active_index_db_path
 from polylogue.paths.sanitize import is_within_root, safe_path_component
+
+
+def test_active_index_path_follows_managed_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    canonical = tmp_path / "canonical" / "index.db"
+    canonical.parent.mkdir()
+    canonical.touch()
+    (root / ".index-active-pointer").write_text(str(canonical), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    assert active_index_db_path() == canonical
 
 
 class TestSafePathComponent:
