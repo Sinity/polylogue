@@ -616,18 +616,22 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState).toMatchObject({ online: true, error: "no_turns" });
   });
 
-  it("automatically captures existing conversation tabs on extension update", async () => {
+  it("reconciles existing conversation tabs on extension update without recapturing", async () => {
     expect(installedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-installed", title: "ChatGPT" }];
-    globalThis.fetch = vi.fn(async () => responseJson({ ok: true, active: true }));
+    globalThis.fetch = vi.fn(async () => responseJson({
+      provider: "chatgpt",
+      provider_session_id: "conv-installed",
+      state: "spooled_only",
+      captured: true,
+    }));
 
     installedListener();
 
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
-      type: "polylogue.capturePage",
-      reason: "extension_installed_or_updated",
-    }));
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled();
+    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-installed"]?.archive_state)
+      .toMatchObject({ state: "spooled_only" }));
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 
   it("routes backfill inventory through an existing provider page without creating a tab", async () => {
@@ -1616,7 +1620,7 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
-  it("does not hand a throttled archive-state refresh to automatic capture", async () => {
+  it("does not recapture an already-safe conversation on activation", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-throttle", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async () => responseJson({
       provider: "chatgpt",
@@ -1626,13 +1630,35 @@ describe("background receiver diagnostics", () => {
     }));
 
     activatedListener({ tabId: 42 });
-    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(stored.polylogueState?.archive_state?.state).toBe("archived"));
     activatedListener({ tabId: 42 });
     await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
 
-    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
     expect((stored.polylogueConversationTimeline?.["chatgpt:conv-throttle"] || [])
       .some((event) => event.detail === "background_capture_throttled")).toBe(false);
+  });
+
+  it("captures a missing conversation once during automatic reconciliation", async () => {
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-missing-on-start", title: "ChatGPT" }];
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("/v1/archive-state")) {
+        return responseJson({
+          provider: "chatgpt",
+          provider_session_id: "conv-missing-on-start",
+          state: "missing",
+          captured: false,
+        });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+
+    installedListener();
+
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "polylogue.capturePage",
+      reason: "auto_capture_missing",
+    }));
   });
 
   it("keeps the earliest freshness deadline when a later hint is queued", async () => {

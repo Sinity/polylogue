@@ -2014,7 +2014,17 @@ async function ensureCaptureFreshnessAlarms() {
 async function captureSupportedTabs(reason) {
   if (!chrome.tabs?.query) return;
   const tabs = await chrome.tabs.query({});
-  await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
+  // Explicit operator sync may recapture an open conversation.  Automatic
+  // lifecycle events must reconcile with the receiver first: `spooled_only`
+  // means the receiver already accepted a capture and is converging it, not
+  // that the extension should re-fetch authenticated provider data.  This is
+  // deliberately durable across service-worker restarts, unlike the in-memory
+  // background-capture throttle.
+  if (reason === "popup_sync_open_tabs") {
+    await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
+    return;
+  }
+  await Promise.allSettled(tabs.map((tab) => refreshActiveTabArchiveState(tab, reason)));
 }
 
 function bytesToBase64(bytes) {
@@ -2672,10 +2682,7 @@ chrome.runtime.onStartup?.addListener(() => {
 chrome.tabs?.onActivated?.addListener((activeInfo) => {
   void (async () => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    const archiveState = await refreshActiveTabArchiveState(tab, "tab_activated");
-    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
-      await captureTab(tab, "tab_activated");
-    }
+    await refreshActiveTabArchiveState(tab, "tab_activated");
   })();
 });
 
@@ -2683,10 +2690,7 @@ chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
   if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
   void (async () => {
     const resolvedTab = tab?.id ? tab : await chrome.tabs.get(tabId);
-    const archiveState = await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
-    if (archiveState && !["missing", "receiver_error", "not_conversation"].includes(archiveState)) {
-      await captureTab(resolvedTab, "tab_updated");
-    }
+    await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
   })();
 });
 
