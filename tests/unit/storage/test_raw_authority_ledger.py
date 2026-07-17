@@ -438,7 +438,13 @@ def test_census_page_bounds_one_oversized_plan_and_detail_chunks_reconstruct_it(
 
 def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
-    _write_codex_raw(tmp_path, native_id="crash", source_path="crash.jsonl", acquired_at_ms=1)
+    raw_id = _write_codex_raw(
+        tmp_path,
+        native_id="crash",
+        source_path="crash.jsonl",
+        acquired_at_ms=1,
+        text="interrupted-authority-fts-needle",
+    )
 
     with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
         with pytest.raises(RuntimeError, match="synthetic crash"):
@@ -449,6 +455,44 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
             conn.execute("SELECT COUNT(*) FROM raw_authority_censuses WHERE lifecycle_status = 'planned'").fetchone()[0]
             == 1
         )
+
+    # The injected failure is deliberately after the production replay writer
+    # has committed its source/index work but before the immutable plan outcome
+    # is receipted.  Resume must preserve that already accepted authority and
+    # its trigger-maintained FTS projection; it may only finish durable ledger
+    # accounting for the interrupted census.
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_before_resume = source_conn.execute(
+            """
+            SELECT raw_id, logical_source_key, source_revision, revision_kind,
+                   revision_authority, parsed_at_ms
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchall()
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        heads_before_resume = index_conn.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, hex(accepted_content_hash),
+                   accepted_frontier_kind, accepted_frontier
+            FROM raw_revision_heads ORDER BY logical_source_key
+            """
+        ).fetchall()
+        sessions_before_resume = index_conn.execute(
+            "SELECT session_id, raw_id, hex(content_hash) FROM sessions ORDER BY session_id"
+        ).fetchall()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        fts_before_resume = dict(archive.index_status())
+        fts_hits_before_resume = archive.search_blocks("interrupted-authority-fts-needle")
+
+    assert source_before_resume
+    assert heads_before_resume
+    assert heads_before_resume[0][2] == raw_id
+    assert sessions_before_resume
+    assert fts_before_resume["exists"] is True
+    assert fts_hits_before_resume
+
     recovered = repair_raw_materialization(_config(tmp_path))
     assert recovered.metrics["raw_materialization_recovered_census_count"] == 1.0
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -468,6 +512,36 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
     assert recovered_receipt["application_rows"] or recovered_receipt["membership_rows"]
     assert recovered_receipt["head_rows"]
     assert recovered_receipt["session_rows"]
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_after_resume = source_conn.execute(
+            """
+            SELECT raw_id, logical_source_key, source_revision, revision_kind,
+                   revision_authority, parsed_at_ms
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchall()
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        heads_after_resume = index_conn.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, hex(accepted_content_hash),
+                   accepted_frontier_kind, accepted_frontier
+            FROM raw_revision_heads ORDER BY logical_source_key
+            """
+        ).fetchall()
+        sessions_after_resume = index_conn.execute(
+            "SELECT session_id, raw_id, hex(content_hash) FROM sessions ORDER BY session_id"
+        ).fetchall()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        fts_after_resume = dict(archive.index_status())
+        fts_hits_after_resume = archive.search_blocks("interrupted-authority-fts-needle")
+
+    assert source_after_resume == source_before_resume
+    assert heads_after_resume == heads_before_resume
+    assert sessions_after_resume == sessions_before_resume
+    assert fts_after_resume == fts_before_resume
+    assert fts_hits_after_resume == fts_hits_before_resume
 
 
 def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_path: Path) -> None:
