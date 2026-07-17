@@ -17,6 +17,7 @@ from devtools import (
     render_pages,
     render_product_workflows,
     render_quality_reference,
+    render_query_discovery,
     render_topology_status,
 )
 from devtools.command_catalog import control_plane_argv
@@ -162,6 +163,21 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/operations/action_contracts.py",
             "polylogue/surfaces/action_affordances.py",
             "polylogue/archive/viewport/profiles.py",
+        ),
+    ),
+    GeneratedSurface(
+        name="query-discovery",
+        label="Query discovery",
+        description="Render parser-gated query examples and result semantics into docs/search.md.",
+        command=control_plane_argv("render query-discovery"),
+        main=render_query_discovery.main,
+        inputs=(
+            "devtools/render_query_discovery.py",
+            "polylogue/archive/query/discovery.py",
+            "polylogue/archive/query/expression.py",
+            "polylogue/archive/query/metadata.py",
+            "polylogue/archive/query/transaction.py",
+            "docs/search.md",
         ),
     ),
     GeneratedSurface(

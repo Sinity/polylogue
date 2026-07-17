@@ -447,12 +447,44 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
     payload = json.loads(result)
     root = payload
 
+    from polylogue.archive.query.expression import parse_unit_source_expression
+    from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
+
+    assert len(result.encode("utf-8")) <= MCP_RESPONSE_BUDGET_BYTES
+
+    assert root["version"] == 2
     assert root["mcp_algebra"]["read_transactions"]
     assert root["mcp_algebra"]["resources"]
     assert root["mcp_algebra"]["prompts"]
-    assert root["grammar"]["terminal_sources"]
+    assert root["terminal_sources"]
     assert root["grammar"]["terminal_form"] == "<terminal-source> where <predicate>"
-    assert all("authority" in unit and "coverage" in unit for unit in root["units"])
+    assert root["corpus"]["positive_count"] >= 80
+    assert root["corpus"]["negative_count"] >= 10
+    assert root["corpus"]["examples_via"]["arguments"] == {"kind": "example"}
+    assert root["corpus"]["errors_via"]["arguments"] == {"kind": "error"}
+    assert set(root["result_semantics"]) == {
+        "exhaustive",
+        "top-k",
+        "sample",
+        "aggregate",
+        "bounded-context",
+        "recursive-page",
+    }
+    assert "not exhaustive" in root["result_semantics"]["top-k"]["teaching"].lower()
+    assert {name: contract["mcp_declaration"] for name, contract in root["result_semantics"].items()} == {
+        "exhaustive": "exhaustive_page",
+        "top-k": "top_k",
+        "sample": "sample",
+        "aggregate": "aggregate",
+        "bounded-context": "bounded_context",
+        "recursive-page": "recursive_graph",
+    }
+    assert root["row_contract"]["authority"]
+    assert root["row_contract"]["coverage"]
+    assert all(unit["example_key"] and unit["result_semantics"] == "exhaustive" for unit in root["units"])
+
+    for unit in root["units"]:
+        assert parse_unit_source_expression(unit["example"]) is not None
 
 
 class TestResourceErrorEnvelopes:
