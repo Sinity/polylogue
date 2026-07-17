@@ -4046,11 +4046,30 @@ class PolylogueArchiveMixin:
         """List session summaries."""
         from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "limit", "offset"}}
+        arguments.update(
+            {
+                "has_types": tuple(has_types),
+                "excluded_origins": tuple(excluded_origins),
+                "tags": tuple(tags),
+                "excluded_tags": tuple(excluded_tags),
+                "repo_names": tuple(repo_names),
+                "project_refs": tuple(project_refs),
+                "tool_terms": tuple(tool_terms),
+                "excluded_tool_terms": tuple(excluded_tool_terms),
+                "action_terms": _archive_action_terms("action", action_terms),
+                "excluded_action_terms": _archive_action_terms("exclude_action", excluded_action_terms),
+                "action_sequence": _archive_action_sequence(action_sequence),
+                "message_type": _archive_message_type(message_type),
+                "since": _archive_query_date_ms("since", since),
+                "until": _archive_query_date_ms("until", until),
+            }
+        )
         transaction = QueryTransaction(
             _active_archive_root(self.config),
             QueryTransactionRequest(
                 operation="archive_list_sessions",
-                arguments={"origin": origin, "cwd_prefix": cwd_prefix, "since": since, "until": until},
+                arguments=arguments,
                 page_size=limit,
                 offset=max(0, offset),
             ),
@@ -4128,11 +4147,30 @@ class PolylogueArchiveMixin:
         """Search session block text."""
         from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 
+        arguments = {key: value for key, value in locals().items() if key not in {"self", "limit"}}
+        arguments.update(
+            {
+                "has_types": tuple(has_types),
+                "excluded_origins": tuple(excluded_origins),
+                "tags": tuple(tags),
+                "excluded_tags": tuple(excluded_tags),
+                "repo_names": tuple(repo_names),
+                "project_refs": tuple(project_refs),
+                "tool_terms": tuple(tool_terms),
+                "excluded_tool_terms": tuple(excluded_tool_terms),
+                "action_terms": _archive_action_terms("action", action_terms),
+                "excluded_action_terms": _archive_action_terms("exclude_action", excluded_action_terms),
+                "action_sequence": _archive_action_sequence(action_sequence),
+                "message_type": _archive_message_type(message_type),
+                "since": _archive_query_date_ms("since", since),
+                "until": _archive_query_date_ms("until", until),
+            }
+        )
         transaction = QueryTransaction(
             _active_archive_root(self.config),
             QueryTransactionRequest(
                 operation="archive_search_sessions",
-                arguments={"query": query, "origin": origin, "cwd_prefix": cwd_prefix, "since": since, "until": until},
+                arguments=arguments,
                 page_size=limit,
             ),
         )
