@@ -47,6 +47,7 @@ def test_raw_authority_scale_proof_reaches_two_matching_quiescent_censuses(tmp_p
     assert passes[-1]["fixed_point"] is True
     assert all(isinstance(item["peak_rss_bytes"], int) and item["peak_rss_bytes"] > 0 for item in passes)
     assert "admission_sample" in payload
+    assert len(cast(list[object], payload["generation_samples"])) >= 2
     assert receipt["status"] == "succeeded"
     assert isinstance(phases[3]["wall_ms"], int | float) and phases[3]["wall_ms"] > 0
     assert "wall_ms" not in phases[2]
@@ -69,6 +70,27 @@ def test_raw_authority_scale_proof_refuses_a_contended_host(monkeypatch: pytest.
 
     with pytest.raises(RuntimeError, match="I/O pressure gate"):
         run_raw_authority_scale_proof(tmp_path, max_io_full_avg10=2.0)
+
+
+def test_raw_authority_scale_proof_rechecks_pressure_during_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    samples = iter(
+        (
+            ProcessSample(1, 1, 0, 0, 0, 0, 0.0, 0.0),
+            ProcessSample(1, 1, 0, 0, 0, 0, 2.1, 0.0),
+        )
+    )
+    monkeypatch.setattr("devtools.raw_authority_scale_proof._process_sample", lambda: next(samples))
+
+    with pytest.raises(RuntimeError, match="I/O pressure gate"):
+        run_raw_authority_scale_proof(
+            tmp_path,
+            components=1,
+            raws=1,
+            prepare_only=True,
+            max_io_full_avg10=2.0,
+        )
 
 
 def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_identity(tmp_path: Path) -> None:
@@ -313,3 +335,8 @@ def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp
     assert requested["component_byte_cohort_distribution"] == expected
     assert achieved["component_byte_cohort_distribution"] == expected
     assert achieved["expanded_total_blob_bytes"] == 6_000
+    root = Path(cast(str, payload["archive_root"]))
+    with sqlite3.connect(root / "source.db") as conn:
+        largest_blob = conn.execute("SELECT MAX(blob_size) FROM raw_sessions").fetchone()
+    assert largest_blob is not None
+    assert int(largest_blob[0]) < 4_096
