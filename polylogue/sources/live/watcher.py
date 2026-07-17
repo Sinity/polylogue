@@ -52,7 +52,12 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 _CATCH_UP_MAX_BATCH_FILES = 50
 _CATCH_UP_MAX_BATCH_BYTES = 64 * 1024 * 1024
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
+# Filesystem notifications are the real-time delivery path.  This sweep is a
+# recovery mechanism for notifications missed while the daemon was unavailable
+# or a watch backend was briefly unhealthy.  Keeping it at the watch cadence
+# made a large, otherwise-idle archive continuously rescan itself.
 _PERIODIC_CATCH_UP_INTERVAL_S = 15.0
+_PERIODIC_CATCH_UP_MAX_INTERVAL_S = 15.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
 
@@ -284,8 +289,9 @@ class LiveWatcher:
         self._cancel_periodic_catch_up()
 
     async def _periodic_catch_up(self, roots: list[Path]) -> None:
+        delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
         while not self._stop.is_set():
-            await asyncio.sleep(_PERIODIC_CATCH_UP_INTERVAL_S)
+            await asyncio.sleep(delay_s)
             if self._stop.is_set():
                 return
             try:
@@ -294,6 +300,11 @@ class LiveWatcher:
                 if not _is_database_locked(exc):
                     raise
                 logger.warning("live.watcher: archive busy during periodic catch-up; will retry")
+            # A periodic pass is deliberately a low-duty-cycle safety net.
+            # Event-driven batches and explicit failed-file retry wakeups keep
+            # normal writes and known failures prompt; repeatedly walking every
+            # source tree does neither.
+            delay_s = min(delay_s * 2, _PERIODIC_CATCH_UP_MAX_INTERVAL_S)
 
     def _cancel_periodic_catch_up(self) -> None:
         task = self._periodic_catch_up_task
