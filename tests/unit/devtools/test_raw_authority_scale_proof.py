@@ -6,7 +6,11 @@ from typing import cast
 
 import pytest
 
-from devtools.raw_authority_scale_proof import ProcessSample, run_raw_authority_scale_proof
+from devtools.raw_authority_scale_proof import (
+    ProcessSample,
+    RawAuthorityScaleScenario,
+    run_raw_authority_scale_proof,
+)
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.storage import repair
@@ -24,7 +28,13 @@ def test_raw_authority_scale_proof_reaches_two_matching_quiescent_censuses(tmp_p
         max_memory_full_avg10=None,
     )
 
-    assert payload["requested_shape"] == {"components": 3, "raws": 5, "pass_limit": 2}
+    assert payload["requested_shape"] == {
+        "components": 3,
+        "direct_candidates": 5,
+        "expanded_candidates": 5,
+        "total_payload_bytes": 5120,
+        "pass_limit": 2,
+    }
     digests = cast(list[str], payload["fixed_point_digests"])
     passes = cast(list[dict[str, object]], payload["passes"])
     receipt = cast(dict[str, object], payload["receipt"])
@@ -111,3 +121,31 @@ def test_raw_authority_scale_profile_is_aggregate_only(tmp_path: Path) -> None:
     serialized = str(profile)
     assert "private-native-id" not in serialized
     assert "/private/source/session.jsonl" not in serialized
+
+
+def test_raw_authority_scale_proof_generates_exact_scenario_bytes_and_expansion(tmp_path: Path) -> None:
+    scenario = RawAuthorityScaleScenario(
+        components=2,
+        direct_candidates=3,
+        expanded_candidates=4,
+        total_payload_bytes=8192,
+    )
+    payload = run_raw_authority_scale_proof(
+        tmp_path,
+        scenario=scenario,
+        pass_limit=2,
+        keep=True,
+        prepare_only=True,
+        max_io_full_avg10=None,
+        max_memory_full_avg10=None,
+    )
+
+    root = Path(cast(str, payload["archive_root"]))
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*), SUM(blob_size) FROM raw_sessions").fetchone() == (4, 8192)
+    achieved = cast(dict[str, object], payload["achieved_shape"])
+    assert achieved["candidate_count"] == 3
+    assert achieved["expanded_candidate_count"] == 4
+    assert achieved["authority_component_count"] == 2
+    assert achieved["expanded_total_blob_bytes"] == 8192
+    assert payload["prepared_only"] is True

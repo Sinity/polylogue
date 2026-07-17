@@ -16,6 +16,8 @@ import os
 import platform
 import resource
 import shutil
+import sqlite3
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -34,7 +36,7 @@ from polylogue.schemas.workload_tiers import WorkloadScaleTier
 from polylogue.storage import repair
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +70,97 @@ class ProcessSample:
     memory_full_avg10: float | None
 
 
-def _payload(native_id: str, revision: int) -> bytes:
-    records = [f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n']
-    records.extend(
-        f'{{"type":"response_item","payload":{{"type":"message","id":"{native_id}-{index}","role":"user","content":[{{"type":"input_text","text":"revision-{index}"}}]}}}}\n'
-        for index in range(revision + 1)
+@dataclass(frozen=True, slots=True)
+class RawAuthorityScaleScenario:
+    """Private-free synthetic corpus shape derived from frontier aggregates."""
+
+    components: int
+    direct_candidates: int
+    expanded_candidates: int
+    total_payload_bytes: int
+
+    def __post_init__(self) -> None:
+        if self.components < 1:
+            raise ValueError("scenario requires at least one authority component")
+        if self.direct_candidates < self.components:
+            raise ValueError("scenario direct candidates must cover every component")
+        if self.expanded_candidates < self.direct_candidates:
+            raise ValueError("scenario expanded candidates cannot be smaller than direct candidates")
+        if self.total_payload_bytes < self.expanded_candidates * 256:
+            raise ValueError("scenario payload budget is too small for valid JSONL evidence")
+
+    @classmethod
+    def from_profile(cls, profile: object) -> RawAuthorityScaleScenario:
+        if not isinstance(profile, dict) or profile.get("format") != "raw-authority-scale-profile-v1":
+            raise ValueError("scenario profile must be a raw-authority-scale-profile-v1 document")
+
+        def count(field: str) -> int:
+            value = profile.get(field)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"scenario profile has no integral {field}")
+            return value
+
+        return cls(
+            components=count("authority_component_count"),
+            direct_candidates=count("candidate_count"),
+            expanded_candidates=count("expanded_candidate_count"),
+            total_payload_bytes=count("expanded_total_blob_bytes"),
+        )
+
+
+def _write_payload(path: Path, *, native_id: str, revision: int, target_size: int, previous: Path | None) -> None:
+    """Stream a prefix-related Codex JSONL raw without retaining its body in memory."""
+    header = (
+        f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+        if previous is None
+        else f'{{"type":"response_item","payload":{{"type":"message","id":"{native_id}-{revision}","role":"user","content":[{{"type":"input_text","text":"revision-{revision}"}}]}}}}\n'
+    ).encode()
+    previous_size = previous.stat().st_size if previous is not None else 0
+    if target_size < previous_size + len(header):
+        raise ValueError("scenario payload allocation cannot preserve valid JSONL evidence")
+    with path.open("wb") as destination:
+        if previous is not None:
+            with previous.open("rb") as source:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+        destination.write(header)
+        remaining = target_size - previous_size - len(header)
+        chunk = b" " * min(1024 * 1024, remaining)
+        while remaining:
+            amount = min(len(chunk), remaining)
+            destination.write(chunk[:amount])
+            remaining -= amount
+
+
+def _component_counts(total: int, *, components: int) -> list[int]:
+    counts = [0] * components
+    for index in range(total):
+        counts[index % components] += 1
+    return counts
+
+
+def _component_authority_shape(scenario: RawAuthorityScaleScenario) -> list[tuple[int, int]]:
+    """Return direct-candidate and pre-materialized sibling counts per component."""
+    direct = _component_counts(scenario.direct_candidates, components=scenario.components)
+    siblings = _component_counts(
+        scenario.expanded_candidates - scenario.direct_candidates,
+        components=scenario.components,
     )
-    return "".join(records).encode()
+    return list(zip(direct, siblings, strict=True))
+
+
+def _row_sizes(scenario: RawAuthorityScaleScenario, component_counts: list[int]) -> list[list[int]]:
+    """Give every standalone raw a valid evidence budget, then spread the remainder."""
+    minimum_rows = [[256 * (revision + 1) for revision in range(count)] for count in component_counts]
+    remaining = scenario.total_payload_bytes - sum(sum(rows) for rows in minimum_rows)
+    if remaining < 0:
+        raise ValueError("scenario payload budget cannot preserve the requested revision topology")
+    terminal_extra, remainder = divmod(remaining, scenario.components)
+    sizes: list[list[int]] = []
+    for component, minimums in enumerate(minimum_rows):
+        rows = list(minimums)
+        rows[-1] += terminal_extra + (1 if component < remainder else 0)
+        sizes.append(rows)
+    return sizes
 
 
 def _rss_bytes() -> int:
@@ -224,13 +310,30 @@ def run_raw_authority_scale_proof(
     *,
     components: int = 16,
     raws: int = 24,
+    scenario: RawAuthorityScaleScenario | None = None,
     pass_limit: int = 4,
     keep: bool = False,
+    prepare_only: bool = False,
     max_io_full_avg10: float | None = 2.0,
     max_memory_full_avg10: float | None = 2.0,
 ) -> dict[str, object]:
     """Exercise real authority census/replay and emit a stable receipt payload."""
-    if components < 1 or raws < components or pass_limit < 1:
+    if pass_limit < 1:
+        raise ValueError("pass_limit must be positive")
+    if scenario is None:
+        if components < 1 or raws < components:
+            raise ValueError("require components >= 1 and raws >= components")
+        scenario = RawAuthorityScaleScenario(
+            components=components,
+            direct_candidates=raws,
+            expanded_candidates=raws,
+            total_payload_bytes=raws * 1024,
+        )
+    if components != 16 and components != scenario.components:
+        raise ValueError("components and scenario.components disagree")
+    if raws != 24 and raws != scenario.direct_candidates:
+        raise ValueError("raws and scenario.direct_candidates disagree")
+    if scenario.components < 1:
         raise ValueError("require components >= 1, raws >= components, and pass_limit >= 1")
     admission_sample = _process_sample()
     _assert_admission(
@@ -242,40 +345,157 @@ def run_raw_authority_scale_proof(
     if root.exists():
         shutil.rmtree(root)
     initialize_active_archive_root(root)
-    revision_counts = [1] * components
-    for index in range(raws - components):
-        revision_counts[index % components] += 1
+    component_shape = _component_authority_shape(scenario)
+    component_sizes = _row_sizes(
+        scenario,
+        [direct_count + sibling_count for direct_count, sibling_count in component_shape],
+    )
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         publisher = archive._blob_publisher
         if publisher is None:
             raise RuntimeError("raw-authority scale proof requires a writable blob publisher")
         source_conn = archive._ensure_source_conn()
         generated_rows: list[tuple[str, int, str]] = []
-        for component, revisions in enumerate(revision_counts):
-            native_id = f"scale-{component:05d}"
-            for revision in range(revisions):
-                blob_hash, _blob_size = publisher.write_from_bytes(_payload(native_id, revision))
-                generated_rows.append((native_id, revision, blob_hash))
-        publisher.flush()
+        pending_rows: list[tuple[str, str, str, int, bool, int]] = []
         acquired_at_ms = 0
-        with source_conn:
-            for native_id, revision, blob_hash in generated_rows:
-                write_source_raw_session(
-                    source_conn,
-                    origin=origin_from_provider(Provider.CODEX),
-                    capture_mode=Provider.CODEX,
-                    source_path=f"/synthetic/raw-authority/{native_id}.jsonl",
-                    source_index=revision,
-                    payload=_payload(native_id, revision),
-                    acquired_at_ms=acquired_at_ms,
-                    blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                    manage_transaction=False,
-                )
-                acquired_at_ms += 1
+        staging = root / "payload-staging"
+        staging.mkdir()
+        with tempfile.TemporaryDirectory(dir=staging) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            for component, ((direct_count, sibling_count), row_sizes) in enumerate(
+                zip(component_shape, component_sizes, strict=True)
+            ):
+                session_native_id = f"scale-authority-component-{component:05d}"
+                component_source_path = f"/synthetic/raw-authority/authority-component-{component:05d}.jsonl"
+                row_kinds = [False] * direct_count + [True] * sibling_count
+                previous: Path | None = None
+                for member, (row_size, terminalized) in enumerate(zip(row_sizes, row_kinds, strict=True)):
+                    source_label = f"scale-{component:05d}-member-{member:05d}"
+                    payload_path = temporary_root / f"{source_label}.jsonl"
+                    _write_payload(
+                        payload_path,
+                        native_id=session_native_id,
+                        revision=member,
+                        target_size=row_size,
+                        previous=previous,
+                    )
+                    blob_hash, blob_size = publisher.write_from_path(payload_path)
+                    payload_path.unlink()
+                    previous = publisher.blob_path(blob_hash)
+                    source_path = component_source_path
+                    pending_rows.append((session_native_id, source_path, blob_hash, blob_size, terminalized, component))
+                    generated_rows.append((source_label, member, blob_hash))
+                    if len(pending_rows) < 128:
+                        continue
+                    publisher.flush()
+                    with source_conn:
+                        for (
+                            row_native_id,
+                            source_path,
+                            row_hash,
+                            row_size_bytes,
+                            terminalized,
+                            row_component,
+                        ) in pending_rows:
+                            raw_id = write_source_raw_session_blob_ref(
+                                source_conn,
+                                origin=origin_from_provider(Provider.CODEX),
+                                capture_mode=Provider.CODEX,
+                                source_path=source_path,
+                                source_index=row_component,
+                                blob_hash=bytes.fromhex(row_hash),
+                                blob_size=row_size_bytes,
+                                acquired_at_ms=acquired_at_ms,
+                                native_id=None if terminalized else row_native_id,
+                                blob_publication_receipt_id=publisher.receipt_id(row_hash),
+                                manage_transaction=False,
+                            )
+                            if terminalized:
+                                with sqlite3.connect(root / "index.db") as index_conn:
+                                    index_conn.execute(
+                                        """
+                                        INSERT INTO raw_revision_applications (
+                                            decision_id, raw_id, session_id, logical_source_key,
+                                            source_revision, acquisition_generation, decision, detail, decided_at_ms
+                                        ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                        """,
+                                        (
+                                            f"synthetic-terminal:{raw_id}",
+                                            raw_id,
+                                            f"codex-session:{row_native_id}",
+                                            f"synthetic:authority-component:{row_component:05d}",
+                                            row_hash,
+                                        ),
+                                    )
+                            acquired_at_ms += 1
+                    pending_rows.clear()
+            if pending_rows:
+                publisher.flush()
+                with source_conn:
+                    for (
+                        row_native_id,
+                        source_path,
+                        row_hash,
+                        row_size_bytes,
+                        terminalized,
+                        row_component,
+                    ) in pending_rows:
+                        raw_id = write_source_raw_session_blob_ref(
+                            source_conn,
+                            origin=origin_from_provider(Provider.CODEX),
+                            capture_mode=Provider.CODEX,
+                            source_path=source_path,
+                            source_index=row_component,
+                            blob_hash=bytes.fromhex(row_hash),
+                            blob_size=row_size_bytes,
+                            acquired_at_ms=acquired_at_ms,
+                            native_id=None if terminalized else row_native_id,
+                            blob_publication_receipt_id=publisher.receipt_id(row_hash),
+                            manage_transaction=False,
+                        )
+                        if terminalized:
+                            with sqlite3.connect(root / "index.db") as index_conn:
+                                index_conn.execute(
+                                    """
+                                    INSERT INTO raw_revision_applications (
+                                        decision_id, raw_id, session_id, logical_source_key,
+                                        source_revision, acquisition_generation, decision, detail, decided_at_ms
+                                    ) VALUES (?, ?, ?, ?, ?, 0, 'superseded', 'synthetic terminal sibling', 0)
+                                    """,
+                                    (
+                                        f"synthetic-terminal:{raw_id}",
+                                        raw_id,
+                                        f"codex-session:{row_native_id}",
+                                        f"synthetic:authority-component:{row_component:05d}",
+                                        row_hash,
+                                    ),
+                                )
+                        acquired_at_ms += 1
+        staging.rmdir()
     archive_id = _generated_archive_id(generated_rows)
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
+    achieved_shape = repair.raw_materialization_scale_profile(config)
+    if prepare_only:
+        prepared_report: dict[str, object] = {
+            "archive_root": str(root),
+            "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+            "achieved_shape": achieved_shape,
+            "admission_sample": asdict(admission_sample),
+            "prepared_only": True,
+        }
+        (root / "raw-authority-scale-preflight.json").write_text(
+            json.dumps(prepared_report, indent=2, sort_keys=True) + "\n"
+        )
+        if not keep:
+            shutil.rmtree(root)
+        return prepared_report
+    if scenario.expanded_candidates != scenario.direct_candidates:
+        raise ValueError(
+            "an expanded-authority scenario requires explicit terminal/deferred cohort outcomes; "
+            "use prepare_only to inspect its exact topology until those outcome variants are implemented"
+        )
     pass_receipts: list[RawAuthorityScalePass] = []
-    for number in range(1, (components * 3) + 4):
+    for number in range(1, (scenario.components * 3) + 4):
         pass_receipt, _digest = _record_repair_pass(
             number=number,
             mode="apply",
@@ -301,7 +521,10 @@ def run_raw_authority_scale_proof(
         fixed_point_digests.append(digest)
     if fixed_point_digests[0] != fixed_point_digests[1] or not pass_receipts[-1].fixed_point:
         raise RuntimeError("raw-authority scale proof did not reach two matching quiescent fixed-point censuses")
-    profile_id = f"workload-profile:synthetic-raw-authority:{components}:{raws}"
+    profile_id = (
+        f"workload-profile:synthetic-raw-authority:{scenario.components}:"
+        f"{scenario.direct_candidates}:{scenario.expanded_candidates}"
+    )
     spec = raw_authority_fixed_point_spec(
         profile_id=profile_id,
         archive_id=archive_id,
@@ -341,15 +564,18 @@ def run_raw_authority_scale_proof(
         ),
         cleanup_complete=not keep,
         notes=(
-            f"requested_components={components}",
-            f"requested_raws={raws}",
+            f"requested_components={scenario.components}",
+            f"requested_direct_candidates={scenario.direct_candidates}",
+            f"requested_expanded_candidates={scenario.expanded_candidates}",
+            f"requested_payload_bytes={scenario.total_payload_bytes}",
             "repair_raw_materialization combines census and replay; its measured resource totals are recorded once on replay.",
             "This receipt is a generated projection; only an explicit July-15-sized invocation is production-shaped evidence.",
         ),
     )
     report: dict[str, object] = {
         "archive_root": str(root),
-        "requested_shape": {"components": components, "raws": raws, "pass_limit": pass_limit},
+        "requested_shape": {**asdict(scenario), "pass_limit": pass_limit},
+        "achieved_shape": achieved_shape,
         "admission_sample": asdict(admission_sample),
         "passes": [asdict(item) for item in pass_receipts],
         "fixed_point_digests": fixed_point_digests,
@@ -366,8 +592,19 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument("--workdir", type=Path, default=Path(".cache") / "raw-authority-scale-proof")
     parser.add_argument("--components", type=int, default=16)
     parser.add_argument("--raws", type=int, default=24)
+    parser.add_argument(
+        "--scenario-profile",
+        type=Path,
+        default=None,
+        help="Read an aggregate scale profile produced by --capture-profile and generate that synthetic shape.",
+    )
     parser.add_argument("--pass-limit", type=int, default=4)
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Build and inspect a private-free synthetic frontier without asserting replay convergence.",
+    )
     parser.add_argument("--max-io-full-avg10", type=float, default=2.0)
     parser.add_argument("--max-memory-full-avg10", type=float, default=2.0)
     parser.add_argument("--allow-contended-host", action="store_true")
@@ -385,14 +622,19 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         args.capture_profile.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
         print(json.dumps(profile, indent=2, sort_keys=True) if args.json else args.capture_profile, file=stdout)
         return 0
+    scenario = None
+    if args.scenario_profile is not None:
+        scenario = RawAuthorityScaleScenario.from_profile(json.loads(args.scenario_profile.read_text()))
     pressure_limit = None if args.allow_contended_host else args.max_io_full_avg10
     memory_limit = None if args.allow_contended_host else args.max_memory_full_avg10
     payload = run_raw_authority_scale_proof(
         args.workdir,
         components=args.components,
         raws=args.raws,
+        scenario=scenario,
         pass_limit=args.pass_limit,
         keep=args.keep,
+        prepare_only=args.prepare_only,
         max_io_full_avg10=pressure_limit,
         max_memory_full_avg10=memory_limit,
     )
