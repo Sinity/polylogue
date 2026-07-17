@@ -3631,6 +3631,17 @@ def _raw_materialization_candidate_ids(
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+        materialized_aliases = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                """
+                SELECT DISTINCT s.origin, s.native_id
+                FROM index_tier.sessions AS s
+                JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
+                WHERE s.native_id IS NOT NULL
+                """
+            )
+        }
         params: list[object] = []
         raw_filter = ""
         if raw_artifact_id is not None:
@@ -3776,7 +3787,7 @@ def _raw_materialization_candidate_ids(
                 continue
             if row["parse_error"] and not _raw_materialization_retryable_missing_blob_error(row["parse_error"]):
                 continue
-            if _raw_materialized_by_source_path_native(conn, row):
+            if _raw_materialized_by_source_path_native(materialized_aliases, row):
                 continue
             if _raw_materialization_parsed_non_session_artifact(archive_root, row):
                 continue
@@ -4188,7 +4199,12 @@ def _unavailable_raw_materialization_backlog(reason: str) -> dict[str, object]:
     }
 
 
-def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> dict[str, object]:
+def raw_materialization_replay_backlog(
+    config: Config,
+    *,
+    limit: int = 10,
+    _candidates: RawMaterializationCandidates | None = None,
+) -> dict[str, object]:
     """Return a read-only weighted backlog for raw source-to-index replay.
 
     The report uses the same candidate selector as ``repair_raw_materialization``
@@ -4207,7 +4223,7 @@ def raw_materialization_replay_backlog(config: Config, *, limit: int = 10) -> di
         ).fetchone()
     if source_ready is None:
         return _unavailable_raw_materialization_backlog("source_tier_uninitialized")
-    candidates = _raw_materialization_candidate_ids(config)
+    candidates = _candidates or _raw_materialization_candidate_ids(config)
     raw_ids_by_size = sorted(
         candidates.raw_ids,
         key=lambda raw_id: (-candidates.raw_blob_bytes.get(raw_id, 0), raw_id),
@@ -4326,10 +4342,10 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     to retain with a synthetic workload receipt because it never includes raw
     ids, source paths, blob hashes, or payload-derived fields.
     """
-    backlog = raw_materialization_replay_backlog(config, limit=0)
+    candidates = _raw_materialization_candidate_ids(config)
+    backlog = raw_materialization_replay_backlog(config, limit=0, _candidates=candidates)
     if not bool(backlog["available"]):
         return {"available": False, "reason": backlog["reason"]}
-    candidates = _raw_materialization_candidate_ids(config)
     component_raw_counts = [len(component) for component in candidates.authority_components]
     component_blob_bytes = [
         sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
@@ -4359,23 +4375,12 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
     }
 
 
-def _raw_materialized_by_source_path_native(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:
     origin = str(row["origin"] or "")
     if not origin:
         return False
     for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
-        existing = conn.execute(
-            """
-            SELECT 1
-            FROM index_tier.sessions AS s
-            JOIN raw_sessions AS existing_raw ON existing_raw.raw_id = s.raw_id
-            WHERE s.origin = ?
-              AND s.native_id = ?
-            LIMIT 1
-            """,
-            (origin, native_id),
-        ).fetchone()
-        if existing is not None:
+        if (origin, native_id) in materialized_aliases:
             return True
     return False
 

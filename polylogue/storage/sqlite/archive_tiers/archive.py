@@ -2332,17 +2332,67 @@ class ArchiveStore:
         conn: sqlite3.Connection,
         raw_ids: list[str],
     ) -> tuple[tuple[str, ...], ...]:
-        """Partition scheduling hints into transitive authority components."""
-        components: list[set[str]] = []
-        for raw_id in dict.fromkeys(raw_ids):
-            expanded, _keys = ArchiveStore.expand_raw_membership_selection_sync(conn, [raw_id])
-            component = set(expanded)
-            overlapping = [existing for existing in components if existing & component]
-            for existing in overlapping:
-                component.update(existing)
-                components.remove(existing)
-            components.append(component)
-        return tuple(tuple(sorted(component)) for component in sorted(components, key=lambda item: min(item)))
+        """Partition scheduling hints with one bulk authority-graph snapshot.
+
+        Re-expanding every direct candidate separately turns a large backlog
+        into thousands of overlapping recursive SQL walks.  Source paths and
+        logical membership keys are both undirected authority edges, so build
+        their connected components once and project only components containing
+        a scheduling hint.
+        """
+        hints = tuple(dict.fromkeys(raw_ids))
+        if not hints:
+            return ()
+
+        parent: dict[str, str] = {}
+
+        def find(raw_id: str) -> str:
+            root = parent.setdefault(raw_id, raw_id)
+            while root != parent[root]:
+                parent[root] = parent[parent[root]]
+                root = parent[root]
+            while raw_id != root:
+                next_raw_id = parent[raw_id]
+                parent[raw_id] = root
+                raw_id = next_raw_id
+            return root
+
+        def join(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        by_path: dict[str, str] = {}
+        by_key: dict[str, str] = {}
+        for raw_id, source_path, logical_source_key in conn.execute(
+            "SELECT raw_id, source_path, logical_source_key FROM raw_sessions"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            path = str(source_path or "")
+            if path:
+                prior = by_path.setdefault(path, raw_text)
+                join(prior, raw_text)
+            if logical_source_key is not None:
+                key = str(logical_source_key)
+                prior = by_key.setdefault(key, raw_text)
+                join(prior, raw_text)
+        for raw_id, logical_source_key in conn.execute(
+            "SELECT raw_id, logical_source_key FROM raw_session_memberships"
+        ):
+            raw_text = str(raw_id)
+            find(raw_text)
+            key = str(logical_source_key)
+            prior = by_key.setdefault(key, raw_text)
+            join(prior, raw_text)
+
+        members: dict[str, list[str]] = {}
+        for raw_id in parent:
+            members.setdefault(find(raw_id), []).append(raw_id)
+        selected_roots = {find(raw_id) for raw_id in hints if raw_id in parent}
+        components = [tuple(sorted(members[root])) for root in selected_roots]
+        return tuple(sorted(components, key=lambda component: component[0]))
 
     def raw_membership_selection_components(self, raw_ids: list[str]) -> tuple[tuple[str, ...], ...]:
         return self.raw_membership_selection_components_sync(self._ensure_source_conn(), raw_ids)
