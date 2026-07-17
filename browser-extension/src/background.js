@@ -876,6 +876,19 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   const settings = await receiverSettings();
   const pairingBefore = await storedReceiverPairing();
 
+  // A fresh extension profile has no authority to probe an authenticated
+  // receiver. Keep that unpaired state local: repeatedly sending an empty
+  // request only creates receiver-side auth noise and cannot establish trust.
+  if (!settings.authToken) {
+    return {
+      ok: true,
+      status: "unauthorized",
+      detail: "receiver_auth_missing",
+      endpoint: settings.baseUrl,
+      pairing: pairingBefore,
+    };
+  }
+
   async function classifyProbe(endpoint, probe, recoveredFrom = null) {
     const body = probe.body;
     if (!body || typeof body !== "object") {
