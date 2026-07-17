@@ -150,8 +150,10 @@ def test_raw_authority_blocker_resolution_cli_requires_confirmation(
         *,
         resolution: str,
         assertion_id: str | None = None,
+        judgment_disposition: str | None = None,
     ) -> dict[str, object]:
         assert assertion_id is None
+        assert judgment_disposition is None
         calls.append((blocker_id, resolution))
         return {"blocker_id": blocker_id, "current_plan": {"plan_id": "current-plan"}}
 

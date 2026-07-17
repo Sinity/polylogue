@@ -1375,6 +1375,7 @@ def resolve_raw_authority_blocker(
     *,
     resolution: str,
     assertion_id: str | None = None,
+    judgment_disposition: str | None = None,
 ) -> JSONDocument:
     """Explicitly acknowledge current evidence and reopen replanning."""
     if not resolution.strip():
@@ -1417,6 +1418,9 @@ def resolve_raw_authority_blocker(
                 if assertion is None or str(assertion[0]) != "accepted":
                     conn.rollback()
                     raise RuntimeError("frontier judgment assertion must be explicitly accepted before replanning")
+                if judgment_disposition != "retain_canonical_authority":
+                    conn.rollback()
+                    raise RuntimeError("frontier judgment resolution requires disposition=retain_canonical_authority")
             observed = stored_plan
         else:
             input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
@@ -1430,6 +1434,7 @@ def resolve_raw_authority_blocker(
                 "current_plan": observed.to_dict(),
                 "operator_resolution": resolution.strip(),
                 "operator_assertion_id": assertion_id,
+                "judgment_disposition": judgment_disposition,
                 "resolved_at_ms": now,
             }
         )
@@ -1458,6 +1463,7 @@ def resolve_raw_authority_blocker(
             },
             "operator_resolution": resolution.strip(),
             "operator_assertion_id": assertion_id,
+            "judgment_disposition": judgment_disposition,
             "resolved_at_ms": now,
             "detail_query_handle": raw_authority_detail_query_handle(str(row["census_id"]), str(row["plan_id"])),
         }

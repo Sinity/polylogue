@@ -171,6 +171,12 @@ def raw_authority_detail_command(
     default=None,
     help="Accepted judgment assertion required by a conflicting-authority blocker.",
 )
+@click.option(
+    "--judgment-disposition",
+    type=click.Choice(["retain_canonical_authority"]),
+    default=None,
+    help="Typed authority choice required when resolving a conflicting frontier.",
+)
 @click.option("--yes", "confirmed", is_flag=True, help="Confirm resolving this blocker against current evidence.")
 @click.option(
     "--output-format",
@@ -185,6 +191,7 @@ def raw_authority_blocker_resolve_command(
     blocker_id: str,
     reason: str,
     assertion_id: str | None,
+    judgment_disposition: str | None,
     confirmed: bool,
     output_format: str,
 ) -> None:
@@ -200,6 +207,7 @@ def raw_authority_blocker_resolve_command(
             blocker_id,
             resolution=reason,
             assertion_id=assertion_id,
+            judgment_disposition=judgment_disposition,
         )
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc

@@ -184,6 +184,7 @@ class BrowserCaptureOriginRepairItem:
     repair_strategy: str | None = None
     replacement_raw_id: str | None = None
     replacement_source_revision: str | None = None
+    replacement_content_hash: str | None = None
     replacement_frontier_kind: str | None = None
     replacement_frontier: int | None = None
     copy_forward_raw_id: str | None = None
@@ -230,10 +231,17 @@ class BrowserCanonicalAuthorityConflictWitness:
     old_logical_source_key: str | None = None
     canonical_logical_source_key: str | None = None
     unknown_raw_content_hash: str | None = None
+    unknown_source_revision: str | None = None
+    unknown_frontier_kind: str | None = None
+    unknown_frontier: int | None = None
+    unknown_decided_at_ms: int | None = None
     unknown_raw_message_count: int | None = None
     competing_raw_id: str | None = None
     competing_content_hash: str | None = None
+    competing_source_revision: str | None = None
     competing_frontier_kind: str | None = None
+    competing_frontier: int | None = None
+    competing_decided_at_ms: int | None = None
     competing_decision: str | None = None
     competing_message_count: int | None = None
     divergent_message_index: int | None = None
@@ -2375,6 +2383,7 @@ def _inspect_browser_capture_origin_mismatch(
         repair_strategy=repair_strategy,
         replacement_raw_id=replacement_raw_id,
         replacement_source_revision=replacement_source_revision,
+        replacement_content_hash=accepted_hash.hex(),
         replacement_frontier_kind=replacement_frontier_kind,
         replacement_frontier=replacement_frontier,
         copy_forward_raw_id=copy_raw_id if repair_strategy == "copy_forward" else None,
@@ -2581,14 +2590,80 @@ def _finalize_browser_origin_copy_forward_index(conn: sqlite3.Connection, item: 
         ),
         decided_at_ms=acquired_at_ms,
     )
+    _retire_browser_origin_legacy_head(
+        conn,
+        item,
+        accepted_raw_id=item.copy_forward_raw_id,
+        accepted_source_revision=item.blob_hash,
+        accepted_content_hash=item.replacement_content_hash or item.accepted_content_hash,
+        accepted_frontier_kind="byte",
+        accepted_frontier=item.accepted_frontier,
+        decided_at_ms=acquired_at_ms,
+    )
 
 
-def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
+def _retire_browser_origin_legacy_head(
+    conn: sqlite3.Connection,
+    item: BrowserCaptureOriginRepairItem,
+    *,
+    accepted_raw_id: str,
+    accepted_source_revision: str,
+    accepted_content_hash: str,
+    accepted_frontier_kind: str,
+    accepted_frontier: int,
+    decided_at_ms: int,
+) -> None:
+    """Terminally receipt and remove the exact obsolete unknown-key head."""
     from polylogue.storage.sqlite.archive_tiers.revision_application import (
         RevisionApplicationReceipt,
         record_revision_application_sync,
     )
 
+    assert item.session_id is not None
+    assert item.old_logical_source_key is not None
+    assert item.blob_hash is not None
+    assert item.accepted_content_hash is not None
+    assert item.accepted_frontier is not None
+    record_revision_application_sync(
+        conn,
+        RevisionApplicationReceipt(
+            raw_id=item.raw_id,
+            session_id=item.session_id,
+            logical_source_key=item.old_logical_source_key,
+            source_revision=item.blob_hash,
+            acquisition_generation=0,
+            decision=ApplicationDecision.SUPERSEDED,
+            accepted_raw_id=accepted_raw_id,
+            accepted_source_revision=accepted_source_revision,
+            accepted_content_hash=bytes.fromhex(accepted_content_hash),
+            accepted_frontier_kind=accepted_frontier_kind,
+            accepted_frontier=accepted_frontier,
+            detail=f"browser_capture_origin_supersession:{item.raw_id}",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+    deleted = conn.execute(
+        """
+        DELETE FROM raw_revision_heads
+        WHERE logical_source_key = ? AND session_id = ? AND accepted_raw_id = ?
+          AND accepted_source_revision = ? AND accepted_content_hash = ?
+          AND accepted_frontier_kind = 'byte' AND accepted_frontier = ?
+          AND acquisition_generation = 0 AND append_end_offset IS NULL
+        """,
+        (
+            item.old_logical_source_key,
+            item.session_id,
+            item.raw_id,
+            item.blob_hash,
+            bytes.fromhex(item.accepted_content_hash),
+            item.accepted_frontier,
+        ),
+    ).rowcount
+    if deleted != 1:
+        raise RuntimeError(f"obsolete browser-origin head CAS failed for {item.raw_id}")
+
+
+def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> None:
     assert item.session_id is not None
     assert item.canonical_logical_source_key is not None
     assert item.blob_hash is not None
@@ -2604,22 +2679,14 @@ def _restore_browser_origin_canonical_head(conn: sqlite3.Connection, item: Brows
     )
     if cursor.rowcount != 1:
         raise RuntimeError(f"session raw pointer CAS failed for {item.raw_id}")
-    record_revision_application_sync(
+    _retire_browser_origin_legacy_head(
         conn,
-        RevisionApplicationReceipt(
-            raw_id=item.raw_id,
-            session_id=item.session_id,
-            logical_source_key=item.canonical_logical_source_key,
-            source_revision=item.blob_hash,
-            acquisition_generation=0,
-            decision=ApplicationDecision.SUPERSEDED,
-            accepted_raw_id=item.replacement_raw_id,
-            accepted_source_revision=item.replacement_source_revision,
-            accepted_content_hash=bytes.fromhex(item.accepted_content_hash),
-            accepted_frontier_kind=item.replacement_frontier_kind,
-            accepted_frontier=item.replacement_frontier,
-            detail=f"browser_capture_origin_supersession:{item.raw_id}",
-        ),
+        item,
+        accepted_raw_id=item.replacement_raw_id,
+        accepted_source_revision=item.replacement_source_revision,
+        accepted_content_hash=item.replacement_content_hash or item.accepted_content_hash,
+        accepted_frontier_kind=item.replacement_frontier_kind,
+        accepted_frontier=item.replacement_frontier,
         decided_at_ms=decided_at_ms,
     )
 
@@ -2632,6 +2699,124 @@ def _apply_browser_origin_repair_item(conn: sqlite3.Connection, item: BrowserCap
         _restore_browser_origin_canonical_head(conn, item)
         return
     raise RuntimeError(f"unsupported browser-capture origin repair strategy: {item.repair_strategy}")
+
+
+def _browser_origin_strategy_terminal(conn: sqlite3.Connection, item: BrowserCaptureOriginRepairItem) -> bool:
+    """Prove the shared strategy retired the legacy head and selected its successor."""
+    replacement_raw_id = item.copy_forward_raw_id or item.replacement_raw_id
+    if (
+        item.session_id is None
+        or item.old_logical_source_key is None
+        or item.canonical_logical_source_key is None
+        or replacement_raw_id is None
+        or item.replacement_source_revision is None
+        or item.replacement_frontier_kind is None
+        or item.replacement_frontier is None
+    ):
+        return False
+    session = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (item.session_id,)).fetchone()
+    canonical = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier
+        FROM raw_revision_heads WHERE logical_source_key = ? AND session_id = ?
+        """,
+        (item.canonical_logical_source_key, item.session_id),
+    ).fetchone()
+    legacy = conn.execute(
+        "SELECT 1 FROM raw_revision_heads WHERE logical_source_key = ?",
+        (item.old_logical_source_key,),
+    ).fetchone()
+    superseded = conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND session_id = ? AND logical_source_key = ?
+          AND decision = 'superseded'
+        """,
+        (item.raw_id, item.session_id, item.old_logical_source_key),
+    ).fetchone()
+    expected = (
+        replacement_raw_id,
+        item.replacement_source_revision,
+        bytes.fromhex(item.replacement_content_hash or item.accepted_content_hash or ""),
+        item.replacement_frontier_kind,
+        item.replacement_frontier,
+    )
+    expected_supersession = expected[:3]
+    return (
+        session is not None
+        and str(session[0]) == replacement_raw_id
+        and canonical is not None
+        and tuple(canonical) == expected
+        and legacy is None
+        and superseded is not None
+        and tuple(superseded) == expected_supersession
+    )
+
+
+def _apply_browser_conflict_canonical_resolution(
+    archive_root: Path,
+    conn: sqlite3.Connection,
+    raw_id: str,
+    expected_witness: Mapping[str, object],
+) -> None:
+    """Apply one explicit retain-canonical judgment against an exact conflict witness."""
+    base = _inspect_browser_capture_origin_strategy(archive_root, raw_id, conn=conn)
+    if base.status != "ineligible":
+        raise RuntimeError("conflict resolution no longer observes a conflicting browser authority")
+    current = _browser_canonical_authority_conflict_witness(archive_root, conn, raw_id, base.reason)
+    current_witness = dataclasses.asdict(current)
+    # ``reason`` is the inspector's human-readable rejection path.  It can
+    # legitimately become more specific as the shared classifier evolves and
+    # is deliberately excluded from the evidence digest.  Every structural
+    # witness field remains an exact CAS precondition.
+    comparable_current = {key: value for key, value in current_witness.items() if key != "reason"}
+    comparable_expected = {key: value for key, value in expected_witness.items() if key != "reason"}
+    if comparable_current != comparable_expected:
+        changed_fields = sorted(
+            key
+            for key in comparable_current.keys() | comparable_expected.keys()
+            if comparable_current.get(key) != comparable_expected.get(key)
+        )
+        raise RuntimeError(
+            f"browser conflict evidence changed after operator judgment: fields={','.join(changed_fields)}"
+        )
+    required = (
+        current.session_id,
+        current.old_logical_source_key,
+        current.canonical_logical_source_key,
+        current.unknown_raw_content_hash,
+        current.unknown_source_revision,
+        current.unknown_frontier,
+        current.competing_raw_id,
+        current.competing_content_hash,
+        current.competing_source_revision,
+        current.competing_frontier_kind,
+        current.competing_frontier,
+    )
+    if any(value is None for value in required):
+        raise RuntimeError("retain-canonical judgment lacks a complete typed competing-head witness")
+    repair_item = BrowserCaptureOriginRepairItem(
+        raw_id=raw_id,
+        status="eligible",
+        reason="accepted operator judgment retained canonical authority",
+        session_id=current.session_id,
+        old_logical_source_key=current.old_logical_source_key,
+        canonical_logical_source_key=current.canonical_logical_source_key,
+        blob_hash=current.unknown_source_revision,
+        accepted_content_hash=current.unknown_raw_content_hash,
+        accepted_frontier=current.unknown_frontier,
+        repair_strategy="restore_canonical_head",
+        replacement_raw_id=current.competing_raw_id,
+        replacement_source_revision=current.competing_source_revision,
+        replacement_content_hash=current.competing_content_hash,
+        replacement_frontier_kind=current.competing_frontier_kind,
+        replacement_frontier=current.competing_frontier,
+    )
+    _restore_browser_origin_canonical_head(conn, repair_item)
+    if not _browser_origin_strategy_terminal(conn, repair_item):
+        raise RuntimeError("retain-canonical judgment did not reach its typed terminal postcondition")
 
 
 def _inspect_browser_capture_origin_strategy(
@@ -2711,7 +2896,7 @@ def _browser_canonical_authority_conflict_witness(
 
     raw = conn.execute(
         """
-        SELECT origin, source_path, blob_hash, blob_size
+        SELECT origin, source_path, blob_hash, blob_size, source_revision
         FROM source.raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -2751,10 +2936,20 @@ def _browser_canonical_authority_conflict_witness(
 
     head = conn.execute(
         """
-        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, decided_at_ms
         FROM raw_revision_heads WHERE logical_source_key = ?
         """,
         (canonical_key,),
+    ).fetchone()
+    old_key = f"{Provider.UNKNOWN.value}:{session.provider_session_id}"
+    unknown_head = conn.execute(
+        """
+        SELECT accepted_frontier_kind, accepted_frontier, decided_at_ms
+        FROM raw_revision_heads
+        WHERE logical_source_key = ? AND session_id = ? AND accepted_raw_id = ?
+        """,
+        (old_key, session_id, raw_id),
     ).fetchone()
     # Deliberately not scoped to ``canonical_key``: the byte-proven-rekey
     # actuator's precondition rejects on *any* retained membership row for
@@ -2777,7 +2972,10 @@ def _browser_canonical_authority_conflict_witness(
 
     competing_raw_id: str | None = None
     competing_content_hash: str | None = None
+    competing_source_revision: str | None = None
     competing_frontier_kind: str | None = None
+    competing_frontier: int | None = None
+    competing_decided_at_ms: int | None = None
     competing_decision: str | None = None
     competing_message_count: int | None = None
     divergent_message_index: int | None = None
@@ -2786,7 +2984,10 @@ def _browser_canonical_authority_conflict_witness(
     if head is not None:
         competing_raw_id = str(head["accepted_raw_id"])
         competing_content_hash = _bytes_value(head["accepted_content_hash"]).hex()
+        competing_source_revision = str(head["accepted_source_revision"])
         competing_frontier_kind = str(head["accepted_frontier_kind"])
+        competing_frontier = int(head["accepted_frontier"])
+        competing_decided_at_ms = int(head["decided_at_ms"])
         application = conn.execute(
             """
             SELECT decision FROM raw_revision_applications
@@ -2854,8 +3055,16 @@ def _browser_canonical_authority_conflict_witness(
         "session_id": session_id,
         "canonical_logical_source_key": canonical_key,
         "unknown_raw_content_hash": accepted_hash.hex(),
+        "unknown_source_revision": str(raw["source_revision"]),
+        "unknown_frontier_kind": None if unknown_head is None else str(unknown_head["accepted_frontier_kind"]),
+        "unknown_frontier": None if unknown_head is None else int(unknown_head["accepted_frontier"]),
+        "unknown_decided_at_ms": None if unknown_head is None else int(unknown_head["decided_at_ms"]),
         "competing_raw_id": competing_raw_id,
         "competing_content_hash": competing_content_hash,
+        "competing_source_revision": competing_source_revision,
+        "competing_frontier_kind": competing_frontier_kind,
+        "competing_frontier": competing_frontier,
+        "competing_decided_at_ms": competing_decided_at_ms,
         "competing_decision": competing_decision,
         "divergent_message_index": divergent_message_index,
     }
@@ -2865,13 +3074,20 @@ def _browser_canonical_authority_conflict_witness(
         status="ineligible",
         reason=base_reason,
         session_id=session_id,
-        old_logical_source_key=f"{Provider.UNKNOWN.value}:{session.provider_session_id}",
+        old_logical_source_key=old_key,
         canonical_logical_source_key=canonical_key,
         unknown_raw_content_hash=accepted_hash.hex(),
+        unknown_source_revision=str(raw["source_revision"]),
+        unknown_frontier_kind=None if unknown_head is None else str(unknown_head["accepted_frontier_kind"]),
+        unknown_frontier=None if unknown_head is None else int(unknown_head["accepted_frontier"]),
+        unknown_decided_at_ms=None if unknown_head is None else int(unknown_head["decided_at_ms"]),
         unknown_raw_message_count=len(projection.message_hashes),
         competing_raw_id=competing_raw_id,
         competing_content_hash=competing_content_hash,
+        competing_source_revision=competing_source_revision,
         competing_frontier_kind=competing_frontier_kind,
+        competing_frontier=competing_frontier,
+        competing_decided_at_ms=competing_decided_at_ms,
         competing_decision=competing_decision,
         competing_message_count=competing_message_count,
         divergent_message_index=divergent_message_index,

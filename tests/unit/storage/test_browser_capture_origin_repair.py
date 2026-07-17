@@ -597,6 +597,10 @@ def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_pa
     assert report.retryable_plan_count == 0
     postflight = inspect_raw_authority_frontier(_config(tmp_path))
     assert all(item.raw_id != raw_id or item.state is RawAuthorityFrontierState.SUPERSEDED for item in postflight.items)
+    assert set(postflight.state_counts) <= {
+        RawAuthorityFrontierState.PROVEN_CURRENT.value,
+        RawAuthorityFrontierState.SUPERSEDED.value,
+    }
     assert not (tmp_path / "recovery").exists()
 
 
@@ -620,6 +624,11 @@ def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: P
         assert index.execute(
             "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
         ).fetchone() == (canonical_raw_id,)
+    postflight = inspect_raw_authority_frontier(_config(tmp_path))
+    assert set(postflight.state_counts) <= {
+        RawAuthorityFrontierState.PROVEN_CURRENT.value,
+        RawAuthorityFrontierState.SUPERSEDED.value,
+    }
 
 
 @pytest.mark.parametrize("authority", ["quarantined", "byte_proven"])
@@ -691,9 +700,9 @@ def test_inspect_conflicts_semantic_hash_divergence_evidence(tmp_path: Path) -> 
     assert item.evidence_digest is not None
 
 
-def test_unified_frontier_conflict_requires_accepted_judgment_and_stays_visible(tmp_path: Path) -> None:
+def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evidence(tmp_path: Path) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
-    _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)
+    canonical_raw_id = _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)
 
     census = inspect_raw_authority_frontier(_config(tmp_path))
 
@@ -720,17 +729,44 @@ def test_unified_frontier_conflict_requires_accepted_judgment_and_stays_visible(
         )
     with sqlite3.connect(tmp_path / "user.db") as user, user:
         assert mark_assertion_status(user, assertion_id, AssertionStatus.ACCEPTED)
+    with pytest.raises(RuntimeError, match="disposition=retain_canonical_authority"):
+        resolve_raw_authority_blocker(
+            tmp_path,
+            blocker_id,
+            resolution="retain the typed canonical authority",
+            assertion_id=assertion_id,
+        )
     resolved = resolve_raw_authority_blocker(
         tmp_path,
         blocker_id,
-        resolution="retain both authorities pending a future evidence change",
+        resolution="retain the typed canonical authority",
         assertion_id=assertion_id,
+        judgment_disposition="retain_canonical_authority",
     )
     assert resolved["operator_assertion_id"] == assertion_id
+    assert resolved["judgment_disposition"] == "retain_canonical_authority"
 
     repeated = inspect_raw_authority_frontier(_config(tmp_path))
-    repeated_conflict = next(item for item in repeated.items if item.raw_id == mismatched_raw_id)
-    assert repeated_conflict.plan_id == conflict.plan_id
+    successor = next(item for item in repeated.items if item.raw_id == mismatched_raw_id)
+    assert successor.plan_id != conflict.plan_id
+    assert successor.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert successor.actuator is RawAuthorityActuator.RESOLVE_CONFLICT
+    applied = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=repeated.census_id,
+        selected_plan_ids=(successor.plan_id,),
+    )
+    assert applied.executed_plan_count == 1
+    assert applied.retryable_plan_count == 0
+    postflight = inspect_raw_authority_frontier(_config(tmp_path))
+    assert set(postflight.state_counts) <= {
+        RawAuthorityFrontierState.PROVEN_CURRENT.value,
+        RawAuthorityFrontierState.SUPERSEDED.value,
+    }
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = 'chatgpt-export:browser-origin-one'"
+        ).fetchone() == (canonical_raw_id,)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(
             "SELECT COUNT(*) FROM raw_authority_blockers WHERE plan_id = ? AND resolved_at_ms IS NULL",

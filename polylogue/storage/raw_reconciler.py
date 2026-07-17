@@ -71,6 +71,7 @@ class RawAuthorityActuator(StrEnum):
     FOLD_DUPLICATE_ALIAS = "fold_duplicate_alias"
     REACQUIRE = "reacquire"
     REQUEST_JUDGMENT = "request_judgment"
+    RESOLVE_CONFLICT = "resolve_conflict"
 
 
 _EXECUTABLE_STATES = {
@@ -647,7 +648,7 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
     with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         existing = read_assertion_envelope(conn, assertion_id)
         if existing is not None and existing.status is not AssertionStatus.CANDIDATE:
-            return existing.assertion_id, existing.status is AssertionStatus.ACCEPTED
+            return existing.assertion_id, False
         upsert_assertion(
             conn,
             assertion_id=assertion_id,
@@ -664,6 +665,7 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
                 "logical_source_key": item.logical_source_key,
                 "evidence_digest": item.evidence_digest,
                 "reason": item.reason,
+                "supported_dispositions": ["retain_canonical_authority"],
             },
             body_text=item.reason,
             author_ref="insight:raw-authority-frontier@v1",
@@ -674,6 +676,72 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
             now_ms=now_ms,
         )
     return assertion_id, False
+
+
+def _apply_judgment_dispositions(
+    config: Config,
+    items: tuple[RawAuthorityFrontierItem, ...],
+) -> tuple[RawAuthorityFrontierItem, ...]:
+    """Promote explicitly resolved conflict plans into executable successors."""
+    root = _archive_root(config)
+    with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
+        resolutions = {
+            str(plan_id): json_document(json.loads(str(resolution)))
+            for plan_id, resolution in conn.execute(
+                """
+                SELECT plan_id, resolution
+                FROM raw_authority_blockers
+                WHERE resolved_at_ms IS NOT NULL AND resolution IS NOT NULL
+                ORDER BY resolved_at_ms
+                """
+            )
+        }
+    promoted: list[RawAuthorityFrontierItem] = []
+    for item in items:
+        resolution = resolutions.get(item.plan_id)
+        disposition = None if resolution is None else resolution.get("judgment_disposition")
+        if (
+            item.state is not RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT
+            or disposition != "retain_canonical_authority"
+        ):
+            promoted.append(item)
+            continue
+        assert resolution is not None
+        witness = json_document(
+            {
+                "schema": "polylogue.raw-authority-strategy-witness.v1",
+                "kind": "browser_conflict_resolution",
+                "conflict": item.strategy_witness,
+                "judgment": {
+                    "disposition": disposition,
+                    "operator_assertion_id": resolution.get("operator_assertion_id"),
+                    "superseded_plan_id": item.plan_id,
+                },
+            }
+        )
+        evidence = {
+            "schema": "polylogue.raw-authority-frontier-evidence.v1",
+            "state": RawAuthorityFrontierState.SAFELY_REKEYABLE.value,
+            "actuator": RawAuthorityActuator.RESOLVE_CONFLICT.value,
+            "input_raw_ids": item.input_raw_ids,
+            "source": item.source_preconditions,
+            "index": item.index_preconditions,
+            "strategy_witness": witness,
+        }
+        evidence_digest = _digest(evidence)
+        promoted.append(
+            dataclasses.replace(
+                item,
+                state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
+                actuator=RawAuthorityActuator.RESOLVE_CONFLICT,
+                reason="accepted operator judgment retained the exact canonical authority",
+                evidence_digest=evidence_digest,
+                strategy_witness=witness,
+                plan_id=f"raw-authority-frontier:{evidence_digest}",
+                evidence_ref=None,
+            )
+        )
+    return tuple(promoted)
 
 
 def _reconcile_frontier_obligations(
@@ -837,8 +905,9 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
             for row in head_rows
         ]
         superseded_items = _terminal_superseded_items(conn)
+    all_items = _apply_judgment_dispositions(config, (*head_items, *superseded_items))
     return (
-        tuple(sorted((*head_items, *superseded_items), key=lambda item: (item.raw_id, item.plan_id))),
+        tuple(sorted(all_items, key=lambda item: (item.raw_id, item.plan_id))),
         len(head_items),
         len(superseded_items),
     )
@@ -938,9 +1007,11 @@ def _apply_strategy(
 ) -> JSONDocument:
     from polylogue.storage.index_generation import RebuildLease
     from polylogue.storage.repair import (
+        _apply_browser_conflict_canonical_resolution,
         _apply_browser_origin_repair_item,
         _apply_duplicate_raw_identity_repair,
         _attach_repair_index,
+        _browser_origin_strategy_terminal,
         _cas_refine_quarantined_accepted_raw,
         _inspect_browser_capture_origin_strategy,
         _inspect_duplicate_raw_identity,
@@ -955,6 +1026,32 @@ def _apply_strategy(
     source_db = root / "source.db"
     index_db = root / "index.db"
 
+    if item.actuator is RawAuthorityActuator.RESOLVE_CONFLICT:
+        conflict = item.strategy_witness.get("conflict")
+        judgment = item.strategy_witness.get("judgment")
+        if not isinstance(conflict, dict) or not isinstance(judgment, dict):
+            raise RuntimeError("conflict-resolution strategy witness is incomplete")
+        evidence = conflict.get("evidence")
+        if not isinstance(evidence, dict) or judgment.get("disposition") != "retain_canonical_authority":
+            raise RuntimeError("conflict-resolution strategy is not explicitly authorized")
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _apply_browser_conflict_canonical_resolution(root, conn, item.raw_id, evidence)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return json_document(
+            {
+                "strategy": item.actuator.value,
+                "disposition": judgment["disposition"],
+                "repaired_count": 1,
+            }
+        )
     if item.actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS:
         canonical_ids = tuple(raw_id for raw_id in item.input_raw_ids if raw_id != item.raw_id)
         if len(canonical_ids) != 1:
@@ -1023,8 +1120,7 @@ def _apply_strategy(
                         _apply_browser_origin_repair_item(conn, browser_locked)
                     elif browser_locked.status != "already_repaired":
                         raise RuntimeError(f"browser-origin strategy lost its locked proof: {browser_locked.reason}")
-                    browser_after = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=conn)
-                    if browser_after.status != "already_repaired":
+                    if not _browser_origin_strategy_terminal(conn, browser_locked):
                         raise RuntimeError("browser-origin strategy did not reach its typed terminal postcondition")
                     conn.commit()
                 except Exception:

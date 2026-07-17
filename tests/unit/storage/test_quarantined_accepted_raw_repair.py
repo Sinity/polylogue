@@ -12,7 +12,9 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.revision_backfill import _parse_one
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import (
+    RawAuthorityFrontierState,
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
@@ -223,3 +225,38 @@ def test_unified_frontier_applies_quarantine_refinement_without_incident_receipt
             (raw_id,),
         ).fetchone() == ("byte_proven", raw_id)
     assert not (tmp_path / "recovery").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_blob", "blob_ref", "frontier", "session_hash", "application", "membership", "envelope"],
+)
+def test_unified_quarantine_strategy_rejects_mutated_authority_witness(tmp_path: Path, mutation: str) -> None:
+    raw_id = _seed_invalid_head(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
+        if mutation == "missing_blob":
+            blob_hash = str(
+                source.execute("SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+            )
+            BlobStore(tmp_path / "blob").blob_path(blob_hash.lower()).unlink()
+        elif mutation == "blob_ref":
+            source.execute("UPDATE blob_refs SET size_bytes = size_bytes + 1 WHERE ref_id = ?", (raw_id,))
+        elif mutation == "frontier":
+            index.execute("UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1")
+        elif mutation == "session_hash":
+            index.execute("UPDATE sessions SET content_hash = zeroblob(32)")
+        elif mutation == "application":
+            index.execute("UPDATE raw_revision_applications SET accepted_raw_id = ?", ("1" * 64,))
+        elif mutation == "membership":
+            source.execute("UPDATE raw_membership_census SET status = 'failed', member_count = 0")
+        elif mutation == "envelope":
+            source.execute("UPDATE raw_sessions SET logical_source_key = 'partial' WHERE raw_id = ?", (raw_id,))
+        source.commit()
+        index.commit()
+    before = _logical_state(tmp_path, raw_id)
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    item = next(item for item in census.items if item.raw_id == raw_id)
+
+    assert item.state is not RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert _logical_state(tmp_path, raw_id) == before
