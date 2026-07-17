@@ -329,7 +329,12 @@ describe("background receiver diagnostics", () => {
       { id: 1, url: "https://chatgpt.com/c/conv-active", active: true },
       { id: 2, url: "https://chatgpt.com/c/conv-inactive", active: false },
     ];
-    globalThis.fetch = vi.fn(async () => responseJson({
+    stored.polylogueReceiverPairing = {
+      state: "online", receiver_id: "rx-inactive", api_schema: "polylogue-browser-capture/v1",
+    };
+    globalThis.fetch = vi.fn(async (url) => responseJson(String(url).endsWith("/v1/status") ? {
+      ok: true, receiver_id: "rx-inactive", api_schema: "polylogue-browser-capture/v1",
+    } : {
       provider: "chatgpt",
       provider_session_id: "conv-inactive",
       state: "spooled_only",
@@ -368,7 +373,15 @@ describe("background receiver diagnostics", () => {
       { id: 2, url: "https://chatgpt.com/c/conv-rejected", active: false },
     ];
     stored.polylogueState = { online: true, provider: "chatgpt", provider_session_id: "conv-active", archive_state: { state: "archived" } };
-    globalThis.fetch = vi.fn(async () => responseJson({ error: "invalid capture" }, { ok: false, status: 400 }));
+    stored.polylogueReceiverPairing = {
+      state: "online", receiver_id: "rx-inactive", api_schema: "polylogue-browser-capture/v1",
+    };
+    globalThis.fetch = vi.fn(async (url) => responseJson(
+      String(url).endsWith("/v1/status")
+        ? { ok: true, receiver_id: "rx-inactive", api_schema: "polylogue-browser-capture/v1" }
+        : { error: "invalid capture" },
+      String(url).endsWith("/v1/status") ? {} : { ok: false, status: 400 },
+    ));
 
     await sendRuntimeMessage({
       type: "polylogue.capture",
@@ -394,6 +407,20 @@ describe("background receiver diagnostics", () => {
     expect(response.receiver_pairing).toBeNull();
     expect(stored.polylogueState.online).toBe(false);
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
+  });
+
+  it("refuses an unpaired content capture before a receiver POST", async () => {
+    delete stored.polylogueReceiverPairing;
+
+    const response = await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "unpaired-content", turns: [] } },
+    }, { tab: tabs[0] });
+
+    expect(response).toMatchObject({ ok: false, error: "receiver_unpaired" });
+    expect(fetchCalls).toHaveLength(0);
+    expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
+    expect(stored.polylogueSessionLedger["chatgpt:unpaired-content"].last_error).toBe("receiver_unpaired");
   });
 
   it("records a held decision when archive-state cannot be checked", async () => {
@@ -1958,11 +1985,18 @@ describe("capture retry queue", () => {
   });
 
   it("queues a capture for retry when the receiver is unreachable, sets a badge, then drains on the next alarm", async () => {
-    let callCount = 0;
+    let captureCalls = 0;
     globalThis.fetch = vi.fn(async (url) => {
-      callCount += 1;
       fetchCalls.push({ url });
-      if (callCount === 1) throw new TypeError("Failed to fetch");
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({
+          ok: true,
+          receiver_id: "rx-retry",
+          api_schema: "polylogue-browser-capture/v1",
+        });
+      }
+      captureCalls += 1;
+      if (captureCalls === 1) throw new TypeError("Failed to fetch");
       return responseJson({
         ok: true,
         provider: "chatgpt",
@@ -1986,6 +2020,9 @@ describe("capture retry queue", () => {
       { id: 2, url: "https://chatgpt.com/c/conv-9", active: false },
     ];
     stored.polylogueState = { online: true, provider: "chatgpt", provider_session_id: "conv-active", archive_state: { state: "archived" } };
+    stored.polylogueReceiverPairing = {
+      state: "online", receiver_id: "rx-retry", api_schema: "polylogue-browser-capture/v1",
+    };
     const response = await sendRuntimeMessage(
       { type: "polylogue.capture", envelope, reason: "content_script_capture" },
       { tab: tabs[1] },
@@ -2013,7 +2050,7 @@ describe("capture retry queue", () => {
     alarmListener({ name: "polylogueCaptureRetry" });
 
     await vi.waitFor(() => expect(stored.polylogueCaptureQueue.entries).toHaveLength(0));
-    expect(callCount).toBe(2);
+    expect(captureCalls).toBe(2);
     expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith("polylogueCaptureRetry");
     expect(stored.polylogueCaptureLog[0].reason).toBe("capture_retry_drained");
     expect(stored.polylogueState.captured).toBeUndefined();

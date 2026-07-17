@@ -2830,6 +2830,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const summary = envelopeSessionSummary(envelope);
       let result;
       try {
+        // Content scripts in an existing provider tab may outlive an extension
+        // reload. Do not let one of those stale producers turn an unpaired
+        // receiver into unauthenticated receiver traffic.
+        if (sender.tab) await requirePairedTrustedReceiver();
         result = await postJson("/v1/browser-captures", envelope);
       } catch (error) {
         if (isRetryableCaptureError(error)) {
