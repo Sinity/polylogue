@@ -2195,11 +2195,33 @@ describe("capture retry queue", () => {
   });
 });
 
-describe("provider-neutral browser action worker", () => {
+describe("browser action polling", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await loadBackground();
+  });
+
+  it("keeps an unpaired alarm wake entirely local", async () => {
+    expect(alarmListener).toBeTypeOf("function");
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+
+    await vi.waitFor(() => expect(fetchCalls).toHaveLength(0));
+  });
+});
+
+describe("provider-neutral browser action worker", () => {
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await loadBackground({
+      polylogueReceiverPairing: {
+        state: "online",
+        receiver_id: "rx-action-test",
+        api_schema: "polylogue-browser-capture/v1",
+      },
+    });
   });
 
   it("submits in an inactive provider tab and records an owner-bound exact receipt", async () => {
@@ -2224,6 +2246,9 @@ describe("provider-neutral browser action worker", () => {
     const updates = [];
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
       if (String(url).includes("/v1/browser-actions?claim_by=")) {
         if (claimed) return responseJson({ actions: [] });
         claimed = true;
@@ -2295,6 +2320,9 @@ describe("provider-neutral browser action worker", () => {
     });
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => undefined);
     globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
       if (String(url).includes("/v1/browser-actions?claim_by=")) {
         if (claimed) return responseJson({ actions: [] });
         claimed = true;
@@ -2357,6 +2385,9 @@ describe("provider-neutral browser action worker", () => {
     const updates = [];
     let claimed = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
       if (String(url).includes("/v1/browser-actions?claim_by=")) {
         if (claimed) return responseJson({ actions: [] });
         claimed = true;
@@ -2403,6 +2434,9 @@ describe("provider-neutral browser action worker", () => {
     let claimed = false;
     let cancelled = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
       if (String(url).includes("/v1/browser-actions?claim_by=")) {
         if (claimed) return responseJson({ actions: [] });
         claimed = true;
