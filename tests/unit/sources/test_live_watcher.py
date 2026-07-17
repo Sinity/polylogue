@@ -32,7 +32,10 @@ from polylogue.sources.live.batch import (
     _FullIngestResult,
     last_complete_newline_from_tail,
 )
-from polylogue.sources.live.batch_support import encode_cursor_hash_authority
+from polylogue.sources.live.batch_support import (
+    encode_cursor_hash_authority,
+    tail_hash_from_path,
+)
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
@@ -1984,6 +1987,78 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     parse_sources.reset_mock()
 
     asyncio.run(watcher._catch_up([root]))
+    assert parse_sources.await_count == 0
+
+
+def test_catch_up_rebases_device_drift_after_one_prefix_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remount must not make every later restart rehash stable history."""
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    payload = b'{"a":1}\n'
+    path.write_bytes(payload)
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    prefix_hash = sha256(payload).hexdigest()
+    tail_hash, _ = tail_hash_from_path(path, len(payload))
+    watcher._cursor.set(
+        path,
+        len(payload),
+        byte_offset=len(payload),
+        last_complete_newline=len(payload),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint=prefix_hash,
+        tail_hash=encode_cursor_hash_authority(
+            prefix_hash,
+            tail_hash,
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        source_name="test",
+        st_dev=stat.st_dev + 1,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    calls = 0
+    rebase_batches = 0
+    real_hash = cast(Callable[..., tuple[str, int]], live_watcher.__dict__["sha256_range_from_path"])
+    real_rebase = watcher._cursor.rebase_authoritative_observations
+
+    def counted_hash(
+        source: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+        chunk_size: int = 64 * 1024,
+    ) -> tuple[str, int]:
+        nonlocal calls
+        calls += 1
+        return real_hash(
+            source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            chunk_size=chunk_size,
+        )
+
+    monkeypatch.setattr(live_watcher, "sha256_range_from_path", counted_hash)
+
+    def counted_rebase(rebases: Iterable[object]) -> int:
+        nonlocal rebase_batches
+        rebase_batches += 1
+        return real_rebase(cast(Iterable[Any], rebases))
+
+    monkeypatch.setattr(watcher._cursor, "rebase_authoritative_observations", counted_rebase)
+
+    asyncio.run(watcher._catch_up([root]))
+    rebased = watcher._cursor.get_record(path)
+    assert calls == 1
+    assert rebase_batches == 1
+    assert parse_sources.await_count == 0
+    assert rebased is not None
+    assert rebased.st_dev == stat.st_dev
+
+    asyncio.run(watcher._catch_up([root]))
+    assert calls == 1
     assert parse_sources.await_count == 0
 
 
