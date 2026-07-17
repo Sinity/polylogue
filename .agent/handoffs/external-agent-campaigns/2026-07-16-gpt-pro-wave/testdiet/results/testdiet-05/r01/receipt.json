@@ -1,0 +1,1 @@
+{"job_id":"testdiet-05","revision":"r01","state":"integrated_merged","bead":"polylogue-z9gh.1","merge_commit":"876358610","pull_request":"https://github.com/Sinity/polylogue/pull/3012","verification":"focused aggregate execution tests and devtools verify --quick passed","scope":"bounded aggregate execution only; shared resumable query transaction remains open"}
